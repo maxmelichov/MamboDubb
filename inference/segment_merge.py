@@ -98,8 +98,8 @@ def merge_same_speaker_segments(
         start = float(phrases[0]["start"])
         end = float(phrases[-1]["end"])
 
-        if cur is None:
-            cur = {
+        def _new_cur() -> dict[str, Any]:
+            row = {
                 "speaker_id": spk,
                 "language": lang,
                 "keep_original": keep_original,
@@ -107,6 +107,22 @@ def merge_same_speaker_segments(
                 "end": end,
                 "phrases": [dict(p) for p in phrases],
             }
+            # Preserve already-rendered TTS paths across merge (selective rebuilds).
+            for key in (
+                "tts_fit",
+                "tts_raw",
+                "tts_speed_used",
+                "ref_audio",
+                "ref_start",
+                "ref_end",
+                "text_en",
+            ):
+                if key in seg and seg[key] is not None:
+                    row[key] = seg[key]
+            return row
+
+        if cur is None:
+            cur = _new_cur()
             continue
 
         gap = start - float(cur["end"])
@@ -119,17 +135,13 @@ def merge_same_speaker_segments(
             cur["phrases"][-1]["pause_after"] = round(max(gap, 0.0), 3)
             cur["phrases"].extend(dict(p) for p in phrases)
             cur["end"] = end
+            # Merged utterance needs a fresh render
+            for key in ("tts_fit", "tts_raw", "tts_speed_used"):
+                cur.pop(key, None)
         else:
             _finalize_merged(cur)
             merged.append(cur)
-            cur = {
-                "speaker_id": spk,
-                "language": lang,
-                "keep_original": keep_original,
-                "start": start,
-                "end": end,
-                "phrases": [dict(p) for p in phrases],
-            }
+            cur = _new_cur()
 
     if cur is not None:
         _finalize_merged(cur)

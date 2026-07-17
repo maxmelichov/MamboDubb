@@ -52,5 +52,5 @@ uv run hf download google/translategemma-4b-it \
 | ASR (faster-whisper CT2) | `inference/transcribe.py` | Ready |
 | Translate | `inference/translate.py` | Ready |
 | Extract + diarize + ASR merge | `inference/extract_pipeline.py` | Ready |
-| Preview dub (F5-TTS) | `inference/build_preview.py` | Ready |
+| Preview dub (Qwen3-TTS CustomVoice) | `inference/build_preview.py` | Ready |
 | ASD / LatentSync / master | — | Planned (see docs) |

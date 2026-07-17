@@ -8,12 +8,12 @@ Produces:
   translated_segments.json
   preview_en.srt
   dubbed_audio.wav
-  preview.mp4   ← video + EN F5-TTS over ducked BGM + soft EN subs
+  preview.mp4   ← video + EN TTS over ducked BGM + soft EN subs
 
-TTS: F5-TTS (https://github.com/SWivid/F5-TTS)
-  --tts-speed 1.0          manual rate (0.3–2.0; >1 = faster/shorter)
-  --tts-fit-duration       nudge speed within 0.85–1.25 toward slot length
-  Per-segment voice ref from that line's own vocals (not SPEAKER_XX bank)
+TTS (default: Qwen3-TTS 0.6B-Base zero-shot — https://arxiv.org/abs/2601.15621):
+  --tts-engine qwen        clone from each phrase's vocal ref → English
+  --tts-engine f5          F5-TTS zero-shot (legacy)
+
 No lip-sync yet (LatentSync = Phase 5).
 """
 
@@ -30,6 +30,7 @@ import torch
 from transformers import AutoModelForImageTextToText, AutoProcessor
 
 from inference.tts_f5 import synthesize_segments_f5, wav_duration as f5_wav_duration
+from inference.tts_qwen import DEFAULT_MODEL as QWEN_DEFAULT_MODEL, synthesize_segments_qwen
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TRANSLATE_MODEL = REPO_ROOT / "models" / "translategemma-4b-it"
@@ -370,16 +371,38 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--skip-translate", action="store_true", help="Reuse existing text_en in JSON.")
     p.add_argument("--skip-tts", action="store_true", help="Keep Hebrew vocals; only add EN subs.")
     p.add_argument(
+        "--tts-engine",
+        choices=("qwen", "f5"),
+        default="qwen",
+        help="TTS backend (default: qwen 0.6B-Base zero-shot clone).",
+    )
+    p.add_argument(
+        "--qwen-model",
+        type=Path,
+        default=QWEN_DEFAULT_MODEL,
+        help="Qwen3-TTS Base checkpoint (default: models/Qwen3-TTS-12Hz-0.6B-Base).",
+    )
+    p.add_argument(
+        "--qwen-x-vector-only",
+        action="store_true",
+        help="Clone via speaker embedding only (no ICL ref_text).",
+    )
+    p.add_argument(
+        "--qwen-reuse-speaker-prompt",
+        action="store_true",
+        help="Reuse one clone prompt per diarization speaker (faster; less phrase-local).",
+    )
+    p.add_argument(
         "--tts-speed",
         type=float,
         default=1.0,
-        help="F5-TTS speed 0.3–2.0 (default 1.0). >1 faster/shorter; <1 slower/longer.",
+        help="F5-TTS only: speed 0.3–2.0 (default 1.0).",
     )
     p.add_argument(
         "--tts-fit-duration",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Nudge F5 speed toward slot length within --fit-speed-* (default: on).",
+        help="F5 only: nudge speed toward slot length (default: on).",
     )
     p.add_argument("--fit-speed-min", type=float, default=0.85)
     p.add_argument("--fit-speed-max", type=float, default=1.25)
@@ -508,9 +531,27 @@ def main() -> None:
             capture_output=True,
         )
     else:
-        f5_device = None if args.device == "auto" else args.device
+        tts_device = None if args.device == "auto" else args.device
+        selected = (
+            {int(value) for value in args.tts_segments.split(",")}
+            if args.tts_segments
+            else None
+        )
         if args.reuse_tts:
-            print("Reusing existing F5-TTS clips.", file=sys.stderr)
+            print(f"Reusing existing TTS clips (engine={args.tts_engine}).", file=sys.stderr)
+        elif args.tts_engine == "qwen":
+            synthesize_segments_qwen(
+                segments,
+                vocals,
+                workdir,
+                model_path=args.qwen_model,
+                x_vector_only=args.qwen_x_vector_only,
+                reuse_speaker_prompt=args.qwen_reuse_speaker_prompt,
+                device=tts_device,
+                selected_indices=selected,
+                merge_pauses=True,
+                max_pause=args.max_pause,
+            )
         else:
             print(
                 f"F5-TTS speed={args.tts_speed} fit_duration={args.tts_fit_duration}",
@@ -525,20 +566,19 @@ def main() -> None:
                 fit_speed_min=args.fit_speed_min,
                 fit_speed_max=args.fit_speed_max,
                 model=args.f5_model,
-                device=f5_device,
-                selected_indices=(
-                    {int(value) for value in args.tts_segments.split(",")}
-                    if args.tts_segments
-                    else None
-                ),
+                device=tts_device,
+                selected_indices=selected,
                 merge_pauses=True,
                 max_pause=args.max_pause,
             )
         payload_out = {
             **payload,
             "segments": segments,
-            "tts_engine": "f5-tts",
+            "tts_engine": (
+                "qwen3-tts-0.6b-base" if args.tts_engine == "qwen" else "f5-tts"
+            ),
             "tts_speed": args.tts_speed,
+            "qwen_x_vector_only": bool(args.qwen_x_vector_only),
         }
         out_json.write_text(json.dumps(payload_out, ensure_ascii=False, indent=2), encoding="utf-8")
         dubbed = build_dubbed_track(segments, background, total_duration, workdir)

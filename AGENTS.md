@@ -9,7 +9,7 @@ Guidance for AI agents and humans working in this repository.
 1. Separate vocals from background music (Demucs)
 2. Diarize + transcribe Hebrew (Pyannote + ivrit-ai Whisper)
 3. Duration-aware translation (TranslateGemma / local LLM)
-4. Zero-shot TTS with speed control (F5-TTS; Qwen3-TTS optional later)
+4. Zero-shot TTS (Qwen3-TTS 0.6B-Base clone from vocal refs; F5 optional)
 5. Active-speaker-gated lip-sync (TalkNet/SyncNet → LatentSync)
 6. Remix background + dubbed vocals with ducking (FFmpeg)
 
@@ -89,11 +89,13 @@ cp .env.example .env   # then set HF_TOKEN
 uv run python inference/transcribe.py path/to/audio.wav --timestamps
 uv run python inference/translate.py -s he -t en "שלום"
 uv run python inference/extract_pipeline.py path/to/video.mp4
-uv run python inference/build_preview.py outputs/<run> --skip-translate --tts-speed 1.0
+uv run python inference/build_preview.py outputs/<run> --skip-translate
+# Legacy F5:
+uv run python inference/build_preview.py outputs/<run> --skip-translate --tts-engine f5
 
 uv run hf download google/translategemma-4b-it --local-dir models/translategemma-4b-it
 uv run hf download ivrit-ai/whisper-large-v3-turbo-ct2 --local-dir models/whisper-large-v3-turbo-ct2
-# F5-TTS checkpoints download automatically on first `build_preview` / `tts_f5` run
+uv run hf download Qwen/Qwen3-TTS-12Hz-0.6B-Base --local-dir models/Qwen3-TTS-12Hz-0.6B-Base
 ```
 
 ## Hard constraints

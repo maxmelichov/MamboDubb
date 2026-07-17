@@ -62,14 +62,14 @@ uv run python inference/transcribe.py vocals.wav --timestamps
 uv run python inference/translate.py -s he -t en "טקסט בעברית"
 ```
 
-## Later phases (not wired yet)
+## Preview / TTS (Phase 3–4)
 
-Planned consumers of `segments.json`:
+Consumers of `segments.json`:
 
-1. **Translate** each `text` with a duration budget ≈ `duration` seconds.
-2. **TTS (F5-TTS)** — zero-shot clone from `vocals.wav` refs; control pace with `--tts-speed`.
-3. **Time fit** — F5 `speed` re-infer (`--tts-fit-duration`) then pad/trim to `[start, end]`.
-4. **ASD** gate → optional LatentSync on that window.
+1. **Translate** each Hebrew `text` (non-Hebrew turns keep original audio).
+2. **TTS (Qwen3-TTS 0.6B-Base)** — zero-shot clone from each phrase’s vocal ref → English.
+3. **Time fit** — concat phrases + pad/soft-trim to `[start, end]`.
+4. **ASD** gate → optional LatentSync on that window (not wired yet).
 5. **Mux** English vocals over `background.wav` with ducking.
 
 ### Pause-aware utterances
@@ -84,25 +84,22 @@ uv run python inference/extract_pipeline.py clip.mp4 --max-duration 60 --max-pau
 uv run python inference/build_preview.py outputs/<run> --skip-translate --max-pause 1.0
 ```
 
-
 ```bash
-# Reuse existing HE→EN text_en; F5-TTS with manual speed
-uv run python inference/build_preview.py outputs/kan11_60s \
-  --skip-translate \
-  --tts-speed 1.0
+# Default: Qwen 0.6B-Base zero-shot from vocal refs
+uv run python inference/build_preview.py outputs/kan11_60s --skip-translate
 
-# Speak faster to pack more English into short windows
+# Speaker-embedding-only clone (no Hebrew ICL text)
 uv run python inference/build_preview.py outputs/kan11_60s \
-  --skip-translate --tts-speed 1.2
+  --skip-translate --qwen-x-vector-only
 
-# Fixed speed only (no auto re-infer)
+# Legacy F5
 uv run python inference/build_preview.py outputs/kan11_60s \
-  --skip-translate --tts-speed 1.0 --no-tts-fit-duration
+  --skip-translate --tts-engine f5 --tts-speed 1.0
 
-# TTS-only (writes tts_clips/ + updates translated_segments.json)
-uv run python inference/tts_f5.py outputs/kan11_60s --tts-speed 1.1
+# TTS-only
+uv run python inference/tts_qwen.py outputs/kan11_60s
 ```
 
-Output: `outputs/<run>/preview.mp4` (EN F5 voice over ducked BGM + soft EN subs).
+Output: `outputs/<run>/preview.mp4` (EN voice over ducked BGM + soft EN subs).
 
 See [architecture.md](architecture.md).

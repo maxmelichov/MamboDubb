@@ -25,6 +25,7 @@ dependencies = [
     "huggingface-hub>=0.26.0",
     "hf>=0.0.1",
     "f5-tts>=1.1.0",
+    "qwen-tts",
 ]
 
 [project.optional-dependencies]
@@ -36,7 +37,8 @@ dev = [
 dq-transcribe = "inference.transcribe:main"
 dq-translate = "inference.translate:main"
 dq-extract = "inference.extract_pipeline:main"
-dq-tts = "inference.tts_f5:main"
+dq-tts = "inference.tts_qwen:main"
+dq-tts-f5 = "inference.tts_f5:main"
 dq-preview = "inference.build_preview:main"
 
 [build-system]
@@ -48,6 +50,9 @@ packages = ["inference"]
 
 [tool.uv]
 package = true
+
+[tool.uv.sources]
+qwen-tts = { path = "third_party/Qwen3-TTS", editable = true }
 
 [tool.ruff]
 line-length = 100
