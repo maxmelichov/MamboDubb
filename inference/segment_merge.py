@@ -10,11 +10,37 @@ Rules:
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
 DEFAULT_MAX_PAUSE = 1.0  # seconds — above this, start a new utterance
 DEFAULT_PHRASE_PAUSE = 0.18  # seconds — within an utterance, mark an internal pause
+# Diarization often flips speaker mid-clause; bridge tiny gaps so ASR isn't clipped.
+DEFAULT_CROSS_SPEAKER_GAP = 0.45
+
+
+_UNFINISHED_TAIL = re.compile(
+    r"(מממן|מממנת|funds|fund|and|the|את|של|עם|ו)\.?$",
+    re.IGNORECASE,
+)
+
+
+def utterance_unfinished(text: str) -> bool:
+    """True when the transcript looks mid-sentence / mid-list (don't hard-cut)."""
+    t = (text or "").strip().rstrip("\"'”’")
+    if not t:
+        return False
+    if t.endswith((",", "،", ";", ":", "—", "-")):
+        return True
+    if t.endswith("…") or t.endswith("..."):
+        return True
+    if _UNFINISHED_TAIL.search(t):
+        return True
+    # No strong terminal punctuation → treat as open when bridging short gaps.
+    if t[-1] not in ".!?؟":
+        return True
+    return False
 
 
 def _join_text(parts: list[str]) -> str:
@@ -75,9 +101,12 @@ def merge_same_speaker_segments(
     segments: list[dict[str, Any]],
     *,
     max_pause: float = DEFAULT_MAX_PAUSE,
+    cross_speaker_gap: float = DEFAULT_CROSS_SPEAKER_GAP,
 ) -> list[dict[str, Any]]:
-    """Merge consecutive same-speaker / same-language segments when the gap is a short pause.
+    """Merge consecutive same-language segments when the gap is a short pause.
 
+    Also bridges *unfinished* sentences across a tiny speaker-id flip (diarization
+    chatter), so we don't cut mid-list ("Qatar funds…" / "…al-Qaeda").
     Never merges across languages. Preserves existing phrases[] instead of flattening.
     """
     if not segments:
@@ -126,16 +155,35 @@ def merge_same_speaker_segments(
             continue
 
         gap = start - float(cur["end"])
-        same = (
-            spk == cur["speaker_id"]
-            and lang == cur.get("language", "he")
+        same_lang = (
+            lang == cur.get("language", "he")
             and keep_original == bool(cur.get("keep_original"))
         )
-        if same and 0 <= gap <= max_pause:
+        same_spk = spk == cur["speaker_id"]
+        prev_tail = ""
+        if cur.get("phrases"):
+            prev_tail = (cur["phrases"][-1].get("text") or "").strip()
+        unfinished = utterance_unfinished(prev_tail)
+
+        bridge_same = same_lang and same_spk and 0 <= gap <= max_pause
+        # Mid-sentence across a spurious speaker flip (very short gap only).
+        bridge_cross = (
+            same_lang
+            and not same_spk
+            and unfinished
+            and 0 <= gap <= cross_speaker_gap
+        )
+
+        if bridge_same or bridge_cross:
             cur["phrases"][-1]["pause_after"] = round(max(gap, 0.0), 3)
             cur["phrases"].extend(dict(p) for p in phrases)
             cur["end"] = end
-            # Merged utterance needs a fresh render
+            # Prefer the speaker who owns more of the merged span.
+            if bridge_cross:
+                cur_dur = float(cur["end"]) - float(cur["start"])
+                new_dur = end - start
+                if new_dur > cur_dur * 0.6:
+                    cur["speaker_id"] = spk
             for key in ("tts_fit", "tts_raw", "tts_speed_used"):
                 cur.pop(key, None)
         else:
@@ -171,8 +219,14 @@ def merge_diarization_turns(
     turns: list[dict[str, Any]],
     *,
     max_pause: float = DEFAULT_MAX_PAUSE,
+    cross_speaker_gap: float = DEFAULT_CROSS_SPEAKER_GAP,
 ) -> list[dict[str, Any]]:
-    """Merge adjacent same-speaker diarization turns separated by a short gap."""
+    """Merge adjacent diarization turns so ASR is not clipped mid-utterance.
+
+    Same speaker: merge gaps ≤ max_pause.
+    Different speaker: merge only micro-gaps (diarization flip) so one Whisper
+    window covers a continuing clause; keep the longer turn's speaker_id.
+    """
     if not turns:
         return []
     ordered = sorted(turns, key=lambda t: float(t["start"]))
@@ -180,7 +234,14 @@ def merge_diarization_turns(
     cur = dict(ordered[0])
     for turn in ordered[1:]:
         gap = float(turn["start"]) - float(cur["end"])
-        if turn["speaker_id"] == cur["speaker_id"] and 0 <= gap <= max_pause:
+        same_spk = turn["speaker_id"] == cur["speaker_id"]
+        if same_spk and 0 <= gap <= max_pause:
+            cur["end"] = float(turn["end"])
+        elif (not same_spk) and 0 <= gap <= cross_speaker_gap:
+            cur_dur = float(cur["end"]) - float(cur["start"])
+            turn_dur = float(turn["end"]) - float(turn["start"])
+            if turn_dur > cur_dur:
+                cur["speaker_id"] = turn["speaker_id"]
             cur["end"] = float(turn["end"])
         else:
             out.append(

@@ -20,6 +20,24 @@ LAT_RE = re.compile(r"[A-Za-z]")
 
 CANDIDATE_LANGS = ("he", "en", "ar")
 
+# Whisper-he often transliterates English names; restore Latin forms for dubbing.
+_CODE_SWITCH_LATIN: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\bאייסיס\b"), "ISIS"),
+    (re.compile(r"\bאיסיס\b"), "ISIS"),
+    (re.compile(r"\bISIS\b", re.I), "ISIS"),
+    (re.compile(r"\bאל-?קאעידה\b"), "Al-Qaeda"),
+    (re.compile(r"\bאל-?קאידה\b"), "Al-Qaeda"),
+    (re.compile(r"\bAl-?Qaeda\b", re.I), "Al-Qaeda"),
+]
+
+
+def restore_latin_names(text: str) -> str:
+    """Keep English org/acronym tokens in Latin inside Hebrew transcripts."""
+    out = text or ""
+    for pat, repl in _CODE_SWITCH_LATIN:
+        out = pat.sub(repl, out)
+    return out
+
 
 def script_ratios(text: str) -> dict[str, float]:
     he = len(HE_RE.findall(text))
@@ -30,28 +48,53 @@ def script_ratios(text: str) -> dict[str, float]:
 
 
 def sanitize_text(text: str, lang: str) -> str:
-    """Drop characters that don't belong to the winning language's script."""
+    """Light cleanup for the winning language — keep code-switched names.
+
+    Hebrew documentary speech often embeds Latin tokens (ISIS, Al-Qaeda, brands).
+    Never strip those from `he` / `ar` transcripts.
+    """
     text = (text or "").strip()
     if not text:
         return ""
     if lang == "en":
+        # Drop HE/AR runs; keep Latin (including names).
         text = re.sub(r"[\u0590-\u05FF\u0600-\u06FF]+", "", text)
     elif lang == "he":
-        text = re.sub(r"[A-Za-z]+", "", text)
+        # Drop Arabic only — keep Latin names inside Hebrew.
+        text = re.sub(r"[\u0600-\u06FF]+", "", text)
     elif lang == "ar":
+        # Drop Hebrew only — keep Latin names inside Arabic.
         text = re.sub(r"[\u0590-\u05FF]+", "", text)
-        text = re.sub(r"[A-Za-z]+", "", text)
     text = re.sub(r"\s+", " ", text).strip(" .,;:-")
     return text.strip()
 
 
 def script_bonus(text: str, lang: str) -> float:
     """Reward transcripts whose script matches the forced language."""
-    ratios = script_ratios(text)
-    if ratios["total_letters"] < 2:
+    if not (text or "").strip():
         return -1.0
-    matched = ratios.get(lang, 0.0)
-    # Heavy penalty when forced-lang script is almost absent (hallucinated wrong lang).
+    he = len(HE_RE.findall(text))
+    ar = len(AR_RE.findall(text))
+    lat = len(LAT_RE.findall(text))
+    # Latin inside HE/AR is code-switching, not a failed script match.
+    if lang == "he":
+        denom = max(he + ar, 1)
+        matched = he / denom
+        if he + ar < 2 and lat >= 2:
+            return -0.5
+    elif lang == "ar":
+        denom = max(ar + he, 1)
+        matched = ar / denom
+        if ar + he < 2 and lat >= 2:
+            return -0.5
+    elif lang == "en":
+        denom = max(lat + he + ar, 1)
+        matched = lat / denom
+    else:
+        matched = 0.0
+        denom = 1
+    if (he + ar + lat) < 2:
+        return -1.0
     if matched < 0.25:
         return -1.5
     return 0.75 * matched
@@ -117,6 +160,8 @@ def score_language(
         return "he", -99.0, [], ""
     lang, score, segments, text = best
     text = sanitize_text(text, lang)
+    if lang in ("he", "ar"):
+        text = restore_latin_names(text)
     return lang, score, segments, text
 
 

@@ -214,6 +214,8 @@ def resolve_whisper_model(model: str) -> str:
 
 def _phrases_from_words(words: list, phrase_pause: float) -> list[dict]:
     """Split word stream into pause-aware phrases (absolute timestamps)."""
+    from inference.lang_detect import restore_latin_names
+
     if not words:
         return []
     phrases: list[dict] = []
@@ -228,6 +230,7 @@ def _phrases_from_words(words: list, phrase_pause: float) -> list[dict]:
         text = "".join(buf).strip()
         if text and " " not in text and len(buf) > 1:
             text = " ".join(w.strip() for w in buf if w.strip())
+        text = restore_latin_names(text)
         if text:
             phrases.append(
                 {
@@ -332,7 +335,9 @@ def transcribe_and_merge(
                 file=sys.stderr,
             )
             continue
-        if len(det["text"].strip()) < 3:
+        # Prefer word-built phrase text (keeps Latin names inside Hebrew).
+        joined = " ".join(p["text"] for p in phrases).strip()
+        if len(joined) < 3 and len(det["text"].strip()) < 3:
             print("    too short — skip", file=sys.stderr)
             continue
 
@@ -350,7 +355,7 @@ def transcribe_and_merge(
             "language_score": det.get("language_score"),
             "keep_original": keep_original,
             "phrases": phrases,
-            "text": " ".join(p["text"] for p in phrases),
+            "text": joined or det["text"],
             "duration": 0.0,
             "pauses": [float(p["pause_after"]) for p in phrases],
         }

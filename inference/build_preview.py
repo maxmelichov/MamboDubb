@@ -68,6 +68,27 @@ def load_translator(model_path: Path, device: torch.device):
     return processor, model, dtype
 
 
+def preserve_latin_tokens(source: str, translated: str) -> str:
+    """Re-inject Latin tokens from the source if the translator dropped them."""
+    import re
+
+    he_re = re.compile(r"[\u0590-\u05FF]")
+    tokens = re.findall(r"[A-Za-z][A-Za-z0-9'./-]*", source or "")
+    out = (translated or "").strip()
+    if not out:
+        return out
+    # Translator sometimes echoes Hebrew or collapses to bare names — don't "fix" that.
+    if he_re.search(out):
+        return out
+    if tokens and len(out.split()) <= len(tokens):
+        return out
+    lower = out.lower()
+    missing = [t for t in tokens if t.lower() not in lower]
+    if not missing:
+        return out
+    return (out.rstrip(" .,") + " " + " ".join(dict.fromkeys(missing))).strip()
+
+
 def translate_text(
     processor,
     model,
@@ -101,7 +122,8 @@ def translate_text(
     input_length = inputs["input_ids"].shape[-1]
     with torch.inference_mode():
         generated = model.generate(**inputs, do_sample=False, max_new_tokens=max_new_tokens)
-    return processor.decode(generated[0, input_length:], skip_special_tokens=True).strip()
+    en = processor.decode(generated[0, input_length:], skip_special_tokens=True).strip()
+    return preserve_latin_tokens(text, en)
 
 
 def srt_timestamp(seconds: float) -> str:
@@ -212,82 +234,89 @@ def wav_duration(path: Path) -> float:
     return f5_wav_duration(path)
 
 
+def _load_mono(path: Path, sample_rate: int):
+    import numpy as np
+    import soundfile as sf
+
+    audio, sr = sf.read(str(path), dtype="float32", always_2d=True)
+    mono = audio.mean(axis=1)
+    if sr == sample_rate:
+        return mono
+    # Linear resample for rare rate mismatches (TTS / Demucs are usually 44.1k).
+    n_out = int(round(len(mono) * sample_rate / sr))
+    if n_out <= 0:
+        return np.zeros(0, dtype=np.float32)
+    x_old = np.linspace(0.0, 1.0, num=len(mono), endpoint=False)
+    x_new = np.linspace(0.0, 1.0, num=n_out, endpoint=False)
+    return np.interp(x_new, x_old, mono).astype(np.float32)
+
+
 def build_dubbed_track(
     segments: list[dict],
     background: Path,
     total_duration: float,
     workdir: Path,
+    *,
+    bg_gain: float = 0.65,
+    speech_gain: float = 1.0,
+    duck_db: float = -6.0,
 ) -> Path:
-    """Place pre-rendered F5 TTS clips on a timeline over ducked background."""
-    silence = workdir / "silence.wav"
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-y",
-            "-f",
-            "lavfi",
-            "-i",
-            "anullsrc=r=44100:cl=mono",
-            "-t",
-            f"{total_duration:.3f}",
-            "-acodec",
-            "pcm_s16le",
-            str(silence),
-        ],
-        check=True,
-        capture_output=True,
-    )
+    """Place TTS clips on a timeline and sum with background (sample-accurate).
 
-    inputs = ["-i", str(background), "-i", str(silence)]
-    filter_parts: list[str] = [
-        f"[0:a]atrim=0:{total_duration:.3f},asetpts=PTS-STARTPTS,volume=0.35[bg]",
-        f"[1:a]atrim=0:{total_duration:.3f},asetpts=PTS-STARTPTS[bed]",
-    ]
+    Avoids ffmpeg adelay/amix, which was mangling stereo BGM into hissy/pumping
+    output when mixed with a mono silence bed + many delayed mono clips.
+    """
+    import numpy as np
+    import soundfile as sf
 
-    speech_labels: list[str] = []
-    next_idx = 2
-    for i, seg in enumerate(segments):
-        fitted = seg.get("tts_fit")
-        if not fitted or not Path(fitted).is_file():
-            continue
-        start = float(seg["start"])
-        delay_ms = int(round(start * 1000))
-        inputs.extend(["-i", str(fitted)])
-        label = f"s{i}"
-        filter_parts.append(f"[{next_idx}:a]adelay={delay_ms}|{delay_ms},volume=1.25[{label}]")
-        speech_labels.append(f"[{label}]")
-        next_idx += 1
-
-    if speech_labels:
-        n = 1 + len(speech_labels)
-        mix_inputs = "[bed]" + "".join(speech_labels)
-        filter_parts.append(f"{mix_inputs}amix=inputs={n}:normalize=0:dropout_transition=0[speech]")
-        filter_parts.append("[bg][speech]amix=inputs=2:normalize=0:dropout_transition=0[out]")
+    bg, sr = sf.read(str(background), dtype="float32", always_2d=True)
+    n_samples = max(1, int(round(total_duration * sr)))
+    if bg.shape[0] < n_samples:
+        bg = np.pad(bg, ((0, n_samples - bg.shape[0]), (0, 0)))
     else:
-        filter_parts.append("[bg]acopy[out]")
+        bg = bg[:n_samples]
+
+    speech = np.zeros(n_samples, dtype=np.float32)
+    placed = 0
+    for seg in segments:
+        fitted = seg.get("tts_fit")
+        if not fitted:
+            continue
+        path = Path(fitted)
+        if not path.is_file():
+            print(f"  skip missing TTS clip: {path}", file=sys.stderr)
+            continue
+        clip = _load_mono(path, sr)
+        i0 = int(round(float(seg["start"]) * sr))
+        if i0 >= n_samples or len(clip) == 0:
+            continue
+        i1 = min(n_samples, i0 + len(clip))
+        speech[i0:i1] += clip[: i1 - i0]
+        placed += 1
+
+    # Smooth envelope → gentle duck under speech (no hard gain jumps).
+    win = max(1, int(0.05 * sr))
+    kernel = np.ones(win, dtype=np.float32) / float(win)
+    env = np.convolve(np.abs(speech), kernel, mode="same")
+    thr = 0.012
+    amount = np.clip((env - thr) / (thr * 4.0), 0.0, 1.0)
+    amount = np.convolve(amount, kernel, mode="same")
+    amount = np.clip(amount, 0.0, 1.0)
+    duck_lin = float(10.0 ** (duck_db / 20.0))
+    bg_scale = bg_gain * ((1.0 - amount) + amount * duck_lin)
+
+    mix = bg * bg_scale[:, None] + (speech * speech_gain)[:, None]
+    peak = float(np.max(np.abs(mix))) if mix.size else 0.0
+    if peak > 0.98:
+        mix *= 0.98 / peak
 
     out_wav = workdir / "dubbed_audio.wav"
-    cmd = [
-        "ffmpeg",
-        "-y",
-        *inputs,
-        "-filter_complex",
-        ";".join(filter_parts),
-        "-map",
-        "[out]",
-        "-acodec",
-        "pcm_s16le",
-        "-ar",
-        "44100",
-        "-t",
-        f"{total_duration:.3f}",
-        str(out_wav),
-    ]
-    print("Mixing dubbed audio…", file=sys.stderr)
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        print(result.stderr[-2000:], file=sys.stderr)
-        raise SystemExit(f"ffmpeg mix failed (exit {result.returncode})")
+    print(
+        f"Mixing dubbed audio (numpy): {placed} clips, "
+        f"bg_gain={bg_gain}, duck={duck_db} dB → {out_wav}",
+        file=sys.stderr,
+    )
+    sf.write(str(out_wav), mix.astype(np.float32), sr, subtype="PCM_16")
     return out_wav
 
 
@@ -508,28 +537,31 @@ def main() -> None:
     )
 
     if args.skip_tts:
+        # Preview remix without TTS: place full vocals as one "clip" at t=0.
+        import numpy as np
+        import soundfile as sf
+
+        bg, sr = sf.read(str(background), dtype="float32", always_2d=True)
+        voc, vsr = sf.read(str(vocals), dtype="float32", always_2d=True)
+        n = max(1, int(round(total_duration * sr)))
+        if bg.shape[0] < n:
+            bg = np.pad(bg, ((0, n - bg.shape[0]), (0, 0)))
+        else:
+            bg = bg[:n]
+        voc_m = voc.mean(axis=1)
+        if vsr != sr and len(voc_m):
+            n_out = int(round(len(voc_m) * sr / vsr))
+            x_old = np.linspace(0.0, 1.0, num=len(voc_m), endpoint=False)
+            x_new = np.linspace(0.0, 1.0, num=n_out, endpoint=False)
+            voc_m = np.interp(x_new, x_old, voc_m).astype(np.float32)
+        speech = np.zeros(n, dtype=np.float32)
+        speech[: min(n, len(voc_m))] = voc_m[:n]
+        mix = bg * 0.65 + speech[:, None]
+        peak = float(np.max(np.abs(mix))) if mix.size else 0.0
+        if peak > 0.98:
+            mix *= 0.98 / peak
         dubbed = workdir / "dubbed_audio.wav"
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-i",
-                str(background),
-                "-i",
-                str(vocals),
-                "-filter_complex",
-                "[0:a]volume=0.35[bg];[1:a]volume=1.0[v];[bg][v]amix=inputs=2:normalize=0[out]",
-                "-map",
-                "[out]",
-                "-t",
-                f"{total_duration:.3f}",
-                "-acodec",
-                "pcm_s16le",
-                str(dubbed),
-            ],
-            check=True,
-            capture_output=True,
-        )
+        sf.write(str(dubbed), mix.astype(np.float32), sr, subtype="PCM_16")
     else:
         tts_device = None if args.device == "auto" else args.device
         selected = (
