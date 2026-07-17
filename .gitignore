@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+uv.lock.bak
+dist/
+build/
+*.egg-info/
+
+# Local model weights (large; download with hf)
+models/
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Runtime outputs
+outputs/
+demucs_out/
+*.wav
+*.mp4
+!third_party/**/assets/**
