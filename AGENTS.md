@@ -9,7 +9,7 @@ Guidance for AI agents and humans working in this repository.
 1. Separate vocals from background music (Demucs)
 2. Diarize + transcribe Hebrew (Pyannote + ivrit-ai Whisper)
 3. Duration-aware translation (TranslateGemma / local LLM)
-4. Zero-shot TTS with time-stretching (Qwen3-TTS / CosyVoice / F5 — TBD)
+4. Zero-shot TTS with speed control (F5-TTS; Qwen3-TTS optional later)
 5. Active-speaker-gated lip-sync (TalkNet/SyncNet → LatentSync)
 6. Remix background + dubbed vocals with ducking (FFmpeg)
 
@@ -54,7 +54,7 @@ Legacy wrappers `inference_whisper_ivrit.py` / `inference_translategemma.py` onl
 }
 ```
 
-- On Apple Silicon: Whisper via **mlx-whisper**; TranslateGemma / Pyannote via PyTorch MPS. Set `PYTORCH_ENABLE_MPS_FALLBACK=1` if LatentSync or Pyannote hits missing ops.
+- On Apple Silicon: Whisper via **faster-whisper** + [`ivrit-ai/whisper-large-v3-turbo-ct2`](https://huggingface.co/ivrit-ai/whisper-large-v3-turbo-ct2); TranslateGemma / Pyannote / F5 via PyTorch MPS. Set `PYTORCH_ENABLE_MPS_FALLBACK=1` if LatentSync or Pyannote hits missing ops.
 - Do not download huge models into the repo root; always use `models/<name>/` via `uv run hf download …`.
 - Do not commit `*.wav` / `*.mp4` / `models/` / `.env`.
 
@@ -65,7 +65,7 @@ Make `uv run python inference/extract_pipeline.py <video>` reliable:
 1. `ffmpeg` → `source.wav`
 2. Demucs → `vocals.wav` + `background.wav`
 3. Pyannote → speaker turns
-4. mlx-whisper (word timestamps) ∩ turns → `segments.json`
+4. faster-whisper (word timestamps) ∩ turns → `segments.json`
 
 Next phases (translation, TTS, ASD, LatentSync) should consume that JSON — do not reinvent timestamps.
 
@@ -78,9 +78,11 @@ cp .env.example .env   # then set HF_TOKEN
 uv run python inference/transcribe.py path/to/audio.wav --timestamps
 uv run python inference/translate.py -s he -t en "שלום"
 uv run python inference/extract_pipeline.py path/to/video.mp4
+uv run python inference/build_preview.py outputs/<run> --skip-translate --tts-speed 1.0
 
 uv run hf download google/translategemma-4b-it --local-dir models/translategemma-4b-it
-# Whisper defaults to Hub id mlx-community/ivrit-ai-whisper-large-v3-mlx (mlx-whisper caches on first run)
+uv run hf download ivrit-ai/whisper-large-v3-turbo-ct2 --local-dir models/whisper-large-v3-turbo-ct2
+# F5-TTS checkpoints download automatically on first `build_preview` / `tts_f5` run
 ```
 
 ## Hard constraints

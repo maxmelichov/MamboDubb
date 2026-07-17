@@ -3,4 +3,4 @@ pyannote.audio
 ffmpeg-python
 python-dotenv
 yt-dlp
-mlx-whisper
+faster-whisper

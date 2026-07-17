@@ -28,37 +28,51 @@ except ImportError:
     pass
 
 try:
-    import mlx_whisper
+    from faster_whisper import WhisperModel
     from pyannote.audio import Pipeline
-    import yt_dlp
 except ImportError as e:
     print(f"Error importing dependencies: {e}", file=sys.stderr)
-    print("Install with: uv sync or uv pip install -r requirements/extract.txt", file=sys.stderr)
+    print("Install with: uv sync", file=sys.stderr)
     sys.exit(1)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MODEL = "https://huggingface.co/ivrit-ai/whisper-large-v3-turbo-ct2"
+DEFAULT_MODEL = str(REPO_ROOT / "models" / "whisper-large-v3-turbo-ct2")
+DEFAULT_HUB_ID = "ivrit-ai/whisper-large-v3-turbo-ct2"
 DEFAULT_DIARIZATION_MODEL = "pyannote/speaker-diarization-3.1"
 
 
 def download_youtube_video(url: str, output_dir: Path) -> Path:
     """Download a YouTube video to the output directory using yt-dlp."""
+    try:
+        import yt_dlp
+    except ImportError as e:
+        raise SystemExit(
+            f"yt-dlp is required for YouTube URLs ({e}).\n"
+            "Install with: uv sync   (or: uv add yt-dlp)"
+        ) from e
+
     print(f"Downloading YouTube video from {url}...", file=sys.stderr)
     output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Use yt-dlp to download the best video+audio format
+
     ydl_opts = {
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'outtmpl': str(output_dir / '%(title)s.%(ext)s'),
-        'quiet': False,
-        'no_warnings': True,
-        'noplaylist': True,
+        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "outtmpl": str(output_dir / "%(title)s.%(ext)s"),
+        "quiet": False,
+        "no_warnings": True,
+        "noplaylist": True,
     }
-    
+
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
         filename = ydl.prepare_filename(info)
-        return Path(filename)
+        path = Path(filename)
+        if not path.is_file():
+            # yt-dlp may rewrite extension after merge (e.g. .webm → .mp4)
+            candidates = list(output_dir.glob(f"{Path(info.get('title', '')).name}*"))
+            if candidates:
+                return candidates[0]
+            raise FileNotFoundError(f"yt-dlp finished but file not found: {path}")
+        return path
 
 
 def require_ffmpeg() -> None:
@@ -68,8 +82,16 @@ def require_ffmpeg() -> None:
         )
 
 
-def extract_audio(input_path: Path, output_wav: Path, sample_rate: int = 44100, max_duration: int = 120) -> Path:
-    """Strip audio from video (or re-encode audio) to a mono/stereo WAV for Demucs."""
+def extract_audio(
+    input_path: Path,
+    output_wav: Path,
+    sample_rate: int = 44100,
+    max_duration: float | None = None,
+) -> Path:
+    """Strip audio from video (or re-encode audio) to a WAV for Demucs.
+
+    If max_duration is set, only the first N seconds are extracted.
+    """
     require_ffmpeg()
     output_wav.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -77,16 +99,21 @@ def extract_audio(input_path: Path, output_wav: Path, sample_rate: int = 44100, 
         "-y",
         "-i",
         str(input_path),
-        "-t",
-        str(max_duration),
-        "-vn",
-        "-acodec",
-        "pcm_s16le",
-        "-ar",
-        str(sample_rate),
-        str(output_wav),
     ]
-    print(f"Extracting audio → {output_wav}", file=sys.stderr)
+    if max_duration is not None and max_duration > 0:
+        cmd.extend(["-t", str(max_duration)])
+    cmd.extend(
+        [
+            "-vn",
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            str(sample_rate),
+            str(output_wav),
+        ]
+    )
+    dur_msg = f" (first {max_duration:g}s)" if max_duration else ""
+    print(f"Extracting audio{dur_msg} → {output_wav}", file=sys.stderr)
     subprocess.run(cmd, check=True, capture_output=True)
     if not output_wav.is_file():
         raise FileNotFoundError(f"ffmpeg did not produce {output_wav}")
@@ -163,63 +190,117 @@ def diarize_audio(vocals_path: Path, model_id: str = DEFAULT_DIARIZATION_MODEL) 
     return segments
 
 
+def resolve_whisper_device(requested: str) -> str:
+    if requested != "auto":
+        return requested
+    try:
+        import ctranslate2
+
+        if "cuda" in ctranslate2.get_supported_compute_types("cuda"):
+            return "cuda"
+    except Exception:
+        pass
+    return "cpu"
+
+
+def resolve_whisper_model(model: str) -> str:
+    path = Path(model)
+    if path.is_dir():
+        return str(path)
+    if model == DEFAULT_MODEL and not Path(DEFAULT_MODEL).is_dir():
+        return DEFAULT_HUB_ID
+    return model
+
+
 def transcribe_and_merge(
     vocals_path: Path,
     segments: list[dict],
     model_name: str,
     language: str = "he",
+    device: str = "auto",
+    compute_type: str = "auto",
+    max_pause: float = 0.75,
+    phrase_pause: float = 0.18,
 ) -> list[dict]:
-    
-    print(f"Transcribing {vocals_path} with mlx_whisper (model={model_name})...", file=sys.stderr)
-    
-    result = mlx_whisper.transcribe(
-        str(vocals_path),
-        path_or_hf_repo=model_name,
-        language=language,
-        word_timestamps=True
-    )
+    from inference.segment_merge import words_to_utterances
 
-    words = []
-    for ws in result.get("segments", []):
-        if "words" in ws:
-            words.extend(ws["words"])
-
+    model_path = resolve_whisper_model(model_name)
+    device = resolve_whisper_device(device)
     print(
-        f"Mapped {len(words)} words → {len(segments)} speaker turns...",
+        f"Transcribing {vocals_path} with faster-whisper ({model_path}) on {device}...",
         file=sys.stderr,
     )
 
-    results: list[dict] = []
-    for seg in segments:
-        seg_start = seg["start"]
-        seg_end = seg["end"]
+    model = WhisperModel(model_path, device=device, compute_type=compute_type)
+    whisper_segments, info = model.transcribe(
+        str(vocals_path),
+        language=language,
+        word_timestamps=True,
+        beam_size=5,
+        vad_filter=True,
+        vad_parameters={"min_silence_duration_ms": int(max_pause * 1000)},
+    )
+
+    words = []
+    for ws in whisper_segments:
+        if ws.words:
+            words.extend(ws.words)
+
+    results = words_to_utterances(
+        words,
+        segments,
+        max_pause=max_pause,
+        phrase_pause=phrase_pause,
+    )
+    print(
+        f"Detected language={info.language} p={info.language_probability:.2f}; "
+        f"{len(words)} words → {len(results)} utterances "
+        f"(max_pause={max_pause}s, phrase_pause={phrase_pause}s)",
+        file=sys.stderr,
+    )
+    return results, model
+
+
+def detect_segment_languages(
+    vocals_path: Path,
+    segments: list[dict],
+    model: WhisperModel,
+    min_duration: float = 1.0,
+) -> None:
+    """Use Whisper to detect language for each utterance segment > min_duration."""
+    print(f"Detecting language for {len(segments)} segments...", file=sys.stderr)
+    import numpy as np
+
+    for i, seg in enumerate(segments):
+        start = float(seg["start"])
+        end = float(seg["end"])
+        dur = end - start
         
-        seg_words = [
-            w["word"] for w in words
-            if "end" in w and "start" in w and w["end"] >= seg_start and w["start"] <= seg_end
-        ]
-        # mlx-whisper words usually include leading spaces; join then normalize.
-        text = "".join(seg_words).strip()
-        if text and " " not in text and len(seg_words) > 1:
-            text = " ".join(w.strip() for w in seg_words if w.strip())
-        
-        if not text:
+        # Only detect language on segments long enough to have confident speech
+        if dur < min_duration:
+            # Inherit from default or context
+            seg["language"] = "he"
             continue
-        results.append(
-            {
-                "speaker_id": seg["speaker_id"],
-                "start": seg_start,
-                "end": seg_end,
-                "duration": round(seg_end - seg_start, 3),
-                "text": text,
-            }
-        )
-    return results
+            
+        cmd = [
+            "ffmpeg", "-y", "-ss", str(start), "-t", str(dur), "-i", str(vocals_path),
+            "-f", "f32le", "-acodec", "pcm_f32le", "-ar", "16000", "-ac", "1", "-"
+        ]
+        try:
+            result = subprocess.run(cmd, capture_output=True, check=True)
+            audio = np.frombuffer(result.stdout, dtype=np.float32)
+            lang, prob, _ = model.detect_language(audio)
+            seg["language"] = lang
+            print(f"  Segment {i:02d} [{start:.1f}-{end:.1f}s]: detected {lang} (prob: {prob:.2f})", file=sys.stderr)
+        except Exception as e:
+            print(f"  Segment {i:02d} [{start:.1f}-{end:.1f}s]: language detection failed ({e})", file=sys.stderr)
+            seg["language"] = "he"
+
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Phase 1 & 2: Demucs + Pyannote + MLX Whisper → speaker-labeled Hebrew JSON."
+        description="Phase 1 & 2: Demucs + Pyannote + faster-whisper (ivrit CT2) → Hebrew JSON."
     )
     parser.add_argument("video", type=str, help="Input video file path or YouTube URL.")
     parser.add_argument(
@@ -235,13 +316,38 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Working directory for stems/audio (default: outputs/<run_id>/).",
     )
-    parser.add_argument("--model", type=str, default=DEFAULT_MODEL, help="HuggingFace model ID or local path for MLX Whisper.")
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=DEFAULT_MODEL,
+        help=f"Local CT2 dir or Hub id (default: {DEFAULT_MODEL}).",
+    )
     parser.add_argument(
         "--diarization-model",
         default=DEFAULT_DIARIZATION_MODEL,
         help=f"Pyannote model id (default: {DEFAULT_DIARIZATION_MODEL}).",
     )
+    parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
+    parser.add_argument("--compute-type", default="auto")
     parser.add_argument("--language", "-l", default="he")
+    parser.add_argument(
+        "--max-pause",
+        type=float,
+        default=1.0,
+        help="Gap (seconds) that starts a new utterance. Shorter same-speaker gaps become TTS pauses.",
+    )
+    parser.add_argument(
+        "--phrase-pause",
+        type=float,
+        default=0.18,
+        help="Within an utterance, gaps >= this become internal pause markers for TTS.",
+    )
+    parser.add_argument(
+        "--max-duration",
+        type=float,
+        default=None,
+        help="Only process the first N seconds of audio (e.g. 60 for a 1-minute test).",
+    )
     parser.add_argument(
         "--skip-demucs",
         action="store_true",
@@ -273,7 +379,7 @@ def main() -> None:
         video_path = Path(args.video)
 
     source_wav = workdir / "source.wav"
-    extract_audio(video_path, source_wav)
+    extract_audio(video_path, source_wav, max_duration=args.max_duration)
 
     if args.skip_demucs:
         vocals_path = source_wav
@@ -293,12 +399,18 @@ def main() -> None:
 
     segments = diarize_audio(vocals_path, model_id=args.diarization_model)
     
-    results = transcribe_and_merge(
+    results, whisper_model = transcribe_and_merge(
         vocals_path,
         segments,
         args.model,
         language=args.language,
+        device=args.device,
+        compute_type=args.compute_type,
+        max_pause=args.max_pause,
+        phrase_pause=args.phrase_pause,
     )
+
+    detect_segment_languages(vocals_path, results, whisper_model)
 
     payload = {
         "source": str(video_path.resolve()),
@@ -306,7 +418,7 @@ def main() -> None:
         "vocals": str(vocals_path.resolve()),
         "background": str(background_path.resolve()) if background_path else None,
         "language": args.language,
-        "whisper_model": args.model,
+        "whisper_model": resolve_whisper_model(args.model),
         "diarization_model": args.diarization_model,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "segments": results,

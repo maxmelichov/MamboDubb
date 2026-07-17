@@ -53,7 +53,7 @@ uv run python inference/extract_pipeline.py clip.mp4 --skip-demucs
 
 ```bash
 uv run python inference/transcribe.py vocals.wav --timestamps
-# default model: mlx-community/ivrit-ai-whisper-large-v3-mlx
+# default: models/whisper-large-v3-turbo-ct2 (ivrit-ai CT2)
 ```
 
 ## Standalone translation
@@ -67,9 +67,42 @@ uv run python inference/translate.py -s he -t en "טקסט בעברית"
 Planned consumers of `segments.json`:
 
 1. **Translate** each `text` with a duration budget ≈ `duration` seconds.
-2. **TTS** per `speaker_id` using a clean vocal reference clip from `vocals.wav`.
-3. **Time-stretch** TTS to `[start, end]`.
+2. **TTS (F5-TTS)** — zero-shot clone from `vocals.wav` refs; control pace with `--tts-speed`.
+3. **Time fit** — F5 `speed` re-infer (`--tts-fit-duration`) then pad/trim to `[start, end]`.
 4. **ASD** gate → optional LatentSync on that window.
 5. **Mux** English vocals over `background.wav` with ducking.
+
+### Pause-aware utterances
+
+Same speaker + short silence is **one utterance**, not a new sentence:
+
+- gap ≤ `--max-pause` (default 1.0s) → merge; TTS inserts matching silence between phrases
+- gap > `--max-pause` or speaker change → new utterance
+
+```bash
+uv run python inference/extract_pipeline.py clip.mp4 --max-duration 60 --max-pause 1.0
+uv run python inference/build_preview.py outputs/<run> --skip-translate --max-pause 1.0
+```
+
+
+```bash
+# Reuse existing HE→EN text_en; F5-TTS with manual speed
+uv run python inference/build_preview.py outputs/kan11_60s \
+  --skip-translate \
+  --tts-speed 1.0
+
+# Speak faster to pack more English into short windows
+uv run python inference/build_preview.py outputs/kan11_60s \
+  --skip-translate --tts-speed 1.2
+
+# Fixed speed only (no auto re-infer)
+uv run python inference/build_preview.py outputs/kan11_60s \
+  --skip-translate --tts-speed 1.0 --no-tts-fit-duration
+
+# TTS-only (writes tts_clips/ + updates translated_segments.json)
+uv run python inference/tts_f5.py outputs/kan11_60s --tts-speed 1.1
+```
+
+Output: `outputs/<run>/preview.mp4` (EN F5 voice over ducked BGM + soft EN subs).
 
 See [architecture.md](architecture.md).

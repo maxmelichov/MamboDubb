@@ -36,16 +36,16 @@ Naively piping a Kan-style documentary into Whisper → translate → TTS → La
 | Phase | Goal | Tools (current / planned) |
 |-------|------|---------------------------|
 | 1 | Vocals vs background | **HTDemucs** (`demucs`) |
-| 2 | Who / when / what (Hebrew) | **Pyannote 3.1** + **mlx-whisper** (`mlx-community/ivrit-ai-whisper-large-v3-mlx`) |
+| 2 | Who / when / what (Hebrew) | **Pyannote 3.1** + **faster-whisper** ([`ivrit-ai/whisper-large-v3-turbo-ct2`](https://huggingface.co/ivrit-ai/whisper-large-v3-turbo-ct2)) |
 | 3 | Length-constrained EN text | TranslateGemma / MLX LLM |
-| 4 | Cloned EN speech + fit window | Qwen3-TTS / CosyVoice / F5 + rubberband/`atempo` |
+| 4 | Cloned EN speech + fit window | **F5-TTS** (`speed` / `--tts-fit-duration`) |
 | 5 | Lip-sync only active faces | TalkNet/SyncNet → **LatentSync** (Wav2Lip fallback) |
 | 6 | Master | FFmpeg ducking + mux |
 
 ## Mac / Apple Silicon notes
 
 - Prefer **uv** + Python **3.12**.
-- Whisper: **mlx-whisper** on Apple Silicon (default Hub id `mlx-community/ivrit-ai-whisper-large-v3-mlx`).
+- Whisper: **faster-whisper** + local `models/whisper-large-v3-turbo-ct2` (Hub: `ivrit-ai/whisper-large-v3-turbo-ct2`).
 - TranslateGemma: PyTorch **MPS**.
 - LatentSync: CUDA-first upstream; expect `PYTORCH_ENABLE_MPS_FALLBACK=1` and possible CPU fallbacks. Keep Wav2Lip/SadTalker as Plan B.
 - Unified memory helps large models, but still isolate phases to profile RAM.

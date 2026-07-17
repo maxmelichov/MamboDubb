@@ -24,19 +24,15 @@ Accept the Pyannote model terms (required once per account):
 
 ## Models
 
-- **Whisper (MLX):** downloaded on first use from Hub (`mlx-community/ivrit-ai-whisper-large-v3-mlx` by default), or point `--model` at a local path.
-- **TranslateGemma:** lives under `models/` (gitignored). If missing:
+- **Whisper (CT2):** [`ivrit-ai/whisper-large-v3-turbo-ct2`](https://huggingface.co/ivrit-ai/whisper-large-v3-turbo-ct2) under `models/whisper-large-v3-turbo-ct2`.
+- **TranslateGemma:** under `models/translategemma-4b-it`.
 
 ```bash
+uv run hf download ivrit-ai/whisper-large-v3-turbo-ct2 \
+  --local-dir models/whisper-large-v3-turbo-ct2
+
 uv run hf download google/translategemma-4b-it \
   --local-dir models/translategemma-4b-it
-```
-
-Optional local Whisper cache:
-
-```bash
-uv run hf download mlx-community/ivrit-ai-whisper-large-v3-mlx \
-  --local-dir models/ivrit-ai-whisper-large-v3-mlx
 ```
 
 `uv sync` pins Python to `>=3.11,<3.14` (typically 3.12) for ML wheel compatibility.

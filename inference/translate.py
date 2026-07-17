@@ -10,6 +10,12 @@ from pathlib import Path
 import torch
 from transformers import AutoModelForImageTextToText, AutoProcessor
 
+print(
+    "WARNING: TranslateGemma currently returns empty on this stack due to a pad-token bug.\n"
+    "Please use `inference/translate_pipeline.py` (which uses mlx-lm) instead.",
+    file=sys.stderr,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MODEL_PATH = REPO_ROOT / "models" / "translategemma-4b-it"
 

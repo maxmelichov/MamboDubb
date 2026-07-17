@@ -2,3 +2,4 @@ accelerate
 sentencepiece
 torch
 transformers
+mlx-lm

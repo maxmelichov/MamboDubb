@@ -5,7 +5,9 @@ description = "Local Hebrew→English video dubbing pipeline for Apple Silicon"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
-    # Transcribe (ivrit-ai Whisper via Apple MLX)
+    # Transcribe (ivrit-ai Whisper CT2 via faster-whisper)
+    "faster-whisper>=1.1.0",
+    # Optional MLX helpers (not used for default ASR)
     "mlx-whisper>=0.4.0",
     "mlx>=0.20.0",
     # Translate (TranslateGemma)
@@ -18,9 +20,11 @@ dependencies = [
     "pyannote.audio>=3.1.0",
     "ffmpeg-python>=0.2.0",
     "python-dotenv>=1.0.0",
+    "yt-dlp>=2025.1.0",
     # Shared tooling
     "huggingface-hub>=0.26.0",
     "hf>=0.0.1",
+    "f5-tts>=1.1.0",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +36,8 @@ dev = [
 dq-transcribe = "inference.transcribe:main"
 dq-translate = "inference.translate:main"
 dq-extract = "inference.extract_pipeline:main"
+dq-tts = "inference.tts_f5:main"
+dq-preview = "inference.build_preview:main"
 
 [build-system]
 requires = ["hatchling"]

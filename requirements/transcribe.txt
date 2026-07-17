@@ -1,1 +1,1 @@
-mlx-whisper
+faster-whisper
