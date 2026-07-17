@@ -30,14 +30,35 @@ except ImportError:
 try:
     import mlx_whisper
     from pyannote.audio import Pipeline
+    import yt_dlp
 except ImportError as e:
     print(f"Error importing dependencies: {e}", file=sys.stderr)
     print("Install with: uv sync or uv pip install -r requirements/extract.txt", file=sys.stderr)
     sys.exit(1)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MODEL = "mlx-community/ivrit-ai-whisper-large-v3-mlx"
+DEFAULT_MODEL = "https://huggingface.co/ivrit-ai/whisper-large-v3-turbo-ct2"
 DEFAULT_DIARIZATION_MODEL = "pyannote/speaker-diarization-3.1"
+
+
+def download_youtube_video(url: str, output_dir: Path) -> Path:
+    """Download a YouTube video to the output directory using yt-dlp."""
+    print(f"Downloading YouTube video from {url}...", file=sys.stderr)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Use yt-dlp to download the best video+audio format
+    ydl_opts = {
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'outtmpl': str(output_dir / '%(title)s.%(ext)s'),
+        'quiet': False,
+        'no_warnings': True,
+        'noplaylist': True,
+    }
+    
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        filename = ydl.prepare_filename(info)
+        return Path(filename)
 
 
 def require_ffmpeg() -> None:
@@ -47,7 +68,7 @@ def require_ffmpeg() -> None:
         )
 
 
-def extract_audio(input_path: Path, output_wav: Path, sample_rate: int = 44100) -> Path:
+def extract_audio(input_path: Path, output_wav: Path, sample_rate: int = 44100, max_duration: int = 120) -> Path:
     """Strip audio from video (or re-encode audio) to a mono/stereo WAV for Demucs."""
     require_ffmpeg()
     output_wav.parent.mkdir(parents=True, exist_ok=True)
@@ -56,6 +77,8 @@ def extract_audio(input_path: Path, output_wav: Path, sample_rate: int = 44100) 
         "-y",
         "-i",
         str(input_path),
+        "-t",
+        str(max_duration),
         "-vn",
         "-acodec",
         "pcm_s16le",
@@ -198,7 +221,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Phase 1 & 2: Demucs + Pyannote + MLX Whisper → speaker-labeled Hebrew JSON."
     )
-    parser.add_argument("video", type=Path, help="Input video or audio file.")
+    parser.add_argument("video", type=str, help="Input video file path or YouTube URL.")
     parser.add_argument(
         "-o",
         "--output",
@@ -229,15 +252,28 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    if not args.video.is_file():
-        raise SystemExit(f"File not found: {args.video}")
+    
+    is_url = args.video.startswith("http://") or args.video.startswith("https://")
+    
+    if not is_url:
+        video_path = Path(args.video)
+        if not video_path.is_file():
+            raise SystemExit(f"File not found: {video_path}")
+        stem_name = video_path.stem
+    else:
+        stem_name = "youtube_download"
 
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "_" + args.video.stem
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "_" + stem_name
     workdir = args.workdir or (REPO_ROOT / "outputs" / run_id)
     workdir.mkdir(parents=True, exist_ok=True)
+    
+    if is_url:
+        video_path = download_youtube_video(args.video, workdir)
+    else:
+        video_path = Path(args.video)
 
     source_wav = workdir / "source.wav"
-    extract_audio(args.video, source_wav)
+    extract_audio(video_path, source_wav)
 
     if args.skip_demucs:
         vocals_path = source_wav
@@ -265,7 +301,7 @@ def main() -> None:
     )
 
     payload = {
-        "source": str(args.video.resolve()),
+        "source": str(video_path.resolve()),
         "workdir": str(workdir.resolve()),
         "vocals": str(vocals_path.resolve()),
         "background": str(background_path.resolve()) if background_path else None,
