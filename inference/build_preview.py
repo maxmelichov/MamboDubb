@@ -269,6 +269,17 @@ def build_dubbed_track(
     import numpy as np
     import soundfile as sf
 
+    # Demucs no_vocals leaves loud HF hiss in vocal holes — clean the bed only.
+    from inference.extract_pipeline import write_clean_background
+
+    raw_bg = workdir / "background_raw.wav"
+    if not raw_bg.is_file() and background.is_file():
+        import shutil
+
+        shutil.copy2(background, raw_bg)
+    if raw_bg.is_file():
+        write_clean_background(raw_bg, background)
+
     bg, sr = sf.read(str(background), dtype="float32", always_2d=True)
     n_samples = max(1, int(round(total_duration * sr)))
     if bg.shape[0] < n_samples:
@@ -313,7 +324,10 @@ def build_dubbed_track(
         else:
             clip_rms = float(np.sqrt(np.mean(take**2) + 1e-12))
             if clip_rms > 1e-4:
-                take *= speech_target_rms / clip_rms
+                # Cap boost — loudness-matching hissy TTS clips made white noise
+                # scream in the 20–35s range.
+                gain = speech_target_rms / clip_rms
+                take *= min(gain, 1.25)
             fade = min(int(0.012 * sr), len(take) // 4)
             if fade > 1:
                 ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)

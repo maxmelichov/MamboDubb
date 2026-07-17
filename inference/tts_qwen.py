@@ -38,6 +38,121 @@ from inference.tts_f5 import (
 FIT_MAX_RATE = 1.28
 FIT_MIN_RATE = 0.85
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_MODEL = REPO_ROOT / "models" / "Qwen3-TTS-12Hz-1.7B-Base"
+HUB_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+# Qwen card: ~3s clone refs. Longer ICL refs + Hebrew→EN blew up decode time on MPS.
+REF_TARGET_SEC = 3.2
+REF_MIN_SEC = 2.0
+REF_MAX_SEC = 4.5
+CODEC_HZ = 12.5
+
+
+def _hf_noise_ratio(audio: np.ndarray, sr: int) -> float:
+    """High-band / mid-band energy — Demucs hiss scores high; clean speech low."""
+    if audio.size < sr // 4:
+        return 1e9
+    x = np.asarray(audio, dtype=np.float32)
+    if x.ndim > 1:
+        x = x.mean(axis=-1)
+    X = np.abs(np.fft.rfft(x))
+    freqs = np.fft.rfftfreq(len(x), 1.0 / sr)
+    mid = float(np.mean(X[(freqs >= 200) & (freqs < 3500)] ** 2) + 1e-12)
+    high = float(np.mean(X[(freqs >= 5500) & (freqs < 14000)] ** 2))
+    return high / mid
+
+
+def pick_cleanest_ref_window(
+    vocals: Path,
+    win_start: float,
+    win_end: float,
+    *,
+    media_duration: float,
+    target_sec: float = REF_TARGET_SEC,
+) -> tuple[float, float]:
+    """Choose a ~target_sec slice inside [win_start, win_end] with least HF hiss."""
+    span = max(0.0, win_end - win_start)
+    if span <= 0.05:
+        a = max(0.0, min(win_start, media_duration - target_sec))
+        return a, min(media_duration, a + target_sec)
+
+    # Load the search region once (mono 24k).
+    pad = 0.05
+    load_a = max(0.0, win_start - pad)
+    load_b = min(media_duration, win_end + pad)
+    tmp = vocals.parent / "tts_refs" / "_ref_scan.wav"
+    tmp.parent.mkdir(parents=True, exist_ok=True)
+    extract_wav_slice(vocals, load_a, load_b, tmp, sample_rate=24000)
+    audio, sr = sf.read(str(tmp), dtype="float32", always_2d=False)
+    if getattr(audio, "ndim", 1) > 1:
+        audio = np.mean(audio, axis=-1).astype(np.float32)
+
+    want = int(round(target_sec * sr))
+    if len(audio) <= want:
+        return load_a, load_b
+
+    hop = max(1, int(0.2 * sr))
+    best_i = 0
+    best_score = 1e18
+    # Prefer windows that are actually speech, not near-silence.
+    for i in range(0, len(audio) - want + 1, hop):
+        chunk = audio[i : i + want]
+        rms = float(np.sqrt(np.mean(chunk**2) + 1e-12))
+        if rms < 0.018:
+            continue
+        score = _hf_noise_ratio(chunk, sr) / max(rms, 1e-3)
+        if score < best_score:
+            best_score = score
+            best_i = i
+
+    ref_start = load_a + best_i / sr
+    ref_end = min(media_duration, ref_start + target_sec)
+    if ref_end - ref_start < REF_MIN_SEC:
+        ref_start = max(0.0, ref_end - REF_MIN_SEC)
+    try:
+        tmp.unlink(missing_ok=True)
+    except Exception:
+        pass
+    return ref_start, ref_end
+
+
+def _speaker_search_windows(
+    seg: dict,
+    phrase: dict,
+    all_segments: list[dict] | None,
+) -> list[tuple[float, float]]:
+    """Candidate time ranges for a clean clone ref (phrase, then same speaker)."""
+    p_start = float(phrase["start"])
+    p_end = float(phrase["end"])
+    seg_a = float(seg.get("start") or p_start)
+    seg_b = float(seg.get("end") or p_end)
+    windows = [
+        (max(seg_a, p_start - 0.15), min(seg_b, p_end + 0.15)),
+        (seg_a, seg_b),
+    ]
+    spk = seg.get("speaker_id")
+    if spk and all_segments:
+        for other in all_segments:
+            if other.get("speaker_id") != spk:
+                continue
+            if other.get("keep_original"):
+                continue
+            if (other.get("language") or "he") != (seg.get("language") or "he"):
+                continue
+            a, b = float(other["start"]), float(other["end"])
+            if b - a >= REF_MIN_SEC:
+                windows.append((a, b))
+    # Dedup / drop empties
+    out: list[tuple[float, float]] = []
+    seen: set[tuple[float, float]] = set()
+    for a, b in windows:
+        key = (round(a, 3), round(b, 3))
+        if b - a < 0.3 or key in seen:
+            continue
+        seen.add(key)
+        out.append((a, b))
+    return out
+
 
 def build_qwen_phrase_ref(
     phrase: dict,
@@ -47,20 +162,50 @@ def build_qwen_phrase_ref(
     vocals: Path,
     out_dir: Path,
     media_duration: float,
+    all_segments: list[dict] | None = None,
 ) -> dict:
-    """~3s vocal slice + Hebrew transcript for Qwen Base clone."""
+    """~3s vocal slice + Hebrew transcript for Qwen Base clone.
+
+    Picks the cleanest window on this speaker (lowest Demucs HF hiss), including
+    later/earlier turns of the same speaker_id when the local phrase is hissy.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
-    p_start = float(phrase["start"])
-    p_end = float(phrase["end"])
     he_text = (phrase.get("text") or seg.get("text") or "um").strip() or "um"
-    mid = (p_start + p_end) / 2.0
-    half = REF_TARGET_SEC / 2.0
-    ref_start = max(0.0, mid - half)
-    ref_end = min(media_duration, ref_start + REF_TARGET_SEC)
-    if ref_end - ref_start < REF_MIN_SEC:
-        ref_start = max(0.0, ref_end - REF_MIN_SEC)
+
+    best: tuple[float, float, float] | None = None  # score, start, end
+    for search_a, search_b in _speaker_search_windows(seg, phrase, all_segments):
+        target = min(REF_TARGET_SEC, max(REF_MIN_SEC, search_b - search_a))
+        ref_start, ref_end = pick_cleanest_ref_window(
+            vocals,
+            search_a,
+            search_b,
+            media_duration=media_duration,
+            target_sec=target,
+        )
+        # Score the chosen window
+        tmp = out_dir / f"_score_{seg_index:02d}_{phrase_index:02d}.wav"
+        extract_wav_slice(vocals, ref_start, ref_end, tmp, sample_rate=24000)
+        audio, sr = sf.read(str(tmp), dtype="float32", always_2d=False)
+        if getattr(audio, "ndim", 1) > 1:
+            audio = np.mean(audio, axis=-1).astype(np.float32)
+        rms = float(np.sqrt(np.mean(audio**2) + 1e-12))
+        score = _hf_noise_ratio(audio, sr) / max(rms, 1e-3)
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        if best is None or score < best[0]:
+            best = (score, ref_start, ref_end)
+
+    if best is None:
+        mid = (float(phrase["start"]) + float(phrase["end"])) / 2.0
+        ref_start = max(0.0, mid - REF_TARGET_SEC / 2.0)
+        ref_end = min(media_duration, ref_start + REF_TARGET_SEC)
+    else:
+        _, ref_start, ref_end = best
     if ref_end - ref_start > REF_MAX_SEC:
         ref_end = ref_start + REF_MAX_SEC
+
     ref_path = out_dir / f"seg_{seg_index:02d}_p{phrase_index:02d}_qwen_ref.wav"
     extract_wav_slice(vocals, ref_start, ref_end, ref_path, sample_rate=24000)
     return {
@@ -69,15 +214,6 @@ def build_qwen_phrase_ref(
         "start": ref_start,
         "end": ref_end,
     }
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MODEL = REPO_ROOT / "models" / "Qwen3-TTS-12Hz-1.7B-Base"
-HUB_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
-# Qwen card: ~3s clone refs. Longer ICL refs + Hebrew→EN blew up decode time on MPS.
-REF_TARGET_SEC = 3.2
-REF_MIN_SEC = 2.0
-REF_MAX_SEC = 4.5
-CODEC_HZ = 12.5
 
 # Hebrew→EN clone sometimes Hebrew-izes names. Keep replacements ~same length.
 _TTS_NAME_RESPPELL: list[tuple[re.Pattern[str], str]] = [
@@ -666,6 +802,7 @@ def synthesize_segments_qwen(
                 vocals,
                 ref_dir,
                 media_duration,
+                all_segments=segments,
             )
             if first_ref_meta is None:
                 first_ref_meta = ref

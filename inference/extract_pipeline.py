@@ -120,24 +120,116 @@ def extract_audio(
     return output_wav
 
 
+def clean_demucs_background(
+    audio,
+    sr: int,
+    *,
+    hop_ms: float = 20.0,
+    hiss_ratio: float = 0.004,
+    weak_rms: float = 0.045,
+):
+    """Cut Demucs residual hiss in no_vocals stems (not speech denoise).
+
+    Vocal holes often leave loud 5–14 kHz noise while mid-band music is weak.
+    Those frames get a strong HF attenuate; real music frames are left alone
+    aside from a mild shelf.
+    """
+    import numpy as np
+    from scipy.signal import stft, istft
+
+    x = np.asarray(audio, dtype=np.float32)
+    if x.ndim == 1:
+        x = x[:, None]
+    n_ch = x.shape[1]
+    hop = max(64, int(sr * hop_ms / 1000))
+    n_fft = 2048
+    out = np.zeros_like(x)
+    freqs = None
+    for ch in range(n_ch):
+        f, _t, Z = stft(
+            x[:, ch],
+            fs=sr,
+            nperseg=n_fft,
+            noverlap=n_fft - hop,
+            boundary="zeros",
+            padded=True,
+        )
+        if freqs is None:
+            freqs = f
+        mid = (freqs >= 200) & (freqs < 3500)
+        high = (freqs >= 5000) & (freqs < 14000)
+        shelf = freqs >= 7000
+        mag = np.abs(Z)
+        # Per-frame band energies
+        mid_e = np.mean(mag[mid, :] ** 2, axis=0) + 1e-12
+        high_e = np.mean(mag[high, :] ** 2, axis=0)
+        # Time-domain RMS proxy from mid band
+        frame_rms = np.sqrt(mid_e)
+        ratio = high_e / mid_e
+        # 0 = clean music, 1 = hissy hole
+        hiss = np.clip((ratio - hiss_ratio) / (hiss_ratio * 4.0), 0.0, 1.0)
+        hiss *= np.clip((weak_rms - frame_rms) / max(weak_rms, 1e-6), 0.0, 1.0)
+        # Smooth over ~120ms
+        win = max(1, int(0.12 / (hop / sr)))
+        kernel = np.ones(win, dtype=np.float32) / float(win)
+        hiss = np.convolve(hiss, kernel, mode="same")
+        hiss = np.clip(hiss, 0.0, 1.0)
+        # Mild always-on shelf + strong cut when hissy
+        shelf_gain = 0.75 - 0.65 * hiss  # 0.75..0.10 linear
+        gain = np.ones_like(mag, dtype=np.float32)
+        gain[shelf, :] *= shelf_gain[None, :]
+        # Extra cut 8k+ in hiss frames
+        ultra = freqs >= 8500
+        gain[ultra, :] *= (1.0 - 0.85 * hiss)[None, :]
+        Z2 = Z * gain
+        _, y = istft(
+            Z2,
+            fs=sr,
+            nperseg=n_fft,
+            noverlap=n_fft - hop,
+            input_onesided=True,
+        )
+        n = min(len(y), x.shape[0])
+        out[:n, ch] = y[:n]
+    return out.astype(np.float32)
+
+
+def write_clean_background(src: Path, dst: Path) -> Path:
+    """Load Demucs no_vocals, suppress hole-hiss, write cleaned bed."""
+    import numpy as np
+    import soundfile as sf
+
+    audio, sr = sf.read(str(src), dtype="float32", always_2d=True)
+    cleaned = clean_demucs_background(audio, sr)
+    peak = float(np.max(np.abs(cleaned))) if cleaned.size else 0.0
+    if peak > 0.99:
+        cleaned *= 0.99 / peak
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(str(dst), cleaned, sr, subtype="PCM_16")
+    print(f"Cleaned Demucs bed hiss → {dst}", file=sys.stderr)
+    return dst
+
+
 def separate_vocals(input_audio: Path, demucs_dir: Path) -> tuple[Path, Path]:
     """Run HTDemucs two-stem separation; return (vocals, background/no_vocals)."""
     demucs_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Running Demucs (htdemucs, two-stems) on {input_audio}...", file=sys.stderr)
+    # htdemucs_ft: fine-tuned, usually less watery residual in no_vocals.
+    model_name = "htdemucs_ft"
+    print(f"Running Demucs ({model_name}, two-stems) on {input_audio}...", file=sys.stderr)
     cmd = [
         sys.executable,
         "-m",
         "demucs",
         "--two-stems=vocals",
         "-n",
-        "htdemucs",
+        model_name,
         "-o",
         str(demucs_dir),
         str(input_audio),
     ]
     subprocess.run(cmd, check=True)
 
-    stem_dir = demucs_dir / "htdemucs" / input_audio.stem
+    stem_dir = demucs_dir / model_name / input_audio.stem
     vocals_path = stem_dir / "vocals.wav"
     background_path = stem_dir / "no_vocals.wav"
     if not vocals_path.is_file():
@@ -513,7 +605,10 @@ def main() -> None:
         vocals_path = vocals_out
     if background_path is not None:
         background_out = workdir / "background.wav"
-        shutil.copy2(background_path, background_out)
+        # Keep raw Demucs stem for debugging; ship a hiss-cleaned bed.
+        raw_bg = workdir / "background_raw.wav"
+        shutil.copy2(background_path, raw_bg)
+        write_clean_background(raw_bg, background_out)
         background_path = background_out
 
     segments = diarize_audio(vocals_path, model_id=args.diarization_model)
