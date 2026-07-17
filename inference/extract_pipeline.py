@@ -278,7 +278,13 @@ def transcribe_and_merge(
 ) -> tuple[list[dict], WhisperModel]:
     """Per-turn language detect (he/en/ar) + ASR; keep non-Hebrew as keep_original."""
     from inference.lang_detect import CANDIDATE_LANGS, detect_and_transcribe_turn
-    from inference.segment_merge import merge_diarization_turns, merge_same_speaker_segments
+    from inference.segment_merge import (
+        merge_diarization_turns,
+        merge_same_speaker_segments,
+        split_segment_by_phrase_speaker,
+        stitch_unfinished_continuations,
+        tag_phrases_with_speakers,
+    )
 
     model_path = resolve_whisper_model(model_name)
     device = resolve_whisper_device(device)
@@ -288,6 +294,14 @@ def transcribe_and_merge(
     )
 
     model = WhisperModel(model_path, device=device, compute_type=compute_type)
+    raw_turns = [
+        {
+            "speaker_id": s["speaker_id"],
+            "start": float(s["start"]),
+            "end": float(s["end"]),
+        }
+        for s in segments
+    ]
     turns = merge_diarization_turns(segments, max_pause=max_pause)
     print(f"Diarization turns: {len(segments)} → {len(turns)} after pause merge", file=sys.stderr)
 
@@ -347,6 +361,13 @@ def transcribe_and_merge(
             for p in phrases:
                 p["text_en"] = p["text"]
 
+        # Label phrases from raw diarization so a long ASR window that still
+        # spans a speaker change can be split before TTS.
+        phrases = tag_phrases_with_speakers(phrases, raw_turns)
+        for p in phrases:
+            if not p.get("speaker_id"):
+                p["speaker_id"] = turn["speaker_id"]
+
         seg = {
             "speaker_id": turn["speaker_id"],
             "start": round(float(phrases[0]["start"]), 3),
@@ -362,14 +383,27 @@ def transcribe_and_merge(
         seg["duration"] = round(seg["end"] - seg["start"], 3)
         if keep_original:
             seg["text_en"] = seg["text"]
-        results.append(seg)
-        flag = "KEEP" if keep_original else "DUB"
-        print(
-            f"    → {lang} ({flag}) score={det.get('language_score')} | {seg['text'][:70]}",
-            file=sys.stderr,
-        )
+        for part in split_segment_by_phrase_speaker(seg):
+            results.append(part)
+            flag = "KEEP" if part.get("keep_original") else "DUB"
+            print(
+                f"    → {part.get('language')} ({flag}) [{part['speaker_id']}] "
+                f"score={det.get('language_score')} | {(part.get('text') or '')[:70]}",
+                file=sys.stderr,
+            )
 
     results = merge_same_speaker_segments(results, max_pause=max_pause)
+    before_stitch = len(results)
+    results = stitch_unfinished_continuations(results)
+    if len(results) != before_stitch:
+        print(
+            f"Stitched unfinished continuations across speaker flips "
+            f"({before_stitch} → {len(results)} rows)",
+            file=sys.stderr,
+        )
+    else:
+        # Row count may stay equal while clause ownership moves — always note.
+        print("Checked unfinished continuations across speaker flips.", file=sys.stderr)
     n_keep = sum(1 for s in results if s.get("keep_original"))
     print(
         f"Utterances: {len(results)} ({n_keep} keep-original, {len(results) - n_keep} Hebrew→dub)",

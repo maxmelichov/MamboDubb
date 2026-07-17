@@ -29,8 +29,14 @@ from inference.tts_f5 import (
     extract_wav_slice,
     phrase_plan,
     place_in_slot,
+    pull_start_to_energy,
     wav_duration,
 )
+
+# Time-stretch bounds: exact Hebrew slots when close; otherwise prefer overrun
+# into the following pause over chipmunk / missing-syllable audio.
+FIT_MAX_RATE = 1.28
+FIT_MIN_RATE = 0.85
 
 
 def build_qwen_phrase_ref(
@@ -152,11 +158,16 @@ def fit_exact_window(
     *,
     sample_rate: int = 44100,
     target_n: int | None = None,
+    max_rate: float = FIT_MAX_RATE,
+    min_rate: float = FIT_MIN_RATE,
+    allow_overrun: bool = True,
 ) -> float:
-    """Time-stretch the *entire* TTS clip to the Hebrew slot — no pad, no trim.
+    """Time-stretch the *entire* TTS clip toward the Hebrew slot — no trim.
 
-    Speeds up or slows down so full speech fills the window exactly.
-    Returns the net atempo rate applied (1.0 = unchanged).
+    When the natural rate is within [min_rate, max_rate], remap to the exact
+    sample count. If English is much longer, cap speed at `max_rate` and keep
+    the full utterance (overrun into the following pause) instead of crushing
+    syllables. Returns the net atempo rate applied (1.0 = unchanged).
     """
     target_sec = max(0.2, float(target_sec))
     if target_n is None:
@@ -166,8 +177,18 @@ def fit_exact_window(
     if actual <= 0.05:
         raise RuntimeError(f"Empty TTS clip: {src}")
 
-    # rate>1 → faster / shorter; always map full content into the slot.
-    rate = actual / (target_n / sample_rate)
+    # rate>1 → faster / shorter
+    natural = actual / (target_n / sample_rate)
+    if allow_overrun and natural > max_rate:
+        rate = max_rate
+        exact = False
+    elif natural < min_rate:
+        rate = min_rate
+        exact = True  # still fill the slot (mild slowdown + remap)
+    else:
+        rate = natural
+        exact = True
+
     work = src
     if abs(rate - 1.0) > 0.005:
         stretched = dst.with_name(dst.stem + "_stretch.wav")
@@ -179,7 +200,8 @@ def fit_exact_window(
         audio = np.mean(audio, axis=-1).astype(np.float32)
     if sr != sample_rate:
         raise RuntimeError(f"Unexpected sample rate {sr} (want {sample_rate})")
-    audio = _remap_to_n(audio, target_n)
+    if exact:
+        audio = _remap_to_n(audio, target_n)
     dst.parent.mkdir(parents=True, exist_ok=True)
     sf.write(str(dst), audio, sample_rate)
     return float(rate)
@@ -192,13 +214,27 @@ def assemble_on_hebrew_timeline(
     out_path: Path,
     *,
     sample_rate: int = 44100,
+    hard_end: float | None = None,
 ) -> Path:
-    """Place each phrase clip at its Hebrew sample span — never slice the TTS audio."""
+    """Place each phrase clip at its Hebrew start — never slice/crush the TTS audio.
+
+    Clips may overrun a short phrase into the following pause, but not past
+    `hard_end` (next segment start).
+    """
+    limit_t = float(hard_end) if hard_end is not None else float(seg_end)
+    last_needed = float(seg_end)
+    for phrase in plan:
+        clip = Path(phrase.get("tts_fit") or "")
+        if clip.is_file():
+            last_needed = max(last_needed, float(phrase["start"]) + wav_duration(clip))
+    last_needed = min(last_needed, limit_t)
+
     seg_a = int(round(seg_start * sample_rate))
-    seg_b = int(round(seg_end * sample_rate))
+    seg_b = int(round(last_needed * sample_rate))
     n = max(1, seg_b - seg_a)
     canvas = np.zeros(n, dtype=np.float32)
-    for phrase in plan:
+
+    for j, phrase in enumerate(plan):
         clip = Path(phrase["tts_fit"])
         if not clip.is_file():
             continue
@@ -225,32 +261,29 @@ def assemble_on_hebrew_timeline(
                 capture_output=True,
             )
             audio, sr = sf.read(str(tmp), dtype="float32", always_2d=False)
+            if getattr(audio, "ndim", 1) > 1:
+                audio = np.mean(audio, axis=-1).astype(np.float32)
+
         p_a = int(round(float(phrase["start"]) * sample_rate))
-        p_b = int(round(float(phrase["end"]) * sample_rate))
-        want_n = max(1, p_b - p_a)
-        if len(audio) != want_n:
-            audio = _remap_to_n(audio, want_n)
+        next_t = (
+            float(plan[j + 1]["start"]) - 0.02
+            if j + 1 < len(plan)
+            else limit_t
+        )
+        max_len = max(0, int(round(next_t * sample_rate)) - p_a)
         offset = p_a - seg_a
         if offset < 0:
-            # Phrase starts before segment canvas — keep the overlapping tail only
-            # if ASR windows are inconsistent (should be rare).
             audio = audio[-offset:]
             offset = 0
-        need = offset + len(audio)
-        if need > len(canvas):
-            canvas = np.pad(canvas, (0, need - len(canvas)))
-        canvas[offset : offset + len(audio)] += audio
+        take = min(len(audio), max_len, n - offset)
+        if take <= 0 or offset >= n:
+            continue
+        # Overwrite (not sum) so overlapping overrun doesn't amplify.
+        canvas[offset : offset + take] = audio[:take]
+
     peak = float(np.max(np.abs(canvas))) if len(canvas) else 0.0
     if peak > 1.0:
         canvas /= peak
-    # Keep canvas exactly the Hebrew segment span (pad only if ASR math undershot).
-    if len(canvas) < n:
-        canvas = np.pad(canvas, (0, n - len(canvas)))
-    elif len(canvas) > n:
-        # Only shrink canvas if we had to pad for an overrun — still keep full
-        # phrase audio by remapping the whole segment (should not happen when
-        # phrase windows nest inside the segment).
-        canvas = _remap_to_n(canvas, n)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     sf.write(str(out_path), canvas, sample_rate)
     return out_path
@@ -443,14 +476,17 @@ def synthesize_segments_qwen(
 
         if keep_original:
             max_end = max(start + 0.4, next_start - 0.05)
+            # Tight caps: Demucs bleed after EN often looks "active" and used to
+            # swallow the next Hebrew onset (audible level cliff + missing dub).
             extended_end = extend_end_by_energy(
                 vocals,
                 start,
                 end,
                 max_end=max_end,
-                pad=0.18,
-                rms_thresh=0.016,
-                bridge_gap_sec=0.55,
+                pad=0.06,
+                rms_thresh=0.045,
+                bridge_gap_sec=0.12,
+                max_extend=0.28,
             )
             if extended_end > end + 0.05:
                 print(
@@ -500,14 +536,33 @@ def synthesize_segments_qwen(
         if not plan:
             continue
 
-        # Hebrew ASR windows are authoritative — never pull starts earlier.
+        prev_end = 0.0
+        if i > 0:
+            prev_end = float(segments[i - 1].get("end") or 0.0)
+
         for j, phrase in enumerate(plan):
             p_start = float(phrase["start"])
             p_end = float(phrase["end"])
+            if j == 0:
+                pulled = pull_start_to_energy(
+                    vocals,
+                    p_start,
+                    p_end,
+                    min_start=prev_end + 0.04,
+                    max_pull=0.85,
+                    rms_thresh=0.04,
+                )
+                if pulled < p_start - 0.04:
+                    print(
+                        f"  SNAP start [{seg['speaker_id']}] "
+                        f"{p_start:.2f} → {pulled:.2f}s (energy onset)",
+                        file=sys.stderr,
+                    )
+                    p_start = pulled
             hard_cap = (
                 float(plan[j + 1]["start"]) - 0.02
                 if j + 1 < len(plan)
-                else min(p_end, next_start - 0.02)
+                else min(max(p_end, p_start + 0.25), next_start - 0.02)
             )
             if j + 1 < len(plan):
                 p_end = min(p_end, hard_cap)
@@ -603,27 +658,44 @@ def synthesize_segments_qwen(
             )
             rates.append(rate)
             actual = wav_duration(fitted_phrase)
+            overrun = actual - p_target
+            note = (
+                f"overrun +{overrun:.2f}s into pause"
+                if overrun > 0.04
+                else "exact slot"
+            )
             print(
                 f"      qwen raw={wav_duration(chunk_441):.2f}s → "
-                f"full-stretch {actual:.2f}s @ rate={rate:.3f} "
-                f"(complete utterance, no gen-cap / no pad/trim)",
+                f"{actual:.2f}s @ rate={rate:.3f} ({note})",
                 file=sys.stderr,
             )
             phrase["tts_fit"] = str(fitted_phrase)
             phrase["tts_raw"] = str(chunk_441)
             phrase["ref_audio"] = ref["path"]
             phrase["tts_speed_used"] = round(rate, 3)
+            if actual > p_target + 0.04:
+                phrase["end"] = round(
+                    min(p_start + actual, next_start - 0.02), 3
+                )
 
         fitted = tts_dir / f"seg_{i:02d}_fit.wav"
-        assemble_on_hebrew_timeline(plan, start, end, fitted, sample_rate=44100)
+        assemble_on_hebrew_timeline(
+            plan,
+            start,
+            end,
+            fitted,
+            sample_rate=44100,
+            hard_end=next_start - 0.02,
+        )
         spoken = wav_duration(fitted)
+        end = max(end, start + spoken)
+        seg["end"] = round(min(end, next_start - 0.02), 3)
+        seg["duration"] = round(float(seg["end"]) - start, 3)
         print(
-            f"    timeline {spoken:.2f}s == Hebrew {target:.2f}s "
-            f"({len(plan)} phrases @ their HE offsets)",
+            f"    timeline {spoken:.2f}s (Hebrew slot was {target:.2f}s, "
+            f"{len(plan)} phrases @ HE offsets, hard_end={next_start - 0.02:.2f})",
             file=sys.stderr,
         )
-
-        seg["duration"] = round(target, 3)
         seg.pop("tts_text", None)
         seg["tts_raw"] = str(plan[0].get("tts_raw") or fitted)
         seg["tts_fit"] = str(fitted)

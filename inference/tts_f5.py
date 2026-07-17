@@ -85,17 +85,22 @@ def extend_end_by_energy(
     rms_thresh: float = 0.018,
     sample_rate: int = 16000,
     bridge_gap_sec: float = 0.45,
+    max_extend: float | None = None,
 ) -> float:
     """Push end forward while speech energy continues (fixes early ASR cuts).
 
     Bridges short dips (breaths) up to bridge_gap_sec so KEEP English isn't
     chopped mid-sentence when energy briefly drops.
+
+    `max_extend` caps how far past ASR `end` we may go — critical so KEEP
+    does not absorb the next speaker after a quiet gap / Demucs bleed.
     """
     import numpy as np
 
-    probe_end = min(max_end, end + 2.5)
+    hard_end = max_end if max_extend is None else min(max_end, end + max(0.0, max_extend))
+    probe_end = min(hard_end, end + 2.5)
     if probe_end <= end + 0.05:
-        return min(end + pad, max_end)
+        return min(end + pad, hard_end)
     dur = probe_end - start
     cmd = [
         "ffmpeg",
@@ -125,7 +130,7 @@ def extend_end_by_energy(
         t = start + i / sample_rate
         if t < end - 0.05:
             continue
-        if t >= max_end:
+        if t >= hard_end:
             break
         rms = float(np.sqrt(np.mean(audio[i : i + hop] ** 2) + 1e-12))
         if rms >= rms_thresh:
@@ -135,7 +140,74 @@ def extend_end_by_energy(
             quiet_run += hop / sample_rate
             if quiet_run >= bridge_gap_sec:
                 break
-    return min(max(last_active + pad, end), max_end)
+    return min(max(last_active + pad, end), hard_end)
+
+
+def pull_start_to_energy(
+    vocals: Path,
+    start: float,
+    end: float,
+    *,
+    min_start: float,
+    max_pull: float = 0.85,
+    rms_thresh: float = 0.04,
+    hold_sec: float = 0.12,
+    sample_rate: int = 16000,
+) -> float:
+    """If speech clearly begins before ASR `start`, pull start back.
+
+    Never crosses `min_start` (previous segment end). Used so Hebrew dubs
+    don't miss onsets that KEEP / late ASR dropped.
+    """
+    import numpy as np
+
+    earliest = max(0.0, min_start, start - max_pull)
+    if start - earliest < 0.06:
+        return start
+    dur = end - earliest
+    if dur <= 0.08:
+        return start
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(vocals),
+        "-ss",
+        f"{earliest:.3f}",
+        "-t",
+        f"{dur:.3f}",
+        "-f",
+        "f32le",
+        "-acodec",
+        "pcm_f32le",
+        "-ar",
+        str(sample_rate),
+        "-ac",
+        "1",
+        "-",
+    ]
+    result = subprocess.run(cmd, capture_output=True, check=True)
+    audio = np.frombuffer(result.stdout, dtype=np.float32)
+    hop = max(1, sample_rate // 20)  # 50ms
+    # Find latest quiet→loud onset before ASR start that stays loud into start.
+    onset = start
+    hold_hops = max(1, int(round(hold_sec / (hop / sample_rate))))
+    start_i = int(round((start - earliest) * sample_rate))
+    i = 0
+    while i < start_i - hop:
+        t = earliest + i / sample_rate
+        window = [float(np.sqrt(np.mean(audio[j : j + hop] ** 2) + 1e-12))
+                  for j in range(i, min(i + hold_hops * hop, start_i), hop)]
+        if len(window) >= hold_hops and min(window) >= rms_thresh:
+            # Prefer the earliest sustained onset in the pull window.
+            onset = t
+            break
+        i += hop
+    # Only keep the pull if energy near ASR start is also speech (same bout).
+    near = audio[max(0, start_i - hop) : min(len(audio), start_i + hop)]
+    if near.size and float(np.sqrt(np.mean(near**2) + 1e-12)) < rms_thresh * 0.7:
+        return start
+    return min(start, max(earliest, onset))
 
 
 def wav_duration(path: Path) -> float:
@@ -894,9 +966,10 @@ def synthesize_segments_f5(
                 start,
                 end,
                 max_end=max_end,
-                pad=0.18,
-                rms_thresh=0.016,
-                bridge_gap_sec=0.55,
+                pad=0.06,
+                rms_thresh=0.045,
+                bridge_gap_sec=0.12,
+                max_extend=0.28,
             )
             if extended_end > end + 0.05:
                 print(

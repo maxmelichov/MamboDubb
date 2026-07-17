@@ -257,14 +257,15 @@ def build_dubbed_track(
     total_duration: float,
     workdir: Path,
     *,
-    bg_gain: float = 0.65,
-    speech_gain: float = 1.0,
-    duck_db: float = -6.0,
+    bg_gain: float = 0.85,
+    speech_gain: float = 1.15,
+    duck_db: float = -3.5,
+    speech_target_rms: float = 0.085,
 ) -> Path:
     """Place TTS clips on a timeline and sum with background (sample-accurate).
 
-    Avoids ffmpeg adelay/amix, which was mangling stereo BGM into hissy/pumping
-    output when mixed with a mono silence bed + many delayed mono clips.
+    Music stays present under dialogue (light duck). Speech is loudness-matched
+    so KEEP English and Qwen clips sit at a similar level over the bed.
     """
     import numpy as np
     import soundfile as sf
@@ -278,7 +279,12 @@ def build_dubbed_track(
 
     speech = np.zeros(n_samples, dtype=np.float32)
     placed = 0
-    for seg in segments:
+    # Place in timeline order; later clips overwrite overlaps (avoids KEEP+dub sum).
+    ordered = sorted(
+        segments,
+        key=lambda s: (float(s.get("start") or 0.0), 0 if s.get("keep_original") else 1),
+    )
+    for seg in ordered:
         fitted = seg.get("tts_fit")
         if not fitted:
             continue
@@ -291,15 +297,25 @@ def build_dubbed_track(
         if i0 >= n_samples or len(clip) == 0:
             continue
         i1 = min(n_samples, i0 + len(clip))
-        speech[i0:i1] += clip[: i1 - i0]
+        take = clip[: i1 - i0].copy()
+        # Per-clip loudness match (KEEP originals are often hotter than Qwen).
+        clip_rms = float(np.sqrt(np.mean(take**2) + 1e-12))
+        if clip_rms > 1e-4:
+            take *= speech_target_rms / clip_rms
+        fade = min(int(0.012 * sr), len(take) // 4)
+        if fade > 1:
+            ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)
+            take[:fade] *= ramp
+            take[-fade:] *= ramp[::-1]
+        speech[i0:i1] = take
         placed += 1
 
-    # Smooth envelope → gentle duck under speech (no hard gain jumps).
-    win = max(1, int(0.05 * sr))
+    # Longer, gentler duck — music remains audible under speech.
+    win = max(1, int(0.14 * sr))
     kernel = np.ones(win, dtype=np.float32) / float(win)
     env = np.convolve(np.abs(speech), kernel, mode="same")
-    thr = 0.012
-    amount = np.clip((env - thr) / (thr * 4.0), 0.0, 1.0)
+    thr = 0.01
+    amount = np.clip((env - thr) / (thr * 6.0), 0.0, 1.0)
     amount = np.convolve(amount, kernel, mode="same")
     amount = np.clip(amount, 0.0, 1.0)
     duck_lin = float(10.0 ** (duck_db / 20.0))
@@ -313,7 +329,7 @@ def build_dubbed_track(
     out_wav = workdir / "dubbed_audio.wav"
     print(
         f"Mixing dubbed audio (numpy): {placed} clips, "
-        f"bg_gain={bg_gain}, duck={duck_db} dB → {out_wav}",
+        f"bg_gain={bg_gain}, duck={duck_db} dB, speech_rms≈{speech_target_rms} → {out_wav}",
         file=sys.stderr,
     )
     sf.write(str(out_wav), mix.astype(np.float32), sr, subtype="PCM_16")
