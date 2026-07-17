@@ -34,19 +34,51 @@ def _join_text(parts: list[str]) -> str:
     return text
 
 
+def _phrases_from_segment(seg: dict[str, Any]) -> list[dict[str, Any]]:
+    """Prefer existing phrase structure; never collapse multi-phrase rows to one blob."""
+    existing = seg.get("phrases") or []
+    if existing:
+        out: list[dict[str, Any]] = []
+        for p in existing:
+            text = (p.get("text") or "").strip()
+            text_en = (p.get("text_en") or "").strip() or None
+            if not text and not text_en:
+                continue
+            phrase = {
+                "text": text,
+                "start": float(p["start"]),
+                "end": float(p["end"]),
+                "pause_after": float(p.get("pause_after") or 0.0),
+            }
+            if text_en:
+                phrase["text_en"] = text_en
+            out.append(phrase)
+        if out:
+            return out
+
+    text = (seg.get("text") or "").strip()
+    text_en = (seg.get("text_en") or "").strip() or None
+    if not text and not text_en:
+        return []
+    phrase = {
+        "text": text,
+        "start": float(seg["start"]),
+        "end": float(seg["end"]),
+        "pause_after": 0.0,
+    }
+    if text_en:
+        phrase["text_en"] = text_en
+    return [phrase]
+
+
 def merge_same_speaker_segments(
     segments: list[dict[str, Any]],
     *,
     max_pause: float = DEFAULT_MAX_PAUSE,
 ) -> list[dict[str, Any]]:
-    """Merge consecutive same-speaker segments when the gap is a short pause.
+    """Merge consecutive same-speaker / same-language segments when the gap is a short pause.
 
-    Output segment shape:
-      {
-        speaker_id, start, end, duration, text,
-        phrases: [{text, text_en?, start, end, pause_after}, ...],
-        pauses: [float, ...]  # pause after phrase i (last usually 0)
-      }
+    Never merges across languages. Preserves existing phrases[] instead of flattening.
     """
     if not segments:
         return []
@@ -56,69 +88,105 @@ def merge_same_speaker_segments(
 
     cur = None
     for seg in ordered:
-        spk = seg["speaker_id"]
-        start = float(seg["start"])
-        end = float(seg["end"])
-        text = (seg.get("text") or "").strip()
-        text_en = (seg.get("text_en") or "").strip() or None
-        if not text and not text_en:
+        phrases = _phrases_from_segment(seg)
+        if not phrases:
             continue
 
-        phrase = {
-            "text": text,
-            "start": start,
-            "end": end,
-            "pause_after": 0.0,
-        }
-        if text_en:
-            phrase["text_en"] = text_en
+        spk = seg["speaker_id"]
+        lang = seg.get("language") or "he"
+        keep_original = bool(seg.get("keep_original", lang != "he"))
+        start = float(phrases[0]["start"])
+        end = float(phrases[-1]["end"])
 
         if cur is None:
             cur = {
                 "speaker_id": spk,
+                "language": lang,
+                "keep_original": keep_original,
                 "start": start,
                 "end": end,
-                "text": text,
-                "phrases": [phrase],
+                "phrases": [dict(p) for p in phrases],
             }
-            if text_en:
-                cur["text_en"] = text_en
             continue
 
         gap = start - float(cur["end"])
-        same = spk == cur["speaker_id"]
+        same = (
+            spk == cur["speaker_id"]
+            and lang == cur.get("language", "he")
+            and keep_original == bool(cur.get("keep_original"))
+        )
         if same and 0 <= gap <= max_pause:
-            # Same speaker continuing after a pause — keep one utterance
             cur["phrases"][-1]["pause_after"] = round(max(gap, 0.0), 3)
-            cur["phrases"].append(phrase)
+            cur["phrases"].extend(dict(p) for p in phrases)
             cur["end"] = end
-            # Keep spaces between merged phrases (Whisper tokens may omit them)
-            cur["text"] = " ".join(
-                p["text"].strip() for p in cur["phrases"] if (p.get("text") or "").strip()
-            )
-            if text_en:
-                prev_en = (cur.get("text_en") or "").strip()
-                cur["text_en"] = (prev_en + " " + text_en).strip() if prev_en else text_en
         else:
-            cur["duration"] = round(float(cur["end"]) - float(cur["start"]), 3)
-            cur["pauses"] = [float(p.get("pause_after") or 0.0) for p in cur["phrases"]]
+            _finalize_merged(cur)
             merged.append(cur)
             cur = {
                 "speaker_id": spk,
+                "language": lang,
+                "keep_original": keep_original,
                 "start": start,
                 "end": end,
-                "text": text,
-                "phrases": [phrase],
+                "phrases": [dict(p) for p in phrases],
             }
-            if text_en:
-                cur["text_en"] = text_en
 
     if cur is not None:
-        cur["duration"] = round(float(cur["end"]) - float(cur["start"]), 3)
-        cur["pauses"] = [float(p.get("pause_after") or 0.0) for p in cur["phrases"]]
+        _finalize_merged(cur)
         merged.append(cur)
 
     return merged
+
+
+def _finalize_merged(cur: dict[str, Any]) -> None:
+    if cur["phrases"]:
+        cur["phrases"][-1]["pause_after"] = 0.0
+    cur["text"] = " ".join(
+        p["text"].strip() for p in cur["phrases"] if (p.get("text") or "").strip()
+    )
+    en_bits = [
+        (p.get("text_en") or "").strip()
+        for p in cur["phrases"]
+        if (p.get("text_en") or "").strip()
+    ]
+    if en_bits:
+        cur["text_en"] = " ".join(en_bits)
+    cur["duration"] = round(float(cur["end"]) - float(cur["start"]), 3)
+    cur["pauses"] = [float(p.get("pause_after") or 0.0) for p in cur["phrases"]]
+
+
+def merge_diarization_turns(
+    turns: list[dict[str, Any]],
+    *,
+    max_pause: float = DEFAULT_MAX_PAUSE,
+) -> list[dict[str, Any]]:
+    """Merge adjacent same-speaker diarization turns separated by a short gap."""
+    if not turns:
+        return []
+    ordered = sorted(turns, key=lambda t: float(t["start"]))
+    out: list[dict[str, Any]] = []
+    cur = dict(ordered[0])
+    for turn in ordered[1:]:
+        gap = float(turn["start"]) - float(cur["end"])
+        if turn["speaker_id"] == cur["speaker_id"] and 0 <= gap <= max_pause:
+            cur["end"] = float(turn["end"])
+        else:
+            out.append(
+                {
+                    "speaker_id": cur["speaker_id"],
+                    "start": round(float(cur["start"]), 3),
+                    "end": round(float(cur["end"]), 3),
+                }
+            )
+            cur = dict(turn)
+    out.append(
+        {
+            "speaker_id": cur["speaker_id"],
+            "start": round(float(cur["start"]), 3),
+            "end": round(float(cur["end"]), 3),
+        }
+    )
+    return out
 
 
 def words_to_utterances(

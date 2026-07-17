@@ -212,90 +212,165 @@ def resolve_whisper_model(model: str) -> str:
     return model
 
 
+def _phrases_from_words(words: list, phrase_pause: float) -> list[dict]:
+    """Split word stream into pause-aware phrases (absolute timestamps)."""
+    if not words:
+        return []
+    phrases: list[dict] = []
+    buf: list[str] = []
+    p_start = float(words[0].start)
+    p_end = float(words[0].end)
+
+    def flush(pause_after: float = 0.0) -> None:
+        nonlocal buf, p_start, p_end
+        if not buf:
+            return
+        text = "".join(buf).strip()
+        if text and " " not in text and len(buf) > 1:
+            text = " ".join(w.strip() for w in buf if w.strip())
+        if text:
+            phrases.append(
+                {
+                    "text": text,
+                    "start": round(p_start, 3),
+                    "end": round(p_end, 3),
+                    "pause_after": round(pause_after, 3),
+                }
+            )
+        buf = []
+
+    for i, w in enumerate(words):
+        token = w.word or ""
+        if i == 0:
+            buf = [token]
+            p_start = float(w.start)
+            p_end = float(w.end)
+            continue
+        gap = float(w.start) - float(words[i - 1].end)
+        if gap >= phrase_pause:
+            flush(pause_after=gap)
+            buf = [token]
+            p_start = float(w.start)
+            p_end = float(w.end)
+        else:
+            if not buf:
+                p_start = float(w.start)
+            buf.append(token)
+            p_end = float(w.end)
+    flush(0.0)
+    if phrases:
+        phrases[-1]["pause_after"] = 0.0
+    return phrases
+
+
 def transcribe_and_merge(
     vocals_path: Path,
     segments: list[dict],
     model_name: str,
-    language: str = "he",
+    language: str = "auto",
     device: str = "auto",
     compute_type: str = "auto",
     max_pause: float = 0.75,
     phrase_pause: float = 0.18,
-) -> list[dict]:
-    from inference.segment_merge import words_to_utterances
+) -> tuple[list[dict], WhisperModel]:
+    """Per-turn language detect (he/en/ar) + ASR; keep non-Hebrew as keep_original."""
+    from inference.lang_detect import CANDIDATE_LANGS, detect_and_transcribe_turn
+    from inference.segment_merge import merge_diarization_turns, merge_same_speaker_segments
 
     model_path = resolve_whisper_model(model_name)
     device = resolve_whisper_device(device)
     print(
-        f"Transcribing {vocals_path} with faster-whisper ({model_path}) on {device}...",
+        f"Language-aware ASR on {vocals_path} with faster-whisper ({model_path}) on {device}...",
         file=sys.stderr,
     )
 
     model = WhisperModel(model_path, device=device, compute_type=compute_type)
-    whisper_segments, info = model.transcribe(
-        str(vocals_path),
-        language=language,
-        word_timestamps=True,
-        beam_size=5,
-        vad_filter=True,
-        vad_parameters={"min_silence_duration_ms": int(max_pause * 1000)},
-    )
+    turns = merge_diarization_turns(segments, max_pause=max_pause)
+    print(f"Diarization turns: {len(segments)} → {len(turns)} after pause merge", file=sys.stderr)
 
-    words = []
-    for ws in whisper_segments:
-        if ws.words:
-            words.extend(ws.words)
+    if language and language != "auto":
+        candidates = (language,)
+    else:
+        candidates = CANDIDATE_LANGS
 
-    results = words_to_utterances(
-        words,
-        segments,
-        max_pause=max_pause,
-        phrase_pause=phrase_pause,
-    )
+    results: list[dict] = []
+    for i, turn in enumerate(turns):
+        start = float(turn["start"])
+        end = float(turn["end"])
+        if end - start < 0.25:
+            continue
+        print(
+            f"  Turn {i:02d} [{start:.1f}-{end:.1f}s] {turn['speaker_id']}…",
+            file=sys.stderr,
+        )
+        det = detect_and_transcribe_turn(
+            model,
+            vocals_path,
+            start,
+            end,
+            candidates=candidates,
+        )
+        lang = det["language"]
+        phrases = _phrases_from_words(det["words"], phrase_pause)
+        if not phrases and det["text"]:
+            phrases = [
+                {
+                    "text": det["text"],
+                    "start": round(start, 3),
+                    "end": round(end, 3),
+                    "pause_after": 0.0,
+                }
+            ]
+        if not phrases:
+            print("    empty — skip", file=sys.stderr)
+            continue
+
+        # Drop low-confidence micro junk (common on music beds / breath)
+        if (end - start) < 0.8 and float(det.get("language_score") or 0) < -0.5:
+            print(
+                f"    junk skip score={det.get('language_score')} dur={end - start:.2f}s",
+                file=sys.stderr,
+            )
+            continue
+        if len(det["text"].strip()) < 3:
+            print("    too short — skip", file=sys.stderr)
+            continue
+
+        keep_original = lang != "he"
+        # For non-Hebrew, expose original text as text_en for subs (no machine translate).
+        if keep_original:
+            for p in phrases:
+                p["text_en"] = p["text"]
+
+        seg = {
+            "speaker_id": turn["speaker_id"],
+            "start": round(float(phrases[0]["start"]), 3),
+            "end": round(float(phrases[-1]["end"]), 3),
+            "language": lang,
+            "language_score": det.get("language_score"),
+            "keep_original": keep_original,
+            "phrases": phrases,
+            "text": " ".join(p["text"] for p in phrases),
+            "duration": 0.0,
+            "pauses": [float(p["pause_after"]) for p in phrases],
+        }
+        seg["duration"] = round(seg["end"] - seg["start"], 3)
+        if keep_original:
+            seg["text_en"] = seg["text"]
+        results.append(seg)
+        flag = "KEEP" if keep_original else "DUB"
+        print(
+            f"    → {lang} ({flag}) score={det.get('language_score')} | {seg['text'][:70]}",
+            file=sys.stderr,
+        )
+
+    results = merge_same_speaker_segments(results, max_pause=max_pause)
+    n_keep = sum(1 for s in results if s.get("keep_original"))
     print(
-        f"Detected language={info.language} p={info.language_probability:.2f}; "
-        f"{len(words)} words → {len(results)} utterances "
-        f"(max_pause={max_pause}s, phrase_pause={phrase_pause}s)",
+        f"Utterances: {len(results)} ({n_keep} keep-original, {len(results) - n_keep} Hebrew→dub)",
         file=sys.stderr,
     )
     return results, model
-
-
-def detect_segment_languages(
-    vocals_path: Path,
-    segments: list[dict],
-    model: WhisperModel,
-    min_duration: float = 1.0,
-) -> None:
-    """Use Whisper to detect language for each utterance segment > min_duration."""
-    print(f"Detecting language for {len(segments)} segments...", file=sys.stderr)
-    import numpy as np
-
-    for i, seg in enumerate(segments):
-        start = float(seg["start"])
-        end = float(seg["end"])
-        dur = end - start
-        
-        # Only detect language on segments long enough to have confident speech
-        if dur < min_duration:
-            # Inherit from default or context
-            seg["language"] = "he"
-            continue
-            
-        cmd = [
-            "ffmpeg", "-y", "-ss", str(start), "-t", str(dur), "-i", str(vocals_path),
-            "-f", "f32le", "-acodec", "pcm_f32le", "-ar", "16000", "-ac", "1", "-"
-        ]
-        try:
-            result = subprocess.run(cmd, capture_output=True, check=True)
-            audio = np.frombuffer(result.stdout, dtype=np.float32)
-            lang, prob, _ = model.detect_language(audio)
-            seg["language"] = lang
-            print(f"  Segment {i:02d} [{start:.1f}-{end:.1f}s]: detected {lang} (prob: {prob:.2f})", file=sys.stderr)
-        except Exception as e:
-            print(f"  Segment {i:02d} [{start:.1f}-{end:.1f}s]: language detection failed ({e})", file=sys.stderr)
-            seg["language"] = "he"
-
 
 
 def parse_args() -> argparse.Namespace:
@@ -329,7 +404,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
     parser.add_argument("--compute-type", default="auto")
-    parser.add_argument("--language", "-l", default="he")
+    parser.add_argument(
+        "--language",
+        "-l",
+        default="auto",
+        help="Force ASR language (he/en/ar) or 'auto' to score he/en/ar per turn (default: auto).",
+    )
     parser.add_argument(
         "--max-pause",
         type=float,
@@ -399,7 +479,7 @@ def main() -> None:
 
     segments = diarize_audio(vocals_path, model_id=args.diarization_model)
     
-    results, whisper_model = transcribe_and_merge(
+    results, _whisper_model = transcribe_and_merge(
         vocals_path,
         segments,
         args.model,
@@ -409,8 +489,6 @@ def main() -> None:
         max_pause=args.max_pause,
         phrase_pause=args.phrase_pause,
     )
-
-    detect_segment_languages(vocals_path, results, whisper_model)
 
     payload = {
         "source": str(video_path.resolve()),

@@ -45,14 +45,25 @@ Legacy wrappers `inference_whisper_ivrit.py` / `inference_translategemma.py` onl
 
 ```json
 {
-  "source": "...",
-  "vocals": "...",
-  "background": "...",
-  "segments": [
-    {"speaker_id": "SPEAKER_00", "start": 0.0, "end": 1.2, "duration": 1.2, "text": "..."}
-  ]
+ "source": "...",
+ "vocals": "...",
+ "background": "...",
+ "segments": [
+ {
+   "speaker_id": "SPEAKER_00",
+   "start": 0.0,
+   "end": 1.2,
+   "duration": 1.2,
+   "language": "he",
+   "keep_original": false,
+   "text": "...",
+   "phrases": [{"text": "...", "start": 0.0, "end": 1.2, "pause_after": 0.0}]
+ }
+ ]
 }
 ```
+
+Non-Hebrew turns (`language` ≠ `he`, `keep_original: true`) keep the original vocals (EN/AR/…). Only Hebrew is translated + TTS'd.
 
 - On Apple Silicon: Whisper via **faster-whisper** + [`ivrit-ai/whisper-large-v3-turbo-ct2`](https://huggingface.co/ivrit-ai/whisper-large-v3-turbo-ct2); TranslateGemma / Pyannote / F5 via PyTorch MPS. Set `PYTORCH_ENABLE_MPS_FALLBACK=1` if LatentSync or Pyannote hits missing ops.
 - Do not download huge models into the repo root; always use `models/<name>/` via `uv run hf download …`.

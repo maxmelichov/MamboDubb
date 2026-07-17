@@ -119,18 +119,92 @@ def write_srt(segments: list[dict], path: Path, text_key: str = "text_en") -> No
     lines: list[str] = []
     idx = 1
     for seg in segments:
-        text = (seg.get(text_key) or "").strip()
+        lang = seg.get("language") or "he"
+        keep = bool(seg.get("keep_original", lang != "he"))
+        phrases = seg.get("phrases") or []
+        if phrases:
+            for p in phrases:
+                text = (p.get(text_key) or p.get("text") or "").strip()
+                if not text:
+                    continue
+                start = float(p.get("start", seg["start"]))
+                end = max(float(p.get("end", seg["end"])), start + 0.4)
+                speaker = seg.get("speaker_id", "")
+                tag = f"{speaker}/{lang}" if keep else speaker
+                lines.append(str(idx))
+                lines.append(f"{srt_timestamp(start)} --> {srt_timestamp(end)}")
+                lines.append(f"[{tag}] {text}" if tag else text)
+                lines.append("")
+                idx += 1
+            continue
+
+        text = (seg.get(text_key) or seg.get("text") or "").strip()
         if not text:
             continue
         start = float(seg["start"])
         end = max(float(seg["end"]), start + 0.4)
         speaker = seg.get("speaker_id", "")
+        tag = f"{speaker}/{lang}" if keep else speaker
         lines.append(str(idx))
         lines.append(f"{srt_timestamp(start)} --> {srt_timestamp(end)}")
-        lines.append(f"[{speaker}] {text}" if speaker else text)
+        lines.append(f"[{tag}] {text}" if tag else text)
         lines.append("")
         idx += 1
     path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def ensure_translations(segments: list[dict], processor, model, device, dtype) -> None:
+    """Translate Hebrew only; copy original text for keep_original / non-he segments."""
+    for i, seg in enumerate(segments):
+        lang = seg.get("language") or "he"
+        keep = bool(seg.get("keep_original", lang != "he"))
+        phrases = seg.get("phrases") or []
+
+        if keep:
+            if phrases:
+                for p in phrases:
+                    p["text_en"] = (p.get("text_en") or p.get("text") or "").strip()
+                seg["text_en"] = " ".join(
+                    (p.get("text_en") or "").strip() for p in phrases if p.get("text_en")
+                )
+            else:
+                seg["text_en"] = (seg.get("text_en") or seg.get("text") or "").strip()
+            print(
+                f"Keep original [{i+1}/{len(segments)}] {lang}: {(seg.get('text') or '')[:50]}…",
+                file=sys.stderr,
+            )
+            continue
+
+        if phrases:
+            for j, p in enumerate(phrases):
+                he = (p.get("text") or "").strip()
+                if not he:
+                    continue
+                if (p.get("text_en") or "").strip():
+                    continue
+                if processor is None:
+                    raise SystemExit("Translator required for Hebrew phrases without text_en")
+                print(
+                    f"Translating [{i+1}/{len(segments)} p{j}] {he[:50]}…",
+                    file=sys.stderr,
+                )
+                p["text_en"] = translate_text(processor, model, device, dtype, he)
+                print(f"  → {p['text_en']}", file=sys.stderr)
+            seg["text_en"] = " ".join(
+                (p.get("text_en") or "").strip() for p in phrases if p.get("text_en")
+            )
+            continue
+
+        he = (seg.get("text") or "").strip()
+        if not he:
+            continue
+        if (seg.get("text_en") or "").strip():
+            continue
+        if processor is None:
+            raise SystemExit("Translator required for Hebrew segments without text_en")
+        print(f"Translating [{i+1}/{len(segments)}] {he[:50]}…", file=sys.stderr)
+        seg["text_en"] = translate_text(processor, model, device, dtype, he)
+        print(f"  → {seg['text_en']}", file=sys.stderr)
 
 
 def wav_duration(path: Path) -> float:
@@ -351,26 +425,44 @@ def main() -> None:
     if not segments:
         raise SystemExit("No usable segments after filtering micro-turns.")
 
-    if args.skip_translate and all(s.get("text_en") for s in segments):
-        print("Reusing existing English translations.", file=sys.stderr)
+    def _has_en(seg: dict) -> bool:
+        if seg.get("keep_original") or seg.get("language", "he") != "he":
+            return bool((seg.get("text") or seg.get("text_en") or "").strip())
+        phrases = seg.get("phrases") or []
+        if phrases:
+            return all((p.get("text_en") or "").strip() for p in phrases if (p.get("text") or "").strip())
+        return bool((seg.get("text_en") or "").strip())
+
+    if args.skip_translate and all(_has_en(s) for s in segments):
+        print("Reusing existing English / original-language text.", file=sys.stderr)
+        # Still normalize keep_original text_en copies
+        for seg in segments:
+            if seg.get("keep_original") or seg.get("language", "he") != "he":
+                seg["keep_original"] = True
+                if not (seg.get("text_en") or "").strip():
+                    seg["text_en"] = (seg.get("text") or "").strip()
+                for p in seg.get("phrases") or []:
+                    if not (p.get("text_en") or "").strip():
+                        p["text_en"] = (p.get("text") or "").strip()
     else:
-        if not args.model.is_dir():
-            raise SystemExit(f"Translate model not found: {args.model}")
+        # For keep_original we don't need the translator at all
+        needs_mt = [
+            s
+            for s in segments
+            if not (s.get("keep_original") or s.get("language", "he") != "he")
+            and not _has_en(s)
+        ]
+        processor = model = dtype = None
         device = resolve_device(args.device)
-        processor, model, dtype = load_translator(args.model, device)
-        for i, seg in enumerate(segments):
-            he = seg["text"].strip()
-            if seg.get("language", "he") != "he":
-                print(f"Skipping translation for non-Hebrew segment [{i+1}/{len(segments)}]: {he[:50]}…", file=sys.stderr)
-                seg["text_en"] = he
-                continue
-                
-            print(f"Translating [{i+1}/{len(segments)}] {he[:50]}…", file=sys.stderr)
-            seg["text_en"] = translate_text(processor, model, device, dtype, he)
-            print(f"  → {seg['text_en']}", file=sys.stderr)
-        del model, processor
-        if device.type == "mps":
-            torch.mps.empty_cache()
+        if needs_mt:
+            if not args.model.is_dir():
+                raise SystemExit(f"Translate model not found: {args.model}")
+            processor, model, dtype = load_translator(args.model, device)
+        ensure_translations(segments, processor, model, device, dtype)
+        if model is not None:
+            del model, processor
+            if device.type == "mps":
+                torch.mps.empty_cache()
 
     out_json = workdir / "translated_segments.json"
     payload_out = {**payload, "segments": segments}

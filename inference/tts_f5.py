@@ -40,23 +40,31 @@ def clamp_speed(speed: float, lo: float = SPEED_MIN, hi: float = SPEED_MAX) -> f
     return max(lo, min(hi, float(speed)))
 
 
-def extract_wav_slice(src: Path, start: float, end: float, dst: Path) -> Path:
+def extract_wav_slice(
+    src: Path,
+    start: float,
+    end: float,
+    dst: Path,
+    *,
+    sample_rate: int = 24000,
+) -> Path:
+    """Extract [start, end). Seek after -i for frame-accurate cuts."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     dur = max(end - start, 0.05)
     subprocess.run(
         [
             "ffmpeg",
             "-y",
+            "-i",
+            str(src),
             "-ss",
             f"{start:.3f}",
             "-t",
             f"{dur:.3f}",
-            "-i",
-            str(src),
             "-acodec",
             "pcm_s16le",
             "-ar",
-            "24000",
+            str(sample_rate),
             "-ac",
             "1",
             str(dst),
@@ -65,6 +73,57 @@ def extract_wav_slice(src: Path, start: float, end: float, dst: Path) -> Path:
         capture_output=True,
     )
     return dst
+
+
+def extend_end_by_energy(
+    vocals: Path,
+    start: float,
+    end: float,
+    *,
+    max_end: float,
+    pad: float = 0.12,
+    rms_thresh: float = 0.025,
+    sample_rate: int = 16000,
+) -> float:
+    """Push end forward while speech energy continues (fixes early ASR cuts)."""
+    import numpy as np
+
+    probe_end = min(max_end, end + 1.5)
+    if probe_end <= end + 0.05:
+        return min(end + pad, max_end)
+    dur = probe_end - start
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(vocals),
+        "-ss",
+        f"{start:.3f}",
+        "-t",
+        f"{dur:.3f}",
+        "-f",
+        "f32le",
+        "-acodec",
+        "pcm_f32le",
+        "-ar",
+        str(sample_rate),
+        "-ac",
+        "1",
+        "-",
+    ]
+    result = subprocess.run(cmd, capture_output=True, check=True)
+    audio = np.frombuffer(result.stdout, dtype=np.float32)
+    hop = max(1, sample_rate // 10)  # 100ms
+    last_active = end
+    rel_end = end - start
+    for i in range(0, len(audio) - hop, hop):
+        t = start + i / sample_rate
+        if t < end - 0.05:
+            continue
+        rms = float(np.sqrt(np.mean(audio[i : i + hop] ** 2) + 1e-12))
+        if rms >= rms_thresh:
+            last_active = t + hop / sample_rate
+    return min(max(last_active + pad, end), max_end)
 
 
 def wav_duration(path: Path) -> float:
@@ -182,25 +241,96 @@ def concat_wavs(paths: list[Path], out: Path, sample_rate: int = 44100) -> Path:
 
 
 def phrase_plan(seg: dict) -> list[dict]:
-    """Return [{text_en, pause_after}, ...] for pause-aware TTS."""
+    """Return phrase dicts with English gen text, Hebrew ref text, and timings."""
     phrases = seg.get("phrases") or []
     if phrases:
         plan = []
         for p in phrases:
-            text = (p.get("text_en") or p.get("text") or "").strip()
-            if not text:
+            text_en = (p.get("text_en") or "").strip()
+            text_he = (p.get("text") or "").strip()
+            # For Hebrew dubs: gen=EN, ref_text=HE. Fall back sensibly.
+            gen = text_en or text_he
+            if not gen:
                 continue
             plan.append(
                 {
-                    "text": text,
+                    "text": gen,
+                    "text_he": text_he or text_en or gen,
+                    "start": float(p.get("start", seg["start"])),
+                    "end": float(p.get("end", seg["end"])),
                     "pause_after": float(p.get("pause_after") or 0.0),
                 }
             )
         if plan:
             plan[-1]["pause_after"] = 0.0
             return plan
-    text = (seg.get("text_en") or seg.get("text") or "").strip()
-    return [{"text": text, "pause_after": 0.0}] if text else []
+    text_en = (seg.get("text_en") or "").strip()
+    text_he = (seg.get("text") or "").strip()
+    gen = text_en or text_he
+    if not gen:
+        return []
+    return [
+        {
+            "text": gen,
+            "text_he": text_he or gen,
+            "start": float(seg["start"]),
+            "end": float(seg["end"]),
+            "pause_after": 0.0,
+        }
+    ]
+
+
+def atempo_chain(rate: float) -> str:
+    """Build ffmpeg atempo filter chain (each stage must be 0.5–2.0)."""
+    rate = max(0.25, min(4.0, float(rate)))
+    parts: list[str] = []
+    while rate > 2.0 + 1e-6:
+        parts.append("atempo=2.0")
+        rate /= 2.0
+    while rate < 0.5 - 1e-6:
+        parts.append("atempo=0.5")
+        rate /= 0.5
+    parts.append(f"atempo={rate:.6f}")
+    return ",".join(parts)
+
+
+def stretch_to_duration(
+    src: Path,
+    dst: Path,
+    target_sec: float,
+    *,
+    sample_rate: int = 44100,
+    min_rate: float = 0.7,
+    max_rate: float = 1.35,
+) -> None:
+    """Time-stretch toward target_sec, then pad (never hard-trim speech)."""
+    actual = wav_duration(src)
+    if actual <= 0.05:
+        pad_or_trim(src, dst, target_sec, sample_rate)
+        return
+    rate = actual / max(target_sec, 0.05)
+    rate = max(min_rate, min(max_rate, rate))
+    stretched = dst.with_name(dst.stem + "_stretch.wav")
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(src),
+            "-af",
+            atempo_chain(rate),
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            str(sample_rate),
+            "-ac",
+            "1",
+            str(stretched),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    place_in_slot(stretched, dst, target_sec, sample_rate)
 
 
 def place_in_slot(src: Path, dst: Path, target_sec: float, sample_rate: int = 44100) -> None:
@@ -233,6 +363,62 @@ def place_in_slot(src: Path, dst: Path, target_sec: float, sample_rate: int = 44
         check=True,
         capture_output=True,
     )
+
+
+def assemble_phrase_timeline(
+    phrases: list[dict],
+    phrase_wavs: list[Path],
+    seg_start: float,
+    seg_end: float,
+    out_path: Path,
+    sample_rate: int = 44100,
+) -> None:
+    """Lay phrase clips onto a silence bed at their Hebrew timeline offsets."""
+    target = max(seg_end - seg_start, 0.4)
+    silence = out_path.with_name(out_path.stem + "_bed.wav")
+    make_silence(silence, target, sample_rate=sample_rate)
+
+    if not phrases or not phrase_wavs:
+        pad_or_trim(silence, out_path, target, sample_rate)
+        return
+
+    inputs: list[str] = ["-i", str(silence)]
+    filters: list[str] = []
+    labels: list[str] = ["[0:a]"]
+    for i, (phrase, wav) in enumerate(zip(phrases, phrase_wavs)):
+        inputs.extend(["-i", str(wav)])
+        delay_ms = int(round(max(0.0, float(phrase["start"]) - seg_start) * 1000))
+        label = f"p{i}"
+        filters.append(f"[{i + 1}:a]adelay={delay_ms}|{delay_ms}[{label}]")
+        labels.append(f"[{label}]")
+
+    n = len(labels)
+    filters.append(
+        f"{''.join(labels)}amix=inputs={n}:normalize=0:dropout_transition=0,"
+        f"atrim=0:{target:.6f},apad=whole_dur={target:.6f}[out]"
+    )
+    cmd = [
+        "ffmpeg",
+        "-y",
+        *inputs,
+        "-filter_complex",
+        ";".join(filters),
+        "-map",
+        "[out]",
+        "-acodec",
+        "pcm_s16le",
+        "-ar",
+        str(sample_rate),
+        "-ac",
+        "1",
+        "-t",
+        f"{target:.3f}",
+        str(out_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(result.stderr[-1500:], file=sys.stderr)
+        raise RuntimeError(f"phrase timeline assemble failed ({result.returncode})")
 
 
 
@@ -303,6 +489,66 @@ def build_segment_ref(
     }
 
 
+def build_phrase_ref(
+    phrase: dict,
+    seg: dict,
+    seg_index: int,
+    phrase_index: int,
+    all_segments: list[dict],
+    vocals: Path,
+    out_dir: Path,
+    media_duration: float,
+) -> dict:
+    """Voice ref = this phrase's Hebrew audio + matching Hebrew text.
+
+    Critical: F5 sizes output from len(gen_text)/len(ref_text). Using the whole
+    utterance as ref_text makes short English phrases collapse to ~1s gibberish.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    p_start = float(phrase["start"])
+    p_end = float(phrase["end"])
+    he_text = (phrase.get("text") or seg.get("text") or "um").strip() or "um"
+
+    # Expand short phrases so F5 has enough reference audio
+    ref_start, ref_end = p_start, p_end
+    dur = ref_end - ref_start
+    if dur < REF_MIN_SEC:
+        need = REF_TARGET_SEC - dur
+        ref_start = max(0.0, p_start - need * 0.35)
+        ref_end = min(media_duration, p_end + need * 0.65)
+        if ref_end - ref_start < REF_MIN_SEC:
+            ref_end = min(media_duration, ref_start + REF_TARGET_SEC)
+        # Prefer Hebrew text that overlaps the expanded window
+        bits: list[str] = []
+        for s in all_segments:
+            if s.get("keep_original"):
+                continue
+            for p in s.get("phrases") or [{"text": s.get("text"), "start": s["start"], "end": s["end"]}]:
+                if float(p.get("end", 0)) <= ref_start or float(p.get("start", 0)) >= ref_end:
+                    continue
+                t = (p.get("text") or "").strip()
+                if t:
+                    bits.append(t)
+        if bits:
+            he_text = " ".join(bits)
+
+    if ref_end - ref_start > REF_MAX_SEC:
+        # Keep audio around the phrase itself
+        mid = (p_start + p_end) / 2
+        ref_start = max(0.0, mid - REF_TARGET_SEC / 2)
+        ref_end = min(media_duration, ref_start + REF_TARGET_SEC)
+        he_text = (phrase.get("text") or he_text).strip() or he_text
+
+    ref_path = out_dir / f"seg_{seg_index:02d}_p{phrase_index:02d}_ref.wav"
+    extract_wav_slice(vocals, ref_start, ref_end, ref_path)
+    return {
+        "path": str(ref_path.resolve()),
+        "ref_text": he_text,
+        "start": ref_start,
+        "end": ref_end,
+    }
+
+
 class F5Synthesizer:
     def __init__(self, model: str = "F5TTS_v1_Base", device: str | None = None):
         from f5_tts.api import F5TTS
@@ -319,11 +565,13 @@ class F5Synthesizer:
         gen_text: str,
         out_wav: Path,
         speed: float = 1.0,
+        fix_duration: float | None = None,
         seed: int | None = None,
+        nfe_step: int = 32,
     ) -> Path:
         speed = clamp_speed(speed)
         out_wav.parent.mkdir(parents=True, exist_ok=True)
-        self.tts.infer(
+        kwargs = dict(
             ref_file=str(ref_audio),
             ref_text=ref_text,
             gen_text=gen_text,
@@ -331,7 +579,12 @@ class F5Synthesizer:
             speed=speed,
             seed=seed,
             remove_silence=False,
+            nfe_step=nfe_step,
         )
+        if fix_duration is not None and fix_duration > 0.2:
+            # Force mel length ≈ Hebrew phrase window (seconds).
+            kwargs["fix_duration"] = float(fix_duration)
+        self.tts.infer(**kwargs)
         return out_wav
 
     def synthesize_fit(
@@ -429,59 +682,124 @@ def synthesize_segments_f5(
     for i, seg in enumerate(segments):
         if selected_indices is not None and i not in selected_indices:
             continue
-        plan = phrase_plan(seg)
-        if not plan:
-            continue
-
-        ref = build_segment_ref(seg, i, segments, vocals, ref_dir, media_duration)
-        refs_meta[f"seg_{i:02d}"] = ref
 
         start = float(seg["start"])
         end = float(seg["end"])
         target = max(end - start, 0.4)
-        seg_speed = clamp_speed(float(seg.get("tts_speed", speed)))
-        
-        is_hebrew = seg.get("language", "he") == "he"
-        if not is_hebrew:
-            print(
-                f"  Skipping TTS for non-Hebrew segment [{seg['speaker_id']}] "
-                f"slot {start:.1f}-{end:.1f}s ({seg.get('language')})", 
-                file=sys.stderr
+        lang = seg.get("language") or "he"
+        keep_original = bool(seg.get("keep_original", lang != "he"))
+
+        # Cap expansion so we don't eat into the next utterance
+        next_start = media_duration
+        if i + 1 < len(segments):
+            next_start = float(segments[i + 1]["start"])
+
+        # Non-Hebrew (EN / AR / …): keep original vocals — do not TTS or translate-dub.
+        if keep_original:
+            extended_end = extend_end_by_energy(
+                vocals, start, end, max_end=max(start + 0.4, next_start - 0.08)
             )
+            if extended_end > end + 0.05:
+                print(
+                    f"  KEEP [{seg['speaker_id']}] {lang} "
+                    f"slot {start:.1f}-{end:.1f}s → extend end to {extended_end:.1f}s",
+                    file=sys.stderr,
+                )
+                end = extended_end
+                seg["end"] = round(end, 3)
+                seg["duration"] = round(end - start, 3)
+                if seg.get("phrases"):
+                    seg["phrases"][-1]["end"] = seg["end"]
+            else:
+                print(
+                    f"  KEEP [{seg['speaker_id']}] {lang} "
+                    f"slot {start:.1f}-{end:.1f}s (original audio)",
+                    file=sys.stderr,
+                )
+            target = max(end - start, 0.4)
             raw = tts_dir / f"seg_{i:02d}_orig.wav"
-            extract_wav_slice(vocals, start, end, raw)
-            fitted = tts_dir / f"seg_{i:02d}_orig_fit.wav"
+            fitted = tts_dir / f"seg_{i:02d}_fit.wav"
+            extract_wav_slice(vocals, start, end, raw, sample_rate=44100)
             place_in_slot(raw, fitted, target, sample_rate=44100)
-            
             seg.pop("tts_text", None)
             seg["tts_raw"] = str(raw)
             seg["tts_fit"] = str(fitted)
             seg["tts_speed_used"] = 1.0
-            seg["ref_audio"] = ref["path"]
-            seg["ref_start"] = ref["start"]
-            seg["ref_end"] = ref["end"]
+            seg["keep_original"] = True
             continue
 
-        chunk_paths: list[Path] = []
+        plan = phrase_plan(seg)
+        if not plan:
+            continue
+
+        seg_speed = clamp_speed(float(seg.get("tts_speed", speed)))
         print(
-            f"  F5 [{seg['speaker_id']}] slot {start:.1f}-{end:.1f}s "
-            f"{len(plan)} phrase(s) ref={ref['start']:.1f}-{ref['end']:.1f}s "
-            f"speed={seg_speed:.2f}",
+            f"  F5 [{seg['speaker_id']}] he slot {start:.1f}-{end:.1f}s "
+            f"{len(plan)} phrase(s) speed={seg_speed:.2f} (fix_duration + phrase refs)",
             file=sys.stderr,
         )
+
+        phrase_wavs: list[Path] = []
+        used_speeds: list[float] = []
+        first_ref_meta: dict | None = None
         for j, phrase in enumerate(plan):
             text = phrase["text"]
-            pause_after = float(phrase.get("pause_after") or 0.0)
-            print(f"    phrase {j}: {text[:60]}…", file=sys.stderr)
+            p_start = float(phrase["start"])
+            p_end = float(phrase["end"])
+            # Extend to actual speech end (ASR often clips trailing syllables)
+            phrase_cap = (
+                float(plan[j + 1]["start"]) - 0.02
+                if j + 1 < len(plan)
+                else min(float(seg["end"]) + 0.35, next_start - 0.05)
+            )
+            p_end = extend_end_by_energy(
+                vocals, p_start, p_end, max_end=max(p_end, phrase_cap)
+            )
+            p_end = min(p_end, phrase_cap)
+            p_target = max(p_end - p_start, 0.35)
+            phrase["start"] = p_start
+            phrase["end"] = p_end
+
+            he_text = (phrase.get("text_he") or phrase.get("text") or "").strip() or "um"
+            ref = build_phrase_ref(
+                {
+                    "start": p_start,
+                    "end": p_end,
+                    "text": he_text,
+                },
+                seg,
+                i,
+                j,
+                segments,
+                vocals,
+                ref_dir,
+                media_duration,
+            )
+            # Always prefer this phrase's Hebrew as ref_text (duration + clone)
+            ref["ref_text"] = he_text
+            refs_meta[f"seg_{i:02d}_p{j:02d}"] = ref
+            if first_ref_meta is None:
+                first_ref_meta = ref
+
+            print(
+                f"    phrase {j} [{p_start:.1f}-{p_end:.1f}s] "
+                f"ref={ref['start']:.1f}-{ref['end']:.1f}s fix={p_target:.2f}s: "
+                f"{text[:55]}…",
+                file=sys.stderr,
+            )
             chunk = tts_dir / f"seg_{i:02d}_p{j:02d}.wav"
+            # F5's fix_duration is TOTAL mel length (ref + generated). Output is
+            # generated[:, ref_audio_len:, :] — so we must add ref duration.
+            ref_dur = max(wav_duration(Path(ref["path"])), 0.5)
+            fix_total = (ref_dur + p_target) if fit_duration else None
             syn.synthesize(
                 ref_audio=Path(ref["path"]),
                 ref_text=ref["ref_text"],
                 gen_text=text,
                 out_wav=chunk,
-                speed=seg_speed,
+                speed=1.0 if fit_duration else seg_speed,
+                fix_duration=fix_total,
             )
-            # Resample to 44.1k mono for concat
             chunk_441 = tts_dir / f"seg_{i:02d}_p{j:02d}_441.wav"
             subprocess.run(
                 [
@@ -500,74 +818,54 @@ def synthesize_segments_f5(
                 check=True,
                 capture_output=True,
             )
-            chunk_paths.append(chunk_441)
-            if pause_after >= 0.05:
-                sil = tts_dir / f"seg_{i:02d}_p{j:02d}_silence.wav"
-                make_silence(sil, pause_after, sample_rate=44100)
-                chunk_paths.append(sil)
-                print(f"    + pause {pause_after:.2f}s", file=sys.stderr)
+            actual = wav_duration(chunk_441)
+            print(f"      raw F5 {actual:.2f}s (target {p_target:.2f}s)", file=sys.stderr)
+
+            fitted_phrase = tts_dir / f"seg_{i:02d}_p{j:02d}_fit.wav"
+            # Small pad/trim only — do not time-stretch mush when fix_duration worked.
+            if abs(actual - p_target) <= 0.45:
+                place_in_slot(chunk_441, fitted_phrase, p_target, sample_rate=44100)
+            else:
+                stretch_to_duration(
+                    chunk_441,
+                    fitted_phrase,
+                    p_target,
+                    sample_rate=44100,
+                    min_rate=0.65,
+                    max_rate=1.35,
+                )
+            phrase["tts_fit"] = str(fitted_phrase)
+            phrase_wavs.append(fitted_phrase)
+            used_speeds.append(1.0 if fit_duration else seg_speed)
+
+        # Keep utterance window covering any phrase-end extensions
+        if plan:
+            end = max(end, float(plan[-1]["end"]))
+            seg["end"] = round(end, 3)
+            seg["duration"] = round(end - start, 3)
+            target = max(end - start, 0.4)
 
         raw = tts_dir / f"seg_{i:02d}_raw.wav"
         fitted = tts_dir / f"seg_{i:02d}_fit.wav"
-        concat_wavs(chunk_paths, raw, sample_rate=44100)
+        concat_wavs(phrase_wavs, raw, sample_rate=44100)
+        assemble_phrase_timeline(plan, phrase_wavs, start, end, fitted, sample_rate=44100)
 
-        # Optional light speed nudge on the whole concatenated utterance
-        used = seg_speed
-        if fit_duration:
-            actual = wav_duration(raw)
-            needed = clamp_speed(seg_speed * (actual / target), fit_speed_min, fit_speed_max)
-            if abs(needed - seg_speed) >= 0.05 and abs(actual - target) > 0.35:
-                print(
-                    f"    utterance fit: {actual:.2f}s → slot {target:.2f}s; "
-                    f"re-speed {seg_speed:.2f} → {needed:.2f}",
-                    file=sys.stderr,
-                )
-                # Re-synth all phrases at needed speed (keeps pauses absolute)
-                chunk_paths = []
-                for j, phrase in enumerate(plan):
-                    chunk = tts_dir / f"seg_{i:02d}_p{j:02d}.wav"
-                    syn.synthesize(
-                        ref_audio=Path(ref["path"]),
-                        ref_text=ref["ref_text"],
-                        gen_text=phrase["text"],
-                        out_wav=chunk,
-                        speed=needed,
-                    )
-                    chunk_441 = tts_dir / f"seg_{i:02d}_p{j:02d}_441.wav"
-                    subprocess.run(
-                        [
-                            "ffmpeg",
-                            "-y",
-                            "-i",
-                            str(chunk),
-                            "-acodec",
-                            "pcm_s16le",
-                            "-ar",
-                            "44100",
-                            "-ac",
-                            "1",
-                            str(chunk_441),
-                        ],
-                        check=True,
-                        capture_output=True,
-                    )
-                    chunk_paths.append(chunk_441)
-                    pause_after = float(phrase.get("pause_after") or 0.0)
-                    if pause_after >= 0.05:
-                        sil = tts_dir / f"seg_{i:02d}_p{j:02d}_silence.wav"
-                        make_silence(sil, pause_after, sample_rate=44100)
-                        chunk_paths.append(sil)
-                concat_wavs(chunk_paths, raw, sample_rate=44100)
-                used = needed
-
-        place_in_slot(raw, fitted, target, sample_rate=44100)
         seg.pop("tts_text", None)
         seg["tts_raw"] = str(raw)
         seg["tts_fit"] = str(fitted)
-        seg["tts_speed_used"] = used
-        seg["ref_audio"] = ref["path"]
-        seg["ref_start"] = ref["start"]
-        seg["ref_end"] = ref["end"]
+        seg["tts_speed_used"] = (
+            sum(used_speeds) / len(used_speeds) if used_speeds else seg_speed
+        )
+        seg["keep_original"] = False
+        if first_ref_meta:
+            seg["ref_audio"] = first_ref_meta["path"]
+            seg["ref_start"] = first_ref_meta["start"]
+            seg["ref_end"] = first_ref_meta["end"]
+        if seg.get("phrases"):
+            for src_p, out_p in zip(seg["phrases"], plan):
+                src_p["text_en"] = out_p["text"]
+                if out_p.get("tts_fit"):
+                    src_p["tts_fit"] = out_p["tts_fit"]
 
     (ref_dir / "refs.json").write_text(
         json.dumps(refs_meta, ensure_ascii=False, indent=2), encoding="utf-8"
