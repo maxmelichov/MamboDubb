@@ -475,7 +475,7 @@ def phrase_plan(seg: dict) -> list[dict]:
 
 def atempo_chain(rate: float) -> str:
     """Build ffmpeg atempo filter chain (each stage must be 0.5–2.0)."""
-    rate = max(0.25, min(4.0, float(rate)))
+    rate = max(0.05, min(20.0, float(rate)))
     parts: list[str] = []
     while rate > 2.0 + 1e-6:
         parts.append("atempo=2.0")

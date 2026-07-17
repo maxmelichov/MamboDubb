@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
-"""Qwen3-TTS 0.6B-Base zero-shot voice clone for DubbingQwen (Phase 4).
+"""Qwen3-TTS 1.7B-Base zero-shot voice clone for DubbingQwen (Phase 4).
 
-Clones from each phrase's own vocal window (Hebrew ref audio + transcript),
-then synthesizes English — same ref strategy as F5, but Qwen Base.
+Clones from each phrase's own vocal window (~3s Hebrew ref), then synthesizes
+English. Default uses speaker-embedding clone (x_vector_only) — stabler for
+Hebrew→English than ICL with Hebrew ref_text.
 
-Model: Qwen/Qwen3-TTS-12Hz-0.6B-Base (https://arxiv.org/abs/2601.15621)
-  - x_vector_only=False (default): ICL with ref_audio + ref_text
-  - x_vector_only=True: speaker embedding only (often stabler cross-lingual)
+Model: Qwen/Qwen3-TTS-12Hz-1.7B-Base (https://arxiv.org/abs/2601.15621)
+  - x_vector_only=True (default): speaker embedding from ref audio
+  - x_vector_only=False: ICL with ref_audio + Hebrew ref_text
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -22,19 +24,236 @@ import soundfile as sf
 import torch
 
 from inference.tts_f5 import (
-    build_phrase_ref,
-    concat_wavs,
+    atempo_chain,
     extend_end_by_energy,
     extract_wav_slice,
-    make_silence,
     phrase_plan,
     place_in_slot,
     wav_duration,
 )
 
+
+def build_qwen_phrase_ref(
+    phrase: dict,
+    seg: dict,
+    seg_index: int,
+    phrase_index: int,
+    vocals: Path,
+    out_dir: Path,
+    media_duration: float,
+) -> dict:
+    """~3s vocal slice + Hebrew transcript for Qwen Base clone."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    p_start = float(phrase["start"])
+    p_end = float(phrase["end"])
+    he_text = (phrase.get("text") or seg.get("text") or "um").strip() or "um"
+    mid = (p_start + p_end) / 2.0
+    half = REF_TARGET_SEC / 2.0
+    ref_start = max(0.0, mid - half)
+    ref_end = min(media_duration, ref_start + REF_TARGET_SEC)
+    if ref_end - ref_start < REF_MIN_SEC:
+        ref_start = max(0.0, ref_end - REF_MIN_SEC)
+    if ref_end - ref_start > REF_MAX_SEC:
+        ref_end = ref_start + REF_MAX_SEC
+    ref_path = out_dir / f"seg_{seg_index:02d}_p{phrase_index:02d}_qwen_ref.wav"
+    extract_wav_slice(vocals, ref_start, ref_end, ref_path, sample_rate=24000)
+    return {
+        "path": str(ref_path.resolve()),
+        "ref_text": he_text,
+        "start": ref_start,
+        "end": ref_end,
+    }
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MODEL = REPO_ROOT / "models" / "Qwen3-TTS-12Hz-0.6B-Base"
-HUB_MODEL = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
+DEFAULT_MODEL = REPO_ROOT / "models" / "Qwen3-TTS-12Hz-1.7B-Base"
+HUB_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+# Qwen card: ~3s clone refs. Longer ICL refs + Hebrew→EN blew up decode time on MPS.
+REF_TARGET_SEC = 3.2
+REF_MIN_SEC = 2.0
+REF_MAX_SEC = 4.5
+CODEC_HZ = 12.5
+
+# Hebrew→EN clone often swallows coda /d/ and Hebrew-izes names ("fund"→"fun",
+# "Hezbollah"→"hizballa"). Keep replacements ~same length so we don't force
+# extreme atempo later.
+_TTS_NAME_RESPPELL: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\bHezbollah\b", re.I), "Hezbollah"),
+    (re.compile(r"\bHizballah\b", re.I), "Hezbollah"),
+    (re.compile(r"\bHizballa\b", re.I), "Hezbollah"),
+]
+
+
+def prepare_english_tts_text(text: str) -> str:
+    """Make English safer for HE→EN voice clone (final consonants + names)."""
+    out = (text or "").strip()
+    if not out:
+        return out
+    for pat, repl in _TTS_NAME_RESPPELL:
+        out = pat.sub(repl, out)
+    # Emphasize the /dz/ release — clone often realizes "funds"/"fund" as "fun".
+    out = re.sub(r"\bfunds\b", "fundz", out)
+    out = re.sub(r"\bfund\b", "fundd", out)
+    if out[-1] not in ".!?":
+        out += "."
+    return out
+
+
+def estimate_max_new_tokens(text: str, target_sec: float | None = None) -> int:
+    """Allow the model to finish the full sentence (never cap to the Hebrew slot).
+
+    Slot matching is done afterward by stretching the complete waveform.
+    `target_sec` is ignored for the cap — keeping it in the signature for callers.
+    """
+    del target_sec  # duration fit is stretch-only; do not truncate generation
+    words = max(1, len(text.split()))
+    # Generous headroom so EOS ends the line, not max_new_tokens.
+    sec = words * 0.65 + 2.5
+    return max(96, min(2048, int(sec * CODEC_HZ)))
+
+
+def _atempo_to(src: Path, dst: Path, rate: float, *, sample_rate: int) -> None:
+    # Allow wide rates; atempo_chain splits into 0.5–2.0 stages.
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(src),
+            "-af",
+            atempo_chain(rate),
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            str(sample_rate),
+            "-ac",
+            "1",
+            str(dst),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
+def _remap_to_n(audio: np.ndarray, target_n: int) -> np.ndarray:
+    """Resample the full waveform to exactly target_n samples (no chop / no pad)."""
+    if target_n <= 0:
+        raise ValueError("target_n must be positive")
+    if len(audio) == target_n:
+        return audio.astype(np.float32, copy=False)
+    x_old = np.linspace(0.0, 1.0, num=len(audio), endpoint=True)
+    x_new = np.linspace(0.0, 1.0, num=target_n, endpoint=True)
+    return np.interp(x_new, x_old, audio).astype(np.float32)
+
+
+def fit_exact_window(
+    src: Path,
+    dst: Path,
+    target_sec: float,
+    *,
+    sample_rate: int = 44100,
+    target_n: int | None = None,
+) -> float:
+    """Time-stretch the *entire* TTS clip to the Hebrew slot — no pad, no trim.
+
+    Speeds up or slows down so full speech fills the window exactly.
+    Returns the net atempo rate applied (1.0 = unchanged).
+    """
+    target_sec = max(0.2, float(target_sec))
+    if target_n is None:
+        target_n = int(round(target_sec * sample_rate))
+    target_n = max(1, int(target_n))
+    actual = wav_duration(src)
+    if actual <= 0.05:
+        raise RuntimeError(f"Empty TTS clip: {src}")
+
+    # rate>1 → faster / shorter; always map full content into the slot.
+    rate = actual / (target_n / sample_rate)
+    work = src
+    if abs(rate - 1.0) > 0.005:
+        stretched = dst.with_name(dst.stem + "_stretch.wav")
+        _atempo_to(src, stretched, rate, sample_rate=sample_rate)
+        work = stretched
+
+    audio, sr = sf.read(str(work), dtype="float32", always_2d=False)
+    if getattr(audio, "ndim", 1) > 1:
+        audio = np.mean(audio, axis=-1).astype(np.float32)
+    if sr != sample_rate:
+        raise RuntimeError(f"Unexpected sample rate {sr} (want {sample_rate})")
+    audio = _remap_to_n(audio, target_n)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(str(dst), audio, sample_rate)
+    return float(rate)
+
+
+def assemble_on_hebrew_timeline(
+    plan: list[dict],
+    seg_start: float,
+    seg_end: float,
+    out_path: Path,
+    *,
+    sample_rate: int = 44100,
+) -> Path:
+    """Place each phrase clip at its Hebrew sample span — never slice the TTS audio."""
+    seg_a = int(round(seg_start * sample_rate))
+    seg_b = int(round(seg_end * sample_rate))
+    n = max(1, seg_b - seg_a)
+    canvas = np.zeros(n, dtype=np.float32)
+    for phrase in plan:
+        clip = Path(phrase["tts_fit"])
+        if not clip.is_file():
+            continue
+        audio, sr = sf.read(str(clip), dtype="float32", always_2d=False)
+        if getattr(audio, "ndim", 1) > 1:
+            audio = np.mean(audio, axis=-1).astype(np.float32)
+        if sr != sample_rate:
+            tmp = clip.with_name(clip.stem + f"_{sample_rate}.wav")
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    str(clip),
+                    "-acodec",
+                    "pcm_s16le",
+                    "-ar",
+                    str(sample_rate),
+                    "-ac",
+                    "1",
+                    str(tmp),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            audio, sr = sf.read(str(tmp), dtype="float32", always_2d=False)
+        p_a = int(round(float(phrase["start"]) * sample_rate))
+        p_b = int(round(float(phrase["end"]) * sample_rate))
+        want_n = max(1, p_b - p_a)
+        if len(audio) != want_n:
+            audio = _remap_to_n(audio, want_n)
+        offset = p_a - seg_a
+        if offset < 0:
+            # Phrase starts before segment canvas — keep the overlapping tail only
+            # if ASR windows are inconsistent (should be rare).
+            audio = audio[-offset:]
+            offset = 0
+        need = offset + len(audio)
+        if need > len(canvas):
+            canvas = np.pad(canvas, (0, need - len(canvas)))
+        canvas[offset : offset + len(audio)] += audio
+    peak = float(np.max(np.abs(canvas))) if len(canvas) else 0.0
+    if peak > 1.0:
+        canvas /= peak
+    # Keep canvas exactly the Hebrew segment span (pad only if ASR math undershot).
+    if len(canvas) < n:
+        canvas = np.pad(canvas, (0, n - len(canvas)))
+    elif len(canvas) > n:
+        # Only shrink canvas if we had to pad for an overrun — still keep full
+        # phrase audio by remapping the whole segment (should not happen when
+        # phrase windows nest inside the segment).
+        canvas = _remap_to_n(canvas, n)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(str(out_path), canvas, sample_rate)
+    return out_path
 
 
 def resolve_qwen_device(requested: str | None) -> str:
@@ -61,14 +280,14 @@ def resolve_model_path(prefer: Path) -> str:
 
 
 class QwenVoiceCloneSynthesizer:
-    """0.6B-Base zero-shot clone with optional prompt reuse per speaker."""
+    """1.7B-Base zero-shot clone with optional prompt reuse per speaker."""
 
     def __init__(
         self,
         *,
         model_path: str | Path | None = None,
         device: str | None = None,
-        x_vector_only: bool = False,
+        x_vector_only: bool = True,
     ) -> None:
         self.device = resolve_qwen_device(device)
         self.dtype = resolve_qwen_dtype(self.device)
@@ -83,7 +302,7 @@ class QwenVoiceCloneSynthesizer:
         if self._model is not None:
             return self._model
 
-        print(f"Loading Qwen3-TTS 0.6B-Base (voice clone) from {self.path}", file=sys.stderr)
+        print(f"Loading Qwen3-TTS 1.7B-Base (voice clone) from {self.path}", file=sys.stderr)
         kwargs: dict = {
             "dtype": self.dtype,
             "low_cpu_mem_usage": False,
@@ -113,6 +332,7 @@ class QwenVoiceCloneSynthesizer:
         language: str = "English",
         out_wav: Path,
         prompt_key: str | None = None,
+        target_sec: float | None = None,
     ) -> Path:
         model = self._load()
         out_wav.parent.mkdir(parents=True, exist_ok=True)
@@ -128,19 +348,35 @@ class QwenVoiceCloneSynthesizer:
             )
             self._prompt_cache[prompt_key] = voice_clone_prompt
 
+        # Cooler sampling → fewer Hebrew-phonology slips on English.
+        speak = prepare_english_tts_text(text)
+        gen_kwargs = {
+            "max_new_tokens": estimate_max_new_tokens(speak, target_sec),
+            "do_sample": True,
+            "temperature": 0.55,
+            "top_p": 0.85,
+            "top_k": 30,
+            "repetition_penalty": 1.08,
+            "subtalker_dosample": True,
+            "subtalker_temperature": 0.55,
+            "subtalker_top_p": 0.85,
+            "subtalker_top_k": 30,
+        }
         if voice_clone_prompt is not None:
             wavs, sr = model.generate_voice_clone(
-                text=text,
+                text=speak,
                 language=language,
                 voice_clone_prompt=voice_clone_prompt,
+                **gen_kwargs,
             )
         else:
             wavs, sr = model.generate_voice_clone(
-                text=text,
+                text=speak,
                 language=language,
                 ref_audio=str(ref_audio),
                 ref_text=ref_text if not self.x_vector_only else None,
                 x_vector_only_mode=self.x_vector_only,
+                **gen_kwargs,
             )
 
         audio = np.asarray(wavs[0], dtype=np.float32)
@@ -156,7 +392,7 @@ def synthesize_segments_qwen(
     language: str = "English",
     model_path: str | Path | None = None,
     device: str | None = None,
-    x_vector_only: bool = False,
+    x_vector_only: bool = True,
     reuse_speaker_prompt: bool = False,
     selected_indices: set[int] | None = None,
     merge_pauses: bool = True,
@@ -184,7 +420,7 @@ def synthesize_segments_qwen(
     )
     mode = "x_vector_only" if x_vector_only else "icl"
     print(
-        f"Qwen3-TTS 0.6B-Base zero-shot clone ({mode}) language={language}",
+        f"Qwen3-TTS 1.7B-Base zero-shot clone ({mode}) language={language}",
         file=sys.stderr,
     )
 
@@ -197,7 +433,13 @@ def synthesize_segments_qwen(
 
         next_start = media_duration
         if i + 1 < len(segments):
-            next_start = float(segments[i + 1]["start"])
+            nxt = segments[i + 1]
+            nxt_phrases = nxt.get("phrases") or []
+            next_start = float(
+                (nxt_phrases[0].get("start") if nxt_phrases else None)
+                or nxt.get("start")
+                or media_duration
+            )
 
         if keep_original:
             max_end = max(start + 0.4, next_start - 0.05)
@@ -258,48 +500,63 @@ def synthesize_segments_qwen(
         if not plan:
             continue
 
+        # Hebrew ASR windows are authoritative — never pull starts earlier.
+        for j, phrase in enumerate(plan):
+            p_start = float(phrase["start"])
+            p_end = float(phrase["end"])
+            hard_cap = (
+                float(plan[j + 1]["start"]) - 0.02
+                if j + 1 < len(plan)
+                else min(p_end, next_start - 0.02)
+            )
+            if j + 1 < len(plan):
+                p_end = min(p_end, hard_cap)
+            phrase["start"] = p_start
+            phrase["end"] = max(p_end, p_start + 0.25)
+
+        he_start = float(plan[0]["start"])
+        he_end = float(plan[-1]["end"])
+        start = he_start
+        end = he_end
+        seg["start"] = round(start, 3)
+        seg["end"] = round(end, 3)
+        target = max(end - start, 0.4)
+
         print(
             f"  Qwen clone [{seg['speaker_id']}] "
-            f"slot {start:.1f}-{end:.1f}s {len(plan)} phrase(s)",
+            f"Hebrew window {start:.1f}-{end:.1f}s ({len(plan)} phrase(s))",
             file=sys.stderr,
         )
 
         first_ref_meta: dict | None = None
+        rates: list[float] = []
         for j, phrase in enumerate(plan):
             text = phrase["text"]
             p_start = float(phrase["start"])
             p_end = float(phrase["end"])
-            hard_cap = (
-                float(plan[j + 1]["start"]) - 0.04
-                if j + 1 < len(plan)
-                else min(float(seg["end"]) + 0.35, next_start - 0.05)
-            )
-            p_end = min(p_end, hard_cap)
-            phrase["start"] = p_start
-            phrase["end"] = p_end
+            p_target = max(p_end - p_start, 0.25)
 
             he_text = (phrase.get("text_he") or phrase.get("text") or "").strip() or "um"
-            ref = build_phrase_ref(
-                {
-                    "start": p_start,
-                    "end": p_end,
-                    "text": he_text,
-                },
+            ref = build_qwen_phrase_ref(
+                {"start": p_start, "end": p_end, "text": he_text},
                 seg,
                 i,
                 j,
-                segments,
                 vocals,
                 ref_dir,
                 media_duration,
             )
-            ref["ref_text"] = he_text if not (ref.get("ref_text") or "").strip() else ref["ref_text"]
             if first_ref_meta is None:
                 first_ref_meta = ref
 
+            speak = prepare_english_tts_text(text)
+            tok = estimate_max_new_tokens(speak, p_target)
+            if speak != text:
+                print(f"    tts-text: {speak[:70]}…", file=sys.stderr)
             print(
-                f"    phrase {j} [{p_start:.1f}-{p_end:.1f}s] "
-                f"ref={ref['start']:.1f}-{ref['end']:.1f}s: {text[:55]}…",
+                f"    phrase {j} HE [{p_start:.2f}-{p_end:.2f}] "
+                f"slot={p_target:.2f}s ref={ref['start']:.1f}-{ref['end']:.1f}s "
+                f"max_tok={tok}: {text[:48]}…",
                 file=sys.stderr,
             )
             chunk = tts_dir / f"seg_{i:02d}_p{j:02d}_qwen.wav"
@@ -307,15 +564,17 @@ def synthesize_segments_qwen(
             if reuse_speaker_prompt:
                 prompt_key = str(seg.get("speaker_id") or f"seg_{i}")
             syn.synthesize(
-                text,
+                speak,
                 ref_audio=Path(ref["path"]),
                 ref_text=str(ref["ref_text"]),
                 language=language,
                 out_wav=chunk,
                 prompt_key=prompt_key,
+                target_sec=p_target,
             )
+            phrase["tts_text"] = speak
 
-            chunk_441 = tts_dir / f"seg_{i:02d}_p{j:02d}_clean.wav"
+            chunk_441 = tts_dir / f"seg_{i:02d}_p{j:02d}_raw441.wav"
             subprocess.run(
                 [
                     "ffmpeg",
@@ -333,76 +592,46 @@ def synthesize_segments_qwen(
                 check=True,
                 capture_output=True,
             )
-            actual = wav_duration(chunk_441)
-            print(f"      qwen {actual:.2f}s", file=sys.stderr)
-            phrase["tts_fit"] = str(chunk_441)
+            fitted_phrase = tts_dir / f"seg_{i:02d}_p{j:02d}_fit.wav"
+            p_a = int(round(p_start * 44100))
+            p_b = int(round(p_end * 44100))
+            rate = fit_exact_window(
+                chunk_441,
+                fitted_phrase,
+                p_target,
+                target_n=max(1, p_b - p_a),
+            )
+            rates.append(rate)
+            actual = wav_duration(fitted_phrase)
+            print(
+                f"      qwen raw={wav_duration(chunk_441):.2f}s → "
+                f"full-stretch {actual:.2f}s @ rate={rate:.3f} "
+                f"(complete utterance, no gen-cap / no pad/trim)",
+                file=sys.stderr,
+            )
+            phrase["tts_fit"] = str(fitted_phrase)
+            phrase["tts_raw"] = str(chunk_441)
             phrase["ref_audio"] = ref["path"]
+            phrase["tts_speed_used"] = round(rate, 3)
 
-        concat_parts: list[Path] = []
-        for j, phrase in enumerate(plan):
-            concat_parts.append(Path(phrase["tts_fit"]))
-            pause = float(phrase.get("pause_after") or 0.0)
-            if j < len(plan) - 1:
-                pause = min(max(pause, 0.08), 0.18)
-                sil = tts_dir / f"seg_{i:02d}_p{j:02d}_breath.wav"
-                make_silence(sil, pause, sample_rate=44100)
-                concat_parts.append(sil)
-
-        if i > 0:
-            prev_end = float(segments[i - 1]["end"])
-            if start - prev_end > 0.25:
-                new_start = prev_end + 0.08
-                print(
-                    f"    pull start {start:.2f} → {new_start:.2f} "
-                    f"(was late after prev end {prev_end:.2f})",
-                    file=sys.stderr,
-                )
-                start = new_start
-                seg["start"] = round(start, 3)
-
-        target = max(float(seg["end"]) - start, 0.4)
-        raw = tts_dir / f"seg_{i:02d}_raw.wav"
         fitted = tts_dir / f"seg_{i:02d}_fit.wav"
-        concat_wavs(concat_parts, raw, sample_rate=44100)
-        spoken = wav_duration(raw)
+        assemble_on_hebrew_timeline(plan, start, end, fitted, sample_rate=44100)
+        spoken = wav_duration(fitted)
         print(
-            f"    concat {spoken:.2f}s into slot {target:.2f}s "
-            f"({len(plan)} phrases)",
+            f"    timeline {spoken:.2f}s == Hebrew {target:.2f}s "
+            f"({len(plan)} phrases @ their HE offsets)",
             file=sys.stderr,
         )
-        if spoken > target + 0.05:
-            subprocess.run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-i",
-                    str(raw),
-                    "-af",
-                    f"atrim=0:{target:.6f},asetpts=PTS-STARTPTS,"
-                    f"afade=t=out:st={max(0.0, target - 0.08):.4f}:d=0.08",
-                    "-acodec",
-                    "pcm_s16le",
-                    "-ar",
-                    "44100",
-                    "-ac",
-                    "1",
-                    str(fitted),
-                ],
-                check=True,
-                capture_output=True,
-            )
-            print(f"    soft-trim concat to {target:.2f}s", file=sys.stderr)
-        else:
-            place_in_slot(raw, fitted, target, sample_rate=44100)
 
-        seg["end"] = round(start + target, 3)
         seg["duration"] = round(target, 3)
         seg.pop("tts_text", None)
-        seg["tts_raw"] = str(raw)
+        seg["tts_raw"] = str(plan[0].get("tts_raw") or fitted)
         seg["tts_fit"] = str(fitted)
-        seg["tts_speed_used"] = 1.0
+        seg["tts_speed_used"] = (
+            round(sum(rates) / len(rates), 3) if rates else 1.0
+        )
         seg["keep_original"] = False
-        seg["tts_engine"] = "qwen3-tts-0.6b-base"
+        seg["tts_engine"] = "qwen3-tts-1.7b-base"
         seg["qwen_clone_mode"] = mode
         if first_ref_meta:
             seg["ref_audio"] = first_ref_meta["path"]
@@ -411,21 +640,25 @@ def synthesize_segments_qwen(
         if seg.get("phrases"):
             for src_p, out_p in zip(seg["phrases"], plan):
                 src_p["text_en"] = out_p["text"]
+                src_p["start"] = out_p["start"]
+                src_p["end"] = out_p["end"]
                 if out_p.get("tts_fit"):
                     src_p["tts_fit"] = out_p["tts_fit"]
+                if out_p.get("tts_speed_used") is not None:
+                    src_p["tts_speed_used"] = out_p["tts_speed_used"]
 
     return segments
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Qwen3-TTS 0.6B-Base zero-shot clone.")
+    p = argparse.ArgumentParser(description="Qwen3-TTS 1.7B-Base zero-shot clone.")
     p.add_argument("workdir", type=Path, help="Run dir with translated_segments.json + vocals.")
     p.add_argument("--language", default="English")
     p.add_argument("--model", type=Path, default=DEFAULT_MODEL)
     p.add_argument(
-        "--x-vector-only",
+        "--icl",
         action="store_true",
-        help="Clone from speaker embedding only (no ICL ref_text).",
+        help="Use ICL (ref_audio + Hebrew ref_text) instead of x-vector-only.",
     )
     p.add_argument(
         "--no-reuse-speaker-prompt",
@@ -458,7 +691,7 @@ def main() -> None:
         language=args.language,
         model_path=args.model,
         device=None if args.device == "auto" else args.device,
-        x_vector_only=args.x_vector_only,
+        x_vector_only=not args.icl,
         reuse_speaker_prompt=not args.no_reuse_speaker_prompt,
         selected_indices=(
             {int(v) for v in args.tts_segments.split(",")} if args.tts_segments else None
@@ -466,7 +699,7 @@ def main() -> None:
         max_pause=args.max_pause,
     )
     payload["segments"] = segments
-    payload["tts_engine"] = "qwen3-tts-0.6b-base"
+    payload["tts_engine"] = "qwen3-tts-1.7b-base"
     out = workdir / "translated_segments.json"
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Wrote {out}", file=sys.stderr)

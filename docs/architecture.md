@@ -38,7 +38,7 @@ Naively piping a Kan-style documentary into Whisper → translate → TTS → La
 | 1 | Vocals vs background | **HTDemucs** (`demucs`) |
 | 2 | Who / when / what (Hebrew) | **Pyannote 3.1** + **faster-whisper** ([`ivrit-ai/whisper-large-v3-turbo-ct2`](https://huggingface.co/ivrit-ai/whisper-large-v3-turbo-ct2)) |
 | 3 | Length-constrained EN text | TranslateGemma / MLX LLM |
-| 4 | EN speech + fit window | **Qwen3-TTS 0.6B-Base** zero-shot clone; F5 optional |
+| 4 | EN speech + fit window | **Qwen3-TTS 1.7B-Base** zero-shot clone; F5 optional |
 | 5 | Lip-sync only active faces | TalkNet/SyncNet → **LatentSync** (Wav2Lip fallback) |
 | 6 | Master | FFmpeg ducking + mux |
 
@@ -67,7 +67,7 @@ Downstream stages must preserve `start`/`end` as the authority for timeline plac
 | `inference/translate.py` | ✅ |
 | `inference/extract_pipeline.py` (Demucs + Pyannote + Whisper merge) | ✅ |
 | Duration-aware translation prompts | ⬜ |
-| TTS (Qwen3-TTS 0.6B-Base clone) | ✅ `inference/tts_qwen.py` + `build_preview --tts-engine qwen` |
+| TTS (Qwen3-TTS 1.7B-Base clone) | ✅ `inference/tts_qwen.py` + `build_preview --tts-engine qwen` |
 | ASD gate | ⬜ |
 | LatentSync integration | ⬜ (vendored under `third_party/LatentSync`) |
 | Final ducking/mux CLI | ⬜ |

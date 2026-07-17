@@ -26,7 +26,7 @@ Accept the Pyannote model terms (required once per account):
 
 - **Whisper (CT2):** [`ivrit-ai/whisper-large-v3-turbo-ct2`](https://huggingface.co/ivrit-ai/whisper-large-v3-turbo-ct2) under `models/whisper-large-v3-turbo-ct2`.
 - **TranslateGemma:** under `models/translategemma-4b-it`.
-- **Qwen3-TTS Base (0.6B):** zero-shot clone under `models/Qwen3-TTS-12Hz-0.6B-Base`.
+- **Qwen3-TTS Base (1.7B):** zero-shot clone under `models/Qwen3-TTS-12Hz-1.7B-Base`.
 
 ```bash
 uv run hf download ivrit-ai/whisper-large-v3-turbo-ct2 \
@@ -35,8 +35,8 @@ uv run hf download ivrit-ai/whisper-large-v3-turbo-ct2 \
 uv run hf download google/translategemma-4b-it \
   --local-dir models/translategemma-4b-it
 
-uv run hf download Qwen/Qwen3-TTS-12Hz-0.6B-Base \
-  --local-dir models/Qwen3-TTS-12Hz-0.6B-Base
+uv run hf download Qwen/Qwen3-TTS-12Hz-1.7B-Base \
+  --local-dir models/Qwen3-TTS-12Hz-1.7B-Base
 ```
 
 `uv sync` pins Python to `>=3.11,<3.14` (typically 3.12) for ML wheel compatibility.

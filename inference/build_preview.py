@@ -10,7 +10,7 @@ Produces:
   dubbed_audio.wav
   preview.mp4   ← video + EN TTS over ducked BGM + soft EN subs
 
-TTS (default: Qwen3-TTS 0.6B-Base zero-shot — https://arxiv.org/abs/2601.15621):
+TTS (default: Qwen3-TTS 1.7B-Base zero-shot — https://arxiv.org/abs/2601.15621):
   --tts-engine qwen        clone from each phrase's vocal ref → English
   --tts-engine f5          F5-TTS zero-shot (legacy)
 
@@ -374,18 +374,18 @@ def parse_args() -> argparse.Namespace:
         "--tts-engine",
         choices=("qwen", "f5"),
         default="qwen",
-        help="TTS backend (default: qwen 0.6B-Base zero-shot clone).",
+        help="TTS backend (default: qwen 1.7B-Base zero-shot clone).",
     )
     p.add_argument(
         "--qwen-model",
         type=Path,
         default=QWEN_DEFAULT_MODEL,
-        help="Qwen3-TTS Base checkpoint (default: models/Qwen3-TTS-12Hz-0.6B-Base).",
+        help="Qwen3-TTS Base checkpoint (default: models/Qwen3-TTS-12Hz-1.7B-Base).",
     )
     p.add_argument(
-        "--qwen-x-vector-only",
+        "--qwen-icl",
         action="store_true",
-        help="Clone via speaker embedding only (no ICL ref_text).",
+        help="ICL clone with Hebrew ref_text (default: x-vector-only from ref audio).",
     )
     p.add_argument(
         "--qwen-reuse-speaker-prompt",
@@ -545,7 +545,7 @@ def main() -> None:
                 vocals,
                 workdir,
                 model_path=args.qwen_model,
-                x_vector_only=args.qwen_x_vector_only,
+                x_vector_only=not args.qwen_icl,
                 reuse_speaker_prompt=args.qwen_reuse_speaker_prompt,
                 device=tts_device,
                 selected_indices=selected,
@@ -575,10 +575,10 @@ def main() -> None:
             **payload,
             "segments": segments,
             "tts_engine": (
-                "qwen3-tts-0.6b-base" if args.tts_engine == "qwen" else "f5-tts"
+                "qwen3-tts-1.7b-base" if args.tts_engine == "qwen" else "f5-tts"
             ),
             "tts_speed": args.tts_speed,
-            "qwen_x_vector_only": bool(args.qwen_x_vector_only),
+            "qwen_x_vector_only": not bool(args.qwen_icl),
         }
         out_json.write_text(json.dumps(payload_out, ensure_ascii=False, indent=2), encoding="utf-8")
         dubbed = build_dubbed_track(segments, background, total_duration, workdir)

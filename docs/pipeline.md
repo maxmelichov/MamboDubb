@@ -67,7 +67,7 @@ uv run python inference/translate.py -s he -t en "טקסט בעברית"
 Consumers of `segments.json`:
 
 1. **Translate** each Hebrew `text` (non-Hebrew turns keep original audio).
-2. **TTS (Qwen3-TTS 0.6B-Base)** — zero-shot clone from each phrase’s vocal ref → English.
+2. **TTS (Qwen3-TTS 1.7B-Base)** — zero-shot clone from each phrase’s vocal ref → English.
 3. **Time fit** — concat phrases + pad/soft-trim to `[start, end]`.
 4. **ASD** gate → optional LatentSync on that window (not wired yet).
 5. **Mux** English vocals over `background.wav` with ducking.
@@ -85,12 +85,12 @@ uv run python inference/build_preview.py outputs/<run> --skip-translate --max-pa
 ```
 
 ```bash
-# Default: Qwen 0.6B-Base zero-shot from vocal refs
+# Default: Qwen 1.7B-Base zero-shot from vocal refs
 uv run python inference/build_preview.py outputs/kan11_60s --skip-translate
 
-# Speaker-embedding-only clone (no Hebrew ICL text)
+# Optional: ICL with Hebrew ref_text (slower cross-lingual)
 uv run python inference/build_preview.py outputs/kan11_60s \
-  --skip-translate --qwen-x-vector-only
+  --skip-translate --qwen-icl
 
 # Legacy F5
 uv run python inference/build_preview.py outputs/kan11_60s \
