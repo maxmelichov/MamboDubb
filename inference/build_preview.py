@@ -257,15 +257,14 @@ def build_dubbed_track(
     total_duration: float,
     workdir: Path,
     *,
-    bg_gain: float = 0.85,
-    speech_gain: float = 1.15,
-    duck_db: float = -3.5,
+    bg_gain: float = 0.55,
+    speech_gain: float = 1.2,
     speech_target_rms: float = 0.085,
 ) -> Path:
-    """Place TTS clips on a timeline and sum with background (sample-accurate).
+    """Place TTS clips on a timeline and sum with a *constant* background level.
 
-    Music stays present under dialogue (light duck). Speech is loudness-matched
-    so KEEP English and Qwen clips sit at a similar level over the bed.
+    No sidechain ducking — pumping the bed under every line made playback feel
+    uneven. Keep music at a steady gain; speech is loudness-matched on top.
     """
     import numpy as np
     import soundfile as sf
@@ -278,6 +277,9 @@ def build_dubbed_track(
         bg = bg[:n_samples]
 
     speech = np.zeros(n_samples, dtype=np.float32)
+    # Mute Demucs bed under KEEP-original spans (those clips already include
+    # the original music from source.wav — layering gappy no_vocals makes waves).
+    bg_gate = np.ones(n_samples, dtype=np.float32)
     placed = 0
     # Place in timeline order; later clips overwrite overlaps (avoids KEEP+dub sum).
     ordered = sorted(
@@ -298,30 +300,48 @@ def build_dubbed_track(
             continue
         i1 = min(n_samples, i0 + len(clip))
         take = clip[: i1 - i0].copy()
-        # Per-clip loudness match (KEEP originals are often hotter than Qwen).
-        clip_rms = float(np.sqrt(np.mean(take**2) + 1e-12))
-        if clip_rms > 1e-4:
-            take *= speech_target_rms / clip_rms
-        fade = min(int(0.012 * sr), len(take) // 4)
-        if fade > 1:
-            ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)
-            take[:fade] *= ramp
-            take[-fade:] *= ramp[::-1]
-        speech[i0:i1] = take
+        keep = bool(seg.get("keep_original") or seg.get("keep_uses_source"))
+        if keep:
+            # Source mix already has natural speech+bed balance.
+            fade = min(int(0.015 * sr), len(take) // 4)
+            if fade > 1:
+                ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)
+                take[:fade] *= ramp
+                take[-fade:] *= ramp[::-1]
+            speech[i0:i1] = take
+            bg_gate[i0:i1] = 0.0
+        else:
+            clip_rms = float(np.sqrt(np.mean(take**2) + 1e-12))
+            if clip_rms > 1e-4:
+                take *= speech_target_rms / clip_rms
+            fade = min(int(0.012 * sr), len(take) // 4)
+            if fade > 1:
+                ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)
+                take[:fade] *= ramp
+                take[-fade:] *= ramp[::-1]
+            speech[i0:i1] = take
         placed += 1
 
-    # Longer, gentler duck — music remains audible under speech.
-    win = max(1, int(0.14 * sr))
-    kernel = np.ones(win, dtype=np.float32) / float(win)
-    env = np.convolve(np.abs(speech), kernel, mode="same")
-    thr = 0.01
-    amount = np.clip((env - thr) / (thr * 6.0), 0.0, 1.0)
-    amount = np.convolve(amount, kernel, mode="same")
-    amount = np.clip(amount, 0.0, 1.0)
-    duck_lin = float(10.0 ** (duck_db / 20.0))
-    bg_scale = bg_gain * ((1.0 - amount) + amount * duck_lin)
+    # Soft edges on bg mute so KEEP↔dub transitions don't click.
+    fade_bg = max(1, int(0.02 * sr))
+    gate = bg_gate.copy()
+    # Simple box blur for mute ramps
+    kernel = np.ones(fade_bg, dtype=np.float32) / float(fade_bg)
+    gate = np.convolve(gate, kernel, mode="same")
+    gate = np.clip(gate, 0.0, 1.0)
 
-    mix = bg * bg_scale[:, None] + (speech * speech_gain)[:, None]
+    mix = bg * (bg_gain * gate)[:, None] + (speech * speech_gain)[:, None]
+    # KEEP clips are already full-mix; don't boost them as hard as TTS.
+    # (speech_gain applied uniformly; KEEP was written at natural level — scale keep down relative)
+    # Re-balance: we applied speech_gain to all; for keep regions reduce toward 1.0
+    # by compensating where gate==0 (keep spans).
+    keep_mask = 1.0 - gate
+    if float(np.max(keep_mask)) > 0.01 and speech_gain != 1.0:
+        # Remove excess speech_gain on KEEP: multiply those samples by 1/speech_gain
+        # through the speech contribution only — approximate via remix of keep parts.
+        mix = bg * (bg_gain * gate)[:, None] + (
+            speech * (speech_gain * gate + 1.0 * keep_mask)
+        )[:, None]
     peak = float(np.max(np.abs(mix))) if mix.size else 0.0
     if peak > 0.98:
         mix *= 0.98 / peak
@@ -329,7 +349,7 @@ def build_dubbed_track(
     out_wav = workdir / "dubbed_audio.wav"
     print(
         f"Mixing dubbed audio (numpy): {placed} clips, "
-        f"bg_gain={bg_gain}, duck={duck_db} dB, speech_rms≈{speech_target_rms} → {out_wav}",
+        f"bg_gain={bg_gain} (constant, no duck), speech_rms≈{speech_target_rms} → {out_wav}",
         file=sys.stderr,
     )
     sf.write(str(out_wav), mix.astype(np.float32), sr, subtype="PCM_16")

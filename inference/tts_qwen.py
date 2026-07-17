@@ -105,6 +105,40 @@ def prepare_english_tts_text(text: str) -> str:
     return out
 
 
+def _transcribe_keep_english(vocals: Path, start: float, end: float) -> str | None:
+    """Re-ASR an extended KEEP English window (picks up trailing clauses)."""
+    try:
+        from faster_whisper import WhisperModel
+        from inference.extract_pipeline import resolve_whisper_model
+    except Exception:
+        return None
+    if end - start < 0.4:
+        return None
+    tmp = vocals.parent / "tts_clips" / "_keep_en_probe.wav"
+    tmp.parent.mkdir(parents=True, exist_ok=True)
+    extract_wav_slice(vocals, start, end, tmp, sample_rate=16000)
+    try:
+        model_path = resolve_whisper_model("ivrit-ai/whisper-large-v3-turbo-ct2")
+        model = WhisperModel(str(model_path), device="cpu", compute_type="auto")
+        segs, _info = model.transcribe(
+            str(tmp),
+            language="en",
+            word_timestamps=False,
+            condition_on_previous_text=False,
+        )
+        text = " ".join((s.text or "").strip() for s in segs).strip()
+        text = re.sub(r"\s+", " ", text)
+        return text or None
+    except Exception as exc:
+        print(f"  KEEP re-ASR failed: {exc}", file=sys.stderr)
+        return None
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 def estimate_max_new_tokens(text: str, target_sec: float | None = None) -> int:
     """Allow the model to finish the full sentence (never cap to the Hebrew slot).
 
@@ -477,18 +511,32 @@ def synthesize_segments_qwen(
 
         if keep_original:
             max_end = max(start + 0.4, next_start - 0.05)
-            # Tight caps: Demucs bleed after EN often looks "active" and used to
-            # swallow the next Hebrew onset (audible level cliff + missing dub).
-            extended_end = extend_end_by_energy(
-                vocals,
-                start,
-                end,
-                max_end=max_end,
-                pad=0.06,
-                rms_thresh=0.045,
-                bridge_gap_sec=0.12,
-                max_extend=0.28,
-            )
+            # English KEEP often has a mid-pause then a short coda ("…they just
+            # want to help"). Bridge longer gaps for EN; stay tight for others.
+            if lang == "en":
+                # Documentary EN often pauses 2–3s before a short coda
+                # ("…they just want to help"). Bridge that silence.
+                extended_end = extend_end_by_energy(
+                    vocals,
+                    start,
+                    end,
+                    max_end=max_end,
+                    pad=0.15,
+                    rms_thresh=0.028,
+                    bridge_gap_sec=3.2,
+                    max_extend=min(6.0, max(0.5, max_end - end)),
+                )
+            else:
+                extended_end = extend_end_by_energy(
+                    vocals,
+                    start,
+                    end,
+                    max_end=max_end,
+                    pad=0.06,
+                    rms_thresh=0.045,
+                    bridge_gap_sec=0.12,
+                    max_extend=0.28,
+                )
             if extended_end > end + 0.05:
                 print(
                     f"  KEEP [{seg['speaker_id']}] {lang} "
@@ -502,17 +550,34 @@ def synthesize_segments_qwen(
                     f"slot {start:.1f}-{end:.1f}s (original audio)",
                     file=sys.stderr,
                 )
+            asr_end = float(seg.get("end") or end)
             seg["end"] = round(end, 3)
             seg["duration"] = round(end - start, 3)
+            if lang == "en" and end > asr_end + 0.35:
+                refreshed = _transcribe_keep_english(vocals, start, end)
+                if refreshed:
+                    seg["text"] = refreshed
+                    seg["text_en"] = refreshed
+                    print(f"    KEEP text ← {refreshed[:80]}", file=sys.stderr)
             if seg.get("phrases"):
                 seg["phrases"][-1]["end"] = seg["end"]
-                if not (seg["phrases"][-1].get("text_en") or "").strip():
-                    seg["phrases"][-1]["text_en"] = seg["phrases"][-1].get("text") or ""
+                if seg.get("text"):
+                    seg["phrases"][-1]["text"] = seg["text"]
+                seg["phrases"][-1]["text_en"] = (
+                    seg.get("text_en")
+                    or seg["phrases"][-1].get("text_en")
+                    or seg["phrases"][-1].get("text")
+                    or ""
+                )
             target = max(end - start, 0.4)
             raw = tts_dir / f"seg_{i:02d}_orig.wav"
             fitted = tts_dir / f"seg_{i:02d}_fit.wav"
-            extract_wav_slice(vocals, start, end, raw, sample_rate=44100)
+            # Prefer source mix for KEEP so Demucs bed-holes don't "wave" under EN.
+            source_mix = workdir / "source.wav"
+            keep_src = source_mix if source_mix.is_file() else vocals
+            extract_wav_slice(keep_src, start, end, raw, sample_rate=44100)
             place_in_slot(raw, fitted, target, sample_rate=44100)
+            seg["keep_uses_source"] = bool(keep_src == source_mix)
             seg.pop("tts_text", None)
             seg["tts_raw"] = str(raw)
             seg["tts_fit"] = str(fitted)

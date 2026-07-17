@@ -98,7 +98,10 @@ def extend_end_by_energy(
     import numpy as np
 
     hard_end = max_end if max_extend is None else min(max_end, end + max(0.0, max_extend))
-    probe_end = min(hard_end, end + 2.5)
+    # Probe through the full allowed extend window (was hard-capped at +2.5s,
+    # which missed EN codas after a long pause).
+    probe_span = 2.5 if max_extend is None else max(2.5, float(max_extend) + 0.5)
+    probe_end = min(hard_end, end + probe_span)
     if probe_end <= end + 0.05:
         return min(end + pad, hard_end)
     dur = probe_end - start
