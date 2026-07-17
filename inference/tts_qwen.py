@@ -79,9 +79,7 @@ REF_MIN_SEC = 2.0
 REF_MAX_SEC = 4.5
 CODEC_HZ = 12.5
 
-# Hebrew→EN clone often swallows coda /d/ and Hebrew-izes names ("fund"→"fun",
-# "Hezbollah"→"hizballa"). Keep replacements ~same length so we don't force
-# extreme atempo later.
+# Hebrew→EN clone sometimes Hebrew-izes names. Keep replacements ~same length.
 _TTS_NAME_RESPPELL: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bHezbollah\b", re.I), "Hezbollah"),
     (re.compile(r"\bHizballah\b", re.I), "Hezbollah"),
@@ -90,15 +88,18 @@ _TTS_NAME_RESPPELL: list[tuple[re.Pattern[str], str]] = [
 
 
 def prepare_english_tts_text(text: str) -> str:
-    """Make English safer for HE→EN voice clone (final consonants + names)."""
+    """Light cleanup for HE→EN voice clone (do not respell common words).
+
+    Earlier funds→fundz made 1.7B say "funs"; keep natural English orthography.
+    """
     out = (text or "").strip()
     if not out:
         return out
     for pat, repl in _TTS_NAME_RESPPELL:
         out = pat.sub(repl, out)
-    # Emphasize the /dz/ release — clone often realizes "funds"/"fund" as "fun".
-    out = re.sub(r"\bfunds\b", "fundz", out)
-    out = re.sub(r"\bfund\b", "fundd", out)
+    # Undo any stale fundz/fundd hacks left in curated JSON.
+    out = re.sub(r"\bfundz\b", "funds", out, flags=re.I)
+    out = re.sub(r"\bfundd\b", "fund", out, flags=re.I)
     if out[-1] not in ".!?":
         out += "."
     return out
