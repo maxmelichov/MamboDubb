@@ -510,14 +510,50 @@ def concat_wavs(paths: list[Path], out: Path, sample_rate: int = 44100) -> Path:
 
 def phrase_plan(seg: dict) -> list[dict]:
     """Return phrase dicts with English gen text, Hebrew ref text, and timings."""
+    import re
+
+    from inference.segment_merge import merge_short_phrases
+
+    he_re = re.compile(r"[\u0590-\u05FF]")
+    keep = bool(seg.get("keep_original") or (seg.get("language") or "he") != "he")
+
+    def _gen_text(text_en: str, text_he: str) -> str:
+        en = (text_en or "").strip()
+        he = (text_he or "").strip()
+        if keep:
+            return en or he
+        # Hebrew dub: never fall back to Hebrew — empty TranslateGemma caused Hebrew TTS.
+        if en and not he_re.search(en):
+            return en
+        if en and he_re.search(en):
+            raise SystemExit(
+                f"Hebrew text_en for dub segment {seg.get('speaker_id')}: {en[:80]!r}. "
+                "Re-run translation (TranslateGemma is broken; use mlx-lm)."
+            )
+        raise SystemExit(
+            f"Missing English text_en for dub segment {seg.get('speaker_id')}: {he[:80]!r}"
+        )
+
     phrases = seg.get("phrases") or []
     if phrases:
+        # Merge stubs that slipped past build_preview so TTS never sees <1s crumbs.
+        phrases = merge_short_phrases(phrases)
+        seg_en = (seg.get("text_en") or "").strip()
+        if (
+            not keep
+            and seg_en
+            and not he_re.search(seg_en)
+            and any(not (p.get("text_en") or "").strip() for p in phrases)
+        ):
+            # Late import: avoid circular import at module load.
+            from inference.build_preview import distribute_en_to_phrases
+
+            distribute_en_to_phrases(seg_en, phrases)
         plan = []
         for p in phrases:
             text_en = (p.get("text_en") or "").strip()
             text_he = (p.get("text") or "").strip()
-            # For Hebrew dubs: gen=EN, ref_text=HE. Fall back sensibly.
-            gen = text_en or text_he
+            gen = _gen_text(text_en, text_he)
             if not gen:
                 continue
             plan.append(
@@ -534,7 +570,7 @@ def phrase_plan(seg: dict) -> list[dict]:
             return plan
     text_en = (seg.get("text_en") or "").strip()
     text_he = (seg.get("text") or "").strip()
-    gen = text_en or text_he
+    gen = _gen_text(text_en, text_he)
     if not gen:
         return []
     return [

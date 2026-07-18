@@ -10,7 +10,8 @@ dependencies = [
     # Optional MLX helpers (not used for default ASR)
     "mlx-whisper>=0.4.0",
     "mlx>=0.20.0",
-    # Translate (TranslateGemma)
+    # Translate (mlx-lm; TranslateGemma transformers path is broken / pad-only)
+    "mlx-lm>=0.22.0",
     "torch>=2.4.0",
     "transformers>=4.50.0",
     "accelerate>=1.0.0",

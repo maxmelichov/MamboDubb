@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -305,7 +306,7 @@ def resolve_whisper_model(model: str) -> str:
 
 
 def _phrases_from_words(words: list, phrase_pause: float) -> list[dict]:
-    """Split word stream into pause-aware phrases (absolute timestamps)."""
+    """Split word stream into pause- and sentence-aware phrases (absolute timestamps)."""
     from inference.lang_detect import restore_latin_names
 
     if not words:
@@ -334,6 +335,15 @@ def _phrases_from_words(words: list, phrase_pause: float) -> list[dict]:
             )
         buf = []
 
+    def _ends_sentence(token: str) -> bool:
+        t = (token or "").rstrip()
+        if not t:
+            return False
+        # Hebrew / Latin sentence terminators (ignore abbreviations like "Dr.").
+        return t[-1] in ".!?…؟" and not (
+            len(t) <= 3 and t[0].isupper() and t.endswith(".")
+        )
+
     for i, w in enumerate(words):
         token = w.word or ""
         if i == 0:
@@ -342,8 +352,11 @@ def _phrases_from_words(words: list, phrase_pause: float) -> list[dict]:
             p_end = float(w.end)
             continue
         gap = float(w.start) - float(words[i - 1].end)
-        if gap >= phrase_pause:
-            flush(pause_after=gap)
+        prev_token = words[i - 1].word or ""
+        # Split on silence OR sentence-final punctuation on the previous word.
+        if gap >= phrase_pause or _ends_sentence(prev_token):
+            pause_val = gap if gap >= phrase_pause else 0.0
+            flush(pause_after=pause_val)
             buf = [token]
             p_start = float(w.start)
             p_end = float(w.end)
@@ -366,17 +379,24 @@ def transcribe_and_merge(
     device: str = "auto",
     compute_type: str = "auto",
     max_pause: float = 0.75,
-    phrase_pause: float = 0.18,
+    phrase_pause: float = 0.28,
+    source_path: Path | None = None,
 ) -> tuple[list[dict], WhisperModel]:
     """Per-turn language detect (he/en/ar) + ASR; keep non-Hebrew as keep_original."""
-    from inference.lang_detect import CANDIDATE_LANGS, detect_and_transcribe_turn
+    from inference.lang_detect import CANDIDATE_LANGS, detect_and_transcribe_turn, looks_like_phonetic_english
     from inference.segment_merge import (
+        find_uncovered_gaps,
+        gap_has_speech_energy,
+        drop_silent_vocal_segments,
         merge_diarization_turns,
         merge_same_speaker_segments,
+        speaker_at_time,
         split_segment_by_phrase_speaker,
+        stabilize_speaker_continuity,
         stitch_unfinished_continuations,
         tag_phrases_with_speakers,
     )
+    import soundfile as sf
 
     model_path = resolve_whisper_model(model_name)
     device = resolve_whisper_device(device)
@@ -402,7 +422,85 @@ def transcribe_and_merge(
     else:
         candidates = CANDIDATE_LANGS
 
+    def _build_result_from_detection(
+        det: dict,
+        *,
+        fallback_speaker: str,
+        window_start: float,
+        window_end: float,
+    ) -> list[dict]:
+        lang = det["language"]
+        phrases = _phrases_from_words(det["words"], phrase_pause)
+        if not phrases and det["text"]:
+            phrases = [
+                {
+                    "text": det["text"],
+                    "start": round(window_start, 3),
+                    "end": round(window_end, 3),
+                    "pause_after": 0.0,
+                }
+            ]
+        if not phrases:
+            return []
+        joined = " ".join(p["text"] for p in phrases).strip()
+        if len(joined) < 3 and len((det.get("text") or "").strip()) < 3:
+            return []
+        # Drop RTL-mark / punctuation-only junk from failed EN windows.
+        letters = re.sub(r"[^\w\u0590-\u05FF\u0600-\u06FF]+", "", joined, flags=re.UNICODE)
+        if len(letters) < 3:
+            return []
+        keep_original = lang != "he"
+        from inference.lang_detect import text_is_hebrew_script_heavy
+
+        joined_text = joined or det["text"]
+        if (
+            not keep_original
+            and looks_like_phonetic_english(joined_text)
+            and not text_is_hebrew_script_heavy(joined_text)
+        ):
+            lang = "en"
+            keep_original = True
+            det["language"] = "en"
+        if keep_original:
+            for p in phrases:
+                # Only copy as text_en when Latin-heavy; Hebrew-script KEEP waits
+                # for source audio / re-ASR rather than fake EN subtitles.
+                from inference.lang_detect import script_ratios
+
+                if script_ratios(p.get("text") or "")["en"] >= 0.35:
+                    p["text_en"] = p["text"]
+                elif script_ratios(joined_text)["en"] >= 0.35:
+                    p["text_en"] = p["text"]
+        phrases = tag_phrases_with_speakers(phrases, raw_turns)
+        for p in phrases:
+            if not p.get("speaker_id"):
+                mid = (float(p["start"]) + float(p["end"])) / 2.0
+                p["speaker_id"] = speaker_at_time(raw_turns, mid) or fallback_speaker
+        seg = {
+            "speaker_id": phrases[0].get("speaker_id") or fallback_speaker,
+            "start": round(float(phrases[0]["start"]), 3),
+            "end": round(float(phrases[-1]["end"]), 3),
+            "language": lang,
+            "language_score": det.get("language_score"),
+            "keep_original": keep_original,
+            "phrases": phrases,
+            "text": joined or det["text"],
+            "duration": 0.0,
+            "pauses": [float(p["pause_after"]) for p in phrases],
+        }
+        seg["duration"] = round(seg["end"] - seg["start"], 3)
+        if keep_original:
+            from inference.lang_detect import script_ratios
+
+            if script_ratios(seg["text"] or "")["en"] >= 0.35:
+                seg["text_en"] = seg["text"]
+        parts: list[dict] = []
+        for part in split_segment_by_phrase_speaker(seg):
+            parts.append(part)
+        return parts
+
     results: list[dict] = []
+    residual_windows: list[tuple[float, float, str]] = []
     for i, turn in enumerate(turns):
         start = float(turn["start"])
         end = float(turn["end"])
@@ -419,21 +517,6 @@ def transcribe_and_merge(
             end,
             candidates=candidates,
         )
-        lang = det["language"]
-        phrases = _phrases_from_words(det["words"], phrase_pause)
-        if not phrases and det["text"]:
-            phrases = [
-                {
-                    "text": det["text"],
-                    "start": round(start, 3),
-                    "end": round(end, 3),
-                    "pause_after": 0.0,
-                }
-            ]
-        if not phrases:
-            print("    empty — skip", file=sys.stderr)
-            continue
-
         # Drop low-confidence micro junk (common on music beds / breath)
         if (end - start) < 0.8 and float(det.get("language_score") or 0) < -0.5:
             print(
@@ -441,41 +524,16 @@ def transcribe_and_merge(
                 file=sys.stderr,
             )
             continue
-        # Prefer word-built phrase text (keeps Latin names inside Hebrew).
-        joined = " ".join(p["text"] for p in phrases).strip()
-        if len(joined) < 3 and len(det["text"].strip()) < 3:
-            print("    too short — skip", file=sys.stderr)
+        parts = _build_result_from_detection(
+            det,
+            fallback_speaker=turn["speaker_id"],
+            window_start=start,
+            window_end=end,
+        )
+        if not parts:
+            print("    empty — skip", file=sys.stderr)
             continue
-
-        keep_original = lang != "he"
-        # For non-Hebrew, expose original text as text_en for subs (no machine translate).
-        if keep_original:
-            for p in phrases:
-                p["text_en"] = p["text"]
-
-        # Label phrases from raw diarization so a long ASR window that still
-        # spans a speaker change can be split before TTS.
-        phrases = tag_phrases_with_speakers(phrases, raw_turns)
-        for p in phrases:
-            if not p.get("speaker_id"):
-                p["speaker_id"] = turn["speaker_id"]
-
-        seg = {
-            "speaker_id": turn["speaker_id"],
-            "start": round(float(phrases[0]["start"]), 3),
-            "end": round(float(phrases[-1]["end"]), 3),
-            "language": lang,
-            "language_score": det.get("language_score"),
-            "keep_original": keep_original,
-            "phrases": phrases,
-            "text": joined or det["text"],
-            "duration": 0.0,
-            "pauses": [float(p["pause_after"]) for p in phrases],
-        }
-        seg["duration"] = round(seg["end"] - seg["start"], 3)
-        if keep_original:
-            seg["text_en"] = seg["text"]
-        for part in split_segment_by_phrase_speaker(seg):
+        for part in parts:
             results.append(part)
             flag = "KEEP" if part.get("keep_original") else "DUB"
             print(
@@ -483,19 +541,142 @@ def transcribe_and_merge(
                 f"score={det.get('language_score')} | {(part.get('text') or '')[:70]}",
                 file=sys.stderr,
             )
+        # If ASR only covered the head of a long diarization turn, queue the
+        # uncovered tail as a recovery window (common on EN interviews).
+        asr_end = max(float(p["end"]) for p in parts)
+        if end - asr_end >= 1.5 and gap_has_speech_energy(vocals_path, asr_end, end):
+            print(
+                f"    turn-tail residual [{asr_end:.1f}-{end:.1f}s] → gap queue",
+                file=sys.stderr,
+            )
+            # Temporarily mark coverage so find_uncovered_gaps still sees holes
+            # between other turns; residual handled in dedicated pass below.
+            residual_windows.append((asr_end, end, turn["speaker_id"]))
+
+    # Whisper often invents speech on music beds when Demucs vocals are empty.
+    before_silent = len(results)
+    results = drop_silent_vocal_segments(
+        results, vocals_path, source_path=source_path
+    )
+    if len(results) != before_silent:
+        print(
+            f"Dropped {before_silent - len(results)} silent-vocals hallucination(s).",
+            file=sys.stderr,
+        )
 
     results = merge_same_speaker_segments(results, max_pause=max_pause)
     before_stitch = len(results)
     results = stitch_unfinished_continuations(results)
     if len(results) != before_stitch:
         print(
-            f"Stitched unfinished continuations across speaker flips "
+            f"Stitched unfinished continuations "
             f"({before_stitch} → {len(results)} rows)",
             file=sys.stderr,
         )
     else:
-        # Row count may stay equal while clause ownership moves — always note.
-        print("Checked unfinished continuations across speaker flips.", file=sys.stderr)
+        print("Checked unfinished continuations.", file=sys.stderr)
+
+    # Recover speech that diarization never covered (energy gaps) + turn tails
+    # where ASR stopped early inside a long turn.
+    try:
+        media_end = float(sf.info(str(vocals_path)).duration)
+    except Exception:
+        media_end = max((float(s["end"]) for s in results), default=0.0)
+    gaps = find_uncovered_gaps(results, media_end, min_gap=1.5)
+    recover_windows: list[tuple[float, float, str | None]] = [
+        (a, b, None) for a, b in gaps
+    ]
+    for a, b, spk in residual_windows:
+        recover_windows.append((a, b, spk))
+    # Merge overlapping recover windows
+    recover_windows.sort(key=lambda x: x[0])
+    merged_windows: list[tuple[float, float, str | None]] = []
+    for a, b, spk in recover_windows:
+        if merged_windows and a <= merged_windows[-1][1] + 0.05:
+            pa, pb, pspk = merged_windows[-1]
+            merged_windows[-1] = (pa, max(pb, b), pspk or spk)
+        else:
+            merged_windows.append((a, b, spk))
+
+    recovered = 0
+    for g0, g1, prefer_spk in merged_windows:
+        if g1 - g0 < 1.2:
+            continue
+        if not gap_has_speech_energy(vocals_path, g0, g1):
+            continue
+        # Long gaps (EN interviews under music) need chunked ASR — whole-window
+        # language ID often collapses to empty EN.
+        chunk = 10.0
+        starts = [g0]
+        t = g0 + chunk
+        while t < g1 - 1.5:
+            starts.append(t)
+            t += chunk
+        spans = []
+        for i, s0 in enumerate(starts):
+            s1 = starts[i + 1] if i + 1 < len(starts) else g1
+            if s1 - s0 >= 1.2:
+                spans.append((s0, s1))
+        for s0, s1 in spans:
+            print(f"  Gap recover [{s0:.1f}-{s1:.1f}s]…", file=sys.stderr)
+            det = detect_and_transcribe_turn(
+                model,
+                vocals_path,
+                s0,
+                s1,
+                candidates=candidates,
+            )
+            if not (det.get("text") or "").strip() and not det.get("words"):
+                print("    empty — skip", file=sys.stderr)
+                continue
+            fallback = (
+                prefer_spk
+                or speaker_at_time(raw_turns, (s0 + s1) / 2.0)
+                or "SPEAKER_00"
+            )
+            parts = _build_result_from_detection(
+                det,
+                fallback_speaker=fallback,
+                window_start=s0,
+                window_end=s1,
+            )
+            if not parts:
+                print("    no usable phrases — skip", file=sys.stderr)
+                continue
+            for part in parts:
+                results.append(part)
+                recovered += 1
+                flag = "KEEP" if part.get("keep_original") else "DUB"
+                print(
+                    f"    → gap {part.get('language')} ({flag}) [{part['speaker_id']}] "
+                    f"| {(part.get('text') or '')[:70]}",
+                    file=sys.stderr,
+                )
+    if recovered:
+        results = sorted(results, key=lambda s: float(s["start"]))
+        results = merge_same_speaker_segments(results, max_pause=max_pause)
+        results = stitch_unfinished_continuations(results)
+        print(f"Recovered {recovered} utterance(s) from energy gaps.", file=sys.stderr)
+        before_silent = len(results)
+        results = drop_silent_vocal_segments(
+            results, vocals_path, source_path=source_path
+        )
+        if len(results) != before_silent:
+            print(
+                f"Dropped {before_silent - len(results)} silent-vocals after gap recovery.",
+                file=sys.stderr,
+            )
+
+    before_stab = [(s.get("speaker_id"), s.get("start")) for s in results]
+    results = stabilize_speaker_continuity(results)
+    flipped = sum(
+        1
+        for (a, _), s in zip(before_stab, results)
+        if a != s.get("speaker_id")
+    )
+    if flipped:
+        print(f"Stabilized speaker_id on {flipped} continuation row(s).", file=sys.stderr)
+
     n_keep = sum(1 for s in results if s.get("keep_original"))
     print(
         f"Utterances: {len(results)} ({n_keep} keep-original, {len(results) - n_keep} Hebrew→dub)",
@@ -550,7 +731,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--phrase-pause",
         type=float,
-        default=0.18,
+        default=0.28,
         help="Within an utterance, gaps >= this become internal pause markers for TTS.",
     )
     parser.add_argument(
@@ -592,14 +773,19 @@ def main() -> None:
     source_wav = workdir / "source.wav"
     extract_audio(video_path, source_wav, max_duration=args.max_duration)
 
+    vocals_out = workdir / "vocals.wav"
     if args.skip_demucs:
-        vocals_path = source_wav
+        # Prefer an existing Demucs vocals stem when re-running ASR only.
+        if vocals_out.is_file():
+            vocals_path = vocals_out
+            print(f"Reusing existing vocals stem: {vocals_path}", file=sys.stderr)
+        else:
+            vocals_path = source_wav
         background_path = None
     else:
         vocals_path, background_path = separate_vocals(source_wav, workdir / "demucs")
 
     # Copy stems to a stable location for later pipeline stages
-    vocals_out = workdir / "vocals.wav"
     if vocals_path.resolve() != vocals_out.resolve():
         shutil.copy2(vocals_path, vocals_out)
         vocals_path = vocals_out
@@ -622,6 +808,7 @@ def main() -> None:
         compute_type=args.compute_type,
         max_pause=args.max_pause,
         phrase_pause=args.phrase_pause,
+        source_path=source_wav if source_wav.is_file() else None,
     )
 
     payload = {
@@ -633,6 +820,7 @@ def main() -> None:
         "whisper_model": resolve_whisper_model(args.model),
         "diarization_model": args.diarization_model,
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "youtube_url": args.video if is_url else None,
         "segments": results,
     }
 

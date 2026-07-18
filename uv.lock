@@ -860,6 +860,7 @@ dependencies = [
     { name = "hf" },
     { name = "huggingface-hub" },
     { name = "mlx" },
+    { name = "mlx-lm" },
     { name = "mlx-whisper" },
     { name = "pyannote-audio" },
     { name = "python-dotenv" },
@@ -885,6 +886,7 @@ requires-dist = [
     { name = "hf", specifier = ">=0.0.1" },
     { name = "huggingface-hub", specifier = ">=0.26.0" },
     { name = "mlx", specifier = ">=0.20.0" },
+    { name = "mlx-lm", specifier = ">=0.22.0" },
     { name = "mlx-whisper", specifier = ">=0.4.0" },
     { name = "pyannote-audio", specifier = ">=3.1.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
@@ -1993,6 +1995,24 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/11/fa/e3608936caa02ebf7fc645e3289134918facb0cff6dcb563d51996a5b70e/mlx-0.32.0-cp313-cp313-manylinux_2_35_x86_64.whl", hash = "sha256:e5cdb9bf7c1a9320827a65f7ed63e3742d5b9280d31affc0c277e77982d465ae", size = 675294, upload-time = "2026-07-07T17:56:00.993Z" },
     { url = "https://files.pythonhosted.org/packages/65/96/4979a82390a69e7ff48a43d3ea5cac222ae6bc41c2ba56550f6f5bd416b3/mlx-0.32.0-cp313-cp313-win_amd64.whl", hash = "sha256:9fea39d8ecf1d08e5c3d5d70936d5a1ca6b890353c1b0b96c4e6232349d48e36", size = 558017, upload-time = "2026-07-07T17:56:02.307Z" },
     { url = "https://files.pythonhosted.org/packages/15/94/1b2a1e3b60fce6bd61ca8af3ccfe0da30f42184352a70123870fd960ce0d/mlx-0.32.0-cp313-cp313-win_arm64.whl", hash = "sha256:df6fa6785fb7a6f8d8e3e91c41074c885aa253b09c2b69e3c4d4f905e3c457e3", size = 543559, upload-time = "2026-07-07T17:56:03.644Z" },
+]
+
+[[package]]
+name = "mlx-lm"
+version = "0.29.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jinja2" },
+    { name = "mlx", marker = "sys_platform == 'darwin'" },
+    { name = "numpy" },
+    { name = "protobuf" },
+    { name = "pyyaml" },
+    { name = "sentencepiece" },
+    { name = "transformers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e3/62/f46e1355256a114808517947f8e83ad6be310c7288c551db0fa678f47923/mlx_lm-0.29.1.tar.gz", hash = "sha256:b99180d8f33d33a077b814e550bfb2d8a59ae003d668fd1f4b3fff62a381d34b", size = 232302, upload-time = "2025-12-16T16:58:27.959Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e5/53/913099c91d384e115ea078325efd9a0bc1ea3eb3458c694b4596cbd267f2/mlx_lm-0.29.1-py3-none-any.whl", hash = "sha256:440941b3054c2a2216e97615de584cc90fa1ea874782e20699b9895721fad8dc", size = 324884, upload-time = "2025-12-16T16:58:26.36Z" },
 ]
 
 [[package]]
