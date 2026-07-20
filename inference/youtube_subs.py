@@ -17,6 +17,11 @@ HARD_REPLACE_SIM = 0.60
 def _norm_he(text: str) -> str:
     t = re.sub(r"\s+", " ", (text or "").strip())
     t = re.sub(r"[\"'״׳]", "", t)
+    # Auto-caption chrome: music / applause tags, speaker arrows, stage directions.
+    t = re.sub(r"\[(?:מוזיקה|applause|music|שירה|קהל)[^\]]*\]", " ", t, flags=re.I)
+    t = re.sub(r"\(+[^)]*(?:מוזיקה|applause|music)[^)]*\)+", " ", t, flags=re.I)
+    t = re.sub(r">{{2,}", " ", t)
+    t = re.sub(r"\s+", " ", t).strip(" -–—")
     return t
 
 
@@ -124,12 +129,13 @@ def align_captions_to_segments(
     segments: list[dict[str, Any]],
     cues: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Attach text_youtube to each segment by time overlap; return summary rows."""
+    """Attach text_youtube (+ youtube_words) to each segment by time overlap."""
     summary: list[dict[str, Any]] = []
     for seg in segments:
         s0 = float(seg["start"])
         s1 = float(seg["end"])
         parts: list[str] = []
+        words_out: list[dict[str, Any]] = []
         for cue in cues:
             ov = _overlap(s0, s1, float(cue["start"]), float(cue["end"]))
             if ov <= 0.05:
@@ -139,11 +145,20 @@ def align_captions_to_segments(
             if ov / cue_dur < 0.25 and ov < 0.4:
                 continue
             parts.append((cue.get("text") or "").strip())
+            for w in cue.get("words") or []:
+                wt = (w.get("text") or "").strip()
+                if not wt:
+                    continue
+                ws = float(w.get("start") or cue["start"])
+                if s0 - 0.15 <= ws <= s1 + 0.15:
+                    words_out.append({"text": wt, "start": round(ws, 3)})
         yt_text = _norm_he(" ".join(parts))
         asr = _norm_he(seg.get("text") or "")
         sim = SequenceMatcher(None, asr, yt_text).ratio() if (asr and yt_text) else 0.0
         if yt_text:
             seg["text_youtube"] = yt_text
+        if words_out:
+            seg["youtube_words"] = words_out
         summary.append(
             {
                 "start": s0,

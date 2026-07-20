@@ -8,6 +8,7 @@ from inference.segment_merge import (
     find_uncovered_gaps,
     is_short_completion,
     merge_short_phrases,
+    needs_object_continuation,
     stabilize_speaker_continuity,
     stitch_unfinished_continuations,
     utterance_unfinished,
@@ -206,9 +207,12 @@ def test_find_uncovered_gaps():
 def test_prepare_english_tts_jabhat():
     text = "Qatar funds ISIS, Jabhat al-Nusra, and Qatar helps"
     out = prepare_english_tts_text(text)
-    assert "Nusra Front" in out
-    assert "Jabhat" not in out or "Nusra Front" in out
-
+    assert "Jabhat al-Nusra" in out
+    assert "Nusra Front" not in out
+    # Legacy / misspellings normalize to the proper name.
+    assert "Jabhat al-Nusra" in prepare_english_tts_text(
+        "Qatar funds the Nusra Front and Jahbat a-Nusra"
+    )
 
 def test_compact_phrase_timeline_gaps():
     from inference.tts_qwen import compact_phrase_timeline_gaps
@@ -442,12 +446,16 @@ def test_retag_english_sandwich():
 
 
 def test_fit_max_rate_capped():
-    from inference.tts_qwen import FIT_MAX_RATE, SHORTEN_RETRY_RATE
+    from inference.tts_qwen import (
+        FIT_MAX_RATE,
+        FIT_MIN_RATE,
+        UNIT_SPLIT_PAUSE_SEC,
+    )
 
-    assert FIT_MAX_RATE <= 1.18 + 1e-9
-    # Shorten triggers only when even mild speedup cannot fit.
-    assert SHORTEN_RETRY_RATE >= FIT_MAX_RATE
-    assert SHORTEN_RETRY_RATE <= 1.35
+    assert FIT_MIN_RATE <= 0.90 + 1e-9
+    assert FIT_MAX_RATE <= 1.25 + 1e-9
+    assert FIT_MIN_RATE < 1.0 <= FIT_MAX_RATE
+    assert UNIT_SPLIT_PAUSE_SEC >= 1.0
 
 
 def test_assemble_disables_bleed_before_keep(tmp_path):
@@ -518,7 +526,8 @@ def test_keep_yield_guard_constant():
     from inference.tts_qwen import KEEP_YIELD_GUARD_SEC, GAP_BLEED_SEC
 
     assert 0.08 <= KEEP_YIELD_GUARD_SEC <= 0.20
-    assert GAP_BLEED_SEC >= 0.20
+    # Isochronous fit keeps bleed tiny — prefer compress over overrun.
+    assert 0.10 <= GAP_BLEED_SEC <= 0.30
 
 
 def test_phonetic_keep_rejects_hebrew_loanwords():
@@ -657,8 +666,507 @@ def test_mt_memory_echo_and_bana():
 
 
 def test_tts_overrun_constants():
-    from inference.tts_qwen import SHORT_SLOT_OVERRUN_CAP_SEC, TIGHT_NEXT_GAP_SEC, REF_MIN_SEC
+    from inference.tts_qwen import (
+        UNIT_SPLIT_PAUSE_SEC,
+        CLONE_MIN_OVERLAP,
+        CLONE_MAX_TRIES,
+        FIT_MAX_RATE,
+        FIT_MIN_RATE,
+        REF_MIN_SEC,
+        KEEP_YIELD_GUARD_SEC,
+        SHORT_SLOT_OVERRUN_CAP_SEC,
+        TIGHT_NEXT_GAP_SEC,
+    )
 
+    assert UNIT_SPLIT_PAUSE_SEC >= 1.0
+    assert 0.25 <= CLONE_MIN_OVERLAP <= 0.50
+    assert CLONE_MAX_TRIES >= 2
+    assert REF_MIN_SEC >= 2.0
+    assert FIT_MIN_RATE < FIT_MAX_RATE
+    assert KEEP_YIELD_GUARD_SEC >= 0.08
     assert SHORT_SLOT_OVERRUN_CAP_SEC <= 0.4
     assert TIGHT_NEXT_GAP_SEC <= 0.35
-    assert REF_MIN_SEC >= 2.0
+
+
+def test_split_utterance_into_units_long_turn_subsplit():
+    """Long monologues without a big pause must still get timeline anchors."""
+    from inference.tts_qwen import MAX_UNIT_SEC, split_utterance_into_units
+
+    seg = {
+        "text": (
+            "משפט אחד ארוך מאוד על הנושא. משפט שני גם ארוך וממשיך. "
+            "משפט שלישי ממשיך בזהירות. משפט רביעי מסיים את המחשבה."
+        ),
+        "text_en": (
+            "First long sentence here about the topic. Second long sentence continues the idea. "
+            "Third sentence keeps going carefully. Fourth sentence finishes the thought."
+        ),
+        "start": 155.0,
+        "end": 182.0,
+        "phrases": [
+            {
+                "text": (
+                    "משפט אחד ארוך מאוד על הנושא. משפט שני גם ארוך וממשיך. "
+                    "משפט שלישי ממשיך בזהירות. משפט רביעי מסיים את המחשבה."
+                ),
+                "start": 155.0,
+                "end": 182.0,
+                "pause_after": 0.0,
+            }
+        ],
+    }
+    units = split_utterance_into_units(seg)
+    assert len(units) >= 2
+    assert all(float(u["end"]) - float(u["start"]) <= MAX_UNIT_SEC + 1.0 for u in units)
+    joined = " ".join(u["text_en"] for u in units)
+    assert "First" in joined and "Fourth" in joined
+
+
+def test_split_utterance_into_units_collapses_small_pauses():
+    from inference.tts_qwen import split_utterance_into_units
+
+    seg = {
+        "text": "משפט אחד. המשך קצר.",
+        "text_en": "One sentence. A short continuation.",
+        "start": 10.0,
+        "end": 14.0,
+        "phrases": [
+            {
+                "text": "משפט אחד.",
+                "start": 10.0,
+                "end": 12.0,
+                "pause_after": 0.3,
+            },
+            {
+                "text": "המשך קצר.",
+                "start": 12.3,
+                "end": 14.0,
+                "pause_after": 0.0,
+            },
+        ],
+    }
+    units = split_utterance_into_units(seg)
+    assert len(units) == 1
+    assert "One sentence" in units[0]["text_en"]
+    assert "continuation" in units[0]["text_en"]
+
+
+def test_split_utterance_into_units_keeps_big_pause():
+    from inference.tts_qwen import MAX_MID_SILENCE_SEC, split_utterance_into_units
+
+    seg = {
+        "text": "חלק ראשון ארוך. חלק שני אחרי שתיקה.",
+        "text_en": (
+            "We are used to spotting the enemy with a glance, "
+            "but not when they use clever tricks. With such calmness, composure."
+        ),
+        "start": 46.0,
+        "end": 61.0,
+        "phrases": [
+            {
+                "text": "חלק ראשון ארוך מאוד כאן עם מילים.",
+                "start": 46.0,
+                "end": 55.0,
+                "pause_after": 3.5,
+            },
+            {
+                "text": "חלק שני אחרי שתיקה ארוכה.",
+                "start": 58.5,
+                "end": 61.0,
+                "pause_after": 0.0,
+            },
+        ],
+    }
+    units = split_utterance_into_units(seg)
+    assert len(units) == 2
+    # Mid-silence is capped and later unit is shifted earlier (no 3.5s dead air).
+    assert float(units[0].get("pause_after") or 0) <= MAX_MID_SILENCE_SEC + 1e-6
+    gap = float(units[1]["start"]) - float(units[0]["end"])
+    assert abs(gap - float(units[0]["pause_after"])) < 0.05
+    assert float(units[1]["start"]) < 58.0  # shifted from 58.5
+    assert all((u.get("text_en") or "").strip() for u in units)
+    joined = " ".join(u["text_en"] for u in units)
+    assert (
+        "enemy" in joined.lower()
+        or "calmness" in joined.lower()
+        or "composure" in joined.lower()
+    )
+    # EN must not dump almost everything into unit 2 after an early comma.
+    assert len(units[0]["text_en"].split()) >= 6
+
+
+def test_coarse_split_en_by_weights():
+    from inference.tts_qwen import coarse_split_en_by_weights
+
+    en = "First clause here. Second clause follows nicely."
+    chunks = coarse_split_en_by_weights(en, [5, 4])
+    assert len(chunks) == 2
+    assert "First" in chunks[0]
+    assert "Second" in chunks[1]
+
+    # Duration-weighted: don't snap to early "weapon," when target is ~55% in.
+    long_en = (
+        "We are used to identifying the enemy with a glance, with the weapon, "
+        "but when the enemy comes in a clever way and subdues you with such "
+        "calmness with composure."
+    )
+    chunks2 = coarse_split_en_by_weights(long_en, [4.7, 3.4])
+    assert len(chunks2) == 2
+    assert "weapon" in chunks2[0].lower() or "glance" in chunks2[0].lower()
+    # First chunk should carry most of the pre-pause content.
+    assert len(chunks2[0].split()) >= 10
+    assert "composure" in chunks2[1].lower() or "calmness" in chunks2[1].lower()
+
+
+def test_clone_length_ok():
+    from inference.tts_qwen import clone_length_ok
+
+    assert clone_length_ok(2.5, "Hello world this is a test")
+    # Chipmunk: 6 words in 0.3s
+    assert not clone_length_ok(0.3, "Hello world this is a test line")
+    assert not clone_length_ok(0.0, "Hello")
+
+
+def test_speaker_language_consistency():
+    from inference.build_preview import enforce_speaker_language_consistency
+
+    segs = [
+        {
+            "speaker_id": "SPEAKER_08",
+            "language": "en",
+            "keep_original": True,
+            "start": 1.0,
+            "end": 7.0,
+            "text": "Qatar is probably one of Israel's most dangerous enemies.",
+            "he_score": -0.8,
+            "en_score": 0.5,
+        },
+        {
+            "speaker_id": "SPEAKER_08",
+            "language": "en",
+            "keep_original": True,
+            "start": 38.0,
+            "end": 44.0,
+            "text": "Qatar is an enemy without stating that it is.",
+            "he_score": -0.7,
+            "en_score": 0.5,
+        },
+        {
+            "speaker_id": "SPEAKER_08",
+            "language": "he",
+            "keep_original": False,
+            "start": 94.0,
+            "end": 110.0,
+            "text": "צ'ייחה מוזה נמצאת בישראל כפילנתרופיסטית בנבלנטרופיסטית.",
+            "he_score": 0.15,
+            "en_score": -2.0,
+            "phrases": [],
+        },
+    ]
+    n = enforce_speaker_language_consistency(segs)
+    assert segs[0]["keep_original"] is True
+    assert segs[1]["keep_original"] is True
+    # Low he_score overrides dense HE-script commentary for EN-native speakers.
+    assert n >= 1
+    assert segs[2]["keep_original"] is True
+    assert segs[2]["language"] == "en"
+
+    segs2 = [
+        {
+            "speaker_id": "SPEAKER_X",
+            "language": "en",
+            "keep_original": True,
+            "start": 1.0,
+            "end": 5.0,
+            "text": "Hello from the English interview.",
+        },
+        {
+            "speaker_id": "SPEAKER_X",
+            "language": "en",
+            "keep_original": True,
+            "start": 6.0,
+            "end": 10.0,
+            "text": "Another English line here today.",
+        },
+        {
+            "speaker_id": "SPEAKER_X",
+            "language": "he",
+            "keep_original": False,
+            "start": 11.0,
+            "end": 14.0,
+            "text": "שייחה מוזה is portrayed.",
+            "he_score": 0.20,
+            "en_score": -1.5,
+            "phrases": [],
+        },
+    ]
+    n2 = enforce_speaker_language_consistency(segs2)
+    assert n2 >= 1
+    assert segs2[2]["keep_original"] is True
+    assert segs2[2]["language"] == "en"
+
+
+def test_is_latin_english_rejects_cjk_and_chrome():
+    from inference.build_preview import (
+        is_english_text,
+        is_latin_english,
+        mt_needs_retry,
+        strip_caption_chrome,
+        strip_non_latin_runs,
+        _postprocess_en,
+    )
+
+    assert is_latin_english("She funds every organization.")
+    assert not is_latin_english("She is first and foremost the one who埋头于代码，实现功能。")
+    assert not is_english_text("埋头于代码")
+    assert mt_needs_retry("היא.", "She who埋头于代码") == "non_english_script"
+    # Longer HE avoids the short-HE balloon gate so time_overflow can fire.
+    overflow_he = " ".join(["מילה"] * 12)
+    assert mt_needs_retry(
+        overflow_he,
+        "This is a very long English paragraph that cannot possibly fit "
+        "into a one-second speaking window without sounding rushed at all today.",
+        duration=1.0,
+    ) == "time_overflow"
+    cleaned = strip_caption_chrome(">> Every org [music] she funds.")
+    assert ">>" not in cleaned
+    assert "[music]" not in cleaned.lower()
+    assert "CJK" not in strip_non_latin_runs("Hello 中文 world")
+    assert "Hello" in strip_non_latin_runs("Hello 中文 world")
+    post = _postprocess_en("היא.", ">> She paints [music] 中文 Qatar.")
+    assert ">>" not in post
+    assert "中文" not in post
+    assert "Qatar" in post
+
+
+def test_prepare_english_tts_strips_non_latin():
+    out = prepare_english_tts_text("She is first 埋头于代码 and foremost.")
+    assert "埋" not in out
+    assert "foremost" in out.lower()
+
+
+def test_clamp_segment_timeline_splits_overlap():
+    from inference.segment_merge import clamp_segment_timeline
+
+    segs = [
+        {
+            "speaker_id": "A",
+            "start": 70.0,
+            "end": 72.4,
+            "phrases": [{"text": "one", "start": 70.0, "end": 72.4, "pause_after": 0.0}],
+        },
+        {
+            "speaker_id": "B",
+            "start": 71.9,
+            "end": 77.0,
+            "phrases": [{"text": "two", "start": 71.9, "end": 77.0, "pause_after": 0.0}],
+        },
+    ]
+    n = clamp_segment_timeline(segs)
+    assert n == 1
+    assert float(segs[0]["end"]) <= float(segs[1]["start"]) + 1e-6
+
+
+def test_boundary_aware_trim_prefers_silence():
+    import numpy as np
+    from inference.tts_qwen import boundary_aware_trim
+
+    sr = 44100
+    # 1s speech + 0.2s silence + 0.3s speech
+    speech = np.ones(sr, dtype=np.float32) * 0.2
+    silence = np.zeros(int(0.2 * sr), dtype=np.float32)
+    more = np.ones(int(0.3 * sr), dtype=np.float32) * 0.2
+    audio = np.concatenate([speech, silence, more])
+    # Max at 1.15s — should cut in the silence near 1.0s, not at 1.15 mid-speech.
+    max_n = int(1.15 * sr)
+    trimmed = boundary_aware_trim(audio, max_n, sample_rate=sr)
+    assert len(trimmed) <= max_n
+    assert len(trimmed) < max_n  # found a quieter cut before the hard limit
+    assert abs(len(trimmed) / sr - 1.0) < 0.15
+
+
+def test_merge_object_continuation_ani_lo_stub():
+    """אני לא מכירה. + אף אישה… must become one phrase (not two TTS units)."""
+    phrases = [
+        {
+            "text": "אני לא מכירה.",
+            "start": 170.0,
+            "end": 170.8,
+            "pause_after": 0.1,
+        },
+        {
+            "text": "אף אישה במזרח התיכון שיש לה השפעה כזאת.",
+            "start": 170.9,
+            "end": 177.5,
+            "pause_after": 0.0,
+        },
+    ]
+    assert needs_object_continuation(phrases[0]["text"], phrases[1]["text"])
+    out = merge_short_phrases(phrases)
+    assert len(out) == 1
+    assert "אני לא מכירה" in out[0]["text"]
+    assert "אף אישה" in out[0]["text"]
+    assert float(out[0]["end"]) == 177.5
+
+
+def test_merge_object_continuation_ignores_bloated_pause_after():
+    """Long pause_after metadata must not block semantic object continuation."""
+    phrases = [
+        {
+            "text": "אני לא מכירה.",
+            "start": 169.1,
+            "end": 179.1,
+            "pause_after": 9.5,  # bloated metadata from ASR silence attribution
+        },
+        {
+            "text": "אף אישה במזרח התיכון שיש לה השפעה כזאת.",
+            "start": 179.12,
+            "end": 181.6,
+            "pause_after": 0.0,
+        },
+    ]
+    out = merge_short_phrases(phrases)
+    assert len(out) == 1
+    assert "אף אישה" in out[0]["text"]
+    assert float(out[0]["end"]) == 181.6
+
+
+def test_split_units_keeps_object_continuation_together():
+    """Long-utterance unit split must not sever אני לא מכירה + אף אישה."""
+    from inference.tts_qwen import split_utterance_into_units
+
+    seg = {
+        "start": 155.5,
+        "end": 181.6,
+        "source_start": 155.5,
+        "source_end": 181.6,
+        "text": (
+            "מרגע שהיא נכנסה לארמון היא הצליחה. "
+            "היא אחראית לשתי ההפיכות. "
+            "אני לא מכירה. אף אישה במזרח התיכון שיש לה השפעה כזאת."
+        ),
+        "text_en": (
+            "From the moment she entered the palace she succeeded. "
+            "She was responsible for both coups. "
+            "I don't know any woman in the Middle East with such influence."
+        ),
+        "phrases": [
+            {"text": "מרגע שהיא נכנסה לארמון היא הצליחה.", "start": 155.5, "end": 162.3, "pause_after": 0.0},
+            {"text": "היא אחראית לשתי ההפיכות.", "start": 162.3, "end": 169.1, "pause_after": 0.0},
+            {"text": "אני לא מכירה.", "start": 169.1, "end": 179.1, "pause_after": 0.0},
+            {"text": "אף אישה במזרח התיכון שיש לה השפעה כזאת.", "start": 179.1, "end": 181.6, "pause_after": 0.0},
+        ],
+    }
+    units = split_utterance_into_units(seg)
+    he_bits = [(u.get("text_he") or "") for u in units]
+    # Stub must not be alone without its object clause.
+    alone = [h for h in he_bits if "מכירה" in h and "אף" not in h]
+    assert not alone, he_bits
+    joined = [h for h in he_bits if "מכירה" in h and "אף" in h]
+    assert joined, he_bits
+
+
+def test_stamp_source_timing_immutable():
+    from inference.segment_merge import stamp_source_timing
+
+    segs = [
+        {
+            "start": 10.0,
+            "end": 12.0,
+            "phrases": [
+                {"text": "שלום", "start": 10.0, "end": 12.0, "pause_after": 0.0}
+            ],
+        }
+    ]
+    n = stamp_source_timing(segs)
+    assert n == 1
+    assert segs[0]["source_start"] == 10.0
+    assert segs[0]["source_end"] == 12.0
+    assert segs[0]["phrases"][0]["source_start"] == 10.0
+    # Re-stamp is idempotent.
+    segs[0]["start"] = 99.0
+    stamp_source_timing(segs)
+    assert segs[0]["source_start"] == 10.0
+
+
+def test_parse_marked_en_alignment():
+    from inference.translate import parse_marked_en, build_marked_he_window
+
+    marked = build_marked_he_window(
+        ["שלום עולם", "אני לא מכירה אף אישה"], focus_idx=1
+    )
+    assert "[[C0]]" in marked and "[[C1]]" in marked
+    parsed = parse_marked_en(
+        "[[C0]] Hello world. [[C1]] I don't know any woman.", 2
+    )
+    assert parsed is not None
+    assert parsed[1].startswith("I don't know")
+    assert parse_marked_en("Hello without markers", 2) is None
+
+
+def test_meaning_preserving_rejects_negation_loss():
+    from inference.build_preview import meaning_preserving
+
+    he = "אני לא מכירה אף אישה במזרח התיכון"
+    orig = "I don't know any women in the Middle East"
+    bad = "I don't about that"
+    good = "I don't know any woman in the Middle East"
+    assert meaning_preserving(he, orig, good)
+    assert not meaning_preserving(he, orig, bad)
+
+
+def test_fit_exact_window_pads_short_clip(tmp_path):
+    import numpy as np
+    import soundfile as sf
+    from inference.tts_qwen import fit_exact_window, wav_duration
+
+    sr = 44100
+    src = tmp_path / "short.wav"
+    dst = tmp_path / "fit.wav"
+    # 1.0s of audio into a 2.0s HE window → pad to ~2s.
+    sf.write(str(src), np.ones(sr, dtype=np.float32) * 0.1, sr)
+    rate = fit_exact_window(src, dst, 2.0, sample_rate=sr, min_rate=0.90, pad_short=True)
+    assert rate <= 1.0
+    dur = wav_duration(dst)
+    assert abs(dur - 2.0) < 0.05
+
+
+def test_assert_tts_coverage_blocks_missing():
+    from inference.build_preview import assert_tts_coverage
+
+    segs = [
+        {
+            "speaker_id": "S0",
+            "language": "he",
+            "keep_original": False,
+            "start": 1.0,
+            "end": 3.0,
+            "text": "שלום",
+            "tts_failed": True,
+        }
+    ]
+    raised = False
+    try:
+        assert_tts_coverage(segs, allow_missing=False)
+    except SystemExit:
+        raised = True
+    assert raised
+    missing = assert_tts_coverage(segs, allow_missing=True)
+    assert len(missing) == 1
+
+
+def test_suppress_vocal_leak_keeps_music_floor():
+    import numpy as np
+    from inference.extract_pipeline import suppress_vocal_leak_in_bed
+
+    sr = 16000
+    n = sr * 2
+    # Constant music bed + speech burst in vocals.
+    bg = np.ones((n, 1), dtype=np.float32) * 0.05
+    voc = np.zeros(n, dtype=np.float32)
+    voc[sr // 2 : sr // 2 + sr // 4] = 0.2
+    cleaned = suppress_vocal_leak_in_bed(bg, voc, sr, speech_floor=0.15)
+    # Never hard-muted to zero.
+    assert float(np.min(np.abs(cleaned))) >= 0.05 * 0.12
+    # Music still present overall.
+    assert float(np.mean(np.abs(cleaned))) > 0.01

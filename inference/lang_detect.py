@@ -67,12 +67,104 @@ _WEAK_LOANWORD_MARKERS: tuple[str, ...] = (
 # Prefer EN when its score is within this margin of HE (avoids HE bias on short EN).
 _EN_SCORE_MARGIN = 0.35
 
+# Common Hebrew function words — signal real HE commentary vs phonetic EN ASR.
+_HE_FUNCTION_WORDS = re.compile(
+    r"(?:^|[\s,])(של|את|על|עם|היא|הוא|אנחנו|אני|זה|זו|כי|אבל|גם|לא|"
+    r"יש|אין|מה|מי|כמו|יותר|בין|אחרי|לפני|בסוף|מדובר)(?:[\s,.!?]|$)"
+)
+
+
+def _has_latin_island(text: str) -> bool:
+    return bool(
+        re.search(r"\b(CIA|ISIS|World War|Al-?Qaeda|UN|NATO)\b", text or "", re.I)
+    )
+
+
+def _real_hebrew_commentary(text: str) -> bool:
+    """Dense Hebrew with grammar words and no EN interview signal → dub, not KEEP."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    ratios = script_ratios(t)
+    if ratios["he"] < 0.70 or ratios["en"] >= 0.15:
+        return False
+    if _has_latin_island(t):
+        return False
+    n_strong = sum(1 for m in _PHONETIC_EN_MARKERS if m in t)
+    if n_strong >= 2:
+        return False
+    weak_only = any(m in t for m in _WEAK_LOANWORD_MARKERS) and n_strong == 0
+    he_funcs = len(_HE_FUNCTION_WORDS.findall(t))
+    if he_funcs >= 2 or weak_only:
+        return True
+    return he_funcs >= 1 and ratios["he"] >= 0.85 and n_strong == 0
+
+
+def should_keep_original(
+    text: str,
+    *,
+    lang: str | None = None,
+    he_score: float | None = None,
+    en_score: float | None = None,
+    neighbors: list[dict[str, Any]] | None = None,
+) -> bool:
+    """Single KEEP gate: score-first; phonetic markers only as tie-break.
+
+    1. Winning lang != he → KEEP
+    2. en_score within margin of he_score → KEEP (interview EN even if HE-script ASR)
+    3. Phonetic-HE rescue: strong markers AND (competitive EN / Latin island /
+       adjacent KEEP-English neighbor)
+    4. Real-HE veto: dense Hebrew commentary without competitive EN → never KEEP
+    """
+    lang = (lang or "he").lower()
+    t = (text or "").strip()
+    if lang != "he":
+        return True
+    if not t:
+        return False
+
+    competitive_en = (
+        he_score is not None
+        and en_score is not None
+        and float(en_score) >= float(he_score) - _EN_SCORE_MARGIN
+    )
+
+    # Real HE commentary veto (unless EN score is competitive).
+    if _real_hebrew_commentary(t) and not competitive_en:
+        return False
+
+    if competitive_en:
+        return True
+
+    n_strong = sum(1 for m in _PHONETIC_EN_MARKERS if m in t)
+    has_strong = n_strong >= 1
+    latin = _has_latin_island(t)
+    neighbor_keep_en = False
+    if neighbors:
+        for n in neighbors:
+            n_lang = (n.get("language") or "he").lower()
+            if n.get("keep_original") or n_lang == "en":
+                neighbor_keep_en = True
+                break
+
+    # Phonetic rescue: markers alone are not enough — need a corroborating signal.
+    if has_strong and (latin or neighbor_keep_en or n_strong >= 2):
+        return True
+    # Competitive EN score already returned True above; neighbor alone without
+    # strong markers must not KEEP (avoids false positives on HE news).
+    if neighbor_keep_en and looks_like_phonetic_english(t) and has_strong:
+        return True
+    return False
+
 
 def looks_like_phonetic_english(text: str) -> bool:
     """True when a 'Hebrew' transcript is mostly English spoken phonetically.
 
-    High-Hebrew script with only loanword markers (e.g. פילנתרופ) is NOT enough —
+    High-Hebrew script with only weak loanwords (e.g. פילנתרופ) is NOT enough —
     that is real Hebrew commentary and must stay as HE dub, not KEEP-original.
+
+    Strong phonetic markers (אינפלואנס / אופריציה / קמפלאז) DO force KEEP even
+    when Whisper wrote the English interview in Hebrew letters.
     """
     t = (text or "").strip()
     if not t:
@@ -80,16 +172,23 @@ def looks_like_phonetic_english(text: str) -> bool:
     ratios = script_ratios(t)
     has_strong_marker = any(m in t for m in _PHONETIC_EN_MARKERS)
     has_weak_loan = any(m in t for m in _WEAK_LOANWORD_MARKERS)
+    has_latin_island = _has_latin_island(t)
+    n_strong = sum(1 for m in _PHONETIC_EN_MARKERS if m in t)
 
-    # Dense Hebrew + near-zero Latin: refuse KEEP even if a weak loanword matches.
-    if ratios["he"] >= 0.70 and ratios["en"] < 0.08:
+    # Weak loanwords alone in dense HE → real Hebrew commentary, not KEEP.
+    if (
+        ratios["he"] >= 0.70
+        and ratios["en"] < 0.08
+        and not has_strong_marker
+        and not has_latin_island
+    ):
         return False
 
-    if has_strong_marker:
-        # Strong markers still need either some Latin or not-overwhelming HE.
-        if ratios["en"] >= 0.08 or ratios["he"] <= 0.75:
-            return True
-        return False
+    # Strong phonetic spellings of EN interview speech (even if HE letters dominate).
+    if has_strong_marker and (n_strong >= 2 or ratios["en"] >= 0.05 or has_latin_island):
+        return True
+    if has_strong_marker and ratios["he"] <= 0.80:
+        return True
 
     if has_weak_loan and ratios["en"] >= 0.12 and ratios["he"] <= 0.65:
         return True
@@ -97,18 +196,23 @@ def looks_like_phonetic_english(text: str) -> bool:
     # Dense Latin + sparse real Hebrew grammar words → likely English audio.
     if ratios["en"] >= 0.35 and ratios["he"] <= 0.55:
         he_only = HE_RE.findall(t)
-        # Short HE runs that are mostly transliteration length tokens
         if ratios["total_letters"] >= 12 and ratios["en"] >= 0.45:
             return True
-        if len(he_only) >= 8 and ratios["en"] >= 0.25:
-            # Many HE letters but with CIA / World War / Al-Qaeda style Latin islands
-            if re.search(r"\b(CIA|ISIS|World War|Al-?Qaeda)\b", t, re.I):
-                return True
+        if len(he_only) >= 8 and ratios["en"] >= 0.25 and has_latin_island:
+            return True
+    if has_latin_island and ratios["en"] >= 0.10:
+        return True
     return False
 
 
 def text_is_hebrew_script_heavy(text: str, *, he_min: float = 0.70) -> bool:
-    """True when transcript is predominantly Hebrew letters (not Latin EN ASR)."""
+    """True when transcript is predominantly Hebrew letters (not Latin EN ASR).
+
+    Does NOT treat strong phonetic-EN interviews as 'Hebrew-only' — those still
+    need KEEP even though Whisper wrote them in Hebrew script.
+    """
+    if should_keep_original(text, lang="he") or looks_like_phonetic_english(text):
+        return False
     ratios = script_ratios(text or "")
     return ratios["he"] >= he_min and ratios["en"] < 0.15
 
@@ -219,8 +323,12 @@ def score_language(
     *,
     candidates: tuple[str, ...] = CANDIDATE_LANGS,
     beam_size: int = 5,
-) -> tuple[str, float, list[Any], str]:
-    """Return (lang, score, whisper_segments, text) for the best candidate."""
+) -> tuple[str, float, list[Any], str, dict[str, float]]:
+    """Return (lang, score, whisper_segments, text, scores_by_lang).
+
+    When KEEP is warranted for HE-script phonetic English, keep the HE transcript
+    (do not sanitize_text(..., "en") into near-empty Latin).
+    """
     scored: list[tuple[str, float, list[Any], str]] = []
 
     for lang in candidates:
@@ -241,17 +349,26 @@ def score_language(
         score = logprob + script_bonus(text, lang)
         scored.append((lang, score, segments, text))
 
+    empty_scores: dict[str, float] = {}
     if not scored:
-        return "he", -99.0, [], ""
+        return "he", -99.0, [], "", empty_scores
 
     scored.sort(key=lambda x: x[1], reverse=True)
+    scores_by_lang = {row[0]: float(row[1]) for row in scored}
 
-    def _finalize(row: tuple[str, float, list[Any], str]) -> tuple[str, float, list[Any], str]:
+    def _finalize(
+        row: tuple[str, float, list[Any], str], *, as_lang: str | None = None
+    ) -> tuple[str, float, list[Any], str]:
         lang, score, segments, text = row
-        text = sanitize_text(text, lang)
-        if lang in ("he", "ar"):
+        out_lang = as_lang or lang
+        # KEEP phonetic-EN: preserve HE-script ASR for debug; do not wipe to Latin.
+        if as_lang == "en" and lang == "he":
+            text = restore_latin_names((text or "").strip())
+            return "en", score, segments, text
+        text = sanitize_text(text, out_lang)
+        if out_lang in ("he", "ar"):
             text = restore_latin_names(text)
-        return lang, score, segments, text
+        return out_lang, score, segments, text
 
     by_lang = {row[0]: row for row in scored}
     he_row = by_lang.get("he")
@@ -259,19 +376,25 @@ def score_language(
 
     chosen = scored[0]
     lang, score, segments, text = chosen
+    he_score = scores_by_lang.get("he")
+    en_score = scores_by_lang.get("en")
+    he_text_raw = he_row[3] if he_row else text
 
-    # Prefer English when HE "wins" but the transcript is phonetic English, or
-    # when EN is within a small score margin (Whisper-he is biased on this corpus).
-    if lang == "he" and en_row is not None:
-        he_text = he_row[3] if he_row else text
-        en_text = en_row[3]
-        en_ratios = script_ratios(en_text)
-        if looks_like_phonetic_english(he_text) or (
-            en_row[1] >= score - _EN_SCORE_MARGIN and en_ratios["en"] >= 0.55
-        ):
-            chosen = en_row
-
-    lang, score, segments, text = _finalize(chosen)
+    # Score-first KEEP via should_keep_original — prefer HE transcript + lang=en.
+    if lang == "he" and should_keep_original(
+        he_text_raw,
+        lang="he",
+        he_score=he_score,
+        en_score=en_score,
+    ):
+        if he_row is not None:
+            lang, score, segments, text = _finalize(he_row, as_lang="en")
+        elif en_row is not None:
+            lang, score, segments, text = _finalize(en_row)
+        else:
+            lang, score, segments, text = _finalize(chosen, as_lang="en")
+    else:
+        lang, score, segments, text = _finalize(chosen)
 
     # Reject punctuation-only / empty winners; try next usable candidate.
     if _letter_count(text) < 3:
@@ -281,14 +404,9 @@ def score_language(
                 lang, score, segments, text = lang2, score2, segs2, text2
                 break
         else:
-            return "he", -99.0, [], ""
+            return "he", -99.0, [], "", scores_by_lang
 
-    if lang == "he" and en_row is not None and looks_like_phonetic_english(text):
-        lang, score, segments, text = _finalize(en_row)
-        if _letter_count(text) < 3 and he_row is not None:
-            lang, score, segments, text = _finalize(he_row)
-
-    return lang, score, segments, text
+    return lang, score, segments, text, scores_by_lang
 
 
 def detect_and_transcribe_turn(
@@ -304,7 +422,7 @@ def detect_and_transcribe_turn(
     with tempfile.TemporaryDirectory(prefix="langdetect_") as tmp:
         clip = Path(tmp) / "clip.wav"
         extract_mono_wav(vocals_path, start, end, clip)
-        lang, score, segments, text = score_language(
+        lang, score, segments, text, scores_by_lang = score_language(
             model, clip, candidates=candidates, beam_size=beam_size
         )
 
@@ -317,7 +435,9 @@ def detect_and_transcribe_turn(
                 continue
             token = (w.word or "").strip()
             if lang == "en" and HE_RE.search(token):
-                continue
+                # Keep HE-script tokens for phonetic-EN KEEP (do not drop).
+                if script_ratios(text or "")["he"] < 0.35:
+                    continue
             if lang == "he" and LAT_RE.search(token) and not HE_RE.search(token):
                 # Keep Latin brand names inside Hebrew (ISIS etc.)
                 pass
@@ -326,9 +446,23 @@ def detect_and_transcribe_turn(
             w.end = float(w.end) + start
             words.append(w)
 
+    keep = should_keep_original(
+        text,
+        lang=lang if lang != "en" or script_ratios(text or "")["en"] >= 0.35 else "he",
+        he_score=scores_by_lang.get("he"),
+        en_score=scores_by_lang.get("en"),
+    )
+    # If gate says KEEP but whisper winner was HE, tag as EN keep.
+    if keep and lang == "he":
+        lang = "en"
+
     return {
         "language": lang,
         "language_score": round(score, 4),
+        "he_score": round(scores_by_lang["he"], 4) if "he" in scores_by_lang else None,
+        "en_score": round(scores_by_lang["en"], 4) if "en" in scores_by_lang else None,
+        "ar_score": round(scores_by_lang["ar"], 4) if "ar" in scores_by_lang else None,
+        "keep_original": keep or lang != "he",
         "text": text,
         "words": words,
         "start": start,

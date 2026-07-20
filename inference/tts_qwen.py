@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Qwen3-TTS 1.7B-Base zero-shot voice clone for DubbingQwen (Phase 4).
 
-Clones from each phrase's own vocal window (~3s Hebrew ref), then synthesizes
-English. Default uses speaker-embedding clone (x_vector_only) — stabler for
-Hebrew→English than ICL with Hebrew ref_text.
+Clones from each segment's own vocal window (~3–4.5s Hebrew ref), then
+synthesizes English and fits each unit isochronously to its Hebrew [start,end]
+(rate 0.90–1.25, escalate to ~1.40, then boundary-aware trim). Units split only
+at pauses ≥1.2s. Clone verify + regenerate for garbled/chipmunk clips.
 
 Model: Qwen/Qwen3-TTS-12Hz-1.7B-Base (https://arxiv.org/abs/2601.15621)
   - x_vector_only=True (default): speaker embedding from ref audio
@@ -14,9 +15,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -27,52 +30,90 @@ from inference.tts_f5 import (
     atempo_chain,
     extend_end_by_energy,
     extract_wav_slice,
-    phrase_plan,
     place_in_slot,
     pull_start_to_energy,
     wav_duration,
 )
 
-# Prefer constant speaking pace. Only speed up when EN is clearly too long for
-# the HE slot; never slow down; avoid micro-retiming that makes adjacent lines
-# alternate slow/fast.
-FIT_MAX_RATE = 1.18
-FIT_MIN_RATE = 1.0
-FIT_SPEEDUP_THRESHOLD = 1.12  # below this, keep rate=1.0 and overrun slightly
-# Only shorten when even mild speedup + slack cannot fit.
-SHORTEN_RETRY_RATE = 1.28
+# Isochronous fit: stretch/compress each unit toward its Hebrew [start,end].
+# Small HE breaths collapse; only pauses >= UNIT_SPLIT_PAUSE_SEC stay as silence.
+FIT_MAX_RATE = 1.25
+FIT_MAX_RATE_HARD = 1.40  # last-resort atempo before boundary trim
+FIT_MIN_RATE = 0.90
+FIT_SPEEDUP_THRESHOLD = 1.0  # always fit toward the HE window (no free overrun)
+UNIT_SPLIT_PAUSE_SEC = 1.2  # only split TTS units at real mid-utterance silence
+# Keep big pauses as real silence, but cap so a long hole doesn't feel "stuck".
+MAX_MID_SILENCE_SEC = 1.2
+# Long same-speaker turns without a big pause still need time anchors or EN drifts.
+MAX_UNIT_SEC = 10.0
+# Shorten before audible speedup at/above FIT_MAX_RATE.
 SHORTEN_SYL_PER_SEC = 3.6
-SHORTEN_MAX_WORD_DROP = 0.35  # reject rewrites that drop more than ~35% of words
-SHORTEN_MIN_SLOT_SEC = 1.2  # default floor; overridden when EN≫HE
-# Cap how far past ASR end a short HE slot may expand into the next gap.
-SHORT_SLOT_OVERRUN_CAP_SEC = 0.35
-TIGHT_NEXT_GAP_SEC = 0.30  # force shorten / no overrun when next onset this close
-# 0 = preserve original HE pauses (default). Set >0 to cap mid-utterance silence.
+SHORTEN_MAX_WORD_DROP = 0.40
+# Legacy CLI default (pause compaction opt-in; units use UNIT_SPLIT_PAUSE_SEC).
 DEFAULT_MAX_DUB_PAUSE = 0.0
-# Adjacent phrases with gap below this become one TTS run (no mid-sentence cut).
-# Keep tight so slow/deliberate HE breaths stay as separate alignment anchors.
+# Kept for tests / callers that still import the old helpers (no longer hot path).
+FIT_MAX_RATE_SHORT = 1.15
+SHORT_SLOT_SEC = 1.50
+SHORTEN_MIN_SLOT_SEC = 1.0
+SHORT_SLOT_OVERRUN_CAP_SEC = 0.20
+TIGHT_NEXT_GAP_SEC = 0.30
 SPEECH_RUN_GAP_SEC = 0.18
-# Slow Hebrew (low words/sec): EN at natural rate finishes early → misaligned lips.
 SLOW_HE_WPS = 2.0
 SLOW_FILL_RATIO = 0.82
-SLOW_MIN_RATE = 0.90  # mild stretch only — not cartoon slow-mo
-SLOW_LEAD_FRAC = 0.40  # put this fraction of leftover silence before speech
+SLOW_MIN_RATE = 0.90
+SLOW_LEAD_FRAC = 0.40
 SLOW_LEAD_MAX_SEC = 0.85
 SLOW_SLOT_MIN_SEC = 1.40
+SLACK_MAX_EARLY_SEC = 0.15
+SLACK_MAX_LATE_SEC = 0.25
 # Qwen often emits ~0.4–0.6s hush before speech; strip before fit/place.
 LEAD_SILENCE_MAX_TRIM_SEC = 0.85
 LEAD_SILENCE_PAD_SEC = 0.03
-# Only when EN/HE mismatch would force rate outside bounds, borrow pause room.
-SLACK_MAX_EARLY_SEC = 0.25
-SLACK_MAX_LATE_SEC = 0.45
+# Clone stability: reject garbled / chipmunk clips and regenerate.
+CLONE_MIN_OVERLAP = 0.35
+CLONE_MAX_TRIES = 3
+CLONE_MIN_SEC_PER_WORD = 0.18  # below this → likely chipmunk / truncated
+CLONE_MAX_SEC_PER_WORD = 0.95  # above this → likely stalled / garbled drawl
+# Boundary-aware trim: look back for silence before hard window end.
+BOUNDARY_TRIM_LOOKBACK_SEC = 0.45
+BOUNDARY_TRIM_RMS = 0.012
+BOUNDARY_TRIM_MIN_SILENCE_SEC = 0.04
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# region agent log
+_DEBUG_LOG_PATH = REPO_ROOT / ".cursor" / "debug-5e8424.log"
+
+
+def _debug_event(
+    hypothesis_id: str,
+    location: str,
+    message: str,
+    data: dict,
+) -> None:
+    try:
+        payload = {
+            "sessionId": "5e8424",
+            "runId": os.environ.get("DUB_DEBUG_RUN", "diagnostic"),
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        with _DEBUG_LOG_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+# endregion
+
 DEFAULT_MODEL = REPO_ROOT / "models" / "Qwen3-TTS-12Hz-1.7B-Base"
 HUB_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
-# Qwen card: ~3s clone refs. Longer ICL refs + Hebrew→EN blew up decode time on MPS.
-REF_TARGET_SEC = 3.2
-REF_MIN_SEC = 2.0
-REF_MAX_SEC = 4.5
+# Longer clean refs → stronger x-vector identity. Concat up to REF_CONCAT_SEC.
+REF_TARGET_SEC = 4.5
+REF_MIN_SEC = 2.5
+REF_MAX_SEC = 6.0
+REF_CONCAT_SEC = 5.5
 CODEC_HZ = 12.5
 
 
@@ -248,9 +289,10 @@ _TTS_NAME_RESPPELL: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bHezbollah\b", re.I), "Hezbollah"),
     (re.compile(r"\bHizballah\b", re.I), "Hezbollah"),
     (re.compile(r"\bHizballa\b", re.I), "Hezbollah"),
-    # Hyphenated Arabic org names are often swallowed in list tails.
-    (re.compile(r"\bJabhat\s+al-?Nusra\b", re.I), "the Nusra Front"),
-    (re.compile(r"\bJahbat\s+al-?Nusra\b", re.I), "the Nusra Front"),
+    # Keep the org's proper name (do not rewrite to "the Nusra Front").
+    (re.compile(r"\bJahbat\s+al-?Nusra\b", re.I), "Jabhat al-Nusra"),
+    (re.compile(r"\bJabhat\s+a-Nusra\b", re.I), "Jabhat al-Nusra"),
+    (re.compile(r"\bthe\s+Nusra\s+Front\b", re.I), "Jabhat al-Nusra"),
     (re.compile(r"\bAl-?Qaeda\b", re.I), "Al-Qaeda"),
     (re.compile(r"\bAl\s+Qaeda\b", re.I), "Al-Qaeda"),
     (re.compile(r"\bSheikha\s+Moza\b", re.I), "Sheikha Moza"),
@@ -263,8 +305,27 @@ def prepare_english_tts_text(text: str) -> str:
 
     Earlier funds→fundz made 1.7B say "funs"; keep natural English orthography.
     Map hard proper nouns to forms Qwen actually voices in list enumerations.
+    Hard-strip non-Latin scripts and caption chrome so garbage never reaches synth.
     """
     out = (text or "").strip()
+    if not out:
+        return out
+    # Caption chrome + non-Latin (CJK/HE/AR) must never reach the voice clone.
+    out = re.sub(
+        r"(?:>>+\s*)|"
+        r"\[(?:music|applause|מוזיקה|שירה|קהל)[^\]]*\]|"
+        r"\((?:music|applause)\)",
+        " ",
+        out,
+        flags=re.IGNORECASE,
+    )
+    cleaned: list[str] = []
+    for ch in out:
+        if ch.isalpha() and not ("A" <= ch <= "Z" or "a" <= ch <= "z"):
+            cleaned.append(" ")
+        else:
+            cleaned.append(ch)
+    out = re.sub(r"\s+", " ", "".join(cleaned)).strip(" ,.;:-")
     if not out:
         return out
     for pat, repl in _TTS_NAME_RESPPELL:
@@ -272,12 +333,18 @@ def prepare_english_tts_text(text: str) -> str:
     # Undo any stale fundz/fundd hacks left in curated JSON.
     out = re.sub(r"\bfundz\b", "funds", out, flags=re.I)
     out = re.sub(r"\bfundd\b", "fund", out, flags=re.I)
-    if out[-1] not in ".!?":
+    if out and out[-1] not in ".!?":
         out += "."
     return out
 
 
-def _transcribe_keep_english(vocals: Path, start: float, end: float) -> str | None:
+def _transcribe_keep_english(
+    vocals: Path,
+    start: float,
+    end: float,
+    *,
+    prefer_source: Path | None = None,
+) -> str | None:
     """Re-ASR an extended KEEP English window (picks up trailing clauses)."""
     try:
         from faster_whisper import WhisperModel
@@ -286,9 +353,10 @@ def _transcribe_keep_english(vocals: Path, start: float, end: float) -> str | No
         return None
     if end - start < 0.4:
         return None
+    src = prefer_source if prefer_source is not None and prefer_source.is_file() else vocals
     tmp = vocals.parent / "tts_clips" / "_keep_en_probe.wav"
     tmp.parent.mkdir(parents=True, exist_ok=True)
-    extract_wav_slice(vocals, start, end, tmp, sample_rate=16000)
+    extract_wav_slice(src, start, end, tmp, sample_rate=16000)
     try:
         model_path = resolve_whisper_model("ivrit-ai/whisper-large-v3-turbo-ct2")
         model = WhisperModel(str(model_path), device="cpu", compute_type="auto")
@@ -303,8 +371,14 @@ def _transcribe_keep_english(vocals: Path, start: float, end: float) -> str | No
         if not text:
             return None
         # ivrit CT2 sometimes still emits Hebrew script under language=en.
-        if re.search(r"[\u0590-\u05FF]", text):
+        if re.search(r"[\u0590-\u05FF]", text) and not re.search(r"[A-Za-z]{3,}", text):
             return None
+        # Strip residual Hebrew tokens if mixed.
+        if re.search(r"[\u0590-\u05FF]", text):
+            text = re.sub(r"[\u0590-\u05FF]+", " ", text)
+            text = re.sub(r"\s+", " ", text).strip(" ,.-")
+            if len(text.split()) < 3:
+                return None
         return text
     except Exception as exc:
         print(f"  KEEP re-ASR failed: {exc}", file=sys.stderr)
@@ -453,9 +527,15 @@ def coalesce_speech_runs(
             if max(gap, prev_pause) < max_gap:
                 prev_he = (prev.get("text_he") or prev.get("text") or "").rstrip()
                 cur_he = (cur.get("text_he") or cur.get("text") or "").rstrip()
-                # Keep sentence-final interjections as their own TTS unit.
-                if prev_he.endswith((".", "!", "?", "…", "؟")) and cur_he.endswith(
-                    (".", "!", "?", "…", "؟")
+                from inference.segment_merge import needs_object_continuation
+
+                object_cont = needs_object_continuation(prev_he, cur_he)
+                # Keep sentence-final interjections as their own TTS unit,
+                # except object-continuation stubs that must stay one unit.
+                if (
+                    not object_cont
+                    and prev_he.endswith((".", "!", "?", "…", "؟"))
+                    and cur_he.endswith((".", "!", "?", "…", "؟"))
                 ):
                     out.append(cur)
                     continue
@@ -530,15 +610,20 @@ def fit_exact_window(
     target_n: int | None = None,
     max_rate: float = FIT_MAX_RATE,
     min_rate: float = FIT_MIN_RATE,
-    allow_overrun: bool = True,
+    allow_overrun: bool = False,
+    hard_max_rate: float = FIT_MAX_RATE_HARD,
+    pad_short: bool = True,
 ) -> float:
-    """Time-stretch toward the Hebrew slot with stable speaking pace.
+    """Isochronous fit toward the Hebrew speaking window.
 
-    - Default: never slow below 1.0 (no slow-mo fill).
-    - Callers may pass min_rate≈0.90 for slow HE slots only.
-    - Keep rate=1.0 when only mildly long (≤ FIT_SPEEDUP_THRESHOLD) and overrun
-      a little into the following pause — avoids slow/fast flip-flops.
-    - Speed up only when clearly over-long; cap at max_rate and overrun.
+    Escalation:
+      1. rate in [min_rate, max_rate] (default 0.90–1.25) to match HE duration
+      2. if still too long → push up to hard_max_rate (~1.40)
+      3. if still too long → soft-fade pad to target (no mid-word chop); only
+         boundary-trim when hard_max still overruns and allow_overrun is False
+
+    Short clips are time-stretched toward the window (down to min_rate) and
+    the canvas is padded with silence to ``target_n`` so lips don't outlast audio.
     """
     target_sec = max(0.2, float(target_sec))
     if target_n is None:
@@ -550,20 +635,28 @@ def fit_exact_window(
 
     # rate>1 → faster / shorter; rate<1 → slower / longer
     natural = actual / (target_n / sample_rate)
-    speedup_from = max(1.0, FIT_SPEEDUP_THRESHOLD)
-    if allow_overrun and natural > max_rate:
-        rate = max_rate
+    exact = False
+    if natural > hard_max_rate:
+        rate = hard_max_rate
+        exact = not allow_overrun
+    elif natural > max_rate:
+        if allow_overrun:
+            rate = max_rate
+            exact = False
+        else:
+            rate = min(natural, hard_max_rate)
+            exact = rate >= hard_max_rate - 0.01 or natural > hard_max_rate
+    elif natural >= FIT_SPEEDUP_THRESHOLD:
+        # Fit toward the HE window (compress or keep 1.0 if already matching).
+        rate = min(max(natural, 1.0), max_rate)
         exact = False
-    elif natural > speedup_from:
-        rate = min(natural, max_rate)
-        exact = True
-    elif natural < min_rate and min_rate < 1.0 - 1e-6:
-        # Slow HE slot: mild stretch toward the window (not below min_rate).
+    elif min_rate <= natural < 1.0:
+        # Mildly short: stretch toward the window so EN fills the HE slot.
         rate = max(natural, min_rate)
-        exact = abs(rate - natural) > 0.02
+        exact = False
     else:
-        # Short, exact, or only slightly long: speak at natural pace.
-        rate = 1.0
+        # Clearly short (natural < min_rate): stretch to min_rate, then pad.
+        rate = min_rate
         exact = False
 
     work = src
@@ -577,11 +670,119 @@ def fit_exact_window(
         audio = np.mean(audio, axis=-1).astype(np.float32)
     if sr != sample_rate:
         raise RuntimeError(f"Unexpected sample rate {sr} (want {sample_rate})")
-    if exact and rate >= 1.0:
-        audio = _remap_to_n(audio, target_n)
+    pre_canvas_n = len(audio)
+    canvas_action = "unchanged"
+    pad_samples = 0
+    removed_samples = 0
+
+    # Prefer filling the Hebrew canvas: pad short audio; only trim when still
+    # overrunning after hard_max_rate and overrun is forbidden.
+    if len(audio) < target_n and pad_short:
+        pad_samples = target_n - len(audio)
+        pad = np.zeros(pad_samples, dtype=np.float32)
+        canvas_action = "pad"
+        # Soft fade into pad so the tail doesn't click.
+        fade = min(int(0.04 * sample_rate), max(1, len(audio) // 10))
+        if fade > 1 and len(audio) > fade:
+            audio = audio.copy()
+            audio[-fade:] *= np.linspace(1.0, 0.85, fade, dtype=np.float32)
+        audio = np.concatenate([audio, pad])
+    elif (exact or not allow_overrun) and rate >= hard_max_rate - 0.01 and len(audio) > target_n:
+        # Last resort only — soft boundary trim, never a hard mid-word chop.
+        before_trim = len(audio)
+        audio = boundary_aware_trim(
+            audio, target_n, sample_rate=sample_rate
+        )
+        removed_samples = max(0, before_trim - len(audio))
+        canvas_action = "boundary_trim"
+    elif len(audio) > target_n and not allow_overrun:
+        # Mild overrun after soft max_rate: soft-fade to target without looking
+        # for silence (avoids cutting a word when no quiet region exists).
+        removed_samples = len(audio) - target_n
+        take = audio[:target_n].copy()
+        fade = min(int(0.08 * sample_rate), max(1, target_n // 8))
+        if fade > 1:
+            take[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)
+        audio = take
+        canvas_action = "hard_window_fade"
+
     dst.parent.mkdir(parents=True, exist_ok=True)
     sf.write(str(dst), audio, sample_rate)
+
+    # region agent log
+    _debug_event(
+        "H4",
+        "inference/tts_qwen.py:fit_exact_window",
+        "Record exact-fit padding or trimming",
+        {
+            "sourceFile": src.name,
+            "targetFile": dst.name,
+            "rawSec": round(actual, 4),
+            "targetSec": round(target_n / sample_rate, 4),
+            "naturalRate": round(natural, 4),
+            "chosenRate": round(float(rate), 4),
+            "preCanvasSec": round(pre_canvas_n / sample_rate, 4),
+            "outputSec": round(len(audio) / sample_rate, 4),
+            "action": canvas_action,
+            "padSec": round(pad_samples / sample_rate, 4),
+            "removedSec": round(removed_samples / sample_rate, 4),
+            "allowOverrun": bool(allow_overrun),
+        },
+    )
+    # endregion
     return float(rate)
+
+
+def boundary_aware_trim(
+    audio: np.ndarray,
+    max_n: int,
+    *,
+    sample_rate: int = 44100,
+    lookback_sec: float = BOUNDARY_TRIM_LOOKBACK_SEC,
+    rms_thresh: float = BOUNDARY_TRIM_RMS,
+    min_silence_sec: float = BOUNDARY_TRIM_MIN_SILENCE_SEC,
+) -> np.ndarray:
+    """Trim to ≤max_n at a silence/energy boundary — never a raw mid-word chop.
+
+    Looks back from max_n for a quiet region; soft-fades out there. Falls back
+    to a soft-fade at max_n only when no silence is found.
+    """
+    if max_n <= 0:
+        return np.zeros(0, dtype=np.float32)
+    if len(audio) <= max_n:
+        return audio.astype(np.float32, copy=False)
+
+    hop = max(1, sample_rate // 100)  # 10ms
+    lookback = int(round(lookback_sec * sample_rate))
+    min_sil = max(1, int(round(min_silence_sec * sample_rate)))
+    search_start = max(0, max_n - lookback)
+    # Find the latest quiet run that ends near max_n.
+    best_cut = max_n
+    i = max_n - hop
+    while i >= search_start:
+        chunk = audio[max(0, i) : i + hop]
+        rms = float(np.sqrt(np.mean(chunk**2) + 1e-12))
+        if rms < rms_thresh:
+            # Expand left through contiguous quiet.
+            j = i
+            while j - hop >= search_start:
+                prev = audio[j - hop : j]
+                if float(np.sqrt(np.mean(prev**2) + 1e-12)) >= rms_thresh:
+                    break
+                j -= hop
+            quiet_len = i + hop - j
+            if quiet_len >= min_sil:
+                # Cut at the start of the quiet region (end of last speech).
+                best_cut = max(1, j)
+                break
+        i -= hop
+
+    take = min(best_cut, max_n, len(audio))
+    chunk = audio[:take].copy()
+    fade = min(int(0.06 * sample_rate), max(1, take // 8))
+    if fade > 1:
+        chunk[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)
+    return chunk.astype(np.float32)
 
 
 def he_words_per_sec(he_text: str, slot_sec: float) -> float:
@@ -609,8 +810,7 @@ def pad_leading_silence_for_slow_slot(
 ) -> float:
     """Insert leading silence so short EN sits later in a slow HE window.
 
-    Returns seconds of lead silence added. Keeps speaking pace; only shifts
-    where the clip begins inside the phrase.
+    Legacy helper retained for tests; utterance-level TTS no longer uses it.
     """
     audio, sr = sf.read(str(src), dtype="float32", always_2d=False)
     if getattr(audio, "ndim", 1) > 1:
@@ -625,7 +825,6 @@ def pad_leading_silence_for_slow_slot(
             sf.write(str(dst), audio, sample_rate)
         return 0.0
     pad = np.zeros(int(round(lead * sample_rate)), dtype=np.float32)
-    # Do not exceed the slot after padding.
     max_n = max(1, int(round(float(slot_sec) * sample_rate)))
     out = np.concatenate([pad, audio])[:max_n]
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -633,11 +832,631 @@ def pad_leading_silence_for_slow_slot(
     return float(lead)
 
 
+def coarse_split_en_by_weights(en: str, group_weights: list[float | int]) -> list[str]:
+    """Split one EN string into N chunks by weight, preferring nearby punctuation.
+
+    Weights should reflect each HE group's share of the utterance (speech
+    duration or caption-word count). Punctuation snaps only when close to the
+    target fraction — a wide snap used to dump almost all EN into the second
+    unit after a mid-utterance comma (0:50 dead-air bug).
+    """
+    n = len(group_weights)
+    if n <= 0:
+        return []
+    en = (en or "").strip()
+    if n == 1 or not en:
+        return [en] if n == 1 else [""] * n
+    weights = [max(0.5, float(w)) for w in group_weights]
+    total_w = float(sum(weights))
+    # Prefer sentence ends; commas only as a secondary snap.
+    sentence_cuts = [m.end() for m in re.finditer(r"(?<=[.!?…])\s+", en)]
+    comma_cuts = [m.end() for m in re.finditer(r"[,;:—–]\s+", en)]
+    words = en.split()
+    if not words:
+        return [en] * n
+
+    chunks: list[str] = []
+    cursor_char = 0
+    assigned_words = 0
+    dangling = {
+        "the", "a", "an", "and", "or", "but", "of", "to", "with", "for",
+        "in", "on", "at", "by", "from", "as", "is", "are", "was", "were",
+        "when", "but", "that", "which", "who",
+    }
+    # Tight snap: ~10% of string or 10 chars — not 25%.
+    snap_tol = max(10, int(0.10 * len(en)))
+
+    def _pick_cut(target_char: int) -> int | None:
+        pool_sent = [c for c in sentence_cuts if cursor_char < c < len(en) - 2]
+        if pool_sent:
+            best = min(pool_sent, key=lambda c: abs(c - target_char))
+            if abs(best - target_char) <= snap_tol:
+                return best
+        pool_comma = [c for c in comma_cuts if cursor_char < c < len(en) - 2]
+        if pool_comma:
+            best = min(pool_comma, key=lambda c: abs(c - target_char))
+            # Commas must be even closer — avoid early "with the weapon," cuts.
+            if abs(best - target_char) <= max(8, snap_tol // 2):
+                return best
+        return None
+
+    for gi in range(n - 1):
+        target_frac = sum(weights[: gi + 1]) / total_w
+        target_char = int(round(target_frac * len(en)))
+        cut = _pick_cut(target_char)
+        if cut is not None:
+            chunk = en[cursor_char:cut].strip().rstrip(",")
+            if chunk:
+                chunks.append(chunk)
+                cursor_char = cut
+                assigned_words = len(en[:cursor_char].split())
+                continue
+        remaining_groups = n - gi - 1
+        need = max(1, round(len(words) * weights[gi] / total_w))
+        need = min(need, max(1, len(words) - assigned_words - remaining_groups))
+        while (
+            need > 1
+            and assigned_words + need < len(words)
+            and words[assigned_words + need - 1].strip(".,;:!?\"'").lower() in dangling
+        ):
+            need -= 1
+        # Prefer a nearby sentence/comma word boundary within ±2 words of need.
+        for k in range(assigned_words + 1, len(words) - remaining_groups + 1):
+            if words[k - 1].endswith((".", "!", "?", "…")):
+                if abs((k - assigned_words) - need) <= max(2, need // 3):
+                    need = k - assigned_words
+                    break
+        chunk_words = words[assigned_words : assigned_words + need]
+        chunks.append(" ".join(chunk_words).strip())
+        assigned_words += need
+        cursor_char = len(" ".join(words[:assigned_words]))
+        if cursor_char < len(en) and en[cursor_char : cursor_char + 1] == " ":
+            cursor_char += 1
+    tail = en[cursor_char:].strip() if cursor_char < len(en) else ""
+    if not tail:
+        tail = " ".join(words[assigned_words:]).strip()
+    chunks.append(tail)
+    while len(chunks) < n:
+        chunks.append("")
+    return chunks[:n]
+
+
+def _group_split_weights(
+    groups: list[list[dict]],
+    *,
+    youtube_words: list[dict] | None = None,
+) -> list[float]:
+    """Weight each unit by speech duration; prefer caption-word counts when present."""
+    speech_durs = [
+        max(0.25, float(g[-1]["end"]) - float(g[0]["start"])) for g in groups
+    ]
+    if youtube_words:
+        counts: list[float] = []
+        for g in groups:
+            a, b = float(g[0]["start"]), float(g[-1]["end"])
+            n = sum(
+                1
+                for w in youtube_words
+                if a - 0.05 <= float(w.get("start") or 0.0) <= b + 0.05
+                and (w.get("text") or "").strip()
+            )
+            counts.append(float(max(1, n)))
+        if sum(counts) >= len(groups):
+            return counts
+    # Blend duration with HE word count so short dense clauses aren't starved.
+    word_counts = [
+        float(max(1, sum(len((p.get("text") or "").split()) for p in g)))
+        for g in groups
+    ]
+    return [0.65 * d + 0.35 * w for d, w in zip(speech_durs, word_counts)]
+
+
+def _coalesce_object_continuation_sents(sents: list[str]) -> list[str]:
+    """Keep 'אני לא מכירה.' + 'אף אישה…' as one HE sentence unit for splitting."""
+    if len(sents) <= 1:
+        return sents
+    try:
+        from inference.segment_merge import needs_object_continuation
+    except Exception:
+        return sents
+    out: list[str] = []
+    i = 0
+    while i < len(sents):
+        cur = sents[i]
+        if i + 1 < len(sents) and needs_object_continuation(cur, sents[i + 1]):
+            out.append(f"{cur.rstrip()} {sents[i + 1].lstrip()}".strip())
+            i += 2
+            continue
+        out.append(cur)
+        i += 1
+    return out
+
+
+def _slice_group_at_times(
+    group: list[dict],
+    cut_times: list[float],
+    *,
+    max_unit_sec: float = MAX_UNIT_SEC,
+    he_sents: list[str] | None = None,
+) -> list[list[dict]]:
+    """Turn absolute cut times into synthetic single-phrase subgroups."""
+    g_start = float(group[0]["start"])
+    g_end = float(group[-1]["end"])
+    he = " ".join((p.get("text") or "").strip() for p in group if p.get("text")).strip()
+    sents = he_sents or ([he] if he else [""])
+    sents = _coalesce_object_continuation_sents(sents)
+
+    bounds = [g_start] + sorted(
+        t for t in cut_times if g_start + 0.8 < t < g_end - 0.8
+    )
+    bounds.append(g_end)
+    merged = [bounds[0]]
+    for t in bounds[1:-1]:
+        if t - merged[-1] < 1.2:
+            continue
+        merged.append(t)
+    if g_end - merged[-1] < 1.2 and len(merged) > 1:
+        merged[-1] = g_end
+    else:
+        merged.append(g_end)
+
+    final = [merged[0]]
+    for t in merged[1:]:
+        # When HE sentences guide the cuts, do not insert anonymous max_unit
+        # chops — those re-split object-continuation spans and scramble text.
+        if he_sents is None:
+            while t - final[-1] > max_unit_sec + 0.5:
+                final.append(final[-1] + max_unit_sec)
+        final.append(t)
+
+    out: list[list[dict]] = []
+    n = max(1, len(final) - 1)
+    for i in range(n):
+        a, b = final[i], final[i + 1]
+        lo = int(round(i * len(sents) / n))
+        hi = int(round((i + 1) * len(sents) / n))
+        text = " ".join(sents[lo:hi]).strip() or he
+        out.append(
+            [
+                {
+                    "text": text,
+                    "start": a,
+                    "end": b,
+                    "pause_after": 0.0,
+                }
+            ]
+        )
+    return out if out else [group]
+
+
+def _split_long_phrase_group(
+    group: list[dict],
+    *,
+    max_unit_sec: float = MAX_UNIT_SEC,
+    youtube_words: list[dict] | None = None,
+) -> list[list[dict]]:
+    """Sub-split a long phrase group into ≤max_unit_sec units.
+
+    Prefer existing phrase boundaries; otherwise cut at caption word gaps or
+    HE sentence ends. General fix for long single-speaker turns that otherwise
+    drift when spoken as one natural-pace clip.
+    """
+    if not group:
+        return []
+    g_start = float(group[0]["start"])
+    g_end = float(group[-1]["end"])
+    try:
+        from inference.segment_merge import needs_object_continuation
+    except Exception:
+        needs_object_continuation = None  # type: ignore
+
+    # Soft allowance for object-continuation spans (stub + object ≈ 12s).
+    soft_max = max_unit_sec + 3.0
+    he_join = " ".join((p.get("text") or "").strip() for p in group if p.get("text")).strip()
+    if (
+        needs_object_continuation
+        and "אני לא" in he_join
+        and any(tok in he_join for tok in ("אף ", "שום ", "את "))
+        and g_end - g_start <= soft_max
+    ):
+        return [group]
+    if g_end - g_start <= max_unit_sec + 0.25:
+        return [group]
+
+    # 1) Pack existing phrases into bins ≤ max_unit_sec.
+    if len(group) > 1:
+        bins: list[list[dict]] = [[]]
+        for p in group:
+            if not bins[-1]:
+                bins[-1].append(p)
+                continue
+            prev = bins[-1][-1]
+            object_cont = bool(
+                needs_object_continuation
+                and needs_object_continuation(
+                    (prev.get("text") or "").strip(),
+                    (p.get("text") or "").strip(),
+                )
+            )
+            span = float(p["end"]) - float(bins[-1][0]["start"])
+            # Object continuations always stay with their stub, even if slightly long.
+            if object_cont:
+                bins[-1].append(p)
+                continue
+            if span > max_unit_sec and len(bins[-1]) >= 1:
+                bins.append([p])
+            else:
+                bins[-1].append(p)
+        if len(bins) > 1:
+            # Recurse per bin — never discard packing and re-slice the whole span
+            # (that re-introduced object-continuation cuts via max_unit chops).
+            out: list[list[dict]] = []
+            for b in bins:
+                out.extend(
+                    _split_long_phrase_group(
+                        b,
+                        max_unit_sec=max_unit_sec,
+                        youtube_words=youtube_words,
+                    )
+                )
+            return out
+
+    # 2) Caption word gaps ≥ 0.45s inside the span → synthetic cuts.
+    if youtube_words:
+        words = sorted(
+            (
+                w
+                for w in youtube_words
+                if g_start - 0.05 <= float(w.get("start") or 0) <= g_end + 0.05
+                and (w.get("text") or "").strip()
+            ),
+            key=lambda w: float(w["start"]),
+        )
+        cut_times: list[float] = []
+        for i in range(len(words) - 1):
+            gap = float(words[i + 1]["start"]) - float(words[i]["start"])
+            if gap >= 0.45:
+                t = float(words[i + 1]["start"])
+                if g_start + 1.5 < t < g_end - 1.5:
+                    cut_times.append(t)
+        if cut_times:
+            return _slice_group_at_times(
+                group, cut_times, max_unit_sec=max_unit_sec
+            )
+
+    # 3) HE sentence ends → proportional time slices.
+    he = " ".join((p.get("text") or "").strip() for p in group if p.get("text")).strip()
+    sents = [s.strip() for s in re.split(r"(?<=[.!?…׃])\s+", he) if s.strip()]
+    sents = _coalesce_object_continuation_sents(sents)
+    if len(sents) < 2:
+        n = max(2, int(round((g_end - g_start) / max_unit_sec)))
+        step = (g_end - g_start) / n
+        cuts = [g_start + step * k for k in range(1, n)]
+        return _slice_group_at_times(group, cuts, max_unit_sec=max_unit_sec)
+
+    weights = [max(1, len(s.split())) for s in sents]
+    total = float(sum(weights))
+    cuts = []
+    acc = 0.0
+    for w in weights[:-1]:
+        acc += w
+        cuts.append(g_start + (acc / total) * (g_end - g_start))
+    return _slice_group_at_times(
+        group, cuts, max_unit_sec=max_unit_sec, he_sents=sents
+    )
+
+
+def split_utterance_into_units(
+    seg: dict,
+    *,
+    split_pause: float = UNIT_SPLIT_PAUSE_SEC,
+    max_mid_silence: float = MAX_MID_SILENCE_SEC,
+    max_unit_sec: float = MAX_UNIT_SEC,
+) -> list[dict]:
+    """Split a dub utterance into TTS units at big pauses and long-span cuts.
+
+    Small HE breaths collapse. Pauses >= split_pause become (capped) silence.
+    Spans longer than max_unit_sec are further split using caption gaps /
+    sentence ends so natural-pace EN cannot drift across a whole monologue.
+    """
+    phrases = list(seg.get("phrases") or [])
+    if phrases:
+        try:
+            from inference.segment_merge import merge_short_phrases
+
+            phrases = merge_short_phrases(phrases)
+            seg["phrases"] = phrases
+        except Exception:
+            pass
+    seg_en = (seg.get("text_en") or "").strip()
+    seg_he = (seg.get("text") or "").strip()
+    if not phrases:
+        if not seg_en and not seg_he:
+            return []
+        return [
+            {
+                "text_en": seg_en or seg_he,
+                "text_he": seg_he,
+                "start": float(seg.get("source_start") or seg["start"]),
+                "end": float(seg.get("source_end") or seg["end"]),
+                "source_start": float(seg.get("source_start") or seg["start"]),
+                "source_end": float(seg.get("source_end") or seg["end"]),
+                "pause_after": 0.0,
+            }
+        ]
+
+    groups: list[list[dict]] = [[]]
+    for i, p in enumerate(phrases):
+        if groups[-1]:
+            prev = groups[-1][-1]
+            gap = float(p["start"]) - float(prev["end"])
+            pause = float(prev.get("pause_after") or 0.0)
+            if max(gap, pause) >= split_pause:
+                groups.append([])
+        groups[-1].append(p)
+
+    yt_words = seg.get("youtube_words")
+    if not isinstance(yt_words, list):
+        yt_words = None
+
+    expanded: list[list[dict]] = []
+    for g in groups:
+        expanded.extend(
+            _split_long_phrase_group(
+                g, max_unit_sec=max_unit_sec, youtube_words=yt_words
+            )
+        )
+    groups = expanded
+
+    weights = _group_split_weights(groups, youtube_words=yt_words)
+
+    phrase_en_chunks = [
+        " ".join(
+            (p.get("text_en") or "").strip() for p in g if p.get("text_en")
+        ).strip()
+        for g in groups
+    ]
+    if phrase_en_chunks and all(phrase_en_chunks):
+        # Prefer already-aligned phrase EN (object-continuation merges, etc.).
+        en_chunks = phrase_en_chunks
+    elif seg_en:
+        if len(groups) == 1:
+            en_chunks = [seg_en]
+        else:
+            en_chunks = coarse_split_en_by_weights(seg_en, weights)
+    else:
+        en_chunks = phrase_en_chunks
+
+    units: list[dict] = []
+    for gi, g in enumerate(groups):
+        he = " ".join((p.get("text") or "").strip() for p in g if p.get("text")).strip()
+        en = (en_chunks[gi] if gi < len(en_chunks) else "").strip()
+        if not en:
+            en = he
+        raw_pause = 0.0
+        if gi + 1 < len(groups):
+            raw_pause = max(
+                0.0,
+                float(groups[gi + 1][0]["start"]) - float(g[-1]["end"]),
+            )
+        pause_after = min(raw_pause, float(max_mid_silence)) if raw_pause else 0.0
+        src_a = float(g[0].get("source_start") or g[0]["start"])
+        src_b = float(g[-1].get("source_end") or g[-1]["end"])
+        units.append(
+            {
+                "text_en": en,
+                "text_he": he or seg_he,
+                "start": src_a,
+                "end": src_b,
+                "source_start": src_a,
+                "source_end": src_b,
+                "pause_after": round(pause_after, 3),
+                "raw_pause_after": round(raw_pause, 3),
+            }
+        )
+
+    for gi in range(len(units) - 1):
+        raw = float(units[gi].get("raw_pause_after") or 0.0)
+        kept = float(units[gi].get("pause_after") or 0.0)
+        shrink = raw - kept
+        if shrink <= 0.04:
+            continue
+        # Compact placement gaps only — keep source_* as ASR anchors.
+        for uj in range(gi + 1, len(units)):
+            units[uj]["start"] = round(float(units[uj]["start"]) - shrink, 3)
+            units[uj]["end"] = round(float(units[uj]["end"]) - shrink, 3)
+
+    # region agent log
+    _debug_event(
+        "H2,H3,H4",
+        "inference/tts_qwen.py:split_utterance_into_units",
+        "Capture ASR phrases and resulting TTS units",
+        {
+            "speaker": seg.get("speaker_id"),
+            "segmentStart": seg.get("source_start", seg.get("start")),
+            "segmentEnd": seg.get("source_end", seg.get("end")),
+            "phraseCount": len(phrases),
+            "groupCount": len(groups),
+            "phrases": [
+                {
+                    "start": p.get("start"),
+                    "end": p.get("end"),
+                    "sourceStart": p.get("source_start"),
+                    "sourceEnd": p.get("source_end"),
+                    "pauseAfter": p.get("pause_after"),
+                    "heWords": len((p.get("text") or "").split()),
+                    "enWords": len((p.get("text_en") or "").split()),
+                }
+                for p in phrases
+            ],
+            "units": [
+                {
+                    "start": unit.get("start"),
+                    "end": unit.get("end"),
+                    "sourceStart": unit.get("source_start"),
+                    "sourceEnd": unit.get("source_end"),
+                    "rawPauseAfter": unit.get("raw_pause_after"),
+                    "pauseAfter": unit.get("pause_after"),
+                    "heWords": len((unit.get("text_he") or "").split()),
+                    "enWords": len((unit.get("text_en") or "").split()),
+                }
+                for unit in units
+            ],
+        },
+    )
+    # endregion
+    return units
+
+def _word_overlap_ratio(a: str, b: str) -> float:
+    wa = set(re.findall(r"[a-z0-9]+", (a or "").lower()))
+    wb = set(re.findall(r"[a-z0-9]+", (b or "").lower()))
+    if not wa:
+        return 0.0
+    return len(wa & wb) / max(1, len(wa))
+
+
+def _expected_speech_sec(text: str) -> float:
+    words = max(1, len((text or "").split()))
+    # Natural English ~2.5–3.5 words/sec; use mid for length sanity.
+    return words / 3.0 + 0.25
+
+
+def clone_length_ok(raw_sec: float, text: str) -> bool:
+    """Reject chipmunk-short or stalled-long clips."""
+    words = max(1, len((text or "").split()))
+    if raw_sec <= 0.05:
+        return False
+    spw = raw_sec / words
+    if spw < CLONE_MIN_SEC_PER_WORD:
+        return False
+    if spw > CLONE_MAX_SEC_PER_WORD and words >= 3:
+        return False
+    expected = _expected_speech_sec(text)
+    # Chipmunk: finished in <40% of expected speaking time.
+    if raw_sec < expected * 0.40:
+        return False
+    return True
+
+
+_CLONE_ASR_MODEL = None
+
+# Dedicated English ASR for clone content checks (not the Hebrew ivrit model).
+CLONE_ASR_CANDIDATES = (
+    "models/faster-whisper-base.en",
+    "Systran/faster-whisper-base.en",
+    "models/faster-whisper-tiny.en",
+    "Systran/faster-whisper-tiny.en",
+)
+
+
+def _get_clone_asr_model():
+    """Lazy-load a dedicated English Whisper model for clone verification."""
+    global _CLONE_ASR_MODEL
+    if _CLONE_ASR_MODEL is not None:
+        return _CLONE_ASR_MODEL
+    try:
+        from faster_whisper import WhisperModel
+        from inference.extract_pipeline import resolve_whisper_model
+
+        last_exc: Exception | None = None
+        for cand in CLONE_ASR_CANDIDATES:
+            try:
+                model_path = resolve_whisper_model(cand)
+                # Prefer local dir when present under repo models/.
+                local = Path(cand)
+                if local.is_dir() and (local / "config.json").is_file():
+                    model_path = str(local.resolve())
+                _CLONE_ASR_MODEL = WhisperModel(
+                    str(model_path), device="cpu", compute_type="auto"
+                )
+                print(
+                    f"  clone verify: English ASR={model_path}",
+                    file=sys.stderr,
+                )
+                return _CLONE_ASR_MODEL
+            except Exception as exc:
+                last_exc = exc
+                continue
+        raise RuntimeError(last_exc or "no English ASR candidate loaded")
+    except Exception as exc:
+        print(f"  clone verify: ASR unavailable ({exc})", file=sys.stderr)
+        return None
+
+
+def verify_clone_clip(
+    wav_path: Path,
+    target_en: str,
+    *,
+    min_overlap: float = CLONE_MIN_OVERLAP,
+    skip_asr: bool = False,
+) -> tuple[bool, float, str]:
+    """Return (ok, overlap, asr_text). Length-fail → ok=False without ASR."""
+    try:
+        raw_sec = wav_duration(wav_path)
+    except Exception:
+        return False, 0.0, ""
+    if not clone_length_ok(raw_sec, target_en):
+        return False, 0.0, f"[len={raw_sec:.2f}s]"
+    if skip_asr:
+        return True, 1.0, ""
+    model = _get_clone_asr_model()
+    if model is None:
+        # No ASR — accept on length alone.
+        return True, 1.0, ""
+    try:
+        segs, _ = model.transcribe(
+            str(wav_path),
+            language="en",
+            task="transcribe",
+            word_timestamps=False,
+            condition_on_previous_text=False,
+            vad_filter=True,
+        )
+        asr = " ".join((s.text or "").strip() for s in segs).strip()
+    except Exception as exc:
+        print(f"  clone verify ASR failed: {exc}", file=sys.stderr)
+        return False, 0.0, ""  # reject on ASR crash — don't accept garbage
+    # Hebrew-script ASR of "English" TTS → garbled clone.
+    he_chars = len(re.findall(r"[\u0590-\u05FF]", asr))
+    lat_chars = len(re.findall(r"[A-Za-z]", asr))
+    if he_chars >= 8 and he_chars >= lat_chars:
+        return False, 0.0, asr[:120]
+    if he_chars > 0 and lat_chars < 3:
+        return False, 0.0, asr[:120]
+    overlap = _word_overlap_ratio(target_en, asr)
+    return overlap >= min_overlap, overlap, asr[:120]
+
+
+def voice_similarity(clone_wav: Path, ref_wav: Path) -> float:
+    """Cosine similarity of spectral fingerprints between clone and ref.
+
+    Returns 0..1-ish; used as a soft identity check alongside content ASR.
+    """
+    try:
+        from inference.speaker_bank import _segment_embedding_fallback
+
+        a, sr_a = sf.read(str(clone_wav), dtype="float32", always_2d=False)
+        b, sr_b = sf.read(str(ref_wav), dtype="float32", always_2d=False)
+        if getattr(a, "ndim", 1) > 1:
+            a = np.mean(a, axis=-1).astype(np.float32)
+        if getattr(b, "ndim", 1) > 1:
+            b = np.mean(b, axis=-1).astype(np.float32)
+        ea = _segment_embedding_fallback(a, int(sr_a))
+        eb = _segment_embedding_fallback(b, int(sr_b))
+        na = float(np.linalg.norm(ea) + 1e-9)
+        nb = float(np.linalg.norm(eb) + 1e-9)
+        return float(np.dot(ea, eb) / (na * nb))
+    except Exception:
+        return 0.5  # neutral when embedding unavailable
+
+
 # Guard silence before a KEEP-original (usually English) onset so the dub
 # does not step on the original speaker. Soft bleed into same-speaker gaps
 # remains allowed when the next segment is also dubbed.
 KEEP_YIELD_GUARD_SEC = 0.12
-GAP_BLEED_SEC = 0.35
+# Soft bleed into the next dub onset (crossfade); never used before KEEP.
+# Kept tiny under isochronous HE-window fit — prefer compress over overrun.
+GAP_BLEED_SEC = 0.20
 
 
 def assemble_on_hebrew_timeline(
@@ -735,16 +1554,22 @@ def assemble_on_hebrew_timeline(
                     file=sys.stderr,
                 )
             continue
-        chunk = audio[:take].copy()
-        if take < len(audio) and take > int(0.08 * sample_rate):
-            fade = min(int(0.08 * sample_rate), take // 4)
-            chunk[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)
-            lost = (len(audio) - take) / sample_rate
+        # Boundary-aware trim when the clip would overrun the next onset —
+        # never a raw mid-word sample chop.
+        if take < len(audio):
+            trimmed = boundary_aware_trim(
+                audio, take, sample_rate=sample_rate
+            )
+            lost = (len(audio) - len(trimmed)) / sample_rate
             if lost > 0.08:
                 print(
-                    f"      WARN: soft-trim phrase {j} lost {lost:.2f}s",
+                    f"      WARN: boundary-trim phrase {j} lost {lost:.2f}s",
                     file=sys.stderr,
                 )
+            chunk = trimmed
+            take = len(chunk)
+        else:
+            chunk = audio[:take].copy()
         # Crossfade mix into existing canvas (don't erase previous tails).
         dest = canvas[offset : offset + take]
         overlap = min(fade_n, take, len(dest))
@@ -842,35 +1667,63 @@ class QwenVoiceCloneSynthesizer:
         out_wav: Path,
         prompt_key: str | None = None,
         target_sec: float | None = None,
+        seed: int | None = None,
+        x_vector_only: bool | None = None,
+        deterministic: bool = False,
     ) -> Path:
         model = self._load()
         out_wav.parent.mkdir(parents=True, exist_ok=True)
+        use_xvec = self.x_vector_only if x_vector_only is None else bool(x_vector_only)
+
+        if seed is not None:
+            torch.manual_seed(int(seed))
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(int(seed))
 
         voice_clone_prompt = None
-        if prompt_key is not None and prompt_key in self._prompt_cache:
-            voice_clone_prompt = self._prompt_cache[prompt_key]
-        elif prompt_key is not None:
-            voice_clone_prompt = model.create_voice_clone_prompt(
-                ref_audio=str(ref_audio),
-                ref_text=ref_text if not self.x_vector_only else None,
-                x_vector_only_mode=self.x_vector_only,
-            )
-            self._prompt_cache[prompt_key] = voice_clone_prompt
+        # Cache key includes mode so ICL retry doesn't reuse an x-vector prompt.
+        cache_key = None
+        if prompt_key is not None:
+            cache_key = f"{prompt_key}|{'xvec' if use_xvec else 'icl'}"
+            if cache_key in self._prompt_cache:
+                voice_clone_prompt = self._prompt_cache[cache_key]
+            else:
+                voice_clone_prompt = model.create_voice_clone_prompt(
+                    ref_audio=str(ref_audio),
+                    ref_text=ref_text if not use_xvec else None,
+                    x_vector_only_mode=use_xvec,
+                )
+                self._prompt_cache[cache_key] = voice_clone_prompt
 
         # Cooler sampling → fewer Hebrew-phonology slips on English.
+        # Deterministic fallback: greedy / near-greedy for stable acceptance.
         speak = prepare_english_tts_text(text)
-        gen_kwargs = {
-            "max_new_tokens": estimate_max_new_tokens(speak, target_sec),
-            "do_sample": True,
-            "temperature": 0.55,
-            "top_p": 0.85,
-            "top_k": 30,
-            "repetition_penalty": 1.08,
-            "subtalker_dosample": True,
-            "subtalker_temperature": 0.55,
-            "subtalker_top_p": 0.85,
-            "subtalker_top_k": 30,
-        }
+        if deterministic:
+            gen_kwargs = {
+                "max_new_tokens": estimate_max_new_tokens(speak, target_sec),
+                "do_sample": False,
+                "temperature": 0.01,
+                "top_p": 1.0,
+                "top_k": 1,
+                "repetition_penalty": 1.05,
+                "subtalker_dosample": False,
+                "subtalker_temperature": 0.01,
+                "subtalker_top_p": 1.0,
+                "subtalker_top_k": 1,
+            }
+        else:
+            gen_kwargs = {
+                "max_new_tokens": estimate_max_new_tokens(speak, target_sec),
+                "do_sample": True,
+                "temperature": 0.55,
+                "top_p": 0.85,
+                "top_k": 30,
+                "repetition_penalty": 1.08,
+                "subtalker_dosample": True,
+                "subtalker_temperature": 0.55,
+                "subtalker_top_p": 0.85,
+                "subtalker_top_k": 30,
+            }
         if voice_clone_prompt is not None:
             wavs, sr = model.generate_voice_clone(
                 text=speak,
@@ -883,8 +1736,8 @@ class QwenVoiceCloneSynthesizer:
                 text=speak,
                 language=language,
                 ref_audio=str(ref_audio),
-                ref_text=ref_text if not self.x_vector_only else None,
-                x_vector_only_mode=self.x_vector_only,
+                ref_text=ref_text if not use_xvec else None,
+                x_vector_only_mode=use_xvec,
                 **gen_kwargs,
             )
 
@@ -909,13 +1762,15 @@ def synthesize_segments_qwen(
     max_dub_pause: float = DEFAULT_MAX_DUB_PAUSE,
     shorten_en_fn=None,
     speaker_bank: dict | None = None,
+    verify_clone: bool = True,
 ) -> list[dict]:
     from inference.segment_merge import (
-        clamp_phrase_timeline,
         dedupe_repeated_sentences,
         dedupe_segment_text_fields,
         merge_same_speaker_segments,
     )
+
+    del max_dub_pause  # units use UNIT_SPLIT_PAUSE_SEC; kept for CLI compat
 
     if merge_pauses:
         before = len(segments)
@@ -938,18 +1793,24 @@ def synthesize_segments_qwen(
     mode = "x_vector_only" if x_vector_only else "icl"
     print(
         f"Qwen3-TTS 1.7B-Base zero-shot clone ({mode}) language={language} "
-        f"reuse_speaker_prompt={reuse_speaker_prompt} max_dub_pause={max_dub_pause}s",
+        f"reuse_speaker_prompt={reuse_speaker_prompt} "
+        f"unit_split={UNIT_SPLIT_PAUSE_SEC:.1f}s verify_clone={verify_clone}",
         file=sys.stderr,
     )
 
     bank = speaker_bank or {}
     speakers_map = bank.get("speakers") if isinstance(bank.get("speakers"), dict) else bank
     bank_paths: dict[str, Path] = {}
+    bank_meta: dict[str, dict] = {}
     for k, v in (speakers_map or {}).items():
         if isinstance(v, dict) and v.get("path"):
             bank_paths[str(k)] = Path(v["path"])
+            bank_meta[str(k)] = v
         elif isinstance(v, (str, Path)):
             bank_paths[str(k)] = Path(v)
+
+    # Track speakers that repeatedly fail clone verify → prefer alt refs / ICL.
+    speaker_fail_counts: dict[str, int] = {}
 
     for i, seg in enumerate(segments):
         dedupe_segment_text_fields(seg)
@@ -980,8 +1841,13 @@ def synthesize_segments_qwen(
             max_end = max(start + 0.4, next_start - 0.05)
             source_mix = workdir / "source.wav"
             probe_src = source_mix if source_mix.is_file() else vocals
-            # Pull start back to true speech onset (symmetric to extend_end).
-            # Fixes late KEEP-English starts from coarse gap-recovery windows.
+            # Freeze ASR authority before energy snap/extend mutates placement.
+            if seg.get("source_start") is None:
+                seg["source_start"] = float(start)
+            if seg.get("source_end") is None:
+                seg["source_end"] = float(end)
+            src_start = float(seg["source_start"])
+            src_end = float(seg["source_end"])
             pulled = pull_start_to_energy(
                 probe_src,
                 start,
@@ -1032,12 +1898,17 @@ def synthesize_segments_qwen(
                     f"slot {start:.1f}-{end:.1f}s (original audio)",
                     file=sys.stderr,
                 )
-            asr_end = float(seg.get("end") or end)
+            # Placement may soft-snap; immutable ASR window stays on source_*.
             seg["start"] = round(start, 3)
             seg["end"] = round(end, 3)
             seg["duration"] = round(end - start, 3)
-            if lang == "en" and end > asr_end + 0.35:
-                refreshed = _transcribe_keep_english(vocals, start, end)
+            seg["source_start"] = round(src_start, 3)
+            seg["source_end"] = round(src_end, 3)
+            prefer_src = source_mix if source_mix.is_file() else None
+            if lang == "en" and end > src_end + 0.35:
+                refreshed = _transcribe_keep_english(
+                    vocals, start, end, prefer_source=prefer_src
+                )
                 if refreshed:
                     refreshed = dedupe_repeated_sentences(
                         re.sub(r"\s+", " ", refreshed).strip()
@@ -1045,17 +1916,47 @@ def synthesize_segments_qwen(
                     seg["text"] = refreshed
                     seg["text_en"] = refreshed
                     print(f"    KEEP text ← {refreshed[:80]}", file=sys.stderr)
-            # Always rebuild KEEP as a single phrase (never glue onto phrases[-1]).
             keep_text = (seg.get("text_en") or seg.get("text") or "").strip()
             keep_text = dedupe_repeated_sentences(keep_text)
+            # Suppress Hebrew-script captions on KEEP-English (mis-ASR / phonetic).
+            # Latin islands like "World War II" must not keep a Hebrew caption.
+            if lang == "en" and re.search(r"[\u0590-\u05FF]", keep_text):
+                he_chars = len(re.findall(r"[\u0590-\u05FF]", keep_text))
+                lat_chars = len(re.findall(r"[A-Za-z]", keep_text))
+                mostly_hebrew = he_chars >= max(8, lat_chars * 2)
+                if mostly_hebrew or not re.search(r"[A-Za-z]{3,}", keep_text):
+                    refreshed = _transcribe_keep_english(
+                        vocals, start, end, prefer_source=prefer_src
+                    )
+                    if refreshed:
+                        keep_text = dedupe_repeated_sentences(refreshed)
+                        print(
+                            f"    KEEP caption ← EN ASR: {keep_text[:80]}",
+                            file=sys.stderr,
+                        )
+                    else:
+                        # Keep a non-empty placeholder so later runs do not
+                        # filter this KEEP row out (empty text → dropped → silence).
+                        keep_text = keep_text if keep_text else "[original audio]"
+                        print(
+                            "    KEEP caption suppressed (Hebrew-script, no EN ASR); "
+                            "keeping original audio",
+                            file=sys.stderr,
+                        )
+            if not keep_text:
+                keep_text = "[original audio]"
             seg["text"] = keep_text
             seg["text_en"] = keep_text
             seg["phrases"] = [
                 {
                     "text": keep_text,
                     "text_en": keep_text,
-                    "start": round(start, 3),
-                    "end": round(end, 3),
+                    "start": round(src_start, 3),
+                    "end": round(src_end, 3),
+                    "source_start": round(src_start, 3),
+                    "source_end": round(src_end, 3),
+                    "tts_start": round(start, 3),
+                    "spoken_end": round(end, 3),
                     "pause_after": 0.0,
                     "speaker_id": seg.get("speaker_id"),
                 }
@@ -1087,24 +1988,21 @@ def synthesize_segments_qwen(
                     )
             continue
 
-        # Preserve original Hebrew before phrase_plan mutates text fields.
+        # --- Utterance-level natural-pace dub ---
         orig_he = (seg.get("text") or "").strip()
-        orig_he_phrases = [
-            (p.get("text") or "").strip() for p in (seg.get("phrases") or [])
-        ]
-
-        plan = phrase_plan(seg)
-        if not plan:
+        # Freeze ASR window before any energy-snap / fit mutation.
+        if "source_start" not in seg:
+            seg["source_start"] = float(seg.get("start") or 0.0)
+            seg["source_end"] = float(seg.get("end") or 0.0)
+        for p in seg.get("phrases") or []:
+            if "source_start" not in p:
+                p["source_start"] = float(p.get("start") or 0.0)
+                p["source_end"] = float(p.get("end") or 0.0)
+        source_a = float(seg["source_start"])
+        source_b = float(seg["source_end"])
+        units = split_utterance_into_units(seg)
+        if not units:
             continue
-        plan = clamp_phrase_timeline(plan)
-        before_runs = len(plan)
-        plan = coalesce_speech_runs(plan)
-        if len(plan) != before_runs:
-            print(
-                f"  coalesce speech runs: {before_runs} → {len(plan)} "
-                f"(gap < {SPEECH_RUN_GAP_SEC:.2f}s)",
-                file=sys.stderr,
-            )
 
         yield_guard = KEEP_YIELD_GUARD_SEC if next_is_keep else 0.02
         if next_is_keep:
@@ -1114,56 +2012,36 @@ def synthesize_segments_qwen(
                 file=sys.stderr,
             )
 
-        for j, phrase in enumerate(plan):
-            p_start = float(phrase["start"])
-            p_end = float(phrase["end"])
-            if j == 0:
-                pulled = pull_start_to_energy(
-                    vocals,
-                    p_start,
-                    p_end,
-                    min_start=prev_end + 0.04,
-                    max_pull=0.85,
-                    rms_thresh=0.04,
-                )
-                if pulled < p_start - 0.04:
-                    print(
-                        f"  SNAP start [{seg['speaker_id']}] "
-                        f"{p_start:.2f} → {pulled:.2f}s (energy onset)",
-                        file=sys.stderr,
-                    )
-                    p_start = pulled
-            hard_cap = (
-                float(plan[j + 1]["start"]) - 0.02
-                if j + 1 < len(plan)
-                else min(max(p_end, p_start + 0.25), next_start - yield_guard)
-            )
-            if j + 1 < len(plan):
-                p_end = min(p_end, hard_cap)
-            elif next_is_keep:
-                # Cap the last phrase so EN cannot spill into KEEP onset.
-                p_end = min(p_end, hard_cap)
-            phrase["start"] = p_start
-            phrase["end"] = max(p_end, p_start + 0.25)
-
-        compacted = compact_phrase_timeline_gaps(plan, max_pause=max_dub_pause)
-        if compacted >= 0.15:
+        # Pull first unit start to energy onset (placement only; source_* stays).
+        u0_start = float(units[0]["start"])
+        u0_end = float(units[0]["end"])
+        pulled = pull_start_to_energy(
+            vocals,
+            u0_start,
+            u0_end,
+            min_start=prev_end + 0.04,
+            max_pull=0.85,
+            rms_thresh=0.04,
+        )
+        if pulled < u0_start - 0.04:
             print(
-                f"  compact pauses −{compacted:.2f}s (cap {max_dub_pause:.2f}s)",
+                f"  SNAP start [{seg['speaker_id']}] "
+                f"{u0_start:.2f} → {pulled:.2f}s (energy onset)",
                 file=sys.stderr,
             )
+            units[0]["start"] = pulled
 
-        he_start = float(plan[0]["start"])
-        he_end = float(plan[-1]["end"])
-        start = he_start
-        end = he_end
-        seg["start"] = round(start, 3)
-        seg["end"] = round(end, 3)
-        target = max(end - start, 0.4)
+        start = float(units[0]["start"])
+        end = float(units[-1]["end"])
+        # Keep ASR start/end authoritative for mix/subs; track placement separately.
+        seg["tts_start"] = round(start, 3)
+        seg["tts_end"] = round(end, 3)
+        seg["start"] = round(source_a, 3)
+        seg["end"] = round(source_b, 3)
 
         print(
             f"  Qwen clone [{seg['speaker_id']}] "
-            f"Hebrew window {start:.1f}-{end:.1f}s ({len(plan)} phrase(s))",
+            f"Hebrew window {source_a:.1f}-{source_b:.1f}s ({len(units)} unit(s))",
             file=sys.stderr,
         )
 
@@ -1171,138 +2049,143 @@ def synthesize_segments_qwen(
         bank_ref = bank_paths.get(spk_key)
         first_ref_meta: dict | None = None
         rates: list[float] = []
-        for j, phrase in enumerate(plan):
-            text = phrase["text"]
-            p_start = float(phrase["start"])
-            p_end = float(phrase["end"])
-            p_target = max(p_end - p_start, 0.25)
+        place_plan: list[dict] = []
 
-            he_text = (phrase.get("text_he") or "").strip()
-            if not he_text and j < len(orig_he_phrases):
-                he_text = orig_he_phrases[j]
-            he_text = he_text or "um"
-            phrase["text_he"] = he_text
-
-            if bank_ref is not None and bank_ref.is_file():
-                ref = {
-                    "path": str(bank_ref.resolve()),
-                    "ref_text": he_text,
-                    "start": float(seg.get("ref_start") or p_start),
-                    "end": float(seg.get("ref_end") or p_end),
-                }
+        for j, unit in enumerate(units):
+            text_en = (unit.get("text_en") or "").strip()
+            he_text = (unit.get("text_he") or orig_he or "um").strip() or "um"
+            u_start = float(unit.get("source_start") or unit["start"])
+            u_end = float(unit.get("source_end") or unit["end"])
+            # Isochronous: fit to the Hebrew ASR chunk [source_start, source_end].
+            he_slot_sec = max(0.25, u_end - u_start)
+            raw_pause = float(unit.get("raw_pause_after") or 0.0)
+            if j + 1 < len(units):
+                # Cap at next unit onset. If a real pause follows, allow speech to
+                # finish into that slack instead of mid-clause cutting.
+                nxt_u = units[j + 1]
+                hard_cap = float(nxt_u.get("source_start") or nxt_u["start"]) - 0.02
+                allow_overrun = raw_pause >= 0.25
             else:
-                ref = build_qwen_phrase_ref(
-                    {"start": p_start, "end": p_end, "text": he_text},
-                    seg,
-                    i,
-                    j,
-                    vocals,
-                    ref_dir,
-                    media_duration,
-                    all_segments=segments,
+                # Last unit: yield before KEEP; tiny bleed only into following dub gap.
+                hard_cap = (
+                    next_start - yield_guard
+                    if next_is_keep
+                    else min(next_start + SHORT_SLOT_OVERRUN_CAP_SEC, media_duration)
                 )
-            if first_ref_meta is None:
-                first_ref_meta = ref
+                allow_overrun = (not next_is_keep) and (hard_cap - u_end) >= 0.25
+            hard_cap = max(hard_cap, u_start + 0.25)
+            # Fit/pad toward the HE lips window; overrun (when allowed) may extend
+            # past u_end into the following pause up to hard_cap on assemble.
+            window_sec = min(he_slot_sec, max(0.25, hard_cap - u_start))
+            window_end = min(u_start + window_sec, hard_cap)
+            if allow_overrun:
+                window_end = hard_cap
 
-            speak = prepare_english_tts_text(text)
-            tok = estimate_max_new_tokens(speak, p_target)
-            if speak != text:
-                print(f"    tts-text: {speak[:70]}…", file=sys.stderr)
+            # Build / pick clone refs — bank first (stable identity), then local.
+            alt_refs: list[dict] = []
+            bm = bank_meta.get(spk_key) or {}
+            if bank_ref is not None and bank_ref.is_file():
+                primary_ref = {
+                    "path": str(bank_ref.resolve()),
+                    "ref_text": str(bm.get("ref_text") or he_text),
+                    "start": float(bm.get("start") or seg.get("ref_start") or u_start),
+                    "end": float(bm.get("end") or seg.get("ref_end") or u_end),
+                }
+                alt_refs.append(primary_ref)
+            phrase_ref = build_qwen_phrase_ref(
+                {"start": u_start, "end": u_end, "text": he_text},
+                seg,
+                i,
+                j,
+                vocals,
+                ref_dir,
+                media_duration,
+                all_segments=segments,
+            )
+            # Avoid duplicating the same path.
+            if not alt_refs or Path(phrase_ref["path"]) != Path(alt_refs[0]["path"]):
+                alt_refs.append(phrase_ref)
+            if first_ref_meta is None:
+                first_ref_meta = alt_refs[0]
+
+            speak = prepare_english_tts_text(text_en)
+            if not speak or not re.search(r"[A-Za-z]{2,}", speak):
+                print(
+                    f"      WARN: empty/non-English TTS text for unit {j}; skip",
+                    file=sys.stderr,
+                )
+                seg["tts_failed"] = True
+                continue
             print(
-                f"    phrase {j} HE [{p_start:.2f}-{p_end:.2f}] "
-                f"slot={p_target:.2f}s ref={ref['start']:.1f}-{ref['end']:.1f}s "
-                f"max_tok={tok}: {text[:48]}…",
+                f"    unit {j} HE [{u_start:.2f}-{u_end:.2f}] "
+                f"window={window_sec:.2f}s: {speak[:60]}…",
                 file=sys.stderr,
             )
-            chunk = tts_dir / f"seg_{i:02d}_p{j:02d}_qwen.wav"
+
+            chunk = tts_dir / f"seg_{i:02d}_u{j:02d}_qwen.wav"
+            chunk_441 = tts_dir / f"seg_{i:02d}_u{j:02d}_raw441.wav"
+            trimmed = tts_dir / f"seg_{i:02d}_u{j:02d}_trim.wav"
             prompt_key = spk_key if reuse_speaker_prompt else None
-            syn.synthesize(
-                speak,
-                ref_audio=Path(ref["path"]),
-                ref_text=str(ref["ref_text"]),
-                language=language,
-                out_wav=chunk,
-                prompt_key=prompt_key,
-                target_sec=p_target,
-            )
-            phrase["tts_text"] = speak
+            # Deterministic per-speaker seed → stable timbre across segments.
+            import hashlib
 
-            chunk_441 = tts_dir / f"seg_{i:02d}_p{j:02d}_raw441.wav"
-            subprocess.run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-i",
-                    str(chunk),
-                    "-acodec",
-                    "pcm_s16le",
-                    "-ar",
-                    "44100",
-                    "-ac",
-                    "1",
-                    str(chunk_441),
-                ],
-                check=True,
-                capture_output=True,
+            spk_seed = (
+                int(hashlib.md5(spk_key.encode("utf-8")).hexdigest()[:8], 16) % 100_000
             )
-            trimmed = tts_dir / f"seg_{i:02d}_p{j:02d}_trim.wav"
-            lead = trim_leading_silence(chunk_441, trimmed)
-            fit_src = trimmed if lead >= 0.04 else chunk_441
-            if lead >= 0.04:
-                print(f"      trim lead silence {lead:.2f}s", file=sys.stderr)
 
-            raw_sec = wav_duration(fit_src)
-            natural = raw_sec / max(p_target, 0.25)
-            # Prefer shorten-and-retry over hard truncation when the next
-            # segment is KEEP-original OR the next onset is very close.
-            is_last_phrase = j + 1 >= len(plan)
-            gap_to_next = max(0.0, float(next_start) - float(p_end))
-            tight_next = is_last_phrase and gap_to_next < TIGHT_NEXT_GAP_SEC
-            en_words = max(1, len(speak.split()))
-            he_words = max(1, len(he_text.split()))
-            en_heavy = en_words > max(4, he_words * 3) and natural > FIT_MAX_RATE
-            shorten_trigger = SHORTEN_RETRY_RATE
-            if (next_is_keep and is_last_phrase) or tight_next:
-                shorten_trigger = min(SHORTEN_RETRY_RATE, FIT_MAX_RATE)
-            # Allow shorten even on sub-1.2s stubs when EN clearly overfills.
-            min_slot_for_shorten = (
-                0.35 if (en_heavy or tight_next or next_is_keep) else SHORTEN_MIN_SLOT_SEC
-            )
-            if (
-                natural > shorten_trigger
-                and shorten_en_fn is not None
-                and p_target >= min_slot_for_shorten
-            ):
-                budget = max(6, int(p_target * SHORTEN_SYL_PER_SEC))
+            def _resample_trim(src_wav: Path) -> Path:
+                subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-y",
+                        "-i",
+                        str(src_wav),
+                        "-acodec",
+                        "pcm_s16le",
+                        "-ar",
+                        "44100",
+                        "-ac",
+                        "1",
+                        str(chunk_441),
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+                lead = trim_leading_silence(chunk_441, trimmed)
+                if lead >= 0.04:
+                    print(f"      trim lead silence {lead:.2f}s", file=sys.stderr)
+                    return trimmed
+                return chunk_441
+
+            best_fit_src: Path | None = None
+            best_overlap = -1.0
+            best_speak = speak
+            best_score = -1.0
+            accepted = False
+
+            # Escalation for HE→EN clone:
+            # default x_vector_only → try x-vector first (cross-lingual safe),
+            # then ICL with aligned Hebrew ref_text. After clone failures, prefer ICL.
+            fail_n = speaker_fail_counts.get(spk_key, 0)
+            prefer_icl = (not x_vector_only) or fail_n >= 2
+            mode_plan: list[tuple[int, bool]] = []  # (ref_idx, use_xvec)
+            for ri in range(len(alt_refs)):
+                if prefer_icl:
+                    mode_plan.append((ri, False))  # ICL first
+                    mode_plan.append((ri, True))
+                else:
+                    mode_plan.append((ri, True))
+                    mode_plan.append((ri, False))
+
+            n_tries = max(CLONE_MAX_TRIES, len(mode_plan)) if verify_clone else 1
+            skip_icl = False  # set when ICL bleeds Hebrew into English target
+            for attempt in range(n_tries):
+                ref_i, use_xvec = mode_plan[attempt % len(mode_plan)]
+                if skip_icl and not use_xvec:
+                    continue
+                ref = alt_refs[ref_i]
+                seed = spk_seed + attempt * 97
                 try:
-                    shorter = shorten_en_fn(
-                        he_text=he_text,
-                        en_text=speak,
-                        duration=p_target,
-                        syllable_budget=budget,
-                    )
-                except Exception as exc:
-                    print(f"      shorten retry failed: {exc}", file=sys.stderr)
-                    shorter = None
-                if shorter and shorter.strip() and shorter.strip() != speak:
-                    orig_words = max(1, len(speak.split()))
-                    new_words = len(shorter.split())
-                    drop = 1.0 - (new_words / orig_words)
-                    if drop > SHORTEN_MAX_WORD_DROP:
-                        print(
-                            f"      shorten rejected (dropped {drop:.0%} words): "
-                            f"{shorter[:70]}…",
-                            file=sys.stderr,
-                        )
-                        shorter = None
-                if shorter and shorter.strip() and shorter.strip() != speak:
-                    print(
-                        f"      shorten EN ({natural:.2f}× → retry): {shorter[:70]}…",
-                        file=sys.stderr,
-                    )
-                    speak = prepare_english_tts_text(shorter)
-                    phrase["text"] = speak
-                    phrase["tts_text"] = speak
                     syn.synthesize(
                         speak,
                         ref_audio=Path(ref["path"]),
@@ -1310,153 +2193,296 @@ def synthesize_segments_qwen(
                         language=language,
                         out_wav=chunk,
                         prompt_key=prompt_key,
-                        target_sec=p_target,
+                        target_sec=window_sec,
+                        seed=seed,
+                        x_vector_only=use_xvec,
                     )
+                except Exception as exc:
+                    print(
+                        f"      synth attempt {attempt} failed: {exc}",
+                        file=sys.stderr,
+                    )
+                    continue
+                fit_src = _resample_trim(chunk)
+
+                if not verify_clone:
+                    best_fit_src = fit_src
+                    best_overlap = 1.0
+                    accepted = True
+                    break
+
+                ok, overlap, asr = verify_clone_clip(fit_src, speak)
+                # Voice identity: compare clone embedding to the ref embedding.
+                voice_sim = voice_similarity(fit_src, Path(ref["path"]))
+                score = overlap * 0.7 + max(0.0, voice_sim) * 0.3
+                print(
+                    f"      clone verify attempt {attempt}: "
+                    f"ok={ok} overlap={overlap:.2f} voice={voice_sim:.2f} "
+                    f"xvec={use_xvec} asr={asr[:50]!r}",
+                    file=sys.stderr,
+                )
+                he_chars = len(re.findall(r"[\u0590-\u05FF]", asr or ""))
+                if he_chars >= 4 and not use_xvec:
+                    # Hebrew ICL often collapses EN target → skip further ICL tries.
+                    skip_icl = True
+                    print(
+                        "      ICL Hebrew bleed detected; preferring x-vector",
+                        file=sys.stderr,
+                    )
+                if score > best_score and (
+                    overlap >= CLONE_MIN_OVERLAP * 0.5 or (ok and voice_sim >= 0.5)
+                ):
+                    best_score = score
+                    best_overlap = overlap
+                    best_copy = tts_dir / f"seg_{i:02d}_u{j:02d}_best.wav"
                     subprocess.run(
                         [
                             "ffmpeg",
                             "-y",
                             "-i",
-                            str(chunk),
+                            str(fit_src),
                             "-acodec",
                             "pcm_s16le",
                             "-ar",
                             "44100",
                             "-ac",
                             "1",
-                            str(chunk_441),
+                            str(best_copy),
                         ],
                         check=True,
                         capture_output=True,
                     )
-                    lead = trim_leading_silence(chunk_441, trimmed)
-                    fit_src = trimmed if lead >= 0.04 else chunk_441
-                    raw_sec = wav_duration(fit_src)
+                    best_fit_src = best_copy
+                if ok and voice_sim >= 0.55:
+                    accepted = True
+                    if best_fit_src is None:
+                        best_fit_src = fit_src
+                        best_overlap = overlap
+                    break
+                if ok and best_fit_src is not None and score >= 0.40:
+                    # Content OK; voice soft — accept best so far after retries.
+                    accepted = True
+                    break
 
-            left_lim = (
-                float(plan[j - 1]["end"]) + 0.08
-                if j > 0
-                else float(prev_end) + 0.04
-            )
-            right_lim = (
-                float(plan[j + 1]["start"]) - 0.08
-                if j + 1 < len(plan)
-                else float(next_start) - yield_guard
-            )
-            # ASR end before slack/fit mutation — used to cap writeback.
-            asr_end = float(phrase.get("end") or p_end)
-            slot_max_rate = 1.12 if (p_end - p_start) < 1.2 else FIT_MAX_RATE
-            # Before KEEP or a tight next onset: do not allow overrun slack.
-            if (next_is_keep and is_last_phrase) or tight_next:
-                slot_max_rate = max(slot_max_rate, FIT_MAX_RATE)
-            p_start, p_end, slack_note = slack_phrase_window_for_rate(
-                p_start=p_start,
-                p_end=p_end,
-                raw_sec=raw_sec,
-                left_lim=left_lim,
-                right_lim=right_lim,
-                max_rate=slot_max_rate,
-            )
-            if slack_note:
-                print(f"      {slack_note}", file=sys.stderr)
-                phrase["start"] = round(p_start, 3)
-                phrase["end"] = round(p_end, 3)
-            p_target = max(p_end - p_start, 0.25)
-
-            slow_slot = is_slow_he_slot(he_text, p_target, raw_sec)
-            slot_min_rate = SLOW_MIN_RATE if slow_slot else FIT_MIN_RATE
-            if slow_slot:
+            # Deterministic fallback when sampled clones all failed acceptance.
+            if verify_clone and not accepted:
                 print(
-                    f"      slow-HE slot ({he_words_per_sec(he_text, p_target):.1f} w/s, "
-                    f"EN fills {raw_sec / p_target:.0%}) → mild stretch + lead pad",
+                    f"      clone deterministic fallback "
+                    f"(best_overlap={best_overlap:.2f})",
                     file=sys.stderr,
                 )
+                ref = alt_refs[0]
+                try:
+                    syn.synthesize(
+                        speak,
+                        ref_audio=Path(ref["path"]),
+                        ref_text=str(ref["ref_text"]),
+                        language=language,
+                        out_wav=chunk,
+                        prompt_key=prompt_key,
+                        target_sec=window_sec,
+                        seed=spk_seed,
+                        x_vector_only=False,  # ICL deterministic
+                        deterministic=True,
+                    )
+                    fit_src = _resample_trim(chunk)
+                    ok, overlap, asr = verify_clone_clip(fit_src, speak)
+                    print(
+                        f"      clone verify fallback: "
+                        f"ok={ok} overlap={overlap:.2f} asr={asr[:50]!r}",
+                        file=sys.stderr,
+                    )
+                    if ok or overlap >= CLONE_MIN_OVERLAP:
+                        best_fit_src = fit_src
+                        best_overlap = overlap
+                        accepted = True
+                    elif best_fit_src is not None and best_overlap >= CLONE_MIN_OVERLAP * 0.7:
+                        # Keep best-effort English rather than leaving a hole.
+                        accepted = True
+                        print(
+                            f"      accepting best-effort clone "
+                            f"(overlap={best_overlap:.2f})",
+                            file=sys.stderr,
+                        )
+                except Exception as exc:
+                    print(f"      deterministic fallback failed: {exc}", file=sys.stderr)
 
-            fitted_phrase = tts_dir / f"seg_{i:02d}_p{j:02d}_fit.wav"
-            p_a = int(round(p_start * 44100))
-            p_b = int(round(p_end * 44100))
+            if not accepted or best_fit_src is None:
+                speaker_fail_counts[spk_key] = speaker_fail_counts.get(spk_key, 0) + 1
+                # Last resort: keep best English-ish clip if any content overlap.
+                if best_fit_src is not None and best_overlap >= 0.20:
+                    print(
+                        f"      WARN: weak clone for unit {j} "
+                        f"(overlap={best_overlap:.2f}); placing best-effort",
+                        file=sys.stderr,
+                    )
+                    accepted = True
+                else:
+                    print(
+                        f"      FAIL: no accepted clone for unit {j} "
+                        f"(best_overlap={best_overlap:.2f}); mark tts_failed",
+                        file=sys.stderr,
+                    )
+                    seg["tts_failed"] = True
+                    continue
+
+            # Shorten-retry if natural rate would exceed FIT_MAX_RATE.
+            # Skip when a following pause can absorb the overrun — don't cut
+            # talking mid-sentence just to squeeze into the HE lips window.
+            raw_sec = wav_duration(best_fit_src)
+            natural = raw_sec / max(window_sec, 0.25)
+            overrun_sec = max(0.0, raw_sec - window_sec)
+            pause_can_absorb = allow_overrun and overrun_sec <= max(0.0, raw_pause - 0.05)
+            if (
+                natural > FIT_MAX_RATE
+                and shorten_en_fn is not None
+                and not pause_can_absorb
+            ):
+                budget = max(6, int(window_sec * SHORTEN_SYL_PER_SEC))
+                try:
+                    shorter = shorten_en_fn(
+                        he_text=he_text,
+                        en_text=best_speak,
+                        duration=window_sec,
+                        syllable_budget=budget,
+                    )
+                except Exception as exc:
+                    print(f"      shorten retry failed: {exc}", file=sys.stderr)
+                    shorter = None
+                if shorter and shorter.strip() and shorter.strip() != best_speak:
+                    orig_words = max(1, len(best_speak.split()))
+                    new_words = len(shorter.split())
+                    drop = 1.0 - (new_words / orig_words)
+                    if drop <= SHORTEN_MAX_WORD_DROP:
+                        print(
+                            f"      shorten EN ({natural:.2f}× → retry): "
+                            f"{shorter[:70]}…",
+                            file=sys.stderr,
+                        )
+                        best_speak = prepare_english_tts_text(shorter)
+                        syn.synthesize(
+                            best_speak,
+                            ref_audio=Path(alt_refs[0]["path"]),
+                            ref_text=str(alt_refs[0]["ref_text"]),
+                            language=language,
+                            out_wav=chunk,
+                            prompt_key=prompt_key,
+                            target_sec=window_sec,
+                            seed=2000 + i * 17 + j,
+                        )
+                        subprocess.run(
+                            [
+                                "ffmpeg",
+                                "-y",
+                                "-i",
+                                str(chunk),
+                                "-acodec",
+                                "pcm_s16le",
+                                "-ar",
+                                "44100",
+                                "-ac",
+                                "1",
+                                str(chunk_441),
+                            ],
+                            check=True,
+                            capture_output=True,
+                        )
+                        lead = trim_leading_silence(chunk_441, trimmed)
+                        best_fit_src = trimmed if lead >= 0.04 else chunk_441
+                        raw_sec = wav_duration(best_fit_src)
+
+            fitted_unit = tts_dir / f"seg_{i:02d}_u{j:02d}_fit.wav"
             rate = fit_exact_window(
-                fit_src,
-                fitted_phrase,
-                p_target,
-                target_n=max(1, p_b - p_a),
-                max_rate=slot_max_rate,
-                min_rate=slot_min_rate,
-                allow_overrun=not (
-                    (next_is_keep and is_last_phrase) or tight_next
-                ),
+                best_fit_src,
+                fitted_unit,
+                window_sec,
+                max_rate=FIT_MAX_RATE,
+                min_rate=FIT_MIN_RATE,
+                allow_overrun=allow_overrun,
             )
-            if slow_slot:
-                lead = pad_leading_silence_for_slow_slot(
-                    fitted_phrase,
-                    fitted_phrase,
-                    slot_sec=p_target,
-                    sample_rate=44100,
-                )
-                if lead >= 0.06:
-                    print(f"      slow-HE lead silence {lead:.2f}s", file=sys.stderr)
             rates.append(rate)
-            actual = wav_duration(fitted_phrase)
-            overrun = actual - p_target
-            note = (
-                f"overrun +{overrun:.2f}s into pause"
-                if overrun > 0.04
-                else "exact slot"
-            )
+            actual = wav_duration(fitted_unit)
+            he_slot = he_slot_sec
+            delta = actual - he_slot
+            if abs(delta) < 0.04:
+                note = "exact"
+            elif delta > 0:
+                note = f"overrun +{delta:.2f}s (capped)"
+            else:
+                note = f"short {-delta:.2f}s (stretched toward HE)"
             print(
-                f"      qwen raw={wav_duration(chunk_441):.2f}s → "
-                f"{actual:.2f}s @ rate={rate:.3f} ({note})",
+                f"      qwen raw={raw_sec:.2f}s → {actual:.2f}s "
+                f"@ rate={rate:.3f} he={he_slot:.2f}s ({note})",
                 file=sys.stderr,
             )
-            phrase["tts_fit"] = str(fitted_phrase)
-            phrase["tts_raw"] = str(chunk_441)
-            phrase["ref_audio"] = ref["path"]
-            phrase["tts_speed_used"] = round(rate, 3)
-            if actual > p_target + 0.04:
-                # Cap expansion for short HE slots — don't fill the whole gap
-                # to the next onset (that caused 0.5s stubs → multi-second repeats).
-                gap_budget = max(0.0, float(next_start) - asr_end - yield_guard)
-                if p_target < 1.5:
-                    max_over = min(SHORT_SLOT_OVERRUN_CAP_SEC, gap_budget * 0.4)
-                else:
-                    max_over = min(gap_budget, SLACK_MAX_LATE_SEC)
-                phrase["end"] = round(
-                    min(p_start + actual, asr_end + max_over, next_start - yield_guard),
-                    3,
-                )
+            place_end = u_end  # always occupy the full Hebrew ASR window
+            if actual > he_slot_sec + 0.04:
+                place_end = min(u_start + actual, window_end)
+            place_plan.append(
+                {
+                    "start": u_start,
+                    "end": place_end,
+                    "source_start": u_start,
+                    "source_end": u_end,
+                    "tts_fit": str(fitted_unit),
+                    "tts_raw": str(best_fit_src),
+                    "tts_speed_used": round(rate, 3),
+                    "tts_text": best_speak,
+                    "text_he": he_text,
+                    "text_en": best_speak,
+                    "pause_after": float(unit.get("pause_after") or 0.0),
+                }
+            )
 
-        start = min(float(p["start"]) for p in plan)
-        end = max(float(p["end"]) for p in plan)
+        if not place_plan:
+            seg["tts_failed"] = True
+            print(
+                f"  FAIL [{seg.get('speaker_id')}] no placed units; tts_failed",
+                file=sys.stderr,
+            )
+            continue
+
+        seg.pop("tts_failed", None)
+        # Restore immutable ASR window; track fitted occupancy separately.
+        start = source_a
+        end = source_b
+        spoken_start = min(float(p["start"]) for p in place_plan)
+        spoken_end = max(float(p["end"]) for p in place_plan)
         seg["start"] = round(start, 3)
         seg["end"] = round(end, 3)
-        target = max(end - start, 0.4)
+        seg["source_start"] = round(start, 3)
+        seg["source_end"] = round(end, 3)
+        seg["tts_start"] = round(spoken_start, 3)
+        seg["spoken_end"] = round(spoken_end, 3)
 
         fitted = tts_dir / f"seg_{i:02d}_fit.wav"
+        # Isochronous: hard-end at next onset (tiny yield before KEEP).
+        if next_is_keep:
+            hard_end = next_start - yield_guard
+        else:
+            hard_end = next_start + SHORT_SLOT_OVERRUN_CAP_SEC
+        # Assemble on the ASR Hebrew timeline so clips fill source windows.
         assemble_on_hebrew_timeline(
-            plan,
+            place_plan,
             start,
             end,
             fitted,
             sample_rate=44100,
-            hard_end=next_start - yield_guard,
+            hard_end=hard_end,
             next_is_keep=next_is_keep,
+            gap_bleed_sec=0.0 if next_is_keep else SHORT_SLOT_OVERRUN_CAP_SEC,
         )
         spoken = wav_duration(fitted)
-        end = max(end, start + spoken)
-        # Don't let short HE stubs expand to the next onset.
-        asr_seg_end = max(float(p.get("end") or 0) for p in plan) if plan else end
-        if (end - start) < 1.5:
-            end = min(end, asr_seg_end + SHORT_SLOT_OVERRUN_CAP_SEC)
-        seg["end"] = round(min(end, next_start - yield_guard), 3)
+        seg["spoken_end"] = round(min(start + spoken, hard_end), 3)
+        seg["tts_end"] = seg["spoken_end"]
         seg["duration"] = round(float(seg["end"]) - start, 3)
         print(
-            f"    timeline {spoken:.2f}s (Hebrew slot was {target:.2f}s, "
-            f"{len(plan)} phrases @ HE offsets, "
-            f"hard_end={next_start - yield_guard:.2f})",
+            f"    timeline {spoken:.2f}s ({len(place_plan)} unit(s) @ HE-window fit, "
+            f"hard_end={hard_end:.2f})",
             file=sys.stderr,
         )
         seg.pop("tts_text", None)
-        seg["tts_raw"] = str(plan[0].get("tts_raw") or fitted)
+        seg["tts_raw"] = str(place_plan[0].get("tts_raw") or fitted)
         seg["tts_fit"] = str(fitted)
         seg["tts_speed_used"] = (
             round(sum(rates) / len(rates), 3) if rates else 1.0
@@ -1469,19 +2495,22 @@ def synthesize_segments_qwen(
             seg["ref_start"] = first_ref_meta["start"]
             seg["ref_end"] = first_ref_meta["end"]
 
-        # REPLACE phrases with the plan (never zip onto unmerged list).
+        # Replace phrases with placed units; keep ASR source_* for mix/subs.
         new_phrases: list[dict] = []
-        for j, out_p in enumerate(plan):
-            he = (out_p.get("text_he") or "").strip()
-            if not he and j < len(orig_he_phrases):
-                he = orig_he_phrases[j]
+        for out_p in place_plan:
+            src_a = float(out_p.get("source_start") or out_p["start"])
+            src_b = float(out_p.get("source_end") or out_p["end"])
             row = {
-                "text": he or orig_he,
+                "text": (out_p.get("text_he") or orig_he).strip(),
                 "text_en": dedupe_repeated_sentences(
-                    (out_p.get("tts_text") or out_p.get("text") or "").strip()
+                    (out_p.get("tts_text") or out_p.get("text_en") or "").strip()
                 ),
-                "start": float(out_p["start"]),
-                "end": float(out_p["end"]),
+                "start": src_a,
+                "end": src_b,
+                "source_start": src_a,
+                "source_end": src_b,
+                "tts_start": float(out_p["start"]),
+                "spoken_end": float(out_p["end"]),
                 "pause_after": float(out_p.get("pause_after") or 0.0),
                 "speaker_id": seg.get("speaker_id"),
             }
@@ -1501,14 +2530,17 @@ def synthesize_segments_qwen(
             seg["text"] = " ".join(
                 (p.get("text") or "").strip() for p in new_phrases if p.get("text")
             )
-        en_bits = [
-            (p.get("text_en") or "").strip() for p in new_phrases if p.get("text_en")
-        ]
-        if en_bits:
-            seg["text_en"] = dedupe_repeated_sentences(" ".join(en_bits))
+        # Keep utterance-level text_en authoritative when present.
+        if not (seg.get("text_en") or "").strip():
+            en_bits = [
+                (p.get("text_en") or "").strip()
+                for p in new_phrases
+                if p.get("text_en")
+            ]
+            if en_bits:
+                seg["text_en"] = dedupe_repeated_sentences(" ".join(en_bits))
 
     return segments
-
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Qwen3-TTS 1.7B-Base zero-shot clone.")
@@ -1531,8 +2563,12 @@ def parse_args() -> argparse.Namespace:
         "--max-dub-pause",
         type=float,
         default=DEFAULT_MAX_DUB_PAUSE,
-        help="Cap intra-utterance silence (0=preserve HE pauses, default). "
-        "Set e.g. 0.7 to compact long mid-utterance silences.",
+        help="Legacy; units split at UNIT_SPLIT_PAUSE_SEC (1.2s). Kept for CLI compat.",
+    )
+    p.add_argument(
+        "--no-clone-verify",
+        action="store_true",
+        help="Skip clone length/ASR verification + regenerate (faster, less stable).",
     )
     p.add_argument("--tts-segments", default=None)
     return p.parse_args()
@@ -1571,6 +2607,7 @@ def main() -> None:
         max_pause=args.max_pause,
         max_dub_pause=args.max_dub_pause,
         speaker_bank=speaker_bank,
+        verify_clone=not args.no_clone_verify,
     )
     payload["segments"] = segments
     payload["tts_engine"] = "qwen3-tts-1.7b-base"

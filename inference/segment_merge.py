@@ -10,6 +10,7 @@ Rules:
 
 from __future__ import annotations
 
+import copy
 import re
 import subprocess
 import sys
@@ -122,11 +123,15 @@ def merge_short_phrases(
                 continue
             # Preserve sentence-final interjections —
             # do not fold a new sentence into the previous one just because
-            # it is short.
+            # it is short. Exception: object-continuation stubs
+            # ("אני לא מכירה." + "אף אישה…") must stay one TTS/MT unit.
             prev_txt = (prev.get("text") or "").rstrip()
             cur_txt = (cur.get("text") or "").rstrip()
-            if prev_txt.endswith((".", "!", "?", "…", "؟")) and cur_txt.endswith(
-                (".", "!", "?", "…", "؟")
+            object_cont = needs_object_continuation(prev_txt, cur_txt)
+            if (
+                not object_cont
+                and prev_txt.endswith((".", "!", "?", "…", "؟"))
+                and cur_txt.endswith((".", "!", "?", "…", "؟"))
             ):
                 out.append(cur)
                 continue
@@ -141,6 +146,9 @@ def merge_short_phrases(
             prev["pause_after"] = cur["pause_after"]
             continue
         out.append(cur)
+    # Second pass: merge object-continuation pairs even when neither is "tiny"
+    # (e.g. short stub + longer object clause both punctuated).
+    out = _merge_object_continuation_phrases(out, hard_pause=hard_pause)
     if len(out) >= 2:
         first = out[0]
         gap0 = float(out[1]["start"]) - float(first["end"])
@@ -163,6 +171,229 @@ def merge_short_phrases(
     if out:
         out[-1]["pause_after"] = 0.0
     return out
+
+
+def _merge_object_continuation_phrases(
+    phrases: list[dict[str, Any]],
+    *,
+    hard_pause: float = HARD_PAUSE_SEC,
+) -> list[dict[str, Any]]:
+    """Join object-seeking stubs with their object clauses inside one utterance.
+
+    General pattern: "אני לא מכירה." + "אף אישה במזרח התיכון…" must become
+    one phrase so MT/TTS cannot misalign "I don't know" onto the wrong clause.
+
+    Semantic continuations override pause_after when the next phrase starts
+    immediately after cur.end (gap small) — long pause_after metadata alone
+    must not block the merge.
+    """
+    if len(phrases) <= 1:
+        return phrases
+    # Object continuations may sit after a brief breath; allow up to ~2s gap.
+    cont_gap_max = max(float(hard_pause), 2.0)
+    out: list[dict[str, Any]] = []
+    i = 0
+    while i < len(phrases):
+        cur = dict(phrases[i])
+        if i + 1 < len(phrases):
+            nxt = phrases[i + 1]
+            gap = float(nxt["start"]) - float(cur["end"])
+            if (
+                gap < cont_gap_max
+                and needs_object_continuation(
+                    (cur.get("text") or "").strip(),
+                    (nxt.get("text") or "").strip(),
+                )
+            ):
+                cur["text"] = _join_text_idempotent(
+                    cur.get("text") or "", nxt.get("text") or ""
+                )
+                if cur.get("text_en") or nxt.get("text_en"):
+                    cur["text_en"] = dedupe_repeated_sentences(
+                        _join_text_idempotent(
+                            cur.get("text_en") or "", nxt.get("text_en") or ""
+                        )
+                    )
+                cur["end"] = max(float(cur["end"]), float(nxt["end"]))
+                cur["pause_after"] = float(nxt.get("pause_after") or 0.0)
+                for key in ("tts_fit", "tts_raw", "tts_speed_used", "tts_text"):
+                    cur.pop(key, None)
+                out.append(cur)
+                i += 2
+                continue
+        out.append(cur)
+        i += 1
+    return out
+
+
+def stamp_source_timing(segments: list[dict[str, Any]]) -> int:
+    """Stamp immutable ASR windows once; later TTS may not overwrite them.
+
+    Sets segment- and phrase-level ``source_start`` / ``source_end`` from the
+    current ``start`` / ``end`` when absent. Returns how many segments stamped.
+    """
+    n = 0
+    for seg in segments:
+        if "source_start" not in seg:
+            seg["source_start"] = float(seg.get("start") or 0.0)
+            seg["source_end"] = float(seg.get("end") or 0.0)
+            n += 1
+        for p in seg.get("phrases") or []:
+            if "source_start" not in p:
+                p["source_start"] = float(p.get("start") or 0.0)
+                p["source_end"] = float(p.get("end") or 0.0)
+    return n
+
+
+def _phrase_text_key(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip())[:48]
+
+
+def restore_asr_phrase_boundaries(
+    segments: list[dict[str, Any]],
+    asr_segments: list[dict[str, Any]],
+) -> int:
+    """Re-apply ASR phrase start/end/text from segments.json.
+
+    TTS unit writeback can bloat short stubs into multi-second windows and drop
+    trailing phrases. ASR timings remain the authority for HE windows.
+    Also re-anchors KEEP/original segment start/end to the matching ASR row so
+    energy snap/extend from a prior run cannot permanently shift the timeline.
+    """
+    if not asr_segments:
+        return 0
+    n = 0
+    for seg in segments:
+        st = float(seg.get("source_start") or seg.get("start") or 0.0)
+        en = float(seg.get("source_end") or seg.get("end") or 0.0)
+        best = None
+        best_ov = 0.0
+        for src in asr_segments:
+            a = float(src.get("start") or 0.0)
+            b = float(src.get("end") or 0.0)
+            ov = max(0.0, min(en, b) - max(st, a))
+            if ov > best_ov:
+                best_ov = ov
+                best = src
+        if best is None or best_ov < 0.5:
+            continue
+
+        keep = bool(seg.get("keep_original") or (seg.get("language") or "he") != "he")
+        asr_a = float(best.get("start") or st)
+        asr_b = float(best.get("end") or en)
+        # Always re-anchor the segment window to ASR (placement may still
+        # soft-snap for KEEP, but source_* / mix authority stays ASR).
+        if abs(asr_a - st) > 0.08 or abs(asr_b - en) > 0.08:
+            seg["start"] = asr_a
+            seg["end"] = asr_b
+            seg["source_start"] = asr_a
+            seg["source_end"] = asr_b
+            seg["duration"] = asr_b - asr_a
+            n += 1
+
+        if keep:
+            continue
+
+        src_phrases = best.get("phrases") or []
+        if len(src_phrases) < 2:
+            continue
+        # Rebuild phrases from ASR; keep utterance-level text_en for redistribute.
+        new_phrases: list[dict[str, Any]] = []
+        for sp in src_phrases:
+            row = {
+                "text": (sp.get("text") or "").strip(),
+                "start": float(sp["start"]),
+                "end": float(sp["end"]),
+                "pause_after": float(sp.get("pause_after") or 0.0),
+                "source_start": float(sp["start"]),
+                "source_end": float(sp["end"]),
+                "speaker_id": seg.get("speaker_id"),
+            }
+            new_phrases.append(row)
+        old = seg.get("phrases") or []
+        changed = len(old) != len(new_phrases) or any(
+            abs(float(o.get("start") or 0) - float(n_.get("start") or 0)) > 0.15
+            or abs(float(o.get("end") or 0) - float(n_.get("end") or 0)) > 0.15
+            or _phrase_text_key(o.get("text") or "") != _phrase_text_key(n_.get("text") or "")
+            for o, n_ in zip(old, new_phrases)
+        )
+        if not changed and len(old) == len(new_phrases):
+            continue
+        # Preserve ASR HE text at segment level too when truncated.
+        src_text = (best.get("text") or "").strip()
+        if src_text and len(src_text) > len((seg.get("text") or "").strip()) + 10:
+            seg["text"] = src_text
+        seg["phrases"] = new_phrases
+        # Drop stale TTS paths so units regenerate on restored windows.
+        for key in ("tts_fit", "tts_raw", "tts_speed_used", "tts_text", "spoken_end", "tts_start"):
+            seg.pop(key, None)
+        n += 1
+    return n
+
+
+def rehydrate_missing_asr_segments(
+    segments: list[dict[str, Any]],
+    asr_segments: list[dict[str, Any]],
+    *,
+    min_hole_sec: float = 1.5,
+) -> int:
+    """Re-insert ASR turns that fell out of translated JSON (e.g. empty KEEP text)."""
+    if not asr_segments:
+        return 0
+
+    def _covered(t0: float, t1: float) -> bool:
+        for s in segments:
+            a = float(s.get("source_start") or s.get("start") or 0.0)
+            b = float(s.get("source_end") or s.get("end") or 0.0)
+            if min(t1, b) - max(t0, a) >= 0.6 * (t1 - t0):
+                return True
+        return False
+
+    added = 0
+    for src in asr_segments:
+        a = float(src.get("start") or 0.0)
+        b = float(src.get("end") or 0.0)
+        if b - a < min_hole_sec:
+            continue
+        if _covered(a, b):
+            continue
+        row = copy.deepcopy(src)
+        # Ensure KEEP rows survive empty-caption filtering.
+        if row.get("keep_original") or (row.get("language") or "he") != "he":
+            row["keep_original"] = True
+            row["language"] = row.get("language") or "en"
+            if not (row.get("text") or "").strip():
+                row["text"] = "[original audio]"
+            if not (row.get("text_en") or "").strip():
+                row["text_en"] = row["text"]
+        row["source_start"] = a
+        row["source_end"] = b
+        segments.append(row)
+        added += 1
+        print(
+            f"  rehydrate missing ASR [{row.get('speaker_id')}] "
+            f"{a:.1f}-{b:.1f}s | {(row.get('text') or '')[:50]}",
+            file=sys.stderr,
+        )
+    if added:
+        segments.sort(
+            key=lambda s: float(s.get("source_start") or s.get("start") or 0.0)
+        )
+    return added
+
+
+def source_start(obj: dict[str, Any]) -> float:
+    """ASR onset — prefers immutable source_start when present."""
+    if obj.get("source_start") is not None:
+        return float(obj["source_start"])
+    return float(obj.get("start") or 0.0)
+
+
+def source_end(obj: dict[str, Any]) -> float:
+    """ASR offset — prefers immutable source_end when present."""
+    if obj.get("source_end") is not None:
+        return float(obj["source_end"])
+    return float(obj.get("end") or 0.0)
 
 
 _SENTENCE_SPLIT_EN = re.compile(r"(?<=[.!?…])\s+")
@@ -298,9 +529,78 @@ def clamp_segment_phrases(seg: dict[str, Any]) -> None:
     _rebuild_segment_text(seg)
 
 
+def clamp_segment_timeline(
+    segments: list[dict[str, Any]],
+    *,
+    min_gap: float = 0.02,
+) -> int:
+    """Make segment start/end monotonic so later turns don't overlap earlier ones.
+
+    Diarization often emits overlapping turns (A ends 72.4, B starts 71.9).
+    Without a clamp, TTS uses B's start as hard_end for A and mid-word-cuts A.
+    Splits the overlap at the midpoint (or prev.end + min_gap). Returns #clamped.
+    """
+    if len(segments) < 2:
+        return 0
+    ordered = sorted(
+        range(len(segments)),
+        key=lambda i: (
+            float(segments[i].get("start") or 0.0),
+            float(segments[i].get("end") or 0.0),
+        ),
+    )
+    changed = 0
+    prev_end = None
+    prev_idx = None
+    for idx in ordered:
+        seg = segments[idx]
+        s = float(seg.get("start") or 0.0)
+        e = float(seg.get("end") or s)
+        if e <= s:
+            e = s + 0.25
+        if prev_end is not None and s < prev_end - 1e-3:
+            overlap = prev_end - s
+            if 0 < overlap <= 1.5 and prev_idx is not None:
+                mid = round((s + prev_end) / 2.0, 3)
+                other = segments[prev_idx]
+                other["end"] = mid
+                other["duration"] = round(
+                    float(other["end"]) - float(other["start"]), 3
+                )
+                phrases = other.get("phrases") or []
+                if phrases:
+                    phrases[-1]["end"] = mid
+                    phrases[-1]["pause_after"] = 0.0
+                new_start = mid
+            else:
+                new_start = round(prev_end + min_gap, 3)
+            if new_start >= e:
+                e = new_start + 0.25
+            print(
+                f"  clamp overlap [{seg.get('speaker_id')}] "
+                f"{s:.2f} → start {new_start:.2f}s",
+                file=sys.stderr,
+            )
+            seg["start"] = new_start
+            s = new_start
+            phrases = seg.get("phrases") or []
+            if phrases:
+                phrases[0]["start"] = new_start
+                if float(phrases[0]["end"]) <= new_start:
+                    phrases[0]["end"] = new_start + 0.25
+            changed += 1
+        seg["end"] = round(e, 3)
+        seg["start"] = round(s, 3)
+        seg["duration"] = round(float(seg["end"]) - float(seg["start"]), 3)
+        prev_end = float(seg["end"])
+        prev_idx = idx
+    return changed
+
+
 _UNFINISHED_TAIL = re.compile(
     r"(מממן|מממנת|שפועל|שפועלת|funds|fund|operates|and|the|את|של|עם|ו|"
-    r"אותך|אותה|אותו|אותם|אותן)\.?$",
+    r"אותך|אותה|אותו|אותם|אותן|"
+    r"צובעת|צובע|צובעים|עושה|מקדמת|מקדם|מצליחה|מצליח)\.?$",
     re.IGNORECASE,
 )
 _OPEN_ADVERBIAL = re.compile(
@@ -308,6 +608,18 @@ _OPEN_ADVERBIAL = re.compile(
     re.IGNORECASE,
 )
 _CLAUSE_END = re.compile(r"[.!?؟]\s+")
+# Known transitive / painting verbs that need an object (את …) on the next turn.
+_OBJECT_SEEKING_STUB = re.compile(
+    r"^(היא |הוא |הם |הן |אני )?(צובעת|צובע|עושה|מקדמת|מקדם|מצליחה|מצליח|"
+    r"מממנת|מממן|קושרת|קושר|מכירה|מכיר|יודעת|יודע)\.?$",
+    re.IGNORECASE,
+)
+_OBJECT_CONT_NEXT = re.compile(r"^(את |אף |שום |ו[\u0590-\u05FF])")
+# Generic short subject + one content word (verb-like) — used with object next only.
+_SUBJECT_VERB_SHORT = re.compile(
+    r"^(היא|הוא|הם|הן|אני)\s+[\u0590-\u05FF]{2,14}\.?$"
+)
+_ANI_LO_STUB = re.compile(r"^אני לא [\u0590-\u05FF]{2,14}\.?$")
 
 
 def utterance_unfinished(text: str) -> bool:
@@ -323,7 +635,34 @@ def utterance_unfinished(text: str) -> bool:
         return True
     if _UNFINISHED_TAIL.search(t):
         return True
+    if _OBJECT_SEEKING_STUB.match(t) or _SUBJECT_VERB_SHORT.match(t):
+        return True
+    if _ANI_LO_STUB.match(t):
+        return True
     if t[-1] not in ".!?؟":
+        return True
+    return False
+
+
+def needs_object_continuation(text: str, next_text: str) -> bool:
+    """True when a short subject+verb / 'אני לא X' stub is completed by next.
+
+    Shared by extract stitch and preview absorb. Next must start with an
+    object/negation continuation (את / אף / שום / ו…).
+    """
+    t = (text or "").strip()
+    nxt = (next_text or "").lstrip()
+    if not t or not nxt:
+        return False
+    if not _OBJECT_CONT_NEXT.match(nxt):
+        return False
+    if _OBJECT_SEEKING_STUB.match(t) or _SUBJECT_VERB_SHORT.match(t):
+        return True
+    if _ANI_LO_STUB.match(t):
+        return True
+    # Tiny 1–3 word stub ending in a verb-like token + object next.
+    words = t.rstrip(".!?").split()
+    if 1 <= len(words) <= 3 and utterance_unfinished(t):
         return True
     return False
 
@@ -458,12 +797,16 @@ def stitch_unfinished_continuations(
         cur_tail = (cur.get("text") or "").strip()
         if cur.get("phrases"):
             cur_tail = (cur["phrases"][-1].get("text") or cur_tail).strip()
+        nxt_text = (nxt.get("text") or "").strip()
         unfinished = utterance_unfinished(cur_tail)
+        object_cont = needs_object_continuation(cur_tail, nxt_text)
         short_b = is_short_completion(nxt)
 
         if same_spk:
             allowed_gap = same_speaker_max_gap
-        elif short_b and unfinished:
+        elif short_b and (unfinished or object_cont):
+            allowed_gap = short_completion_gap
+        elif object_cont:
             allowed_gap = short_completion_gap
         else:
             allowed_gap = max_gap
@@ -473,16 +816,15 @@ def stitch_unfinished_continuations(
             and same_keep
             and not cur.get("keep_original")
             and 0 <= gap <= allowed_gap
-            and unfinished
+            and (unfinished or object_cont)
             and (nxt.get("phrases") or (nxt.get("text") or "").strip())
         ):
             out.append(cur)
             i += 1
             continue
 
-        # Short completion (or same-speaker unfinished + any short/medium follow-on
-        # that is itself unfinished-free and tiny): absorb whole next segment.
-        if short_b or (same_spk and unfinished and is_short_completion(nxt)):
+        # Object-continuation stubs (היא צובעת + את…): absorb even cross-speaker.
+        if object_cont or short_b or (same_spk and unfinished and is_short_completion(nxt)):
             cur = _absorb_segment_into(cur, nxt, speaker_id=str(cur.get("speaker_id")))
             out.append(cur)
             i += 2
@@ -490,7 +832,6 @@ def stitch_unfinished_continuations(
 
         # Same-speaker unfinished across a longer pause: absorb whole next if it
         # looks like a continuation (vav / no strong new-sentence marker).
-        nxt_text = (nxt.get("text") or "").strip()
         if same_spk and unfinished and (
             is_continuation_start(nxt_text) or not nxt_text[:1].isupper()
         ):
@@ -772,6 +1113,10 @@ def drop_silent_vocal_segments(
         source = None
     kept: list[dict[str, Any]] = []
     for seg in segments:
+        # Never drop KEEP-original (EN/AR/…) — those must stay in the mix.
+        if seg.get("keep_original") or (seg.get("language") or "he") != "he":
+            kept.append(seg)
+            continue
         a, b = float(seg["start"]), float(seg["end"])
         dur = max(0.05, b - a)
         # Short genuine thanks clips can't meet a fixed 0.25s active floor.
@@ -995,6 +1340,9 @@ def split_segment_by_phrase_speaker(seg: dict[str, Any]) -> list[dict[str, Any]]
             "speaker_id": group[0].get("speaker_id") or seg.get("speaker_id"),
             "language": seg.get("language"),
             "language_score": seg.get("language_score"),
+            "he_score": seg.get("he_score"),
+            "en_score": seg.get("en_score"),
+            "ar_score": seg.get("ar_score"),
             "keep_original": seg.get("keep_original"),
             "start": round(float(group[0]["start"]), 3),
             "end": round(float(group[-1]["end"]), 3),
@@ -1111,8 +1459,12 @@ def merge_same_speaker_segments(
                 "end": end,
                 "phrases": [dict(p) for p in phrases],
             }
-            # Preserve already-rendered TTS paths across merge (selective rebuilds).
+            # Preserve language scores + already-rendered TTS across merge.
             for key in (
+                "language_score",
+                "he_score",
+                "en_score",
+                "ar_score",
                 "tts_fit",
                 "tts_raw",
                 "tts_speed_used",

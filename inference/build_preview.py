@@ -22,21 +22,30 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import torch
 
 from inference.segment_merge import (
     clamp_segment_phrases,
+    clamp_segment_timeline,
     dedupe_repeated_sentences,
     dedupe_segment_text_fields,
     is_continuation_start,
     merge_short_phrases,
+    needs_object_continuation,
     refresh_segment_fields,
+    rehydrate_missing_asr_segments,
+    restore_asr_phrase_boundaries,
     retag_english_sandwich,
+    stamp_source_timing,
+    source_end,
+    source_start,
     utterance_unfinished,
 )
 from inference.tts_f5 import synthesize_segments_f5, wav_duration as f5_wav_duration
@@ -47,9 +56,37 @@ from inference.tts_qwen import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-# TranslateGemma via transformers currently emits pad-only output on this stack.
-# Use mlx-lm (same default as inference/translate_pipeline.py).
+
+# region agent log
+_DEBUG_LOG_PATH = REPO_ROOT / ".cursor" / "debug-5e8424.log"
+
+
+def _debug_event(
+    hypothesis_id: str,
+    location: str,
+    message: str,
+    data: dict,
+) -> None:
+    try:
+        payload = {
+            "sessionId": "5e8424",
+            "runId": os.environ.get("DUB_DEBUG_RUN", "diagnostic"),
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        with _DEBUG_LOG_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+# endregion
+
+# Default: TranslateGemma 4B with neighbor-chunk context.
+# mlx-lm instruct LLM available via --translator llm (A/B).
 DEFAULT_MLX_TRANSLATE_MODEL = "mlx-community/Qwen2.5-7B-Instruct-4bit"
+DEFAULT_GEMMA_MODEL = REPO_ROOT / "models" / "translategemma-4b-it"
 MIN_SEG_DURATION = 0.35
 HE_RE = re.compile(r"[\u0590-\u05FF]")
 
@@ -63,6 +100,9 @@ TRANSLATE_GLOSSARY = (
     "- האחים המוסלמים / אחים מוסלמים → Muslim Brotherhood\n"
     "- פר אקסלנס / פר-אקסלנס → par excellence (never 'of excellence')\n"
     "- ג'בהת אל-נוסרה → Jabhat al-Nusra\n"
+    "- מצפון / למצפון / למצפון המערבי → conscience / for the Western conscience "
+    "(never 'north'; צפון=north, מצפון=conscience)\n"
+    "- בשלוות נפש / בנינוחות → with composure / calmly (never 'clear conscience')\n"
     "- היא לא מאיימת → It doesn't threaten (neuter/country), not 'She is not threatening'\n"
     "- בנה / לבנה / בנה השני → her son / to her son / her second son "
     "(never 'daughter' — בן is masculine)\n"
@@ -87,9 +127,52 @@ def looks_hebrew(text: str) -> bool:
     return bool(HE_RE.search(text or ""))
 
 
+# Letters outside Latin (CJK, Cyrillic, Arabic, Hebrew, …) — must not reach TTS.
+_LATIN_LETTER_RE = re.compile(r"[A-Za-z]")
+# Caption / stage chrome that must not inflate EN length or be spoken.
+_CAPTION_CHROME_RE = re.compile(
+    r"(?:>>+\s*)|"
+    r"\[(?:music|applause|מוזיקה|שירה|קהל)[^\]]*\]|"
+    r"\((?:music|applause)\)",
+    flags=re.IGNORECASE,
+)
+
+
+def is_latin_english(text: str) -> bool:
+    """True when text has Latin letters and no non-Latin letter scripts (CJK/HE/AR/…)."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if not _LATIN_LETTER_RE.search(t):
+        return False
+    for ch in t:
+        if ch.isalpha() and not ("A" <= ch <= "Z" or "a" <= ch <= "z"):
+            return False
+    return True
+
+
+def strip_non_latin_runs(text: str) -> str:
+    """Drop non-Latin letter runs; keep Latin, digits, and punctuation."""
+    out: list[str] = []
+    for ch in text or "":
+        if ch.isalpha() and not ("A" <= ch <= "Z" or "a" <= ch <= "z"):
+            out.append(" ")
+        else:
+            out.append(ch)
+    return re.sub(r"\s+", " ", "".join(out)).strip(" ,.;:-")
+
+
+def strip_caption_chrome(text: str) -> str:
+    """Remove YouTube/ASR stage marks (>>, [music], [applause], …)."""
+    t = _CAPTION_CHROME_RE.sub(" ", text or "")
+    return re.sub(r"\s+", " ", t).strip(" ,.;:-")
+
+
 def is_english_text(text: str) -> bool:
     t = (text or "").strip()
-    return bool(t) and not looks_hebrew(t)
+    if not t or looks_hebrew(t):
+        return False
+    return is_latin_english(t)
 
 
 def preserve_latin_tokens(source: str, translated: str) -> str:
@@ -153,6 +236,9 @@ def _split_en_across_groups(en: str, group_weights: list[int]) -> list[str]:
         dangling = {
             "the", "a", "an", "and", "or", "but", "of", "to", "with", "for",
             "in", "on", "at", "by", "from", "as", "is", "are", "was", "were",
+            # Clause openers — never end a chunk mid-"but when …"
+            "when", "if", "while", "because", "though", "although", "that",
+            "which", "who", "whom", "whose", "than", "then",
         }
         while (
             need > 1
@@ -160,6 +246,18 @@ def _split_en_across_groups(en: str, group_weights: list[int]) -> list[str]:
             and words[assigned_words + need - 1].strip(".,;:!?\"'").lower() in dangling
         ):
             need -= 1
+        # If we still land on a dangling opener, push the cut forward to the
+        # next comma/sentence so the clause stays intact (pause slack can absorb).
+        while (
+            assigned_words + need < len(words)
+            and words[assigned_words + need - 1].strip(".,;:!?\"'").lower() in dangling
+        ):
+            need += 1
+            if words[assigned_words + need - 1].endswith((".", "!", "?", "…", ",", ";", ":")):
+                break
+            if need > len(words) - assigned_words - remaining_groups:
+                need = max(1, len(words) - assigned_words - remaining_groups)
+                break
         for k in range(assigned_words + 1, len(words) - remaining_groups + 1):
             if words[k - 1].endswith((".", "!", "?", "…", ",", ";", ":")):
                 if abs((k - assigned_words) - need) <= max(3, need // 2):
@@ -187,7 +285,8 @@ def distribute_en_to_phrases(en: str, phrases: list[dict]) -> None:
     Hard pauses (>= HARD_PAUSE_SEC) are alignment anchors — never pack phrase
     groups across them; split EN at clause punctuation instead.
     """
-    en = dedupe_repeated_sentences((en or "").strip())
+    en = strip_caption_chrome(strip_non_latin_runs((en or "").strip()))
+    en = dedupe_repeated_sentences(en)
     if not phrases:
         return
     if len(phrases) == 1 or not en:
@@ -218,7 +317,16 @@ def distribute_en_to_phrases(en: str, phrases: list[dict]) -> None:
             p["text_en"] = " ".join(chunk).strip()
         return
 
-    weights = [max(1, len((p.get("text") or "").split())) for p in phrases]
+    # Prefer HE speech-duration weights when timestamps exist; else word counts.
+    if all(
+        p.get("start") is not None and p.get("end") is not None for p in phrases
+    ):
+        weights = [
+            max(1, int(round(max(0.25, float(p["end"]) - float(p["start"])) * 10)))
+            for p in phrases
+        ]
+    else:
+        weights = [max(1, len((p.get("text") or "").split())) for p in phrases]
     total_w = sum(weights)
 
     hard_pause_idxs: list[int] = []
@@ -261,10 +369,11 @@ def distribute_en_to_phrases(en: str, phrases: list[dict]) -> None:
         return
 
     # Soft packing only when there are NO hard pauses — may merge short phrases.
+    # Never rewrite HE start/end/text: ASR phrase windows are immutable. Only
+    # attach text_en onto the existing phrase rows.
     if 1 <= len(en_sents) < len(phrases):
         sent_w = [max(1, len(s.split())) for s in en_sents]
         sent_total = float(sum(sent_w))
-        new_phrases: list[dict] = []
         p_i = 0
         for si, sw in enumerate(sent_w):
             need = (sw / sent_total) * total_w
@@ -283,21 +392,13 @@ def distribute_en_to_phrases(en: str, phrases: list[dict]) -> None:
             group = phrases[p_start:p_i]
             if not group:
                 continue
-            merged = dict(group[0])
-            merged["text"] = " ".join(
-                (g.get("text") or "").strip() for g in group if (g.get("text") or "").strip()
-            ).strip()
-            merged["text_en"] = en_sents[si]
-            merged["start"] = float(group[0]["start"])
-            merged["end"] = float(group[-1]["end"])
-            merged["pause_after"] = float(group[-1].get("pause_after") or 0.0)
-            for key in ("tts_fit", "tts_raw", "tts_speed_used"):
-                merged.pop(key, None)
-            new_phrases.append(merged)
-        if new_phrases:
-            phrases.clear()
-            phrases.extend(new_phrases)
-            return
+            # Put the full sentence on the first phrase of the span; clear the
+            # rest so TTS units prefer the authoritative sentence once.
+            group[0]["text_en"] = en_sents[si]
+            for g in group[1:]:
+                g["text_en"] = ""
+        _repair_dangling_en_phrases(phrases)
+        return
 
     en_clauses = [c.strip() for c in re.split(r",\s*", en) if c.strip()]
     if len(en_clauses) == len(phrases) and len(phrases) >= 2:
@@ -395,6 +496,15 @@ _REL_CLAUSE_START = re.compile(
 )
 
 
+_TRAILING_DANGLING_EN = re.compile(
+    r"^(.*?)\b("
+    r"the|a|an|and|or|but|of|to|with|for|in|on|at|by|from|as|"
+    r"when|if|while|because|though|although|that|which|who|whom|whose|than|then"
+    r")(?:\s*[.,;:]*)?$",
+    re.I | re.S,
+)
+
+
 def _repair_dangling_en_phrases(phrases: list[dict]) -> None:
     """Merge phrases whose EN is only a relative-clause tail into the previous.
 
@@ -402,6 +512,11 @@ def _repair_dangling_en_phrases(phrases: list[dict]) -> None:
       p0: "She funds every Islamic terrorist organization"
       p1: "that operates in the world."
     which drop the Hebrew clause and sound like a skipped line.
+
+    Also repairs trailing mid-clause cuts ("… but when.") by moving the
+    dangling opener onto the next phrase when a hard pause does NOT follow
+    — or by pulling the next phrase's EN back when the cut left an unfinished
+    clause before a pause (prefer complete talking; pause is slack).
     """
     i = 1
     while i < len(phrases):
@@ -421,6 +536,96 @@ def _repair_dangling_en_phrases(phrases: list[dict]) -> None:
             if key in phrases[i] and key not in prev:
                 prev[key] = phrases[i][key]
         phrases.pop(i)
+
+    # Trailing dangling mid-clause ("… but when.") — rejoin and re-split so
+    # talking stays complete. Prefer a comma cut that leaves a short adverbial
+    # tail on the post-pause phrase when a hard pause follows.
+    i = 0
+    while i < len(phrases) - 1:
+        cur = phrases[i]
+        nxt = phrases[i + 1]
+        cur_en = (cur.get("text_en") or "").strip()
+        nxt_en = (nxt.get("text_en") or "").strip()
+        if not cur_en or not nxt_en:
+            i += 1
+            continue
+        if not _TRAILING_DANGLING_EN.match(cur_en):
+            i += 1
+            continue
+        gap = float(nxt.get("start") or 0.0) - float(cur.get("end") or 0.0)
+        pause = float(cur.get("pause_after") or 0.0)
+        full = f"{cur_en} {nxt_en}".strip()
+        full = re.sub(r"\s+", " ", full)
+        if max(gap, pause) >= HARD_PAUSE_SEC:
+            # Pause is slack: keep HE windows, put the main clause before the
+            # pause and a short adverbial/tail after when possible.
+            cuts = [
+                m.start()
+                for m in re.finditer(
+                    r"(?:,\s+)?\b(with such|with so|in such)\b",
+                    full,
+                    flags=re.I,
+                )
+            ]
+            if not cuts:
+                cuts = [
+                    m.start()
+                    for m in re.finditer(
+                        r",\s+(with|and then)\b", full, flags=re.I
+                    )
+                ]
+            if cuts and cuts[-1] > len(full) * 0.35:
+                cut = cuts[-1]
+                left = full[:cut].strip().rstrip(",") + ","
+                right = full[cut:].lstrip(", ").strip()
+            else:
+                # Fall back: keep ~70% of words before the pause (complete talking),
+                # leave a short tail for the post-pause lips.
+                words = full.split()
+                keep = max(4, int(round(len(words) * 0.72)))
+                keep = min(keep, len(words) - 2)
+                while keep < len(words) - 1 and not words[keep - 1].endswith(
+                    (",", ".", "!", "?", "…", ";", ":")
+                ):
+                    keep += 1
+                    if keep >= len(words) - 1:
+                        break
+                left = " ".join(words[:keep]).strip()
+                right = " ".join(words[keep:]).strip()
+            cur["text_en"] = left
+            nxt["text_en"] = right
+        else:
+            # Soft gap: merge phrase rows so talking isn't chopped.
+            cur["text_en"] = full
+            cur["text"] = (
+                f"{(cur.get('text') or '').strip()} {(nxt.get('text') or '').strip()}"
+            ).strip()
+            cur["end"] = float(nxt["end"])
+            cur["pause_after"] = float(nxt.get("pause_after") or 0.0)
+            phrases.pop(i + 1)
+            continue
+        i += 1
+
+    # Absorb empty-EN soft-gap phrases into the previous (keep hard pauses).
+    i = 1
+    while i < len(phrases):
+        if (phrases[i].get("text_en") or "").strip():
+            i += 1
+            continue
+        prev = phrases[i - 1]
+        gap = float(phrases[i].get("start") or 0.0) - float(prev.get("end") or 0.0)
+        pause = float(prev.get("pause_after") or 0.0)
+        if max(gap, pause) >= HARD_PAUSE_SEC:
+            # Hard pause with no EN — leave the row (caller may fill later).
+            i += 1
+            continue
+        prev["text"] = (
+            f"{(prev.get('text') or '').strip()} {(phrases[i].get('text') or '').strip()}"
+        ).strip()
+        prev["end"] = float(phrases[i]["end"])
+        prev["pause_after"] = float(phrases[i].get("pause_after") or 0.0)
+        phrases.pop(i)
+
     # Clear stale per-phrase TTS paths after a merge.
     for p in phrases:
         for key in ("tts_fit", "tts_raw", "tts_speed_used"):
@@ -510,12 +715,98 @@ def load_mlx_translator(model_id: str):
         from mlx_lm import load
     except ImportError as exc:
         raise SystemExit(
-            "mlx-lm is required for translation (TranslateGemma returns empty on this stack).\n"
+            "mlx-lm is required for --translator llm.\n"
             "Install with: uv sync"
         ) from exc
     print(f"Loading mlx-lm translator {model_id}...", file=sys.stderr)
     model, tokenizer = load(model_id)
     return model, tokenizer
+
+
+def load_gemma_translator(model_path: Path | str, device: str = "auto"):
+    from inference.translate import load_translategemma, resolve_device
+
+    return load_translategemma(Path(model_path), device=resolve_device(device))
+
+
+def translate_text_gemma(
+    processor,
+    model,
+    text: str,
+    *,
+    device=None,
+    duration: float | None = None,
+    max_tokens: int = 220,
+    prev_he: str | None = None,
+    next_he: str | None = None,
+    next_hes: list[str] | None = None,
+) -> str:
+    """Translate with TranslateGemma, optionally using neighbor HE context.
+
+    When neighbors are provided, tries marker-aligned multi-chunk translation
+    and returns only the focus chunk's English. Falls back to direct MT.
+    """
+    from inference.translate import translate_gemma, translate_gemma_marked_chunks
+
+    he = (text or "").strip()
+    if not he:
+        return ""
+
+    # Build a small neighbor window: prev + current + up to 2 next.
+    chunks: list[str] = []
+    focus_idx = 0
+    if prev_he and prev_he.strip() and prev_he.strip() != he:
+        chunks.append(prev_he.strip())
+        focus_idx = 1
+    chunks.append(he)
+    upcoming = list(next_hes or [])
+    if next_he and next_he.strip():
+        upcoming = [next_he.strip()] + upcoming
+    for u in upcoming:
+        if u and u != he and len(chunks) < 4:
+            chunks.append(u)
+
+    en = ""
+    if len(chunks) > 1:
+        parsed = translate_gemma_marked_chunks(
+            processor,
+            model,
+            chunks,
+            focus_idx=focus_idx,
+            device=device,
+            max_new_tokens=max_tokens,
+        )
+        if parsed and focus_idx in parsed:
+            en = parsed[focus_idx]
+            print(
+                f"  gemma marked-align ok ({len(parsed)}/{len(chunks)} chunks)",
+                file=sys.stderr,
+            )
+    if not en:
+        en = translate_gemma(
+            processor,
+            model,
+            he,
+            source="he",
+            target="en",
+            device=device,
+            max_new_tokens=max_tokens,
+        )
+    en = _postprocess_en(he, en)
+    if duration is not None and duration >= 0.8:
+        if estimate_en_speaking_sec(en) > float(duration) * EN_FIT_MAX_RATIO:
+            en = shorten_en_preserving_meaning(
+                he,
+                en,
+                duration=float(duration),
+                syllable_budget=max(6, int(float(duration) * 2.6)),
+            )
+    if not is_english_text(en):
+        # Soft failure — caller / ensure_translations can fall back to mlx-lm.
+        raise RuntimeError(
+            f"TranslateGemma returned empty/Hebrew for: {he[:80]!r}\nGot: {en[:80]!r}"
+        )
+    return en
 
 
 def _mlx_chat(model, tokenizer, system: str, user: str, *, max_tokens: int = 220) -> str:
@@ -560,7 +851,9 @@ def _collapse_pronoun_verb_stub(en: str) -> str:
 
 
 def _postprocess_en(he: str, en: str, *, prev_en: str | None = None) -> str:
-    en = preserve_latin_tokens(he, en.strip().strip('"').strip("'"))
+    en = strip_caption_chrome(en.strip().strip('"').strip("'"))
+    en = strip_non_latin_runs(en)
+    en = preserve_latin_tokens(he, en)
     en = dedupe_repeated_sentences(en)
     en = _collapse_pronoun_verb_stub(en)
     en = re.sub(r"\bbacterial\b", "Qatari", en, flags=re.I)
@@ -569,6 +862,28 @@ def _postprocess_en(he: str, en: str, *, prev_en: str | None = None) -> str:
     en = re.sub(r"\bIslamic Brotherhood\b", "Muslim Brotherhood", en, flags=re.I)
     if "פר אקסלנס" in he or "פר-אקסלנס" in he:
         en = re.sub(r"\bof excellence\b", "par excellence", en, flags=re.I)
+    # מצפון = conscience (never north); צפון = north
+    if re.search(r"מצפון", he):
+        en = re.sub(
+            r"\b[Ww]estern [Nn]orth\b",
+            "Western conscience",
+            en,
+        )
+        en = re.sub(
+            r"\bfor the (Western )?north\b",
+            r"for the \1conscience".replace("  ", " "),
+            en,
+            flags=re.I,
+        )
+        en = re.sub(
+            r"\bcomfortable for the (Western )?north\b",
+            r"comfortable for the \1conscience".replace("  ", " "),
+            en,
+            flags=re.I,
+        )
+        # Bare "north" after Western / conscience context.
+        if re.search(r"\bnorth\b", en, re.I) and not re.search(r"\bצפון\b", he):
+            en = re.sub(r"\b[Nn]orth\b", "conscience", en)
     # בנה = her son (never daughter)
     if re.search(r"\bבנה\b|לבנה", he) and re.search(r"\bdaughter\b", en, re.I):
         en = re.sub(r"\b(second )?daughter\b", r"\1son", en, flags=re.I)
@@ -577,6 +892,10 @@ def _postprocess_en(he: str, en: str, *, prev_en: str | None = None) -> str:
     if prev_en:
         en = strip_leading_memory_echo(en, prev_en)
     return en
+
+
+# Shared threshold for strip_leading_memory_echo and mt_needs_retry.
+MEMORY_ECHO_NGRAM_THRESHOLD = 0.50
 
 
 def _ngram_overlap_ratio(a: str, b: str, *, n: int = 4) -> float:
@@ -614,7 +933,10 @@ def strip_leading_memory_echo(en: str, prev_en: str) -> str:
         if sn and (sn in prev_norm or prev_norm in sn):
             dropped = True
             continue
-        if _ngram_overlap_ratio(s, prev, n=4) >= 0.55 and i == 0:
+        if (
+            _ngram_overlap_ratio(s, prev, n=4) >= MEMORY_ECHO_NGRAM_THRESHOLD
+            and i == 0
+        ):
             dropped = True
             continue
         kept.append(s)
@@ -627,13 +949,188 @@ def strip_leading_memory_echo(en: str, prev_en: str) -> str:
     return en
 
 
+def _force_shorten_en_for_he(he: str, en: str) -> str:
+    """Deprecated hard truncate — prefer meaning-preserving shorten.
+
+    Kept as last-resort only when no LLM/Gemma rewrite is available. Prefer
+    clause boundaries over raw word chops.
+    """
+    he_words = max(1, len((he or "").split()))
+    budget = max(6, he_words * 3)
+    words = (en or "").split()
+    if len(words) <= budget:
+        return (en or "").strip()
+    # Prefer cutting at a sentence/clause boundary inside the budget.
+    cut_at = budget
+    for k in range(budget, max(3, budget // 2), -1):
+        tok = words[k - 1]
+        if tok.endswith((".", "!", "?", "…", ";", ",")):
+            cut_at = k
+            break
+    cut = " ".join(words[:cut_at]).rstrip(" ,;:")
+    if cut and cut[-1] not in ".!?":
+        cut += "."
+    return cut
+
+
+_MEANING_NEGATION = re.compile(
+    r"\b(not|no|never|none|neither|don't|doesn't|didn't|isn't|aren't|won't|"
+    r"can't|cannot|without)\b",
+    re.I,
+)
+_MEANING_QUANT = re.compile(
+    r"\b(any|every|all|none|most|many|few|each|both|some|no)\b",
+    re.I,
+)
+
+
+def meaning_preserving(he: str, original_en: str, candidate_en: str) -> bool:
+    """True when candidate keeps names, numbers, negation, and quantifiers."""
+    orig = (original_en or "").strip()
+    cand = (candidate_en or "").strip()
+    if not cand or not is_english_text(cand):
+        return False
+    # Proper nouns / glossary tokens present in original must survive.
+    for tok in re.findall(r"\b[A-Z][a-zA-Z]{2,}\b", orig):
+        if tok.lower() in {"the", "and", "for", "with", "from", "that", "this"}:
+            continue
+        if tok.lower() not in cand.lower():
+            # Allow minor respelling only for known glossary forms.
+            if tok.lower() in {"sheikha", "moza", "qatar", "hamas", "hezbollah"}:
+                if tok.lower() not in cand.lower():
+                    return False
+            else:
+                return False
+    # Numbers must survive.
+    for num in re.findall(r"\b\d+[\w./-]*\b", orig):
+        if num not in cand:
+            return False
+    # Negation / quantifier polarity.
+    if _MEANING_NEGATION.search(orig) and not _MEANING_NEGATION.search(cand):
+        return False
+    if _MEANING_QUANT.search(orig) and not _MEANING_QUANT.search(cand):
+        # Soft: only require when HE also has אין/אף/כל/שום.
+        if re.search(r"(אין|אף|כל|שום|לא)", he or ""):
+            return False
+    # Don't allow collapsing to a tiny stub relative to original.
+    if len(cand.split()) < max(3, len(orig.split()) // 4):
+        return False
+    return True
+
+
+def shorten_en_preserving_meaning(
+    he: str,
+    en: str,
+    *,
+    duration: float,
+    syllable_budget: int,
+    shorten_fn=None,
+) -> str:
+    """Compress EN for timing without dropping core meaning.
+
+    Tries ``shorten_fn`` (LLM) first; rejects meaning-breaking rewrites.
+    Never hard-truncates mid-clause when a meaning-preserving option exists.
+    """
+    en0 = (en or "").strip()
+    if not en0:
+        return en0
+    if shorten_fn is not None:
+        try:
+            shorter = shorten_fn(
+                he_text=he,
+                en_text=en0,
+                duration=duration,
+                syllable_budget=syllable_budget,
+            )
+        except Exception:
+            shorter = None
+        if shorter and meaning_preserving(he, en0, shorter):
+            return strip_caption_chrome(strip_non_latin_runs(shorter))
+    # Soft clause drop from the end: remove trailing clauses until budget.
+    sents = [s.strip() for s in re.split(r"(?<=[.!?…])\s+", en0) if s.strip()]
+    if len(sents) > 1:
+        kept = list(sents)
+        while len(kept) > 1:
+            trial = " ".join(kept[:-1]).strip()
+            if estimate_en_speaking_sec(trial) <= duration * EN_FIT_MAX_RATIO:
+                if meaning_preserving(he, en0, trial):
+                    return trial
+                break
+            kept.pop()
+    return en0
+
+
+def sanitize_mt_after_retry(
+    he: str,
+    en: str,
+    *,
+    memory: list[tuple[str, str]] | None = None,
+    reason: str | None = None,
+    duration: float | None = None,
+) -> tuple[str, bool]:
+    """Strip echo / force-shorten after a failed MT retry.
+
+    Returns (en, ok_for_memory). Never feed echo/overlong EN into rolling memory.
+    """
+    en = strip_caption_chrome((en or "").strip())
+    en = strip_non_latin_runs(en)
+    en = dedupe_repeated_sentences(en)
+    if memory:
+        en = strip_leading_memory_echo(en, memory[-1][1])
+    retry_reasons = ("en_too_long_for_he", "memory_echo", "non_english_script", "time_overflow")
+    flagged = reason in retry_reasons or mt_needs_retry(
+        he, en, memory=memory, duration=duration
+    ) in retry_reasons
+    if flagged:
+        if memory:
+            en = strip_leading_memory_echo(en, memory[-1][1])
+        still = mt_needs_retry(he, en, memory=memory, duration=duration)
+        if still in ("en_too_long_for_he", "memory_echo", "time_overflow"):
+            en = shorten_en_preserving_meaning(
+                he,
+                en,
+                duration=float(duration or 1.0),
+                syllable_budget=max(6, int(float(duration or 1.0) * 2.6)),
+            )
+            if memory:
+                en = strip_leading_memory_echo(en, memory[-1][1])
+            # Only hard-truncate if still overflowing AND meaning check allows.
+            still3 = mt_needs_retry(he, en, memory=memory, duration=duration)
+            if still3 in ("en_too_long_for_he", "time_overflow"):
+                truncated = _force_shorten_en_for_he(he, en)
+                if meaning_preserving(he, en, truncated):
+                    en = truncated
+                # else keep the longer meaning-preserving EN; TTS will compress.
+        if still == "non_english_script":
+            en = strip_non_latin_runs(en)
+        still2 = mt_needs_retry(he, en, memory=memory, duration=duration)
+        if still2 in retry_reasons:
+            return en, False
+    return en, True
+
+
+def estimate_en_speaking_sec(en: str) -> float:
+    """Rough natural English speaking duration (~2.8 words/sec + small pad)."""
+    words = max(1, len((en or "").split()))
+    return words / 2.8 + 0.2
+
+
+# Isochronic band: EN speaking time should land ~0.8–1.2× the Hebrew chunk.
+EN_FIT_MIN_RATIO = 0.80
+EN_FIT_MAX_RATIO = 1.20
+
+
 def mt_needs_retry(
     he: str,
     en: str,
     *,
     memory: list[tuple[str, str]] | None = None,
+    duration: float | None = None,
 ) -> str | None:
     """Return a reason string if the translation looks broken."""
+    en = strip_caption_chrome((en or "").strip())
+    if en and not is_latin_english(en):
+        return "non_english_script"
     en_n = dedupe_repeated_sentences(en)
     if en_n != en.strip() and len(en.split()) > len(en_n.split()) + 2:
         return "repeated_clauses"
@@ -642,9 +1139,17 @@ def mt_needs_retry(
     # Short HE must not balloon into a paragraph (memory echo symptom).
     if he_words <= 6 and en_words > max(8, he_words * 4):
         return "en_too_long_for_he"
+    # Isochronic overflow: EN would need >1.2× the speaking window.
+    if duration is not None and duration >= 0.8:
+        est = estimate_en_speaking_sec(en)
+        if est > float(duration) * EN_FIT_MAX_RATIO:
+            return "time_overflow"
     if memory:
         prev_en = (memory[-1][1] or "").strip()
-        if prev_en and _ngram_overlap_ratio(en, prev_en, n=4) >= 0.45:
+        if (
+            prev_en
+            and _ngram_overlap_ratio(en, prev_en, n=4) >= MEMORY_ECHO_NGRAM_THRESHOLD
+        ):
             return "memory_echo"
     # בנה must not become daughter
     if re.search(r"\bבנה\b|לבנה", he or "") and re.search(
@@ -732,11 +1237,16 @@ def translate_text_mlx(
             f"HARD LIMIT: at most ~{hard_syllable_budget} syllables. "
             "Compress ruthlessly but keep names and core meaning.\n"
         )
-    elif duration is not None and duration >= 2.0:
-        target_syllables = max(8, int(duration * 3.2))
+    elif duration is not None and duration >= 0.8:
+        # Target EN speaking time ≈ HE chunk (0.8–1.2× band).
+        target_syllables = max(6, int(duration * 3.0))
+        lo = max(4, int(duration * 2.4))
+        hi = max(lo + 2, int(duration * 3.6))
         timing = (
-            f"Aim for roughly {target_syllables} syllables so the dub can fit "
-            f"about {duration:.1f}s, but never sacrifice meaning or names.\n"
+            f"The Hebrew takes about {duration:.1f}s. Aim for {target_syllables} "
+            f"syllables (roughly {lo}–{hi}) so English fits the same window "
+            f"(about 0.8–1.2× the original length). Prefer concise phrasing; "
+            "never sacrifice names or core meaning.\n"
         )
     ctx_parts: list[str] = []
     if synopsis and synopsis.strip():
@@ -842,43 +1352,130 @@ def shorten_english_mlx(
 
 
 def retag_phonetic_english(segments: list[dict]) -> int:
-    """Force keep_original on HE rows that are clearly phonetic English ASR.
+    """Apply should_keep_original gate to HE rows (score-first; markers as tie-break).
 
-    Never KEEP when the transcript is still Hebrew-script heavy — that would
-    play undubbed Hebrew source under a false EN label.
+    On KEEP flip, preserve HE-script ASR text — do not sanitize into empty Latin.
     """
-    from inference.lang_detect import (
-        looks_like_phonetic_english,
-        text_is_hebrew_script_heavy,
-    )
+    from inference.lang_detect import script_ratios, should_keep_original
 
     n = 0
-    for seg in segments:
+    for i, seg in enumerate(segments):
         lang = seg.get("language") or "he"
         keep = bool(seg.get("keep_original", lang != "he"))
         if keep or lang != "he":
             continue
         text = (seg.get("text") or "").strip()
-        if not looks_like_phonetic_english(text):
-            continue
-        if text_is_hebrew_script_heavy(text):
+        neighbors: list[dict] = []
+        if i > 0:
+            neighbors.append(segments[i - 1])
+        if i + 1 < len(segments):
+            neighbors.append(segments[i + 1])
+        if not should_keep_original(
+            text,
+            lang=lang,
+            he_score=seg.get("he_score"),
+            en_score=seg.get("en_score"),
+            neighbors=neighbors,
+        ):
             continue
         seg["language"] = "en"
         seg["keep_original"] = True
-        # Only set text_en when it already looks Latin; otherwise leave for
-        # KEEP re-ASR / source audio without pretending HE is EN subtitles.
-        from inference.lang_detect import script_ratios
-
         if script_ratios(text)["en"] >= 0.35:
             seg["text_en"] = text
             for p in seg.get("phrases") or []:
                 p["text_en"] = (p.get("text") or "").strip()
         n += 1
         print(
-            f"  Retag phonetic-EN → KEEP [{seg.get('speaker_id')}] "
+            f"  Retag KEEP [{seg.get('speaker_id')}] "
             f"{float(seg['start']):.1f}-{float(seg['end']):.1f}s | {text[:60]}",
             file=sys.stderr,
         )
+    return n
+
+
+def enforce_speaker_language_consistency(
+    segments: list[dict],
+    *,
+    min_keep_frac: float = 0.45,
+    min_keep_count: int = 2,
+) -> int:
+    """Flip low-confidence HE-dub turns to KEEP when the speaker is mostly English.
+
+    Fixes English interviewees whose occasional turn was mis-ASR'd as Hebrew
+    (e.g. SPEAKER_08 at ~1:40). Dense real-Hebrew commentary is protected by
+    `_real_hebrew_commentary`.
+    """
+    from inference.lang_detect import _real_hebrew_commentary, script_ratios
+
+    by_spk: dict[str, list[int]] = {}
+    for i, seg in enumerate(segments):
+        spk = str(seg.get("speaker_id") or "")
+        if not spk:
+            continue
+        by_spk.setdefault(spk, []).append(i)
+
+    n = 0
+    for spk, idxs in by_spk.items():
+        if len(idxs) < 2:
+            continue
+        keep_n = 0
+        dub_n = 0
+        for i in idxs:
+            seg = segments[i]
+            lang = seg.get("language") or "he"
+            keep = bool(seg.get("keep_original", lang != "he"))
+            if keep or lang == "en":
+                keep_n += 1
+            elif lang == "he":
+                dub_n += 1
+        total = keep_n + dub_n
+        if total < 2 or keep_n < min_keep_count:
+            continue
+        if keep_n / total < min_keep_frac:
+            continue
+        # Speaker is mostly English — flip remaining HE dubs unless dense HE.
+        for i in idxs:
+            seg = segments[i]
+            lang = seg.get("language") or "he"
+            keep = bool(seg.get("keep_original", lang != "he"))
+            if keep or lang != "he":
+                continue
+            text = (seg.get("text") or "").strip()
+            if not text:
+                continue
+            he_score = seg.get("he_score")
+            en_score = seg.get("en_score")
+            ratios = script_ratios(text)
+            # Low Whisper HE confidence → treat as mis-tagged English even when
+            # ASR text looks like dense Hebrew (common on EN natives).
+            low_he_conf = he_score is not None and float(he_score) < 0.35
+            competitive_en = (
+                he_score is not None
+                and en_score is not None
+                and float(en_score) >= float(he_score) - 0.5
+            )
+            if _real_hebrew_commentary(text) and not low_he_conf and not competitive_en:
+                continue
+            weak_he = (
+                low_he_conf
+                or ratios["he"] < 0.70
+                or competitive_en
+                or (he_score is not None and float(he_score) < 0.45)
+            )
+            if not weak_he and ratios["he"] >= 0.85:
+                continue
+            seg["language"] = "en"
+            seg["keep_original"] = True
+            seg.pop("text_en", None)  # KEEP path will re-ASR / suppress
+            for p in seg.get("phrases") or []:
+                p.pop("text_en", None)
+            n += 1
+            print(
+                f"  Speaker-consistency KEEP [{spk}] "
+                f"{float(seg['start']):.1f}-{float(seg['end']):.1f}s "
+                f"(speaker {keep_n}/{total} EN) | {text[:60]}",
+                file=sys.stderr,
+            )
     return n
 
 
@@ -888,19 +1485,66 @@ def ensure_translations(
     tokenizer,
     *,
     episode_ctx: dict | None = None,
+    translator: str = "gemma",
+    gemma_device=None,
 ) -> None:
-    """Translate Hebrew with episode synopsis + rolling HE→EN memory."""
+    """Translate Hebrew with episode synopsis + rolling HE→EN memory.
+
+    translator='gemma' uses TranslateGemma (model=processor, tokenizer=gemma_model).
+    translator='llm' uses mlx-lm (model, tokenizer).
+    """
+    use_gemma = translator == "gemma"
 
     def _seg_he(seg: dict) -> str:
+        """Hebrew source for MT: video ASR is the authority.
+
+        YouTube captions (if present) are optional context only — they must not
+        replace the ASR transcript that owns the timeline.
+        """
         return (seg.get("text") or "").strip()
 
-    if episode_ctx is None and model is not None:
+    if episode_ctx is None and model is not None and not use_gemma:
         episode_ctx = build_episode_context(model, tokenizer, segments)
     episode_ctx = episode_ctx or {}
     synopsis = episode_ctx.get("synopsis") or ""
     glossary_extra = episode_ctx.get("glossary_extra") or ""
     memory: list[tuple[str, str]] = []
     skip_until = -1
+
+    def _translate_one(
+        he_src: str,
+        *,
+        slot_sec: float,
+        next_hes_local: list[str] | None = None,
+        youtube_he: str | None = None,
+        hard_budget: int | None = None,
+        max_tokens: int = 220,
+        prev_he: str | None = None,
+    ) -> str:
+        if use_gemma:
+            return translate_text_gemma(
+                model,
+                tokenizer,
+                he_src,
+                device=gemma_device,
+                duration=slot_sec,
+                max_tokens=max_tokens,
+                prev_he=prev_he,
+                next_hes=next_hes_local,
+            )
+        return translate_text_mlx(
+            model,
+            tokenizer,
+            he_src,
+            duration=slot_sec,
+            synopsis=synopsis or None,
+            glossary_extra=glossary_extra or None,
+            memory=list(memory),
+            next_hes=next_hes_local,
+            youtube_he=youtube_he,
+            hard_syllable_budget=hard_budget,
+            max_tokens=max_tokens,
+        )
 
     for i, seg in enumerate(segments):
         if i < skip_until:
@@ -950,7 +1594,9 @@ def ensure_translations(
         if not he:
             continue
         if is_english_text(seg.get("text_en") or ""):
-            seg["text_en"] = dedupe_repeated_sentences(seg["text_en"])
+            seg["text_en"] = dedupe_repeated_sentences(
+                strip_caption_chrome(strip_non_latin_runs(seg["text_en"]))
+            )
             if phrases:
                 distribute_en_to_phrases(seg["text_en"], phrases)
             memory.append((he, seg["text_en"]))
@@ -958,6 +1604,85 @@ def ensure_translations(
             continue
         if model is None:
             raise SystemExit("Translator required for Hebrew segments without English text_en")
+
+        def _syllable_budget(slot_sec: float, *, tight: bool = False) -> int:
+            # ~3.0 syl/sec natural; tight → ~2.6 so TTS atempo stays ≤1.25×.
+            rate = 2.6 if tight else 3.0
+            return max(6, int(float(slot_sec) * rate))
+
+        def _finalize_mt(
+            he_src: str,
+            en_raw: str,
+            *,
+            slot_sec: float,
+            next_hes_local: list[str] | None = None,
+            youtube_he: str | None = None,
+        ) -> tuple[str, bool]:
+            """QA-retry + isochronic shorten. Returns (en, ok_for_memory)."""
+            budget = _syllable_budget(slot_sec)
+            en = strip_caption_chrome(strip_non_latin_runs(en_raw))
+            reason = mt_needs_retry(he_src, en, memory=memory, duration=slot_sec)
+            ok_for_memory = True
+            if reason:
+                print(f"  MT QA retry ({reason})…", file=sys.stderr)
+                tight = reason in ("time_overflow", "en_too_long_for_he")
+                en = _translate_one(
+                    he_src,
+                    slot_sec=slot_sec,
+                    next_hes_local=next_hes_local,
+                    youtube_he=youtube_he,
+                    hard_budget=_syllable_budget(slot_sec, tight=tight),
+                    max_tokens=240,
+                )
+                en = strip_caption_chrome(strip_non_latin_runs(en))
+                en = dedupe_repeated_sentences(en)
+                if memory:
+                    en = strip_leading_memory_echo(en, memory[-1][1])
+                reason2 = mt_needs_retry(he_src, en, memory=memory, duration=slot_sec)
+                if reason2 in ("time_overflow", "en_too_long_for_he"):
+                    print(f"  MT shorten ({reason2})…", file=sys.stderr)
+                    if use_gemma:
+                        en = shorten_en_preserving_meaning(
+                            he_src,
+                            en,
+                            duration=slot_sec,
+                            syllable_budget=_syllable_budget(slot_sec, tight=True),
+                        )
+                    else:
+                        try:
+                            shorter = shorten_english_mlx(
+                                model,
+                                tokenizer,
+                                he_text=he_src,
+                                en_text=en,
+                                duration=slot_sec,
+                                syllable_budget=_syllable_budget(slot_sec, tight=True),
+                                synopsis=synopsis or None,
+                            )
+                            if shorter and meaning_preserving(he_src, en, shorter):
+                                en = strip_caption_chrome(strip_non_latin_runs(shorter))
+                            elif shorter and is_english_text(shorter):
+                                print(
+                                    "  MT shorten rejected (meaning loss)",
+                                    file=sys.stderr,
+                                )
+                        except Exception as exc:
+                            print(f"  MT shorten failed: {exc}", file=sys.stderr)
+                    reason2 = mt_needs_retry(
+                        he_src, en, memory=memory, duration=slot_sec
+                    )
+                if reason2:
+                    print(f"  MT QA still flagged ({reason2})", file=sys.stderr)
+                    en, ok_for_memory = sanitize_mt_after_retry(
+                        he_src,
+                        en,
+                        memory=memory,
+                        reason=reason2,
+                        duration=slot_sec,
+                    )
+            en = strip_caption_chrome(strip_non_latin_runs(en))
+            en = dedupe_repeated_sentences(en)
+            return en, ok_for_memory
 
         # Absorb unfinished / tiny stubs INTO the next segment (one TTS unit).
         # Avoids "she paints / she paints" echo from join_only_first_clause.
@@ -973,28 +1698,35 @@ def ensure_translations(
             nxt_dur = float(nxt.get("end", 0) - float(nxt.get("start", 0)))
             gap = float(nxt.get("start", 0) - float(seg.get("end", 0)))
             same_spk = str(seg.get("speaker_id")) == str(nxt.get("speaker_id"))
-            # Do NOT strip .!? — finished stubs must not look unfinished.
-            # Never absorb finished stubs across speakers.
+            # Object-seeking stub (היא צובעת.) + את … on next: absorb even across
+            # speakers — diarization often flips mid-sentence here.
+            object_cont = needs_object_continuation(he, nxt_he)
             short_stub = (
-                same_spk
-                and he_words <= 3
+                he_words <= 3
                 and seg_dur <= 1.2
-                and nxt_words >= 4
+                and (nxt_words >= 4 or object_cont)
                 and not nxt_keep
                 and nxt_he
                 and 0 <= gap <= 1.2
-                and utterance_unfinished(he)
                 and (
-                    nxt_he.startswith("את ")
+                    (same_spk and utterance_unfinished(he))
+                    or object_cont
+                )
+                and (
+                    object_cont
+                    or nxt_he.startswith("את ")
                     or nxt_he.startswith("ו")
                     or is_continuation_start(nxt_he)
                 )
             )
+            # Absorb short next only for same speaker OR object-continuation
+            # (never JOIN independent cross-speaker turns).
             absorb_short_next = (
                 not nxt_keep
                 and nxt_he
                 and utterance_unfinished(he)
-                and (nxt_words <= 6 or nxt_dur <= 2.0)
+                and (same_spk or object_cont)
+                and (nxt_words <= 6 or nxt_dur <= 2.0 or object_cont)
                 and 0 <= gap <= 1.2
                 and not short_stub
             )
@@ -1046,48 +1778,37 @@ def ensure_translations(
                     file=sys.stderr,
                 )
                 yt = (seg.get("text_youtube") or nxt.get("text_youtube") or None)
-                en = translate_text_mlx(
-                    model,
-                    tokenizer,
+                en = _translate_one(
                     join_he,
-                    duration=dur,
-                    synopsis=synopsis or None,
-                    glossary_extra=glossary_extra or None,
-                    memory=list(memory),
-                    next_hes=next_hes,
+                    slot_sec=dur,
+                    next_hes_local=next_hes,
                     youtube_he=yt,
+                    hard_budget=_syllable_budget(dur),
                 )
-                reason = mt_needs_retry(join_he, en, memory=memory)
-                if reason:
-                    print(f"  MT QA retry ({reason})…", file=sys.stderr)
-                    en = translate_text_mlx(
-                        model,
-                        tokenizer,
-                        join_he,
-                        duration=dur,
-                        synopsis=synopsis or None,
-                        glossary_extra=glossary_extra or None,
-                        memory=list(memory),
-                        next_hes=next_hes,
-                        youtube_he=yt,
-                        max_tokens=240,
-                    )
-                    en = dedupe_repeated_sentences(en)
-                    if memory:
-                        en = strip_leading_memory_echo(en, memory[-1][1])
-                    reason2 = mt_needs_retry(join_he, en, memory=memory)
-                    if reason2:
-                        print(f"  MT QA still flagged ({reason2})", file=sys.stderr)
+                en, ok_for_memory = _finalize_mt(
+                    join_he, en, slot_sec=dur, next_hes_local=next_hes, youtube_he=yt
+                )
                 print(f"  → {en}", file=sys.stderr)
-                en_sents = [
-                    s.strip() for s in re.split(r"(?<=[.!?…])\s+", en) if s.strip()
-                ]
-                if len(en_sents) >= 2:
-                    en_head = " ".join(en_sents[:-1]).strip()
-                    en_tail = en_sents[-1].strip()
+                # Map full joined EN onto current + next by HE-duration weight —
+                # never duplicate the tail onto both segments (Qatar funds… bug).
+                he_w = max(1, he_words)
+                nxt_w = max(1, nxt_words)
+                total_w = float(he_w + nxt_w)
+                words = en.split()
+                if len(words) >= 2:
+                    cut = max(1, min(len(words) - 1, round(len(words) * he_w / total_w)))
+                    # Prefer a nearby sentence/clause boundary.
+                    for k in range(cut, max(1, cut - 4), -1):
+                        if words[k - 1].endswith((".", "!", "?", "…", ",", ";")):
+                            cut = k
+                            break
+                    en_head = " ".join(words[:cut]).strip().rstrip(",")
+                    en_tail = " ".join(words[cut:]).strip()
+                    if en_tail.lower().startswith("and "):
+                        en_tail = "And " + en_tail[4:]
                 else:
                     en_head = en
-                    en_tail = en if nxt_words <= 3 else ""
+                    en_tail = ""
                 seg["text_en"] = en_head
                 if phrases:
                     distribute_en_to_phrases(en_head, phrases)
@@ -1097,7 +1818,17 @@ def ensure_translations(
                     nxt["text_en"] = en_tail
                 elif en_tail:
                     nxt["text_en"] = en_tail
-                memory.append((join_he, en))
+                else:
+                    # Tiny stub join: whole EN stays on current; next gets empty
+                    # so repair_missing_english can fill if needed.
+                    nxt.pop("text_en", None)
+                if ok_for_memory:
+                    memory.append((join_he, en))
+                else:
+                    print(
+                        "  MT memory skip (echo/overlong after retry)",
+                        file=sys.stderr,
+                    )
                 skip_until = i + 2
                 continue
 
@@ -1107,52 +1838,42 @@ def ensure_translations(
             if t:
                 next_hes.append(t)
 
+        prev_he = None
+        if memory:
+            prev_he = memory[-1][0]
+        elif i > 0:
+            prev_he = (segments[i - 1].get("text") or "").strip() or None
+
         dur = float(seg.get("duration") or (float(seg["end"]) - float(seg["start"])))
         print(
             f"Translating [{i+1}/{len(segments)}] ({dur:.1f}s) {he[:60]}…",
             file=sys.stderr,
         )
         yt = (seg.get("text_youtube") or None)
-        en = translate_text_mlx(
-            model,
-            tokenizer,
+        en = _translate_one(
             he,
-            duration=dur,
-            synopsis=synopsis or None,
-            glossary_extra=glossary_extra or None,
-            memory=list(memory),
-            next_hes=next_hes,
+            slot_sec=dur,
+            next_hes_local=next_hes,
             youtube_he=yt,
+            hard_budget=_syllable_budget(dur),
+            prev_he=prev_he,
         )
-        reason = mt_needs_retry(he, en, memory=memory)
-        if reason:
-            print(f"  MT QA retry ({reason})…", file=sys.stderr)
-            en = translate_text_mlx(
-                model,
-                tokenizer,
-                he,
-                duration=dur,
-                synopsis=synopsis or None,
-                glossary_extra=glossary_extra or None,
-                memory=list(memory),
-                next_hes=next_hes,
-                youtube_he=yt,
-                max_tokens=240,
-            )
-            en = dedupe_repeated_sentences(en)
-            if memory:
-                en = strip_leading_memory_echo(en, memory[-1][1])
-            reason2 = mt_needs_retry(he, en, memory=memory)
-            if reason2:
-                print(f"  MT QA still flagged ({reason2})", file=sys.stderr)
-            en = dedupe_repeated_sentences(en)
+        en, ok_for_memory = _finalize_mt(
+            he, en, slot_sec=dur, next_hes_local=next_hes, youtube_he=yt
+        )
         print(f"  → {en}", file=sys.stderr)
 
         he_src = (seg.get("_translate_text") or he).strip()
         seg["text_en"] = en
         if phrases:
             distribute_en_to_phrases(en, phrases)
-        memory.append((he_src, en))
+        if ok_for_memory:
+            memory.append((he_src, en))
+        else:
+            print(
+                "  MT memory skip (echo/overlong after retry)",
+                file=sys.stderr,
+            )
         seg.pop("_translate_text", None)
 
 
@@ -1280,19 +2001,29 @@ def build_dubbed_track(
     workdir: Path,
     *,
     bg_gain: float = 0.55,
+    duck_gain: float = 0.45,
     speech_gain: float = 1.2,
     speech_target_rms: float = 0.085,
+    vocals: Path | None = None,
+    speech_gaps: list[dict] | None = None,
 ) -> Path:
-    """Place TTS clips on a timeline and sum with a *constant* background level.
+    """Place TTS clips on a timeline and sum with a continuous ducked bed.
 
-    No sidechain ducking — pumping the bed under every line made playback feel
-    uneven. Keep music at a steady gain; speech is loudness-matched on top.
+    Under HE dubs: keep music/SFX audible at ``duck_gain`` with smooth
+    attack/release. Residual Hebrew speech is suppressed via a leak-cleaned
+    bed (spectral/energy soft attenuation) — never by hard-muting the music.
+    Never mix original HE vocals under TTS.
+
+    KEEP-original spans use the source mix clip and equal-power crossfade
+    with the bed.
     """
     import numpy as np
     import soundfile as sf
 
-    # Demucs no_vocals leaves loud HF hiss in vocal holes — clean the bed only.
-    from inference.extract_pipeline import write_clean_background
+    from inference.extract_pipeline import (
+        write_clean_background,
+        write_leak_cleaned_background,
+    )
 
     raw_bg = workdir / "background_raw.wav"
     if not raw_bg.is_file() and background.is_file():
@@ -1301,6 +2032,14 @@ def build_dubbed_track(
         shutil.copy2(background, raw_bg)
     if raw_bg.is_file():
         write_clean_background(raw_bg, background)
+    # Soft leak suppression — keeps music continuous under speech energy.
+    if vocals is not None and Path(vocals).is_file():
+        leak_bg = workdir / "background_leakclean.wav"
+        try:
+            write_leak_cleaned_background(background, Path(vocals), leak_bg)
+            background = leak_bg
+        except Exception as exc:
+            print(f"  leak-clean skipped: {exc}", file=sys.stderr)
 
     bg, sr = sf.read(str(background), dtype="float32", always_2d=True)
     n_samples = max(1, int(round(total_duration * sr)))
@@ -1310,25 +2049,89 @@ def build_dubbed_track(
         bg = bg[:n_samples]
 
     speech = np.zeros(n_samples, dtype=np.float32)
-    # Mute Demucs bed under KEEP-original spans (those clips already include
-    # the original music from source.wav — layering gappy no_vocals makes waves).
-    bg_gate = np.ones(n_samples, dtype=np.float32)
+    # Continuous duck envelope: 1.0 = full bed, duck_gain under HE dubs.
+    # Never forced to 0 for dubs/failures (that caused jumpy silent holes).
+    duck = float(np.clip(duck_gain, 0.15, 1.0))
+    bg_env = np.ones(n_samples, dtype=np.float32)
+
+    def _apply_duck(t0: float, t1: float, level: float, *, attack=0.08, release=0.15) -> None:
+        i0 = max(0, int(round(float(t0) * sr)))
+        i1 = min(n_samples, int(round(float(t1) * sr)))
+        if i1 <= i0:
+            return
+        a = max(1, int(attack * sr))
+        r = max(1, int(release * sr))
+        # Attack into duck level.
+        a_end = min(i1, i0 + a)
+        for k, idx in enumerate(range(i0, a_end)):
+            t = (k + 1) / a
+            target = 1.0 * (1.0 - t) + level * t
+            bg_env[idx] = min(bg_env[idx], target)
+        # Sustain.
+        if a_end < i1 - r:
+            bg_env[a_end : i1 - r] = np.minimum(bg_env[a_end : i1 - r], level)
+        # Release back toward 1.0.
+        r_start = max(a_end, i1 - r)
+        for k, idx in enumerate(range(r_start, i1)):
+            t = (k + 1) / max(1, i1 - r_start)
+            target = level * (1.0 - t) + 1.0 * t
+            bg_env[idx] = min(bg_env[idx], max(level, target))
+
+    for seg in segments:
+        a = float(seg.get("source_start") or seg.get("start") or 0.0)
+        b = float(seg.get("source_end") or seg.get("end") or 0.0)
+        # Tail guard: extend duck slightly past ASR end so residual HE tails
+        # (e.g. "רבה") stay under the duck floor even if TTS ended early.
+        b_guard = b + 0.35
+        if b_guard <= a:
+            continue
+        keep = bool(seg.get("keep_original") or seg.get("keep_uses_source"))
+        failed = bool(seg.get("tts_failed"))
+        is_dub = (
+            not keep
+            and (seg.get("language") or "he") == "he"
+        )
+        if keep:
+            # KEEP brings full source mix — bed silenced under the KEEP clip
+            # with equal-power edges applied when placing speech.
+            _apply_duck(a, b, 0.0, attack=0.04, release=0.06)
+        elif is_dub:
+            # Successful or failed: keep music at duck floor (never hard mute).
+            _apply_duck(a, b_guard, duck, attack=0.08, release=0.18)
+
+    for gap in speech_gaps or []:
+        # Uncovered speech energy: duck (not mute) so music stays continuous.
+        _apply_duck(
+            float(gap["start"]),
+            float(gap["end"]) + 0.25,
+            duck,
+            attack=0.08,
+            release=0.15,
+        )
+
     placed = 0
-    # Place in timeline order; later clips overwrite overlaps (avoids KEEP+dub sum).
+    missing_tts = 0
     ordered = sorted(
         segments,
         key=lambda s: (float(s.get("start") or 0.0), 0 if s.get("keep_original") else 1),
     )
     for seg in ordered:
+        if seg.get("tts_failed"):
+            missing_tts += 1
+            continue
         fitted = seg.get("tts_fit")
         if not fitted:
+            if not seg.get("keep_original") and (seg.get("language") or "he") == "he":
+                missing_tts += 1
             continue
         path = Path(fitted)
         if not path.is_file():
             print(f"  skip missing TTS clip: {path}", file=sys.stderr)
+            missing_tts += 1
             continue
         clip = _load_mono(path, sr)
-        i0 = int(round(float(seg["start"]) * sr))
+        # Place at immutable ASR start so lips and audio share the same onset.
+        i0 = int(round(float(seg.get("source_start") or seg["start"]) * sr))
         if i0 >= n_samples or len(clip) == 0:
             continue
         i1 = min(n_samples, i0 + len(clip))
@@ -1340,9 +2143,8 @@ def build_dubbed_track(
                 ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)
                 take[:fade] *= ramp
                 take[-fade:] *= ramp[::-1]
-            # KEEP: overwrite (source mix already complete).
             speech[i0:i1] = take
-            bg_gate[i0:i1] = 0.0
+            bg_env[i0:i1] = 0.0
         else:
             clip_rms = float(np.sqrt(np.mean(take**2) + 1e-12))
             if clip_rms > 1e-4:
@@ -1353,8 +2155,6 @@ def build_dubbed_track(
                 ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)
                 take[:fade] *= ramp
                 take[-fade:] *= ramp[::-1]
-            # Crossfade-mix overlapping dub clips instead of overwrite
-            # (overwrite erased previous tails → "skipped sentences").
             dest = speech[i0:i1]
             overlap = min(fade if fade > 1 else int(0.04 * sr), len(take), len(dest))
             if overlap > 1 and float(np.max(np.abs(dest[:overlap]))) > 1e-4:
@@ -1365,25 +2165,19 @@ def build_dubbed_track(
             else:
                 dest[:] = take
             speech[i0:i1] = dest
+            # Ensure duck floor under the placed EN clip.
+            bg_env[i0:i1] = np.minimum(bg_env[i0:i1], duck)
         placed += 1
 
-    # Soft edges on bg mute so KEEP↔dub transitions don't click.
-    fade_bg = max(1, int(0.02 * sr))
-    gate = bg_gate.copy()
-    # Simple box blur for mute ramps
-    kernel = np.ones(fade_bg, dtype=np.float32) / float(fade_bg)
-    gate = np.convolve(gate, kernel, mode="same")
+    # Final envelope smooth (~60 ms) so KEEP↔dub transitions don't click.
+    fade_bg = max(1, int(0.06 * sr))
+    gate = np.convolve(bg_env, np.ones(fade_bg, dtype=np.float32) / float(fade_bg), mode="same")
     gate = np.clip(gate, 0.0, 1.0)
 
     mix = bg * (bg_gain * gate)[:, None] + (speech * speech_gain)[:, None]
     # KEEP clips are already full-mix; don't boost them as hard as TTS.
-    # (speech_gain applied uniformly; KEEP was written at natural level — scale keep down relative)
-    # Re-balance: we applied speech_gain to all; for keep regions reduce toward 1.0
-    # by compensating where gate==0 (keep spans).
     keep_mask = 1.0 - gate
     if float(np.max(keep_mask)) > 0.01 and speech_gain != 1.0:
-        # Remove excess speech_gain on KEEP: multiply those samples by 1/speech_gain
-        # through the speech contribution only — approximate via remix of keep parts.
         mix = bg * (bg_gain * gate)[:, None] + (
             speech * (speech_gain * gate + 1.0 * keep_mask)
         )[:, None]
@@ -1394,9 +2188,69 @@ def build_dubbed_track(
     out_wav = workdir / "dubbed_audio.wav"
     print(
         f"Mixing dubbed audio (numpy): {placed} clips, "
-        f"bg_gain={bg_gain} (constant, no duck), speech_rms≈{speech_target_rms} → {out_wav}",
+        f"bg_gain={bg_gain} duck={duck} (continuous leak-cleaned bed), "
+        f"missing_tts={missing_tts}, speech_rms≈{speech_target_rms} → {out_wav}",
         file=sys.stderr,
     )
+
+    # region agent log
+    mix_windows = []
+    bed_mono = bg.mean(axis=-1)
+    for idx, seg in enumerate(segments):
+        a = float(seg.get("source_start") or seg.get("start") or 0.0)
+        b = float(seg.get("source_end") or seg.get("end") or 0.0)
+        i0 = max(0, min(n_samples, int(round(a * sr))))
+        i1 = max(i0, min(n_samples, int(round(b * sr))))
+        if i1 <= i0:
+            continue
+        speech_slice = speech[i0:i1]
+        bed_slice = bed_mono[i0:i1]
+        gate_slice = gate[i0:i1]
+        frame = max(1, int(0.05 * sr))
+        speech_frame_rms = [
+            float(np.sqrt(np.mean(speech_slice[j : j + frame] ** 2) + 1e-12))
+            for j in range(0, max(0, len(speech_slice) - frame + 1), frame)
+        ]
+        mix_windows.append(
+            {
+                "index": idx,
+                "speaker": seg.get("speaker_id"),
+                "start": round(a, 3),
+                "end": round(b, 3),
+                "keep": bool(seg.get("keep_original") or seg.get("keep_uses_source")),
+                "ttsFailed": bool(seg.get("tts_failed")),
+                "hasTtsFit": bool(seg.get("tts_fit")),
+                "speechRms": round(
+                    float(np.sqrt(np.mean(speech_slice**2) + 1e-12)), 6
+                ),
+                "bedRms": round(
+                    float(np.sqrt(np.mean(bed_slice**2) + 1e-12)), 6
+                ),
+                "gateMin": round(float(np.min(gate_slice)), 4),
+                "gateMean": round(float(np.mean(gate_slice)), 4),
+                "silentSpeechFrameFraction": round(
+                    (
+                        sum(value < 0.004 for value in speech_frame_rms)
+                        / len(speech_frame_rms)
+                    )
+                    if speech_frame_rms
+                    else 1.0,
+                    4,
+                ),
+            }
+        )
+    _debug_event(
+        "H1,H4,H5",
+        "inference/build_preview.py:build_dubbed_track",
+        "Measure speech coverage and bed envelope in source windows",
+        {
+            "placed": placed,
+            "missingTts": missing_tts,
+            "windows": mix_windows,
+        },
+    )
+    # endregion
+
     sf.write(str(out_wav), mix.astype(np.float32), sr, subtype="PCM_16")
     return out_wav
 
@@ -1497,9 +2351,88 @@ def log_speech_gaps(segments: list[dict], vocals: Path, workdir: Path) -> list[d
     return hits
 
 
+def assert_tts_coverage(segments: list[dict], *, allow_missing: bool = False) -> list[dict]:
+    """Require every HE dub window to have a validated TTS clip before mux.
+
+    Returns the list of failing segments. Raises SystemExit unless allow_missing.
+    """
+    missing: list[dict] = []
+    for i, seg in enumerate(segments):
+        if seg.get("keep_original") or (seg.get("language") or "he") != "he":
+            continue
+        if (seg.get("language") or "") == "skip":
+            continue
+        if not (seg.get("text") or "").strip():
+            continue
+        failed = bool(seg.get("tts_failed"))
+        fitted = seg.get("tts_fit")
+        ok_file = bool(fitted) and Path(fitted).is_file()
+        if failed or not ok_file:
+            missing.append(
+                {
+                    "index": i,
+                    "speaker_id": seg.get("speaker_id"),
+                    "start": float(seg.get("source_start") or seg.get("start") or 0.0),
+                    "end": float(seg.get("source_end") or seg.get("end") or 0.0),
+                    "tts_failed": failed,
+                    "tts_fit": fitted,
+                    "text": (seg.get("text") or "")[:80],
+                }
+            )
+    if missing:
+        print(
+            f"TTS coverage FAIL: {len(missing)} HE window(s) without valid EN clip:",
+            file=sys.stderr,
+        )
+        for m in missing[:12]:
+            print(
+                f"  [{m['speaker_id']}] {m['start']:.1f}-{m['end']:.1f}s "
+                f"failed={m['tts_failed']} | {m['text']}",
+                file=sys.stderr,
+            )
+        if not allow_missing:
+            raise SystemExit(
+                f"Refusing to mux: {len(missing)} Hebrew segment(s) lack validated TTS. "
+                "Re-run TTS or pass --allow-missing-tts for a degraded preview."
+            )
+    return missing
+
+
 def run_dub_qa(segments: list[dict], dubbed: Path, workdir: Path) -> Path:
     """Re-ASR dubbed speech windows and compare to text_en → qa_report.json."""
-    report = {"segments": []}
+    import numpy as np
+    import soundfile as sf
+
+    report: dict = {
+        "segments": [],
+        "coverage": [],
+        "early_ends": [],
+        "music_jumps": [],
+    }
+    # Coverage gate summary.
+    for i, seg in enumerate(segments):
+        if seg.get("keep_original") or (seg.get("language") or "he") != "he":
+            continue
+        src_a = float(seg.get("source_start") or seg.get("start") or 0.0)
+        src_b = float(seg.get("source_end") or seg.get("end") or 0.0)
+        spoken = float(seg.get("spoken_end") or seg.get("tts_end") or src_b)
+        early = max(0.0, src_b - spoken)
+        fitted = seg.get("tts_fit")
+        row_cov = {
+            "index": i,
+            "speaker_id": seg.get("speaker_id"),
+            "source_start": src_a,
+            "source_end": src_b,
+            "spoken_end": spoken,
+            "early_end_sec": round(early, 3),
+            "tts_failed": bool(seg.get("tts_failed")),
+            "has_tts": bool(fitted) and Path(fitted).is_file() if fitted else False,
+            "tts_speed_used": seg.get("tts_speed_used"),
+        }
+        report["coverage"].append(row_cov)
+        if early >= 0.35:
+            report["early_ends"].append(row_cov)
+
     try:
         from faster_whisper import WhisperModel
         from inference.extract_pipeline import resolve_whisper_model
@@ -1509,6 +2442,29 @@ def run_dub_qa(segments: list[dict], dubbed: Path, workdir: Path) -> Path:
         out = workdir / "qa_report.json"
         out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         return out
+
+    # Music envelope discontinuity probe on the leak-cleaned bed (not the
+    # speech+bed mix — speech onsets would otherwise flood false positives).
+    try:
+        bed_path = workdir / "background_leakclean.wav"
+        if not bed_path.is_file():
+            bed_path = workdir / "background.wav"
+        audio, sr = sf.read(str(bed_path), dtype="float32", always_2d=True)
+        mono = audio.mean(axis=-1)
+        hop = max(1, int(0.05 * sr))
+        prev_rms = None
+        for i0 in range(0, len(mono) - hop, hop):
+            rms = float(np.sqrt(np.mean(mono[i0 : i0 + hop] ** 2) + 1e-12))
+            # Near-mute collapse from an audible bed frame.
+            if prev_rms is not None and prev_rms > 0.015 and rms < 0.002 and rms < prev_rms * 0.12:
+                t = i0 / sr
+                report["music_jumps"].append(
+                    {"t": round(t, 2), "from_rms": round(prev_rms, 4), "to_rms": round(rms, 4)}
+                )
+            prev_rms = rms
+        report["music_jumps"] = report["music_jumps"][:40]
+    except Exception as exc:
+        report["music_probe_error"] = str(exc)
 
     model_path = resolve_whisper_model("ivrit-ai/whisper-large-v3-turbo-ct2")
     model = WhisperModel(str(model_path), device="cpu", compute_type="auto")
@@ -1522,39 +2478,46 @@ def run_dub_qa(segments: list[dict], dubbed: Path, workdir: Path) -> Path:
         fitted = seg.get("tts_fit")
         if not en or not fitted or not Path(fitted).is_file():
             continue
-        start = float(seg["start"])
-        end = float(seg["end"])
         try:
-            fit_path = Path(fitted)
-            asr_src = str(fit_path) if fit_path.is_file() else None
-            if asr_src is None:
-                extract_wav_slice(dubbed, start, end, tmp, sample_rate=16000)
-                asr_src = str(tmp)
+            extract_wav_slice(
+                Path(fitted),
+                0.0,
+                f5_wav_duration(Path(fitted)),
+                tmp,
+                sample_rate=16000,
+            )
             segs, _ = model.transcribe(
-                asr_src,
-                language="en",
-                word_timestamps=False,
-                condition_on_previous_text=False,
+                str(tmp), language="en", task="transcribe", word_timestamps=False
             )
             asr = " ".join((s.text or "").strip() for s in segs).strip()
         except Exception as exc:
-            report["segments"].append({"index": i, "error": str(exc)})
-            continue
-        en_words = set(re.findall(r"[a-z0-9]+", en.lower()))
-        asr_words = set(re.findall(r"[a-z0-9]+", asr.lower()))
-        if en_words:
-            overlap = len(en_words & asr_words) / max(1, len(en_words))
-        else:
-            overlap = 0.0
+            asr = f"[asr_error: {exc}]"
+        from inference.tts_qwen import _word_overlap_ratio
+
+        overlap = _word_overlap_ratio(en, asr)
+        repeated = False
+        words = en.lower().split()
+        if len(words) >= 8:
+            half = len(words) // 2
+            repeated = words[:half] == words[half : half * 2]
         row = {
             "index": i,
             "speaker_id": seg.get("speaker_id"),
-            "start": start,
-            "end": end,
+            "start": float(seg.get("source_start") or seg["start"]),
+            "end": float(seg.get("source_end") or seg["end"]),
             "text_en": en[:200],
             "asr": asr[:200],
             "word_overlap": round(overlap, 3),
-            "repeated": dedupe_repeated_sentences(en) != en,
+            "repeated": repeated,
+            "tts_speed_used": seg.get("tts_speed_used"),
+            "early_end_sec": round(
+                max(
+                    0.0,
+                    float(seg.get("source_end") or seg["end"])
+                    - float(seg.get("spoken_end") or seg.get("tts_end") or seg["end"]),
+                ),
+                3,
+            ),
         }
         report["segments"].append(row)
         if overlap < 0.45 or row["repeated"]:
@@ -1584,7 +2547,20 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--model",
         default=DEFAULT_MLX_TRANSLATE_MODEL,
-        help=f"mlx-lm HF model id for HE→EN (default: {DEFAULT_MLX_TRANSLATE_MODEL}).",
+        help=f"mlx-lm HF model id for HE→EN when --translator llm (default: {DEFAULT_MLX_TRANSLATE_MODEL}).",
+    )
+    p.add_argument(
+        "--translator",
+        choices=("llm", "gemma"),
+        default="gemma",
+        help="Translation backend: gemma (TranslateGemma-4B + neighbor context, default) "
+        "or llm (mlx-lm instruct with synopsis/memory).",
+    )
+    p.add_argument(
+        "--gemma-model",
+        type=Path,
+        default=DEFAULT_GEMMA_MODEL,
+        help=f"Local TranslateGemma dir (default: {DEFAULT_GEMMA_MODEL}).",
     )
     p.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"), default="auto")
     p.add_argument("--skip-translate", action="store_true", help="Reuse existing text_en in JSON.")
@@ -1593,7 +2569,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help="Reuse text_en from a reference run (e.g. outputs/kan11_60s/translated_segments.json) "
-        "when Hebrew/time overlaps. Default: sibling kan11_60s if present.",
+        "when Hebrew/time overlaps.",
     )
     p.add_argument("--skip-tts", action="store_true", help="Keep Hebrew vocals; only add EN subs.")
     p.add_argument(
@@ -1616,8 +2592,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--qwen-reuse-speaker-prompt",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Reuse one clone prompt per speaker (default: on).",
+        default=False,
+        help="Reuse one clone prompt per speaker (default: off — fresh clone per segment).",
     )
     p.add_argument(
         "--tts-speed",
@@ -1643,13 +2619,25 @@ def parse_args() -> argparse.Namespace:
         "--max-dub-pause",
         type=float,
         default=DEFAULT_MAX_DUB_PAUSE,
-        help="Cap intra-utterance silence (0=preserve HE pauses, default). "
-        "Set e.g. 0.7 to compact long mid-utterance silences.",
+        help="Legacy CLI; TTS units split at pauses ≥1.2s. Kept for compat.",
     )
     p.add_argument(
-        "--no-speaker-bank",
+        "--no-clone-verify",
         action="store_true",
-        help="Skip per-speaker canonical ref bank + embedding relabel.",
+        help="Skip TTS clone length/ASR verification + regenerate (faster).",
+    )
+    p.add_argument(
+        "--speaker-bank",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Build/use per-speaker canonical ref bank (default: on — stable per-person voice).",
+    )
+    p.add_argument(
+        "--duck-gain",
+        type=float,
+        default=0.45,
+        help="Music bed gain under HE dubs (0–1). Default 0.45 keeps music audible; "
+        "residual HE speech still gated out via vocals energy.",
     )
     p.add_argument(
         "--qa",
@@ -1657,9 +2645,14 @@ def parse_args() -> argparse.Namespace:
         help="After mux, re-ASR dubbed speech and write qa_report.json.",
     )
     p.add_argument(
+        "--allow-missing-tts",
+        action="store_true",
+        help="Allow mux even when some HE windows lack validated TTS (degraded).",
+    )
+    p.add_argument(
         "--youtube-url",
         default=None,
-        help="YouTube URL for Hebrew auto-caption cross-check (or use payload youtube_url).",
+        help="Optional YouTube URL for caption cross-check (off by default; ASR is authority).",
     )
     p.add_argument(
         "--tts-segments",
@@ -1682,18 +2675,78 @@ def main() -> None:
     if not seg_path.is_file():
         raise SystemExit(f"Missing {seg_path}")
 
-    payload = json.loads(seg_path.read_text(encoding="utf-8"))
+    asr_payload = json.loads(seg_path.read_text(encoding="utf-8"))
+    payload = asr_payload
     translated_path = workdir / "translated_segments.json"
     if args.skip_translate and translated_path.is_file():
         payload = json.loads(translated_path.read_text(encoding="utf-8"))
         print(f"Loaded translations from {translated_path}", file=sys.stderr)
 
-    segments = [
-        s
-        for s in payload.get("segments", [])
-        if float(s.get("duration", s["end"] - s["start"])) >= MIN_SEG_DURATION
-        and (s.get("text") or "").strip()
-    ]
+    asr_segments = list(asr_payload.get("segments", []))
+    segments = []
+    for s in payload.get("segments", []):
+        dur = float(s.get("duration", s["end"] - s["start"]))
+        if dur < MIN_SEG_DURATION:
+            continue
+        keep = bool(s.get("keep_original") or (s.get("language") or "he") != "he")
+        text = (s.get("text") or "").strip()
+        # KEEP/original rows must survive empty captions — blank text used to
+        # drop whole English turns and leave silent holes in the mix.
+        if not text and not keep:
+            continue
+        if keep and not text:
+            s = dict(s)
+            s["text"] = (s.get("text_en") or "").strip() or "[original audio]"
+            s["text_en"] = (s.get("text_en") or "").strip() or s["text"]
+            s["keep_original"] = True
+        segments.append(s)
+
+    # region agent log
+    loaded_rows = payload.get("segments", [])
+    missing_asr_rows = []
+    for idx, src in enumerate(asr_segments):
+        a = float(src.get("start") or 0.0)
+        b = float(src.get("end") or 0.0)
+        covered = any(
+            max(
+                0.0,
+                min(b, float(row.get("source_end") or row.get("end") or 0.0))
+                - max(a, float(row.get("source_start") or row.get("start") or 0.0)),
+            )
+            >= max(0.1, (b - a) * 0.6)
+            for row in loaded_rows
+        )
+        if not covered:
+            missing_asr_rows.append(
+                {
+                    "index": idx,
+                    "start": round(a, 3),
+                    "end": round(b, 3),
+                    "speaker": src.get("speaker_id"),
+                    "keep": bool(src.get("keep_original")),
+                    "language": src.get("language"),
+                    "textEmpty": not bool((src.get("text") or "").strip()),
+                }
+            )
+    _debug_event(
+        "H1",
+        "inference/build_preview.py:main-load",
+        "Compare authoritative ASR rows with loaded preview rows",
+        {
+            "usingTranslated": bool(args.skip_translate and translated_path.is_file()),
+            "asrCount": len(asr_segments),
+            "loadedCount": len(loaded_rows),
+            "filteredCount": len(segments),
+            "missingAsrRows": missing_asr_rows,
+            "emptyLoadedRows": [
+                i
+                for i, row in enumerate(loaded_rows)
+                if not (row.get("text") or "").strip()
+            ],
+        },
+    )
+    # endregion
+
     if not segments:
         raise SystemExit("No usable segments after filtering micro-turns.")
 
@@ -1701,6 +2754,34 @@ def main() -> None:
     for seg in segments:
         dedupe_segment_text_fields(seg)
         clamp_segment_phrases(seg)
+
+    n_overlap = clamp_segment_timeline(segments)
+    if n_overlap:
+        print(
+            f"Clamped {n_overlap} overlapping segment boundary(ies).",
+            file=sys.stderr,
+        )
+
+    # Re-insert ASR turns missing from translated JSON (empty-KEEP drop bug).
+    n_rehyd = rehydrate_missing_asr_segments(segments, asr_segments)
+    if n_rehyd:
+        print(f"Rehydrated {n_rehyd} missing ASR turn(s).", file=sys.stderr)
+
+    # Restore immutable HE phrase windows from segments.json (TTS writeback
+    # must not permanently corrupt ASR timing).
+    n_restored = restore_asr_phrase_boundaries(segments, asr_segments)
+    if n_restored:
+        print(
+            f"Restored ASR phrase boundaries on {n_restored} segment(s).",
+            file=sys.stderr,
+        )
+
+    n_src = stamp_source_timing(segments)
+    if n_src:
+        print(
+            f"Stamped immutable ASR source timing on {n_src} segment(s).",
+            file=sys.stderr,
+        )
 
     vocals_path = workdir / "vocals.wav"
     if vocals_path.is_file():
@@ -1731,7 +2812,14 @@ def main() -> None:
             file=sys.stderr,
         )
 
-    youtube_url = args.youtube_url or payload.get("youtube_url")
+    n_spk = enforce_speaker_language_consistency(segments)
+    if n_spk:
+        print(
+            f"Speaker-consistency KEEP on {n_spk} turn(s).",
+            file=sys.stderr,
+        )
+
+    youtube_url = args.youtube_url  # ASR is authority; captions only if explicitly requested
     if youtube_url and not args.skip_translate:
         from inference.youtube_subs import crosscheck_workdir
 
@@ -1766,6 +2854,10 @@ def main() -> None:
     def _has_en(seg: dict) -> bool:
         if seg.get("keep_original") or seg.get("language", "he") != "he":
             return bool((seg.get("text") or seg.get("text_en") or "").strip())
+        # Segment-level EN is enough under --skip-translate; phrase rows are
+        # often wiped by ASR boundary restore and then redistributed.
+        if is_english_text(seg.get("text_en") or ""):
+            return True
         phrases = seg.get("phrases") or []
         if phrases:
             return all(
@@ -1773,7 +2865,7 @@ def main() -> None:
                 for p in phrases
                 if (p.get("text") or "").strip()
             )
-        return is_english_text(seg.get("text_en") or "")
+        return False
 
     if args.skip_translate and all(_has_en(s) for s in segments):
         print("Reusing existing English / original-language text.", file=sys.stderr)
@@ -1794,11 +2886,82 @@ def main() -> None:
             and not _has_en(s)
         ]
         model = tokenizer = None
+        gemma_device = None
         if needs_mt:
-            model, tokenizer = load_mlx_translator(str(args.model))
-        ensure_translations(segments, model, tokenizer)
+            if args.translator == "gemma":
+                processor, gemma_model, gemma_device = load_gemma_translator(
+                    args.gemma_model, device=args.device
+                )
+                model, tokenizer = processor, gemma_model
+            else:
+                model, tokenizer = load_mlx_translator(str(args.model))
+        ensure_translations(
+            segments,
+            model,
+            tokenizer,
+            translator=args.translator,
+            gemma_device=gemma_device,
+        )
         if model is not None:
             del model, tokenizer
+
+    # Always sanitize EN before TTS (chrome / non-Latin / echo leftovers).
+    for seg in segments:
+        if seg.get("keep_original") or (seg.get("language") or "he") != "he":
+            continue
+        if (seg.get("text_en") or "").strip():
+            en = dedupe_repeated_sentences(
+                strip_caption_chrome(strip_non_latin_runs(seg["text_en"]))
+            )
+            he = (seg.get("text") or "").strip()
+            dur = float(seg.get("duration") or (float(seg["end"]) - float(seg["start"])))
+            # Skip-translate leftovers can still be overlong / non-Latin — clamp.
+            # When --skip-translate, do NOT auto-shorten: that destroys hand-fixed EN.
+            reason = mt_needs_retry(he, en, duration=dur)
+            if reason == "non_english_script":
+                en = strip_non_latin_runs(en)
+            elif (
+                not args.skip_translate
+                and reason in ("time_overflow", "en_too_long_for_he")
+            ):
+                en = strip_non_latin_runs(en)
+                en = shorten_en_preserving_meaning(
+                    he,
+                    en,
+                    duration=dur,
+                    syllable_budget=max(6, int(dur * 2.6)),
+                )
+                print(
+                    f"  Pre-TTS shorten [{seg.get('speaker_id')}] "
+                    f"{float(seg['start']):.1f}s ({reason})",
+                    file=sys.stderr,
+                )
+            seg["text_en"] = en
+            # Glue false sentence breaks from prior duration packing
+            # ("No woman. in the Middle" → "No woman in the Middle").
+            en = re.sub(r"\.\s+([a-z])", r" \1", en)
+            seg["text_en"] = en
+            phrases = seg.get("phrases") or []
+            if phrases:
+                # Re-apply semantic phrase merges (object continuations) even on
+                # --skip-translate so stale JSON gets the continuity fix.
+                phrases = merge_short_phrases(phrases)
+                seg["phrases"] = phrases
+                # Prefer existing phrase EN under --skip-translate (hand fixes).
+                phrase_en_ok = all(
+                    is_english_text(p.get("text_en") or "")
+                    for p in phrases
+                    if (p.get("text") or "").strip()
+                )
+                if is_english_text(en) and not (
+                    args.skip_translate and phrase_en_ok
+                ):
+                    distribute_en_to_phrases(en, phrases)
+        for p in seg.get("phrases") or []:
+            if (p.get("text_en") or "").strip():
+                p["text_en"] = dedupe_repeated_sentences(
+                    strip_caption_chrome(strip_non_latin_runs(p["text_en"]))
+                )
 
     # Drop stubs absorbed into continuations (language=skip / empty text).
     before_abs = len(segments)
@@ -1831,20 +2994,29 @@ def main() -> None:
             refresh_segment_fields(seg)
 
     # Sentence-split / skip-translate can leave HE rows with no EN — repair before TTS.
-    missing = [
+    missing_seg_en = [
         s
         for s in segments
         if not (s.get("keep_original") or (s.get("language") or "he") != "he")
-        and (
-            not is_english_text(s.get("text_en") or "")
-            or any(
-                not (p.get("text_en") or "").strip()
-                for p in (s.get("phrases") or [])
-                if (p.get("text") or "").strip()
-            )
+        and not is_english_text(s.get("text_en") or "")
+    ]
+    missing_phrase_en = [
+        s
+        for s in segments
+        if not (s.get("keep_original") or (s.get("language") or "he") != "he")
+        and is_english_text(s.get("text_en") or "")
+        and any(
+            not (p.get("text_en") or "").strip()
+            for p in (s.get("phrases") or [])
+            if (p.get("text") or "").strip()
         )
     ]
-    if missing:
+    if missing_phrase_en and not missing_seg_en:
+        # Redistribute from existing segment EN — no MT model needed.
+        n_fix = repair_missing_english(segments, None, None)
+        if n_fix:
+            print(f"Repaired {n_fix} segment(s) missing English.", file=sys.stderr)
+    elif missing_seg_en or missing_phrase_en:
         model = tokenizer = None
         try:
             model, tokenizer = load_mlx_translator(str(args.model))
@@ -1854,6 +3026,43 @@ def main() -> None:
                 del model, tokenizer
         if n_fix:
             print(f"Repaired {n_fix} segment(s) missing English.", file=sys.stderr)
+
+    # region agent log
+    _debug_event(
+        "H2,H3",
+        "inference/build_preview.py:pre-write-segments",
+        "Capture phrase timing and translation alignment before TTS",
+        {
+            "segments": [
+                {
+                    "index": i,
+                    "speaker": seg.get("speaker_id"),
+                    "start": round(float(seg.get("start") or 0.0), 3),
+                    "end": round(float(seg.get("end") or 0.0), 3),
+                    "sourceStart": seg.get("source_start"),
+                    "sourceEnd": seg.get("source_end"),
+                    "keep": bool(seg.get("keep_original")),
+                    "language": seg.get("language"),
+                    "phraseCount": len(seg.get("phrases") or []),
+                    "phrases": [
+                        {
+                            "start": round(float(p.get("start") or 0.0), 3),
+                            "end": round(float(p.get("end") or 0.0), 3),
+                            "sourceStart": p.get("source_start"),
+                            "sourceEnd": p.get("source_end"),
+                            "pauseAfter": p.get("pause_after"),
+                            "heWords": len((p.get("text") or "").split()),
+                            "enWords": len((p.get("text_en") or "").split()),
+                            "hasTtsFit": bool(p.get("tts_fit")),
+                        }
+                        for p in (seg.get("phrases") or [])
+                    ],
+                }
+                for i, seg in enumerate(segments)
+            ]
+        },
+    )
+    # endregion
 
     out_json = workdir / "translated_segments.json"
     payload_out = {**payload, "segments": segments}
@@ -1875,7 +3084,7 @@ def main() -> None:
         workdir / "source.wav" if (workdir / "source.wav").is_file() else vocals
     )
 
-    log_speech_gaps(segments, vocals, workdir)
+    speech_gaps = log_speech_gaps(segments, vocals, workdir)
 
     if args.skip_tts:
         # Preview remix without TTS: place full vocals as one "clip" at t=0.
@@ -1914,24 +3123,31 @@ def main() -> None:
             print(f"Reusing existing TTS clips (engine={args.tts_engine}).", file=sys.stderr)
         elif args.tts_engine == "qwen":
             speaker_bank = None
-            if not args.no_speaker_bank:
+            use_bank = bool(args.speaker_bank)
+            if use_bank:
                 from inference.speaker_bank import build_speaker_bank
 
                 print("Building per-speaker voice bank…", file=sys.stderr)
                 speaker_bank = build_speaker_bank(segments, vocals, workdir)
+            else:
+                print(
+                    "Fresh per-segment clone refs (speaker bank off).",
+                    file=sys.stderr,
+                )
 
             shorten_model = shorten_tok = None
             shorten_en_fn = None
-            try:
-                shorten_model, shorten_tok = load_mlx_translator(str(args.model))
+            if args.translator == "llm":
+                try:
+                    shorten_model, shorten_tok = load_mlx_translator(str(args.model))
 
-                def shorten_en_fn(**kwargs):
-                    return shorten_english_mlx(shorten_model, shorten_tok, **kwargs)
-            except SystemExit:
-                print(
-                    "  shorten-retry unavailable (translator not loaded)",
-                    file=sys.stderr,
-                )
+                    def shorten_en_fn(**kwargs):
+                        return shorten_english_mlx(shorten_model, shorten_tok, **kwargs)
+                except SystemExit:
+                    print(
+                        "  shorten-retry unavailable (translator not loaded)",
+                        file=sys.stderr,
+                    )
 
             try:
                 synthesize_segments_qwen(
@@ -1948,6 +3164,7 @@ def main() -> None:
                     max_dub_pause=args.max_dub_pause,
                     shorten_en_fn=shorten_en_fn,
                     speaker_bank=speaker_bank,
+                    verify_clone=not args.no_clone_verify,
                 )
             finally:
                 if shorten_model is not None:
@@ -1980,9 +3197,20 @@ def main() -> None:
             "tts_speed": args.tts_speed,
             "qwen_x_vector_only": not bool(args.qwen_icl),
             "max_dub_pause": args.max_dub_pause,
+            "translator": args.translator,
+            "duck_gain": args.duck_gain,
         }
         out_json.write_text(json.dumps(payload_out, ensure_ascii=False, indent=2), encoding="utf-8")
-        dubbed = build_dubbed_track(segments, background, total_duration, workdir)
+        assert_tts_coverage(segments, allow_missing=bool(args.allow_missing_tts))
+        dubbed = build_dubbed_track(
+            segments,
+            background,
+            total_duration,
+            workdir,
+            vocals=vocals,
+            speech_gaps=speech_gaps,
+            duck_gain=args.duck_gain,
+        )
 
     video = find_source_video(workdir, payload)
     preview = workdir / "preview.mp4"

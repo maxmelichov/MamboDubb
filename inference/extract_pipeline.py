@@ -211,6 +211,110 @@ def write_clean_background(src: Path, dst: Path) -> Path:
     return dst
 
 
+def suppress_vocal_leak_in_bed(
+    background: np.ndarray,
+    vocals: np.ndarray,
+    sr: int,
+    *,
+    hop_sec: float = 0.02,
+    speech_floor: float = 0.12,
+    music_keep: float = 0.85,
+) -> np.ndarray:
+    """Attenuate speech-dominant leakage in the music bed without muting music.
+
+    Uses a smoothed time-domain vocal-energy envelope to gently duck only the
+    speech-correlated portion of the bed. Music-dominant frames stay near full.
+    Returns a bed with continuous gain (no binary 0/1 holes).
+    """
+    import numpy as np
+
+    bg = np.asarray(background, dtype=np.float32)
+    if bg.ndim == 1:
+        bg = bg[:, None]
+    n = bg.shape[0]
+    voc = np.asarray(vocals, dtype=np.float32)
+    if voc.ndim > 1:
+        voc = voc.mean(axis=-1)
+    if len(voc) < n:
+        voc = np.pad(voc, (0, n - len(voc)))
+    else:
+        voc = voc[:n]
+
+    hop = max(1, int(hop_sec * sr))
+    n_frames = max(1, (n + hop - 1) // hop)
+    frame_gain = np.ones(n_frames, dtype=np.float32)
+    for fi in range(n_frames):
+        i0 = fi * hop
+        i1 = min(n, i0 + hop)
+        v = voc[i0:i1]
+        b = bg[i0:i1].mean(axis=-1) if bg.ndim > 1 else bg[i0:i1]
+        v_rms = float(np.sqrt(np.mean(v * v) + 1e-12))
+        b_rms = float(np.sqrt(np.mean(b * b) + 1e-12))
+        if v_rms < 0.012:
+            frame_gain[fi] = 1.0
+            continue
+        # Speech-dominant when vocals >> bed residual.
+        ratio = v_rms / max(b_rms, 1e-4)
+        if ratio >= 2.5 and v_rms >= 0.025:
+            # Strong speech leak → keep a music floor, never hard mute.
+            frame_gain[fi] = speech_floor
+        elif ratio >= 1.2 and v_rms >= 0.018:
+            # Mild leak → soft duck toward music_keep.
+            t = min(1.0, (ratio - 1.2) / 1.3)
+            frame_gain[fi] = music_keep * (1.0 - t) + speech_floor * t
+        else:
+            frame_gain[fi] = 1.0
+
+    # Smooth envelope (~120 ms) so the bed never jumps.
+    smooth_n = max(3, int(0.12 / hop_sec))
+    if smooth_n % 2 == 0:
+        smooth_n += 1
+    kernel = np.ones(smooth_n, dtype=np.float32) / float(smooth_n)
+    frame_gain = np.convolve(frame_gain, kernel, mode="same")
+    frame_gain = np.clip(frame_gain, speech_floor, 1.0)
+
+    # Upsample frame gains to samples with linear interpolation.
+    sample_gain = np.ones(n, dtype=np.float32)
+    for fi in range(n_frames):
+        i0 = fi * hop
+        i1 = min(n, i0 + hop)
+        sample_gain[i0:i1] = frame_gain[fi]
+    # Extra sample-level smooth (~40 ms).
+    fade = max(1, int(0.04 * sr))
+    k2 = np.ones(fade, dtype=np.float32) / float(fade)
+    sample_gain = np.convolve(sample_gain, k2, mode="same")
+    sample_gain = np.clip(sample_gain, speech_floor, 1.0)
+
+    return (bg * sample_gain[:, None]).astype(np.float32)
+
+
+def write_leak_cleaned_background(
+    background: Path,
+    vocals: Path,
+    dst: Path,
+) -> Path:
+    """Write a music bed with residual Hebrew leakage attenuated (not muted)."""
+    import numpy as np
+    import soundfile as sf
+
+    bg, sr = sf.read(str(background), dtype="float32", always_2d=True)
+    voc, vsr = sf.read(str(vocals), dtype="float32", always_2d=True)
+    if vsr != sr:
+        # Simple length align; Demucs stems share SR in practice.
+        if voc.shape[0] != bg.shape[0]:
+            n = min(voc.shape[0], bg.shape[0])
+            voc = voc[:n]
+            bg = bg[:n]
+    cleaned = suppress_vocal_leak_in_bed(bg, voc.mean(axis=-1), sr)
+    peak = float(np.max(np.abs(cleaned))) if cleaned.size else 0.0
+    if peak > 0.99:
+        cleaned *= 0.99 / peak
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(str(dst), cleaned.astype(np.float32), sr, subtype="PCM_16")
+    print(f"Leak-cleaned music bed → {dst}", file=sys.stderr)
+    return dst
+
+
 def separate_vocals(input_audio: Path, demucs_dir: Path) -> tuple[Path, Path]:
     """Run HTDemucs two-stem separation; return (vocals, background/no_vocals)."""
     demucs_dir.mkdir(parents=True, exist_ok=True)
@@ -383,7 +487,7 @@ def transcribe_and_merge(
     source_path: Path | None = None,
 ) -> tuple[list[dict], WhisperModel]:
     """Per-turn language detect (he/en/ar) + ASR; keep non-Hebrew as keep_original."""
-    from inference.lang_detect import CANDIDATE_LANGS, detect_and_transcribe_turn, looks_like_phonetic_english
+    from inference.lang_detect import CANDIDATE_LANGS, detect_and_transcribe_turn, should_keep_original
     from inference.segment_merge import (
         find_uncovered_gaps,
         gap_has_speech_energy,
@@ -449,24 +553,28 @@ def transcribe_and_merge(
         letters = re.sub(r"[^\w\u0590-\u05FF\u0600-\u06FF]+", "", joined, flags=re.UNICODE)
         if len(letters) < 3:
             return []
-        keep_original = lang != "he"
-        from inference.lang_detect import text_is_hebrew_script_heavy
+        from inference.lang_detect import script_ratios
 
         joined_text = joined or det["text"]
-        if (
-            not keep_original
-            and looks_like_phonetic_english(joined_text)
-            and not text_is_hebrew_script_heavy(joined_text)
+        keep_original = bool(
+            det.get("keep_original")
+            if det.get("keep_original") is not None
+            else lang != "he"
+        )
+        if should_keep_original(
+            joined_text,
+            lang=lang,
+            he_score=det.get("he_score"),
+            en_score=det.get("en_score"),
         ):
-            lang = "en"
             keep_original = True
-            det["language"] = "en"
+            if lang == "he":
+                lang = "en"
+                det["language"] = "en"
         if keep_original:
             for p in phrases:
-                # Only copy as text_en when Latin-heavy; Hebrew-script KEEP waits
-                # for source audio / re-ASR rather than fake EN subtitles.
-                from inference.lang_detect import script_ratios
-
+                # Only copy as text_en when Latin-heavy; Hebrew-script KEEP keeps
+                # HE ASR for debug (no sanitize wipe into near-empty Latin).
                 if script_ratios(p.get("text") or "")["en"] >= 0.35:
                     p["text_en"] = p["text"]
                 elif script_ratios(joined_text)["en"] >= 0.35:
@@ -482,6 +590,9 @@ def transcribe_and_merge(
             "end": round(float(phrases[-1]["end"]), 3),
             "language": lang,
             "language_score": det.get("language_score"),
+            "he_score": det.get("he_score"),
+            "en_score": det.get("en_score"),
+            "ar_score": det.get("ar_score"),
             "keep_original": keep_original,
             "phrases": phrases,
             "text": joined or det["text"],
@@ -489,11 +600,8 @@ def transcribe_and_merge(
             "pauses": [float(p["pause_after"]) for p in phrases],
         }
         seg["duration"] = round(seg["end"] - seg["start"], 3)
-        if keep_original:
-            from inference.lang_detect import script_ratios
-
-            if script_ratios(seg["text"] or "")["en"] >= 0.35:
-                seg["text_en"] = seg["text"]
+        if keep_original and script_ratios(seg["text"] or "")["en"] >= 0.35:
+            seg["text_en"] = seg["text"]
         parts: list[dict] = []
         for part in split_segment_by_phrase_speaker(seg):
             parts.append(part)
@@ -676,6 +784,33 @@ def transcribe_and_merge(
     )
     if flipped:
         print(f"Stabilized speaker_id on {flipped} continuation row(s).", file=sys.stderr)
+
+    # Final KEEP gate pass so segments.json is correct without depending on preview.
+    n_keep_flip = 0
+    for i, seg in enumerate(results):
+        text = (seg.get("text") or "").strip()
+        neighbors = []
+        if i > 0:
+            neighbors.append(results[i - 1])
+        if i + 1 < len(results):
+            neighbors.append(results[i + 1])
+        if should_keep_original(
+            text,
+            lang=seg.get("language") or "he",
+            he_score=seg.get("he_score"),
+            en_score=seg.get("en_score"),
+            neighbors=neighbors,
+        ):
+            if not seg.get("keep_original"):
+                n_keep_flip += 1
+            seg["keep_original"] = True
+            if (seg.get("language") or "he") == "he":
+                seg["language"] = "en"
+            # Do not sanitize HE ASR into empty Latin on KEEP flip.
+        elif (seg.get("language") or "he") == "he":
+            seg["keep_original"] = False
+    if n_keep_flip:
+        print(f"KEEP gate flipped {n_keep_flip} turn(s) → keep_original.", file=sys.stderr)
 
     n_keep = sum(1 for s in results if s.get("keep_original"))
     print(

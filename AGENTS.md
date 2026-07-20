@@ -2,6 +2,34 @@
 
 Guidance for AI agents and humans working in this repository.
 
+> ## ⛔ EXTREME NOTICE — NO LOCAL / ONE-OFF OUTPUT FIXES
+>
+> **THIS KEEPS HAPPENING. IT MUST STOP.**
+>
+> When dubbing quality is wrong (bad translation, missing TTS, mid-sentence cuts,
+> wrong org names, silence holes, bad timing):
+>
+> 1. **Fix the pipeline code** in `inference/` (and add/adjust tests).
+> 2. **Prove the systemic fix** so the *next* full run is correct by default.
+> 3. **Do NOT** hand-edit `outputs/**/translated_segments.json`, patch one
+>    `text_en`, “just re-TTS segments 3,6”, or otherwise bandage a single run.
+>
+> Forbidden patterns (examples of what agents have done wrong):
+> - Editing one phrase in `outputs/kan11_5m/translated_segments.json` and calling it done
+> - `--tts-segments 3,6` as a substitute for fixing MT / pause / fit / glossary bugs
+> - Rewriting names in JSON while a TTS glossary still silently changes them again
+> - “Quick local fix now, systemic later”
+>
+> Allowed only if the user **explicitly** asks for a one-off patch to a run.
+> Even then: still fix the root cause in code in the same session unless told not to.
+>
+> Root-cause homes (use these, not `outputs/`):
+> - Translation / EN split / pause packing → `inference/build_preview.py`, `inference/translate*.py`
+> - TTS fit / overrun into pause / unit split → `inference/tts_qwen.py`
+> - Name respell / spoken forms → `prepare_english_tts_text` / glossary in `tts_qwen.py`
+> - Timing / phrases → `inference/segment_merge.py`
+> - Always cover with `tests/test_segment_merge_and_tts.py` (or adjacent tests)
+
 ## What this project is
 
 **DubbingQwen** is a local Apple Silicon pipeline that turns Hebrew documentary / news video into English dubs:
@@ -100,6 +128,7 @@ uv run hf download Qwen/Qwen3-TTS-12Hz-1.7B-Base --local-dir models/Qwen3-TTS-12
 
 ## Hard constraints
 
+- **No local output band-aids.** See the EXTREME NOTICE at the top. Fix `inference/` + tests, not `outputs/`.
 - Never force-push, amend shared history, or skip hooks unless the user asks.
 - Never write exploits or attack tooling.
 - Never print or commit secrets from `.env`.

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Per-speaker voice bank for consistent Qwen TTS cloning.
 
-Builds one canonical ~3–4s clean vocal ref per diarization speaker, optionally
-relabeling outlier segments via embedding proximity so rapid speaker flips
-don't produce timbre jumps.
+Builds one canonical ~4.5–6s clean vocal ref per diarization speaker (concat
+of two clean windows when a single turn is short), optionally relabeling
+outlier segments via embedding proximity so rapid speaker flips don't produce
+timbre jumps.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import numpy as np
 
 from inference.tts_f5 import extract_wav_slice, wav_duration
 from inference.tts_qwen import (
+    REF_CONCAT_SEC,
     REF_MAX_SEC,
     REF_MIN_SEC,
     REF_TARGET_SEC,
@@ -46,33 +48,140 @@ def _load_mono_slice(
 
 
 def _segment_embedding_fallback(audio: np.ndarray, sr: int = 16000) -> np.ndarray:
-    """Cheap spectral fingerprint when pyannote embedding model is unavailable."""
+    """Token-free speaker fingerprint (log-mel bands + pitch + deltas).
+
+    Stronger than a raw FFT snapshot so same-person turns can be merged without
+    pyannote/HF access. Not as good as ECAPA, but enough for documentary
+    over-segmentation collapse.
+    """
     if audio.size < sr // 4:
-        return np.zeros(32, dtype=np.float32)
-    # Log-mel-ish: band energies + spectral centroid.
-    X = np.abs(np.fft.rfft(audio.astype(np.float32)))
-    freqs = np.fft.rfftfreq(len(audio), 1.0 / sr)
-    bands = np.linspace(80, min(7000, sr / 2 - 1), 17)
-    feats: list[float] = []
-    for a, b in zip(bands[:-1], bands[1:]):
-        mask = (freqs >= a) & (freqs < b)
-        feats.append(float(np.log1p(np.mean(X[mask] ** 2) + 1e-12)))
-    # Pitch-ish: peak in 80–400 Hz
-    voice = (freqs >= 80) & (freqs < 400)
-    if np.any(voice):
-        peak_i = int(np.argmax(X[voice]))
-        feats.append(float(freqs[voice][peak_i]))
+        return np.zeros(64, dtype=np.float32)
+    x = audio.astype(np.float32)
+    # Frame into ~25ms windows, 10ms hop.
+    win = max(1, int(0.025 * sr))
+    hop = max(1, int(0.010 * sr))
+    if len(x) < win:
+        x = np.pad(x, (0, win - len(x)))
+    n_frames = 1 + (len(x) - win) // hop
+    # Precompute FFT freqs for mel-ish bands.
+    n_fft = 512
+    freqs = np.fft.rfftfreq(n_fft, 1.0 / sr)
+    bands = np.linspace(80, min(7000, sr / 2 - 1), 25)
+    band_masks = [(freqs >= a) & (freqs < b) for a, b in zip(bands[:-1], bands[1:])]
+    frame_feats: list[np.ndarray] = []
+    for fi in range(n_frames):
+        frame = x[fi * hop : fi * hop + win]
+        if len(frame) < win:
+            frame = np.pad(frame, (0, win - len(frame)))
+        # Hann window
+        frame = frame * np.hanning(win).astype(np.float32)
+        if len(frame) < n_fft:
+            frame = np.pad(frame, (0, n_fft - len(frame)))
+        else:
+            frame = frame[:n_fft]
+        X = np.abs(np.fft.rfft(frame, n=n_fft))
+        bands_e = np.array(
+            [float(np.log1p(np.mean(X[m] ** 2) + 1e-12)) for m in band_masks],
+            dtype=np.float32,
+        )
+        frame_feats.append(bands_e)
+    mat = np.stack(frame_feats, axis=0)  # (T, 24)
+    mean = mat.mean(axis=0)
+    std = mat.std(axis=0)
+    # Delta (first-order)
+    if mat.shape[0] >= 3:
+        delta = mat[2:] - mat[:-2]
+        d_mean = delta.mean(axis=0)
     else:
-        feats.append(0.0)
-    # Centroid
-    denom = float(np.sum(X) + 1e-12)
-    feats.append(float(np.sum(freqs * X) / denom))
-    # Pad / trim to 32
-    while len(feats) < 32:
-        feats.append(0.0)
-    vec = np.asarray(feats[:32], dtype=np.float32)
+        d_mean = np.zeros_like(mean)
+    # Pitch-ish: peak in 80–400 Hz from full clip
+    Xf = np.abs(np.fft.rfft(x))
+    ff = np.fft.rfftfreq(len(x), 1.0 / sr)
+    voice = (ff >= 80) & (ff < 400)
+    if np.any(voice):
+        peak_f = float(ff[voice][int(np.argmax(Xf[voice]))])
+    else:
+        peak_f = 0.0
+    denom = float(np.sum(Xf) + 1e-12)
+    centroid = float(np.sum(ff * Xf) / denom)
+    extras = np.array([peak_f / 400.0, centroid / 8000.0], dtype=np.float32)
+    # Pack to 64-d: mean(24) + std(24) + d_mean truncated + extras
+    vec = np.concatenate(
+        [
+            mean,
+            std,
+            d_mean[:14],
+            extras,
+        ]
+    ).astype(np.float32)
+    if vec.size < 64:
+        vec = np.pad(vec, (0, 64 - vec.size))
+    vec = vec[:64]
     n = float(np.linalg.norm(vec) + 1e-9)
     return vec / n
+
+
+_SPEECHBRAIN_OK: bool | None = None
+_SPEECHBRAIN_CLASSIFIER = None
+
+
+def _try_speechbrain_embedding(audio: np.ndarray, sr: int = 16000) -> np.ndarray | None:
+    """Optional ECAPA-TDNN via SpeechBrain (no gated HF token required)."""
+    global _SPEECHBRAIN_OK, _SPEECHBRAIN_CLASSIFIER
+    if _SPEECHBRAIN_OK is False:
+        return None
+    try:
+        import torch
+
+        if _SPEECHBRAIN_CLASSIFIER is None:
+            from speechbrain.inference.speaker import EncoderClassifier
+
+            _SPEECHBRAIN_CLASSIFIER = EncoderClassifier.from_hparams(
+                source="speechbrain/spkrec-ecapa-voxceleb",
+                savedir=str(REPO_ROOT / "models" / "spkrec-ecapa-voxceleb"),
+                run_opts={"device": "cpu"},
+            )
+        wav = audio.astype(np.float32)
+        if sr != 16000:
+            n_out = int(round(len(wav) * 16000 / sr))
+            x_old = np.linspace(0.0, 1.0, num=len(wav), endpoint=False)
+            x_new = np.linspace(0.0, 1.0, num=n_out, endpoint=False)
+            wav = np.interp(x_new, x_old, wav).astype(np.float32)
+        tensor = torch.from_numpy(wav).unsqueeze(0)
+        with torch.no_grad():
+            emb = _SPEECHBRAIN_CLASSIFIER.encode_batch(tensor)
+        vec = emb.squeeze().cpu().numpy().astype(np.float32).reshape(-1)
+        n = float(np.linalg.norm(vec) + 1e-9)
+        _SPEECHBRAIN_OK = True
+        return (vec / n).astype(np.float32)
+    except Exception as exc:
+        if _SPEECHBRAIN_OK is not False:
+            print(
+                f"  speaker_bank: SpeechBrain ECAPA unavailable ({exc}); "
+                "using improved spectral embedding",
+                file=sys.stderr,
+            )
+        _SPEECHBRAIN_OK = False
+        return None
+
+
+def embed_segment(
+    vocals: Path, start: float, end: float, *, use_pyannote: bool = True
+) -> tuple[np.ndarray, str]:
+    """Return (embedding, backend) where backend is pyannote|speechbrain|spectral."""
+    dur = max(0.4, min(4.0, float(end) - float(start)))
+    mid = (float(start) + float(end)) / 2.0
+    a = max(0.0, mid - dur / 2.0)
+    b = a + dur
+    audio = _load_mono_slice(vocals, a, b, sample_rate=16000)
+    if use_pyannote:
+        emb = _try_pyannote_embedding(audio, 16000)
+        if emb is not None:
+            return emb, "pyannote"
+    emb = _try_speechbrain_embedding(audio, 16000)
+    if emb is not None:
+        return emb, "speechbrain"
+    return _segment_embedding_fallback(audio, 16000), "spectral"
 
 
 _PYANNOTE_OK: bool | None = None
@@ -110,27 +219,11 @@ def _try_pyannote_embedding(audio: np.ndarray, sr: int = 16000) -> np.ndarray | 
         if _PYANNOTE_OK is not False:
             print(
                 f"  speaker_bank: pyannote embedding unavailable ({exc}); "
-                "using spectral fallback without relabel",
+                "will try SpeechBrain / spectral",
                 file=sys.stderr,
             )
         _PYANNOTE_OK = False
         return None
-
-
-def embed_segment(
-    vocals: Path, start: float, end: float, *, use_pyannote: bool = True
-) -> tuple[np.ndarray, bool]:
-    """Return (embedding, used_pyannote)."""
-    dur = max(0.4, min(4.0, float(end) - float(start)))
-    mid = (float(start) + float(end)) / 2.0
-    a = max(0.0, mid - dur / 2.0)
-    b = a + dur
-    audio = _load_mono_slice(vocals, a, b, sample_rate=16000)
-    if use_pyannote:
-        emb = _try_pyannote_embedding(audio, 16000)
-        if emb is not None:
-            return emb, True
-    return _segment_embedding_fallback(audio, 16000), False
 
 
 def _cosine(a: np.ndarray, b: np.ndarray) -> float:
@@ -145,8 +238,9 @@ def relabel_speakers_by_embedding(
 ) -> int:
     """Relabel HE dub segments whose embedding is closer to another speaker centroid.
 
-    Only runs when pyannote embeddings are available — spectral fallback is too
-    weak and collapses distinct voices.
+    Uses pyannote when available, else SpeechBrain ECAPA (token-free), else an
+    improved spectral fingerprint. Spectral merges use a higher threshold to
+    avoid collapsing distinct voices.
     """
     he_idxs = [
         i
@@ -158,23 +252,45 @@ def relabel_speakers_by_embedding(
         return 0
 
     embs: dict[int, np.ndarray] = {}
-    used_pyannote = False
+    backends: set[str] = set()
     for i in he_idxs:
         s = segments[i]
         try:
-            emb, ok = embed_segment(vocals, float(s["start"]), float(s["end"]))
+            emb, backend = embed_segment(vocals, float(s["start"]), float(s["end"]))
             embs[i] = emb
-            used_pyannote = used_pyannote or ok
+            backends.add(backend)
         except Exception:
             continue
     if len(embs) < 2:
         return 0
-    if not used_pyannote:
-        print(
-            "  speaker_bank: skip embedding relabel (no pyannote access)",
-            file=sys.stderr,
-        )
-        return 0
+
+    # Spectral is weaker — only allow speaker-level centroid merges at a very
+    # high threshold, and skip per-segment reassignment (too noisy / collapses
+    # distinct documentary voices).
+    backend = (
+        "pyannote"
+        if "pyannote" in backends
+        else ("speechbrain" if "speechbrain" in backends else "spectral")
+    )
+    thresh = float(merge_threshold)
+    per_segment_relabel = True
+    winner_margin = 0.05
+    if backend == "spectral":
+        thresh = max(thresh, 0.97)
+        per_segment_relabel = False
+        winner_margin = 0.08
+    elif backend == "speechbrain":
+        thresh = max(thresh, 0.85)
+        winner_margin = 0.06
+    else:
+        # pyannote: still require a clear winner so distinct people stay distinct.
+        thresh = max(thresh, 0.88)
+        winner_margin = 0.05
+    print(
+        f"  speaker_bank: embedding backend={backend} merge_thresh={thresh:.2f} "
+        f"margin={winner_margin:.2f} per_segment={per_segment_relabel}",
+        file=sys.stderr,
+    )
 
     by_spk: dict[str, list[np.ndarray]] = {}
     for i, emb in embs.items():
@@ -193,11 +309,29 @@ def relabel_speakers_by_embedding(
     for a_i in range(len(spk_ids)):
         for b_i in range(a_i + 1, len(spk_ids)):
             a, b = spk_ids[a_i], spk_ids[b_i]
-            if _cosine(centroids[a], centroids[b]) >= merge_threshold + 0.05:
+            if _cosine(centroids[a], centroids[b]) >= thresh + 0.02:
                 keep, drop = (a, b) if a <= b else (b, a)
                 merge_map[drop] = keep
 
     changed = 0
+    # Apply speaker-level merges first.
+    for i in he_idxs:
+        cur = str(segments[i].get("speaker_id") or "")
+        canon = merge_map.get(cur, cur)
+        if canon != cur:
+            print(
+                f"  merge-spk {cur} → {canon} "
+                f"@ {float(segments[i]['start']):.1f}s",
+                file=sys.stderr,
+            )
+            segments[i]["speaker_id"] = canon
+            for p in segments[i].get("phrases") or []:
+                p["speaker_id"] = canon
+            changed += 1
+
+    if not per_segment_relabel:
+        return changed
+
     for i, emb in embs.items():
         cur = merge_map.get(
             str(segments[i].get("speaker_id") or ""),
@@ -208,7 +342,7 @@ def relabel_speakers_by_embedding(
         for spk, c in centroids.items():
             canon = merge_map.get(spk, spk)
             score = _cosine(emb, c)
-            if score > best + 0.05 and score >= merge_threshold:
+            if score > best + winner_margin and score >= thresh:
                 best = score
                 best_spk = canon
         if best_spk != str(segments[i].get("speaker_id")):
@@ -281,9 +415,10 @@ def pick_canonical_ref_for_speaker(
 ) -> dict[str, Any] | None:
     """Choose the cleanest ≥REF_MIN_SEC window across all turns of this speaker.
 
-    Prefers the longest clean candidate. If no single turn yields REF_MIN_SEC,
-    concatenates multiple clean slices. Returns None (skip bank) when still
-    too short — TTS will fall back to per-phrase refs.
+    Prefers a long clean candidate (~REF_TARGET_SEC). When the best single
+    window is shorter than REF_CONCAT_SEC, concatenates a second clean slice
+    for stronger x-vector identity. Returns None when still too short — TTS
+    falls back to per-phrase refs.
     """
     windows: list[tuple[float, float]] = []
     for seg in segments:
@@ -339,7 +474,25 @@ def pick_canonical_ref_for_speaker(
 
     ref_path = out_dir / f"speaker_{speaker_id}_ref.wav"
     if best is not None:
-        _, ref_start, ref_end, _ = best
+        _, ref_start, ref_end, dur = best
+        # Pad with a second clean window when the best single slice is short.
+        if dur < REF_CONCAT_SEC - 0.15 and len(windows) >= 2:
+            concat = _concat_ref_windows(
+                vocals,
+                windows,
+                ref_path,
+                target_sec=REF_CONCAT_SEC,
+            )
+            if concat is not None:
+                ref_start, ref_end = concat
+                return {
+                    "path": str(ref_path.resolve()),
+                    "start": ref_start,
+                    "end": ref_end,
+                    "speaker_id": speaker_id,
+                    "score": float(best[0]),
+                    "concat": True,
+                }
         if ref_end - ref_start > REF_MAX_SEC:
             ref_end = ref_start + REF_MAX_SEC
         extract_wav_slice(vocals, ref_start, ref_end, ref_path, sample_rate=24000)
@@ -353,7 +506,7 @@ def pick_canonical_ref_for_speaker(
 
     # No single window long enough — try concatenating short turns.
     concat = _concat_ref_windows(
-        vocals, windows, ref_path, target_sec=REF_TARGET_SEC
+        vocals, windows, ref_path, target_sec=REF_CONCAT_SEC
     )
     if concat is None:
         print(
@@ -379,8 +532,14 @@ def build_speaker_bank(
     workdir: Path,
     *,
     relabel: bool = True,
+    merge_threshold: float = 0.90,
 ) -> dict[str, Any]:
-    """Build tts_refs/speaker_bank.json with one clean ref per speaker."""
+    """Build tts_refs/speaker_bank.json with one clean ref per speaker.
+
+    Conservative embedding merge (high threshold + winner margin) collapses
+    over-segmented diarization labels for the same real person while refusing
+    to share a voice across distinct overlapping speakers.
+    """
     out_dir = workdir / "tts_refs"
     out_dir.mkdir(parents=True, exist_ok=True)
     media_duration = wav_duration(vocals)
@@ -388,9 +547,16 @@ def build_speaker_bank(
     n_relabel = 0
     if relabel:
         try:
-            n_relabel = relabel_speakers_by_embedding(segments, vocals)
+            n_relabel = relabel_speakers_by_embedding(
+                segments, vocals, merge_threshold=merge_threshold
+            )
         except Exception as exc:
             print(f"  speaker_bank relabel skipped: {exc}", file=sys.stderr)
+    else:
+        print(
+            "  speaker_bank: cross-speaker merge disabled",
+            file=sys.stderr,
+        )
 
     speakers = sorted(
         {
@@ -405,6 +571,10 @@ def build_speaker_bank(
             spk, segments, vocals, out_dir, media_duration
         )
         if meta:
+            # Attach the HE transcript that overlaps the ref window for ICL.
+            meta["ref_text"] = _ref_text_for_window(
+                segments, spk, float(meta["start"]), float(meta["end"])
+            )
             bank["speakers"][spk] = meta
             print(
                 f"  speaker bank [{spk}] ref "
@@ -415,3 +585,34 @@ def build_speaker_bank(
     out_path.write_text(json.dumps(bank, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Wrote {out_path} ({len(bank['speakers'])} speakers)", file=sys.stderr)
     return bank
+
+
+def _ref_text_for_window(
+    segments: list[dict[str, Any]],
+    speaker_id: str,
+    ref_start: float,
+    ref_end: float,
+) -> str:
+    """HE transcript overlapping the reference window for ICL cloning."""
+    bits: list[str] = []
+    for seg in segments:
+        if str(seg.get("speaker_id")) != str(speaker_id):
+            continue
+        if seg.get("keep_original") or (seg.get("language") or "he") != "he":
+            continue
+        for p in seg.get("phrases") or [{"text": seg.get("text"), "start": seg.get("start"), "end": seg.get("end")}]:
+            a = float(p.get("start") or 0.0)
+            b = float(p.get("end") or 0.0)
+            if b <= ref_start or a >= ref_end:
+                continue
+            t = (p.get("text") or "").strip()
+            if t:
+                bits.append(t)
+        if not bits:
+            a = float(seg.get("start") or 0.0)
+            b = float(seg.get("end") or 0.0)
+            if not (b <= ref_start or a >= ref_end):
+                t = (seg.get("text") or "").strip()
+                if t:
+                    bits.append(t)
+    return " ".join(bits).strip() or "um"
