@@ -39,6 +39,9 @@ SENTENCE_PAUSE_SEC = 0.55
 MAX_DRIFT_SEC = 0.6
 RUN_BREAK_GAP_SEC = 1.5
 INTER_GAP_SEC = 0.12
+# Only close inter-segment gaps smaller than this; larger gaps are real stops
+# and must keep place_start ≈ source_start (do not pull forward by MAX_DRIFT).
+CLOSE_GAP_MAX_SEC = 0.35
 PLACE_KEEP_GUARD_SEC = 0.12
 PLACE_MAX_SPEED = 1.50
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…؟])\s+")
@@ -1805,17 +1808,20 @@ def plan_dub_placement(
     max_drift: float = MAX_DRIFT_SEC,
     run_break_gap: float = RUN_BREAK_GAP_SEC,
     inter_gap: float = INTER_GAP_SEC,
+    close_gap_max: float = CLOSE_GAP_MAX_SEC,
     keep_guard: float = PLACE_KEEP_GUARD_SEC,
     max_speed: float = PLACE_MAX_SPEED,
 ) -> int:
     """Plan elastic ``place_start`` / ``place_end`` / ``place_speed`` for HE dubs.
 
     Groups consecutive Hebrew dubs into runs bounded by KEEP/non-Hebrew segments
-    and by natural gaps ≥ ``run_break_gap``. Within a run, closes small gaps
-    (``inter_gap``), keeps onset drift ≤ ``max_drift``, and — when the run would
-    overrun a locked KEEP anchor — applies one uniform speed-up ≤ ``max_speed``.
-    Never trims speech. Last segment before a run-break gap / media end is
-    allowed to finish fully into that slack.
+    and by natural gaps ≥ ``run_break_gap``. Within a run, closes only small gaps
+    (``orig_gap < close_gap_max``) down to ``inter_gap``, keeps onset drift ≤
+    ``max_drift`` on those closable gaps, and — when the run would overrun a
+    locked KEEP anchor — applies one uniform speed-up ≤ ``max_speed``.
+    Gaps ≥ ``close_gap_max`` are intentional stops: ``place_start ≈ source_start``
+    (never pulled forward). Never trims speech. Last segment before a run-break
+    gap / media end is allowed to finish fully into that slack.
 
     Mutates ``segments`` in place. Returns the number of dub segments planned.
     """
@@ -1924,22 +1930,37 @@ def plan_dub_placement(
             ok = True
             for ri, idx in enumerate(run):
                 src_a = _src_a(segments[idx])
+                orig_gap = 0.0
                 if ri == 0:
                     p0 = src_a
                 else:
                     prev_src_b = _src_b(segments[run[ri - 1]])
                     orig_gap = max(0.0, src_a - prev_src_b)
-                    gap = min(orig_gap, float(inter_gap)) if orig_gap > 1e-3 else 0.0
-                    # Close gaps: start right after previous end (+ tiny gap).
-                    p0 = places[-1][1] + gap
-                    if p0 < src_a - float(max_drift):
-                        p0 = src_a - float(max_drift)
-                    if p0 > src_a + float(max_drift):
-                        p0 = src_a + float(max_drift)
+                    if orig_gap >= float(close_gap_max):
+                        # Intentional stop: keep the HE onset (do not pull forward).
+                        p0 = max(places[-1][1], src_a)
+                    else:
+                        gap = (
+                            min(orig_gap, float(inter_gap))
+                            if orig_gap > 1e-3
+                            else 0.0
+                        )
+                        # Close micro-gaps: start right after previous end.
+                        p0 = places[-1][1] + gap
+                        if p0 < src_a - float(max_drift):
+                            p0 = src_a - float(max_drift)
+                        if p0 > src_a + float(max_drift):
+                            p0 = src_a + float(max_drift)
                     if p0 + 1e-3 < places[-1][1]:
                         ok = False
                 p1 = p0 + lens[ri]
-                if abs(p0 - src_a) > float(max_drift) + 1e-3:
+                # Drift budget applies only to closable micro-gaps; preserved
+                # stops sit at src_a by design (zero or positive slack).
+                if (
+                    ri > 0
+                    and orig_gap < float(close_gap_max)
+                    and abs(p0 - src_a) > float(max_drift) + 1e-3
+                ):
                     ok = False
                 places.append((p0, p1))
             # Last segment before a soft gap may finish into the slack.

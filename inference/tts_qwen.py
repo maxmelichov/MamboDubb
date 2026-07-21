@@ -82,6 +82,8 @@ BOUNDARY_TRIM_RMS = 0.012
 BOUNDARY_TRIM_MIN_SILENCE_SEC = 0.04
 # Intra-segment unit packing: small natural pause when closing unit gaps.
 UNIT_INTER_GAP_SEC = 0.08
+# Preserve real HE dramatic stops; only close micro-gaps below this.
+UNIT_PRESERVE_GAP_SEC = 0.45
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -189,12 +191,17 @@ def pick_cleanest_ref_window(
     return ref_start, ref_end
 
 
-def _speaker_search_windows(
+# Own-segment clone ref quality gate: usable if long enough and not near-silent.
+REF_OWN_MIN_RMS = 0.018
+# HF/RMS score above this → own window is unusable; allow same-speaker fallback.
+REF_OWN_MAX_NOISE_SCORE = 8.0
+
+
+def _speaker_own_windows(
     seg: dict,
     phrase: dict,
-    all_segments: list[dict] | None,
 ) -> list[tuple[float, float]]:
-    """Candidate time ranges for a clean clone ref (phrase, then same speaker)."""
+    """Phrase + segment windows for per-segment zero-shot cloning."""
     p_start = float(phrase["start"])
     p_end = float(phrase["end"])
     seg_a = float(seg.get("start") or p_start)
@@ -203,19 +210,6 @@ def _speaker_search_windows(
         (max(seg_a, p_start - 0.15), min(seg_b, p_end + 0.15)),
         (seg_a, seg_b),
     ]
-    spk = seg.get("speaker_id")
-    if spk and all_segments:
-        for other in all_segments:
-            if other.get("speaker_id") != spk:
-                continue
-            if other.get("keep_original"):
-                continue
-            if (other.get("language") or "he") != (seg.get("language") or "he"):
-                continue
-            a, b = float(other["start"]), float(other["end"])
-            if b - a >= REF_MIN_SEC:
-                windows.append((a, b))
-    # Dedup / drop empties
     out: list[tuple[float, float]] = []
     seen: set[tuple[float, float]] = set()
     for a, b in windows:
@@ -225,6 +219,86 @@ def _speaker_search_windows(
         seen.add(key)
         out.append((a, b))
     return out
+
+
+def _speaker_same_id_fallback_windows(
+    seg: dict,
+    phrase: dict,
+    all_segments: list[dict] | None,
+) -> list[tuple[float, float]]:
+    """Other HE turns with the same speaker_id (never a different speaker)."""
+    spk = seg.get("speaker_id")
+    if not spk or not all_segments:
+        return []
+    p_start = float(phrase["start"])
+    p_end = float(phrase["end"])
+    seg_a = float(seg.get("start") or p_start)
+    seg_b = float(seg.get("end") or p_end)
+    mid = 0.5 * (p_start + p_end)
+    nearby: list[tuple[float, float, float]] = []
+    for other in all_segments:
+        if other.get("speaker_id") != spk:
+            continue
+        if other.get("keep_original"):
+            continue
+        if (other.get("language") or "he") != "he":
+            continue
+        a, b = float(other["start"]), float(other["end"])
+        if b - a < REF_MIN_SEC:
+            continue
+        if abs(a - seg_a) < 0.05 and abs(b - seg_b) < 0.05:
+            continue
+        nearby.append((abs(0.5 * (a + b) - mid), a, b))
+    nearby.sort(key=lambda t: t[0])
+    out: list[tuple[float, float]] = []
+    seen: set[tuple[float, float]] = set()
+    for _dist, a, b in nearby[:4]:
+        key = (round(a, 3), round(b, 3))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((a, b))
+    return out
+
+
+def _speaker_search_windows(
+    seg: dict,
+    phrase: dict,
+    all_segments: list[dict] | None,
+) -> list[tuple[float, float]]:
+    """Candidate clone refs: own segment first, then same-speaker_id only.
+
+    Cross-speaker nearest-in-time windows are never candidates — scoring those
+    let a cleaner foreign turn steal identity (0:50 SPEAKER_02→SPEAKER_06 bug).
+    """
+    windows = list(_speaker_own_windows(seg, phrase))
+    for a, b in _speaker_same_id_fallback_windows(seg, phrase, all_segments):
+        key = (round(a, 3), round(b, 3))
+        if any((round(x, 3), round(y, 3)) == key for x, y in windows):
+            continue
+        windows.append((a, b))
+    return windows
+
+
+def _score_ref_window(
+    vocals: Path,
+    ref_start: float,
+    ref_end: float,
+    *,
+    tmp: Path,
+) -> tuple[float, float]:
+    """Return (noise_score, rms) for a candidate ref slice."""
+    extract_wav_slice(vocals, ref_start, ref_end, tmp, sample_rate=24000)
+    audio, sr = sf.read(str(tmp), dtype="float32", always_2d=False)
+    if getattr(audio, "ndim", 1) > 1:
+        audio = np.mean(audio, axis=-1).astype(np.float32)
+    rms = float(np.sqrt(np.mean(audio**2) + 1e-12))
+    score = _hf_noise_ratio(audio, sr) / max(rms, 1e-3)
+    try:
+        tmp.unlink(missing_ok=True)
+    except Exception:
+        pass
+    return score, rms
 
 
 def build_qwen_phrase_ref(
@@ -239,43 +313,52 @@ def build_qwen_phrase_ref(
 ) -> dict:
     """~3s vocal slice + Hebrew transcript for Qwen Base clone.
 
-    Picks the cleanest window on this speaker (lowest Demucs HF hiss), including
-    later/earlier turns of the same speaker_id when the local phrase is hissy.
+    Prefer this segment's own vocals. Only if own audio fails a quality gate
+    (too short / near-silent / catastrophic HF) fall back to other turns of
+    the same ``speaker_id``. Never clone from a different speaker.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     he_text = (phrase.get("text") or seg.get("text") or "um").strip() or "um"
+    tmp = out_dir / f"_score_{seg_index:02d}_{phrase_index:02d}.wav"
 
-    best: tuple[float, float, float] | None = None  # score, start, end
-    for search_a, search_b in _speaker_search_windows(seg, phrase, all_segments):
-        target = min(REF_TARGET_SEC, max(REF_MIN_SEC, search_b - search_a))
-        ref_start, ref_end = pick_cleanest_ref_window(
-            vocals,
-            search_a,
-            search_b,
-            media_duration=media_duration,
-            target_sec=target,
+    def _best_in(windows: list[tuple[float, float]]) -> tuple[float, float, float, float] | None:
+        # score, start, end, rms
+        best: tuple[float, float, float, float] | None = None
+        for search_a, search_b in windows:
+            target = min(REF_TARGET_SEC, max(REF_MIN_SEC, search_b - search_a))
+            ref_start, ref_end = pick_cleanest_ref_window(
+                vocals,
+                search_a,
+                search_b,
+                media_duration=media_duration,
+                target_sec=target,
+            )
+            score, rms = _score_ref_window(vocals, ref_start, ref_end, tmp=tmp)
+            if best is None or score < best[0]:
+                best = (score, ref_start, ref_end, rms)
+        return best
+
+    own_best = _best_in(_speaker_own_windows(seg, phrase))
+    chosen: tuple[float, float, float, float] | None = own_best
+    own_ok = (
+        own_best is not None
+        and own_best[3] >= REF_OWN_MIN_RMS
+        and (own_best[2] - own_best[1]) >= REF_MIN_SEC * 0.6
+        and own_best[0] <= REF_OWN_MAX_NOISE_SCORE
+    )
+    if not own_ok:
+        fb = _best_in(
+            _speaker_same_id_fallback_windows(seg, phrase, all_segments)
         )
-        # Score the chosen window
-        tmp = out_dir / f"_score_{seg_index:02d}_{phrase_index:02d}.wav"
-        extract_wav_slice(vocals, ref_start, ref_end, tmp, sample_rate=24000)
-        audio, sr = sf.read(str(tmp), dtype="float32", always_2d=False)
-        if getattr(audio, "ndim", 1) > 1:
-            audio = np.mean(audio, axis=-1).astype(np.float32)
-        rms = float(np.sqrt(np.mean(audio**2) + 1e-12))
-        score = _hf_noise_ratio(audio, sr) / max(rms, 1e-3)
-        try:
-            tmp.unlink(missing_ok=True)
-        except Exception:
-            pass
-        if best is None or score < best[0]:
-            best = (score, ref_start, ref_end)
+        if fb is not None and (chosen is None or fb[0] < chosen[0]):
+            chosen = fb
 
-    if best is None:
+    if chosen is None:
         mid = (float(phrase["start"]) + float(phrase["end"])) / 2.0
         ref_start = max(0.0, mid - REF_TARGET_SEC / 2.0)
         ref_end = min(media_duration, ref_start + REF_TARGET_SEC)
     else:
-        _, ref_start, ref_end = best
+        _, ref_start, ref_end, _rms = chosen
     if ref_end - ref_start > REF_MAX_SEC:
         ref_end = ref_start + REF_MAX_SEC
 
@@ -837,7 +920,16 @@ def coarse_split_en_by_weights(en: str, group_weights: list[float | int]) -> lis
     dangling = {
         "the", "a", "an", "and", "or", "but", "of", "to", "with", "for",
         "in", "on", "at", "by", "from", "as", "is", "are", "was", "were",
-        "when", "but", "that", "which", "who",
+        "when", "but", "that", "which", "who", "into", "onto", "about",
+        "than", "then", "if", "while", "because", "so", "very",
+        "she", "he", "it", "they", "we", "i",
+    }
+    # Never leave a cut that starts the next chunk with these (mid-PP / mid-clause).
+    leading_glue = {
+        "for", "to", "of", "in", "with", "that", "which", "who", "than",
+        "into", "onto", "about", "from", "by", "on", "at", "as", "and", "or",
+        "but", "if", "while", "because", "is", "are", "was", "were", "has",
+        "have", "had",
     }
     # Tight snap: ~10% of string or 10 chars — not 25%.
     snap_tol = max(10, int(0.10 * len(en)))
@@ -870,18 +962,24 @@ def coarse_split_en_by_weights(en: str, group_weights: list[float | int]) -> lis
         remaining_groups = n - gi - 1
         need = max(1, round(len(words) * weights[gi] / total_w))
         need = min(need, max(1, len(words) - assigned_words - remaining_groups))
-        while (
-            need > 1
-            and assigned_words + need < len(words)
-            and words[assigned_words + need - 1].strip(".,;:!?\"'").lower() in dangling
-        ):
-            need -= 1
         # Prefer a nearby sentence/comma word boundary within ±2 words of need.
         for k in range(assigned_words + 1, len(words) - remaining_groups + 1):
             if words[k - 1].endswith((".", "!", "?", "…")):
                 if abs((k - assigned_words) - need) <= max(2, need // 3):
                     need = k - assigned_words
                     break
+        # Grow (don't shrink) past dangling ends and mid-PP starts so we never
+        # cut "comfortable | for the Western" or "colors that | are very…".
+        max_need = len(words) - assigned_words - remaining_groups
+        guard = 0
+        while assigned_words + need < len(words) and need < max_need and guard < 12:
+            last = words[assigned_words + need - 1].strip(".,;:!?\"'").lower()
+            nxt = words[assigned_words + need].strip(".,;:!?\"'").lower()
+            if last in dangling or nxt in leading_glue:
+                need += 1
+                guard += 1
+                continue
+            break
         chunk_words = words[assigned_words : assigned_words + need]
         chunks.append(" ".join(chunk_words).strip())
         assigned_words += need
@@ -1192,7 +1290,15 @@ def split_utterance_into_units(
         ).strip()
         for g in groups
     ]
-    if phrase_en_chunks and all(phrase_en_chunks):
+    broken_phrase_en = any(
+        re.match(
+            r"^(is|are|was|were|has|have|had)\s+",
+            (c or "").strip(),
+            flags=re.I,
+        )
+        for c in phrase_en_chunks
+    )
+    if phrase_en_chunks and all(phrase_en_chunks) and not broken_phrase_en:
         # Prefer already-aligned phrase EN (object-continuation merges, etc.).
         en_chunks = phrase_en_chunks
     elif seg_en:
@@ -1447,16 +1553,20 @@ def assemble_on_hebrew_timeline(
     next_is_keep: bool = False,
     gap_bleed_sec: float | None = None,
 ) -> Path:
-    """Place each unit clip back-to-back — never trim mid-sentence.
+    """Place each unit clip on the HE timeline — never trim mid-sentence.
 
-    Units keep their full synthesized length. Small intra-segment gaps are
-    closed (``UNIT_INTER_GAP_SEC``). Overlaps are crossfaded. ``hard_end`` /
+    Units keep their full synthesized length. Real HE stops
+    (``orig_gap >= UNIT_PRESERVE_GAP_SEC``) are preserved at the source onset;
+    only micro-gaps are closed to ``UNIT_INTER_GAP_SEC``. Pad tails are not
+    source gaps — callers should pass ``pad_short=False`` on non-final units
+    so short clips abut the next unit. Overlaps are crossfaded. ``hard_end`` /
     ``next_is_keep`` no longer truncate audio; the elastic packer speeds the
     whole segment clip when a KEEP anchor requires it.
     """
     del hard_end, gap_bleed_sec, next_is_keep  # packer owns yield / speed-up
     inter = float(UNIT_INTER_GAP_SEC)
-    # Build placement plan: close gaps, keep full clip lengths.
+    preserve = float(UNIT_PRESERVE_GAP_SEC)
+    # Build placement plan: preserve real stops, close micro-gaps, keep full clips.
     place_abs: list[tuple[float, float, Path]] = []
     cursor = float(seg_start)
     for j, phrase in enumerate(plan):
@@ -1471,11 +1581,23 @@ def assemble_on_hebrew_timeline(
             p0 = max(float(seg_start), src_a)
         else:
             prev_end = place_abs[-1][1]
-            orig_gap = max(0.0, src_a - float(plan[j - 1].get("end") or src_a))
-            # Prefer source onset when there is room; otherwise abut with a
-            # tiny natural pause (never leave a multi-second hole inside a unit pack).
-            gap = min(orig_gap, inter) if orig_gap > 1e-3 else 0.0
-            p0 = max(prev_end + gap, min(src_a, prev_end + inter))
+            # Prefer the previous unit's HE source_end for the real gap; fall
+            # back to its place end only when source timing is missing.
+            prev_src_end = float(
+                plan[j - 1].get("source_end")
+                or plan[j - 1].get("end")
+                or src_a
+            )
+            orig_gap = max(0.0, src_a - prev_src_end)
+            if orig_gap >= preserve:
+                # Real dramatic stop: park at the HE onset (keep the silence).
+                p0 = max(prev_end, src_a)
+            elif orig_gap > 1e-3:
+                # Micro-gap: close to a tiny natural pause.
+                gap = min(orig_gap, inter)
+                p0 = max(prev_end + gap, min(src_a, prev_end + inter))
+            else:
+                p0 = prev_end
             if p0 < prev_end:
                 p0 = prev_end
         p1 = p0 + dur
@@ -2363,6 +2485,11 @@ def synthesize_segments_qwen(
                         raw_sec = wav_duration(best_fit_src)
 
             fitted_unit = tts_dir / f"seg_{i:02d}_u{j:02d}_fit.wav"
+            # Non-final units: don't pad short speech out to the HE window —
+            # that creates multi-second holes before a continuing EN clause
+            # (1:52 "comfortable … for the Western" bug). Final unit may pad
+            # so the segment canvas still covers the HE end.
+            pad_short = j + 1 >= len(units)
             rate = fit_exact_window(
                 best_fit_src,
                 fitted_unit,
@@ -2370,6 +2497,7 @@ def synthesize_segments_qwen(
                 max_rate=FIT_MAX_RATE_GENTLE,
                 min_rate=FIT_MIN_RATE,
                 allow_overrun=True,
+                pad_short=pad_short,
             )
             rates.append(rate)
             actual = wav_duration(fitted_unit)

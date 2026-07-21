@@ -217,7 +217,7 @@ def suppress_vocal_leak_in_bed(
     sr: int,
     *,
     hop_sec: float = 0.02,
-    speech_floor: float = 0.50,
+    speech_floor: float = 0.32,
     music_keep: float = 0.90,
 ) -> np.ndarray:
     """Attenuate speech-dominant leakage in the music bed without muting music.
@@ -226,9 +226,8 @@ def suppress_vocal_leak_in_bed(
     speech-correlated portion of the bed. Music-dominant frames stay near full.
     Returns a bed with continuous gain (no binary 0/1 holes).
 
-    ``speech_floor`` defaults high (~0.50) so that under dubbed speech (where
-    the original HE vocals still key the envelope) the music stays clearly
-    audible after stacking with the remix duck envelope.
+    ``speech_floor`` (~0.32) attenuates residual HE without crushing music under
+    dubbed windows (stacked with remix duck). Extended dub duck covers HE tails.
     """
     import numpy as np
 
@@ -273,6 +272,7 @@ def suppress_vocal_leak_in_bed(
         smooth_n += 1
     kernel = np.ones(smooth_n, dtype=np.float32) / float(smooth_n)
     frame_gain = np.convolve(frame_gain, kernel, mode="same")
+    # Music-dominant frames must stay high; only speech-dominant clips to floor.
     frame_gain = np.clip(frame_gain, speech_floor, 1.0)
 
     # Upsample frame gains to samples with linear interpolation.

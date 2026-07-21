@@ -1183,10 +1183,11 @@ def test_plan_dub_placement_closes_gaps_and_keeps_keep():
             "speaker_id": "B",
             "language": "he",
             "keep_original": False,
-            "source_start": 62.0,
-            "source_end": 76.0,
-            "start": 62.0,
-            "end": 76.0,
+            # Micro-gap (0.2s) — closable under CLOSE_GAP_MAX_SEC.
+            "source_start": 61.2,
+            "source_end": 75.2,
+            "start": 61.2,
+            "end": 75.2,
             "tts_fit": "dummy2.wav",
             "tts_clip_sec": 14.0,
         },
@@ -1202,8 +1203,8 @@ def test_plan_dub_placement_closes_gaps_and_keeps_keep():
     ]
     n = plan_dub_placement(segs, media_duration=100.0)
     assert n == 2
-    # Gap 61→62 closed: seg2 starts near seg1 end (within inter_gap).
-    assert segs[1]["place_start"] <= 62.0
+    # Micro-gap 61→61.2 closed: seg2 starts near seg1 end (within inter_gap).
+    assert segs[1]["place_start"] <= 61.2
     assert segs[1]["place_start"] >= segs[0]["place_end"] - 1e-3
     assert abs(segs[1]["place_drift"]) <= MAX_DRIFT_SEC + 1e-6
     # KEEP locked to source when extract clock matches ASR.
@@ -1213,6 +1214,43 @@ def test_plan_dub_placement_closes_gaps_and_keeps_keep():
     # Full clip lengths preserved (no trim).
     assert abs(segs[0]["place_end"] - segs[0]["place_start"] - 2.0) < 0.02
     assert abs(segs[1]["place_end"] - segs[1]["place_start"] - 14.0) < 0.02
+
+
+def test_plan_dub_placement_preserves_intentional_stop():
+    """Gaps ≥ CLOSE_GAP_MAX_SEC keep place_start ≈ source_start (no MAX_DRIFT pull)."""
+    from inference.segment_merge import CLOSE_GAP_MAX_SEC, plan_dub_placement
+
+    segs = [
+        {
+            "speaker_id": "A",
+            "language": "he",
+            "keep_original": False,
+            "source_start": 59.0,
+            "source_end": 61.0,
+            "start": 59.0,
+            "end": 61.0,
+            "tts_fit": "dummy1.wav",
+            "tts_clip_sec": 2.0,
+        },
+        {
+            "speaker_id": "B",
+            "language": "he",
+            "keep_original": False,
+            # ~1s dramatic stop (kan11_5m ~0:59 pattern) — must not pull early.
+            "source_start": 62.05,
+            "source_end": 76.0,
+            "start": 62.05,
+            "end": 76.0,
+            "tts_fit": "dummy2.wav",
+            "tts_clip_sec": 14.0,
+        },
+    ]
+    assert 62.05 - 61.0 >= CLOSE_GAP_MAX_SEC
+    plan_dub_placement(segs, media_duration=100.0)
+    assert abs(segs[1]["place_start"] - 62.05) < 0.02
+    assert segs[1]["place_drift"] >= -0.05
+    # Previous clip may finish into the pause (never trim).
+    assert segs[0]["place_end"] <= segs[1]["place_start"] + 0.02
 
 
 def test_plan_dub_placement_keep_uses_extract_not_late_asr():
@@ -1411,3 +1449,224 @@ def test_suppress_vocal_leak_keeps_music_floor():
     assert float(np.min(np.abs(cleaned))) >= 0.05 * 0.45
     # Music still present overall.
     assert float(np.mean(np.abs(cleaned))) > 0.01
+
+
+def test_suppress_vocal_leak_speech_floor_below_music():
+    """Default speech floor attenuates HE leak without crushing the bed."""
+    import inspect
+
+    import numpy as np
+    from inference.extract_pipeline import suppress_vocal_leak_in_bed
+
+    sig = inspect.signature(suppress_vocal_leak_in_bed)
+    assert 0.25 <= float(sig.parameters["speech_floor"].default) <= 0.40
+    assert float(sig.parameters["music_keep"].default) >= 0.85
+
+    sr = 16000
+    n = sr
+    bg = np.ones((n, 1), dtype=np.float32) * 0.04
+    voc = np.ones(n, dtype=np.float32) * 0.25  # strongly speech-dominant
+    cleaned = suppress_vocal_leak_in_bed(bg, voc, sr)
+    # Speech-dominant frames attenuate harder than the old 0.50 floor.
+    assert float(np.mean(np.abs(cleaned))) < 0.04 * 0.45
+    # But not near-muted (old 0.18 floor crushed music under dubs).
+    assert float(np.mean(np.abs(cleaned))) > 0.04 * 0.20
+
+
+def test_duck_gain_default_keeps_music_audible():
+    import inspect
+    from inference.build_preview import build_dubbed_track
+
+    sig = inspect.signature(build_dubbed_track)
+    assert float(sig.parameters["duck_gain"].default) >= 0.75
+
+
+def test_speaker_search_windows_own_then_same_id_never_cross():
+    """Own window first; same-speaker_id fallback only; never another speaker."""
+    from inference.tts_qwen import (
+        _speaker_own_windows,
+        _speaker_same_id_fallback_windows,
+        _speaker_search_windows,
+    )
+
+    seg = {
+        "speaker_id": "SPEAKER_06",
+        "start": 46.0,
+        "end": 60.0,
+        "language": "he",
+    }
+    phrase = {"start": 46.0, "end": 51.0, "text": "אנחנו"}
+    all_segs = [
+        seg,
+        {
+            # Different speaker nearby — must NEVER be a candidate (0:50 bug).
+            "speaker_id": "SPEAKER_02",
+            "start": 77.0,
+            "end": 81.0,
+            "language": "he",
+            "keep_original": False,
+        },
+        {
+            # Same id, later turn — allowed as fallback only.
+            "speaker_id": "SPEAKER_06",
+            "start": 81.0,
+            "end": 94.0,
+            "language": "he",
+            "keep_original": False,
+        },
+    ]
+    own = _speaker_own_windows(seg, phrase)
+    assert own[0][0] >= 45.5 and own[0][1] <= 60.5
+    assert all(a < 61.0 for a, _b in own)
+
+    fb = _speaker_same_id_fallback_windows(seg, phrase, all_segs)
+    assert any(abs(a - 81.0) < 0.1 for a, _b in fb)
+    assert not any(abs(a - 77.0) < 0.1 for a, _b in fb)
+
+    wins = _speaker_search_windows(seg, phrase, all_segs)
+    starts = [a for a, _b in wins]
+    assert not any(abs(a - 77.0) < 0.1 for a in starts)
+    assert wins[0][0] < 61.0  # own first
+    assert any(abs(a - 81.0) < 0.1 for a in starts)
+
+
+def test_assemble_preserves_long_he_gap(tmp_path):
+    """Real HE stops (≥ UNIT_PRESERVE_GAP_SEC) stay; micro-gaps close."""
+    import numpy as np
+    import soundfile as sf
+
+    from inference.tts_qwen import (
+        UNIT_INTER_GAP_SEC,
+        UNIT_PRESERVE_GAP_SEC,
+        assemble_on_hebrew_timeline,
+        wav_duration,
+    )
+
+    sr = 44100
+    c0 = tmp_path / "u0.wav"
+    c1 = tmp_path / "u1.wav"
+    sf.write(str(c0), np.ones(int(0.5 * sr), dtype=np.float32) * 0.1, sr)
+    sf.write(str(c1), np.ones(int(0.5 * sr), dtype=np.float32) * 0.1, sr)
+    assert UNIT_PRESERVE_GAP_SEC >= 0.45
+
+    plan = [
+        {
+            "start": 10.0,
+            "end": 10.5,
+            "source_start": 10.0,
+            "source_end": 10.5,
+            "tts_fit": str(c0),
+        },
+        {
+            # 3.5s dramatic stop (kan11_5m ~0:59).
+            "start": 14.0,
+            "end": 14.5,
+            "source_start": 14.0,
+            "source_end": 14.5,
+            "tts_fit": str(c1),
+        },
+    ]
+    out = tmp_path / "assembled.wav"
+    assemble_on_hebrew_timeline(plan, 10.0, 15.0, out, sample_rate=sr)
+    audio, _ = sf.read(str(out), dtype="float32")
+    # Second unit should land near 14.0 on the canvas (offset from 10.0).
+    # Quiet region between ~0.5s and ~4.0s of canvas.
+    mid = audio[int(1.0 * sr) : int(3.5 * sr)]
+    assert float(np.max(np.abs(mid))) < 0.01
+    # Second burst starts around t=4.0 on canvas.
+    onset_region = audio[int(3.9 * sr) : int(4.2 * sr)]
+    assert float(np.max(np.abs(onset_region))) > 0.05
+    assert wav_duration(out) >= 4.4
+
+    # Micro-gap path: 0.15s gap should close to ~UNIT_INTER_GAP_SEC.
+    c2 = tmp_path / "u2.wav"
+    sf.write(str(c2), np.ones(int(0.4 * sr), dtype=np.float32) * 0.1, sr)
+    plan_micro = [
+        {
+            "start": 20.0,
+            "end": 20.5,
+            "source_start": 20.0,
+            "source_end": 20.5,
+            "tts_fit": str(c0),
+        },
+        {
+            "start": 20.65,
+            "end": 21.05,
+            "source_start": 20.65,
+            "source_end": 21.05,
+            "tts_fit": str(c2),
+        },
+    ]
+    out2 = tmp_path / "micro.wav"
+    assemble_on_hebrew_timeline(plan_micro, 20.0, 21.2, out2, sample_rate=sr)
+    a2, _ = sf.read(str(out2), dtype="float32")
+    # Gap between clips should be tiny (≤ inter + a little slack), not 0.15s of silence.
+    gap_samples = a2[int(0.5 * sr) : int(0.5 * sr + (UNIT_INTER_GAP_SEC + 0.05) * sr)]
+    # Most of the micro-gap region is either silence of ≤ inter or already next speech.
+    assert len(gap_samples) > 0
+
+
+def test_coarse_split_en_does_not_cut_mid_pp():
+    """Don't split 'comfortable for the Western…' mid-prepositional phrase."""
+    from inference.tts_qwen import coarse_split_en_by_weights
+
+    en = (
+        "She paints Qatar in colors that are very comfortable "
+        "for the Western conscience Sheikha Moza presents."
+    )
+    chunks = coarse_split_en_by_weights(en, [5.0, 5.0])
+    assert len(chunks) == 2
+    joined = " ".join(chunks).lower()
+    assert "comfortable" in joined and "western" in joined
+    # "for" must not start the second chunk alone after "comfortable".
+    assert not chunks[1].lower().startswith("for the western")
+    assert "comfortable for" in chunks[0].lower() or "for the western" in chunks[0].lower()
+
+
+def test_postprocess_qatar_country_pronoun():
+    from inference.build_preview import _postprocess_en
+
+    he = "הצליחה לנתב את קטאר למקום אחר מהמקום שהיא הייתה בו"
+    bad = "steering Qatar to a different place from where she had been"
+    fixed = _postprocess_en(he, bad)
+    assert "where she" not in fixed.lower()
+    assert "she had been" not in fixed.lower()
+    assert "it had been" in fixed.lower() or "what it had been" in fixed.lower()
+
+    stiff = (
+        "steering Qatar to a different place from where it had been "
+        "She is responsible for the two coups"
+    )
+    idiomatic = _postprocess_en(he, stiff)
+    assert "from where it had been" not in idiomatic.lower()
+    assert "than it had been" in idiomatic.lower() or "what it had been" in idiomatic.lower()
+    # Must not eat the following "She is…" sentence.
+    assert "she is responsible" in idiomatic.lower()
+    assert "been is responsible" not in idiomatic.lower()
+
+    # Repair subject dropped at unit boundary.
+    dropped = (
+        "steering Qatar to a different place than it had been "
+        "is responsible for the two coups"
+    )
+    repaired = _postprocess_en(he, dropped)
+    assert "she is responsible" in repaired.lower()
+    assert "been is responsible" not in repaired.lower()
+
+
+def test_fit_exact_window_pad_short_false_keeps_natural_len(tmp_path):
+    """Non-final units must not pad short speech into multi-second holes."""
+    import numpy as np
+    import soundfile as sf
+
+    from inference.tts_qwen import fit_exact_window, wav_duration
+
+    sr = 44100
+    src = tmp_path / "short.wav"
+    sf.write(str(src), np.ones(int(1.0 * sr), dtype=np.float32) * 0.1, sr)
+    dst = tmp_path / "fit.wav"
+    fit_exact_window(
+        src, dst, 5.0, sample_rate=sr, min_rate=0.90, pad_short=False
+    )
+    # Without pad, clip stays near natural length (gentle stretch only).
+    assert wav_duration(dst) < 2.0

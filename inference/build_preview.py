@@ -106,11 +106,14 @@ TRANSLATE_GLOSSARY = (
     "(never 'north'; צפון=north, מצפון=conscience)\n"
     "- בשלוות נפש / בנינוחות → with composure / calmly (never 'clear conscience')\n"
     "- היא לא מאיימת → It doesn't threaten (neuter/country), not 'She is not threatening'\n"
+    "- קטאר … מהמקום שהיא הייתה בו / שהיא היתה בו → Qatar / a different place than "
+    "it had been / what it had been (country = it; never 'where she was')\n"
     "- בנה / לבנה / בנה השני → her son / to her son / her second son "
     "(never 'daughter' — בן is masculine)\n"
     "General Hebrew grammar for dubbing:\n"
     "- Feminine possessives (בנה / בתה / בעלה) keep the woman's perspective "
     "(her son / her daughter / her husband).\n"
+    "- Feminine pronouns referring to a country (קטאר / איראן / מצרים) → it, not she.\n"
     "- Idioms like שלא נתבלבל → 'let's not get confused' (not literal calques).\n"
 )
 
@@ -891,6 +894,46 @@ def _postprocess_en(he: str, en: str, *, prev_en: str | None = None) -> str:
         en = re.sub(r"\b(second )?daughter\b", r"\1son", en, flags=re.I)
         en = re.sub(r"\bher son\b", "her son", en, flags=re.I)
         en = re.sub(r"\bhis second son\b", "her second son", en, flags=re.I)
+    # קטאר + שהיא הייתה → country = it (never "where she was")
+    if re.search(r"קטאר|קטר", he) and re.search(r"שהיא הי(?:י)?תה", he):
+        en = re.sub(
+            r"\b(?:the )?place where she (?:had )?been\b",
+            "what it had been",
+            en,
+            flags=re.I,
+        )
+        en = re.sub(
+            r"\bwhere she (?:had )?been\b",
+            "where it had been",
+            en,
+            flags=re.I,
+        )
+        en = re.sub(
+            r"\ba different place from where it had been\b",
+            "a different place than it had been",
+            en,
+            flags=re.I,
+        )
+        en = re.sub(
+            r"\bfrom where it had been\b",
+            "than it had been",
+            en,
+            flags=re.I,
+        )
+        en = re.sub(r"\bQatar was she\b", "Qatar was", en, flags=re.I)
+        # Ensure sentence break before a capital She/He/It after the fix.
+        en = re.sub(
+            r"(than it had been|what it had been|where it had been)\s+(She|He|It)\b",
+            r"\1. \2",
+            en,
+        )
+        # Repair subject dropped at the unit boundary ("been is responsible").
+        en = re.sub(
+            r"(than it had been|what it had been|where it had been)\.?\s+is responsible\b",
+            r"\1. She is responsible",
+            en,
+            flags=re.I,
+        )
     if prev_en:
         en = strip_leading_memory_echo(en, prev_en)
     return en
@@ -2003,7 +2046,7 @@ def build_dubbed_track(
     workdir: Path,
     *,
     bg_gain: float = 0.55,
-    duck_gain: float = 0.60,
+    duck_gain: float = 0.82,
     speech_gain: float = 1.2,
     speech_target_rms: float = 0.085,
     vocals: Path | None = None,
@@ -2107,20 +2150,27 @@ def build_dubbed_track(
             _apply_duck(a, b, 0.0, attack=0.04, release=0.06)
         elif is_dub:
             # Duck under the *placed* voice (may drift from ASR source window).
+            # Extend past both place_end and source_end so HE coda tails
+            # (e.g. "רבה") don't poke through the bed after the EN clip ends.
             a = float(
                 seg.get("place_start")
                 or seg.get("source_start")
                 or seg.get("start")
                 or 0.0
             )
-            b = float(
+            place_b = float(
                 seg.get("place_end")
                 or seg.get("spoken_end")
                 or seg.get("source_end")
                 or seg.get("end")
                 or 0.0
             )
-            b_guard = b + 0.20
+            source_b = float(
+                seg.get("source_end")
+                or seg.get("end")
+                or place_b
+            )
+            b_guard = max(place_b, source_b) + 0.40
             if b_guard <= a:
                 continue
             # Successful or failed: keep music at duck floor (never hard mute).
@@ -2742,15 +2792,19 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--speaker-bank",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Build/use per-speaker canonical ref bank (default: on — stable per-person voice).",
+        default=False,
+        help=(
+            "Build/use per-speaker canonical ref bank (default: off — "
+            "per-segment zero-shot clone from each turn's own vocals; "
+            "pass --speaker-bank for forced cross-turn identity)."
+        ),
     )
     p.add_argument(
         "--duck-gain",
         type=float,
-        default=0.60,
-        help="Music bed gain under HE dubs (0–1). Default 0.60 keeps music clearly "
-        "audible; residual HE speech still gated out via vocals energy.",
+        default=0.82,
+        help="Music bed gain under HE dubs (0–1). Default 0.82 keeps music clearly "
+        "audible under EN dubs; residual HE speech still gated via vocals energy.",
     )
     p.add_argument(
         "--qa",
@@ -3019,6 +3073,7 @@ def main() -> None:
             del model, tokenizer
 
     # Always sanitize EN before TTS (chrome / non-Latin / echo leftovers).
+    prev_en_mem: str | None = None
     for seg in segments:
         if seg.get("keep_original") or (seg.get("language") or "he") != "he":
             continue
@@ -3027,6 +3082,10 @@ def main() -> None:
                 strip_caption_chrome(strip_non_latin_runs(seg["text_en"]))
             )
             he = (seg.get("text") or "").strip()
+            # Re-apply glossary / calque fixes even under --skip-translate
+            # (e.g. Qatar country-pronoun → it).
+            en = _postprocess_en(he, en, prev_en=prev_en_mem)
+            prev_en_mem = en
             dur = float(seg.get("duration") or (float(seg["end"]) - float(seg["start"])))
             # Skip-translate leftovers can still be overlong / non-Latin — clamp.
             # When --skip-translate, do NOT auto-shorten: that destroys hand-fixed EN.
@@ -3060,20 +3119,36 @@ def main() -> None:
                 # --skip-translate so stale JSON gets the continuity fix.
                 phrases = merge_short_phrases(phrases)
                 seg["phrases"] = phrases
-                # Prefer existing phrase EN under --skip-translate (hand fixes).
+                # Prefer existing phrase EN under --skip-translate (hand fixes),
+                # but force redistribute when a phrase clearly lost a subject
+                # pronoun (e.g. "is responsible" after Qatar country-it rewrite).
                 phrase_en_ok = all(
                     is_english_text(p.get("text_en") or "")
                     for p in phrases
                     if (p.get("text") or "").strip()
                 )
-                if is_english_text(en) and not (
-                    args.skip_translate and phrase_en_ok
+                broken_phrase = any(
+                    re.match(
+                        r"^(is|are|was|were|has|have|had)\s+",
+                        (p.get("text_en") or "").strip(),
+                        flags=re.I,
+                    )
+                    for p in phrases
+                )
+                if is_english_text(en) and (
+                    broken_phrase
+                    or not (args.skip_translate and phrase_en_ok)
                 ):
                     distribute_en_to_phrases(en, phrases)
+        he = (seg.get("text") or "").strip()
         for p in seg.get("phrases") or []:
             if (p.get("text_en") or "").strip():
-                p["text_en"] = dedupe_repeated_sentences(
-                    strip_caption_chrome(strip_non_latin_runs(p["text_en"]))
+                p_he = (p.get("text") or "").strip() or he
+                p["text_en"] = _postprocess_en(
+                    p_he,
+                    dedupe_repeated_sentences(
+                        strip_caption_chrome(strip_non_latin_runs(p["text_en"]))
+                    ),
                 )
 
     # Drop stubs absorbed into continuations (language=skip / empty text).
@@ -3102,6 +3177,13 @@ def main() -> None:
         if any(not (p.get("text_en") or "").strip() for p in phrases) or any(
             _REL_CLAUSE_START.match((p.get("text_en") or "").strip())
             for p in phrases[1:]
+        ) or any(
+            re.match(
+                r"^(is|are|was|were|has|have|had)\s+",
+                (p.get("text_en") or "").strip(),
+                flags=re.I,
+            )
+            for p in phrases
         ):
             distribute_en_to_phrases(en, phrases)
             refresh_segment_fields(seg)
