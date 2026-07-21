@@ -1516,8 +1516,10 @@ def test_speaker_search_windows_own_then_same_id_never_cross():
         },
     ]
     own = _speaker_own_windows(seg, phrase)
-    assert own[0][0] >= 45.5 and own[0][1] <= 60.5
-    assert all(a < 61.0 for a, _b in own)
+    # Own windows are unit/phrase-local only — never the full parent 46–60.
+    assert own[0][0] >= 45.9 and own[0][1] <= 51.1
+    assert all(b <= 51.1 for _a, b in own)
+    assert not any(abs(a - 46.0) < 0.05 and abs(b - 60.0) < 0.05 for a, b in own)
 
     fb = _speaker_same_id_fallback_windows(seg, phrase, all_segs)
     assert any(abs(a - 81.0) < 0.1 for a, _b in fb)
@@ -1621,6 +1623,68 @@ def test_coarse_split_en_does_not_cut_mid_pp():
     # "for" must not start the second chunk alone after "comfortable".
     assert not chunks[1].lower().startswith("for the western")
     assert "comfortable for" in chunks[0].lower() or "for the western" in chunks[0].lower()
+    # Never split the NP "Western conscience".
+    assert not chunks[0].rstrip(".,").lower().endswith("western")
+    assert "western conscience" in joined
+
+
+def test_distribute_repairs_western_conscience_mid_np():
+    """Stale phrase EN cut at Western.|conscience is redistributed/glued."""
+    from inference.build_preview import distribute_en_to_phrases, phrase_en_cuts_broken
+
+    phrases = [
+        {
+            "start": 110.0,
+            "end": 115.0,
+            "pause_after": 0.9,
+            "text": "היא צובעת את קטאר בצבעים שמאוד נוחים למצפון המערבי",
+            "text_en": "She paints Qatar in colors that are very comfortable for the Western.",
+        },
+        {
+            "start": 115.9,
+            "end": 122.0,
+            "pause_after": 0.0,
+            "text": "שיח עמוזה מצליחה למתג את קטאר",
+            "text_en": "conscience Sheikha Moza successfully brands Qatar.",
+        },
+    ]
+    assert phrase_en_cuts_broken(phrases)
+    en = (
+        "She paints Qatar in colors that are very comfortable for the Western "
+        "conscience Sheikha Moza successfully brands Qatar."
+    )
+    distribute_en_to_phrases(en, phrases)
+    assert not phrase_en_cuts_broken(phrases)
+    joined = " ".join((p.get("text_en") or "") for p in phrases).lower()
+    assert "western conscience" in joined
+    assert not any(
+        (p.get("text_en") or "").rstrip(".,").lower().endswith("western")
+        for p in phrases
+    )
+
+
+def test_speaker_own_windows_unit_local_not_parent():
+    """Multi-unit turns must not share the full parent segment as a ref window."""
+    from inference.tts_qwen import _speaker_own_windows
+
+    seg = {
+        "speaker_id": "SPEAKER_06",
+        "start": 81.0,
+        "end": 95.0,
+        "language": "he",
+    }
+    units = [
+        {"start": 81.0, "end": 84.5, "text": "א"},
+        {"start": 84.5, "end": 88.0, "text": "ב"},
+        {"start": 88.0, "end": 95.0, "text": "ג"},
+    ]
+    windows = [_speaker_own_windows(seg, u)[0] for u in units]
+    for (a, b), u in zip(windows, units):
+        assert a >= float(u["start"]) - 0.05
+        assert b <= float(u["end"]) + 0.05
+    # Distinct unit windows — not all collapsing to the parent 81–95.
+    assert len({(round(a, 2), round(b, 2)) for a, b in windows}) == 3
+    assert not any(abs(a - 81.0) < 0.05 and abs(b - 95.0) < 0.05 for a, b in windows)
 
 
 def test_postprocess_qatar_country_pronoun():

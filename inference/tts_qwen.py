@@ -201,23 +201,31 @@ def _speaker_own_windows(
     seg: dict,
     phrase: dict,
 ) -> list[tuple[float, float]]:
-    """Phrase + segment windows for per-segment zero-shot cloning."""
+    """Unit/phrase-local windows only for per-unit zero-shot cloning.
+
+    Do **not** add the full parent segment as a candidate: scoring that let every
+    unit in a multi-unit turn pick the same mid-segment ref (identical
+    seg_N_p00/p01/p02 refs — 1:24 and 1:31 same-voice bug).
+    """
+    del seg  # parent span must not compete with the unit window
     p_start = float(phrase["start"])
     p_end = float(phrase["end"])
-    seg_a = float(seg.get("start") or p_start)
-    seg_b = float(seg.get("end") or p_end)
-    windows = [
-        (max(seg_a, p_start - 0.15), min(seg_b, p_end + 0.15)),
-        (seg_a, seg_b),
-    ]
+    # Slight pad inside the unit only (clamp to phrase bounds after).
+    a = p_start
+    b = p_end
+    if b - a < 0.3:
+        mid = 0.5 * (p_start + p_end)
+        a = mid - 0.2
+        b = mid + 0.2
+    windows = [(a, b)]
     out: list[tuple[float, float]] = []
     seen: set[tuple[float, float]] = set()
-    for a, b in windows:
-        key = (round(a, 3), round(b, 3))
-        if b - a < 0.3 or key in seen:
+    for wa, wb in windows:
+        key = (round(wa, 3), round(wb, 3))
+        if wb - wa < 0.15 or key in seen:
             continue
         seen.add(key)
-        out.append((a, b))
+        out.append((wa, wb))
     return out
 
 
@@ -313,9 +321,10 @@ def build_qwen_phrase_ref(
 ) -> dict:
     """~3s vocal slice + Hebrew transcript for Qwen Base clone.
 
-    Prefer this segment's own vocals. Only if own audio fails a quality gate
-    (too short / near-silent / catastrophic HF) fall back to other turns of
-    the same ``speaker_id``. Never clone from a different speaker.
+    Prefer this **unit/phrase** window only. Only if that local audio fails a
+    quality gate (near-silent / catastrophic HF) fall back to other turns of
+    the same ``speaker_id``. Never clone from a different speaker, and never
+    score the full parent segment against a sub-unit.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     he_text = (phrase.get("text") or seg.get("text") or "um").strip() or "um"
@@ -325,7 +334,9 @@ def build_qwen_phrase_ref(
         # score, start, end, rms
         best: tuple[float, float, float, float] | None = None
         for search_a, search_b in windows:
-            target = min(REF_TARGET_SEC, max(REF_MIN_SEC, search_b - search_a))
+            # Target at most the search span — do not ask for longer than the unit.
+            span = max(0.25, search_b - search_a)
+            target = min(REF_TARGET_SEC, max(min(REF_MIN_SEC, span), span))
             ref_start, ref_end = pick_cleanest_ref_window(
                 vocals,
                 search_a,
@@ -333,6 +344,11 @@ def build_qwen_phrase_ref(
                 media_duration=media_duration,
                 target_sec=target,
             )
+            # Clamp to the unit search window so we never inherit outside audio.
+            ref_start = max(ref_start, search_a)
+            ref_end = min(ref_end, search_b)
+            if ref_end - ref_start < 0.15:
+                continue
             score, rms = _score_ref_window(vocals, ref_start, ref_end, tmp=tmp)
             if best is None or score < best[0]:
                 best = (score, ref_start, ref_end, rms)
@@ -340,10 +356,10 @@ def build_qwen_phrase_ref(
 
     own_best = _best_in(_speaker_own_windows(seg, phrase))
     chosen: tuple[float, float, float, float] | None = own_best
+    # Prefer any usable local audio (even short units) over a remote same-id turn.
     own_ok = (
         own_best is not None
         and own_best[3] >= REF_OWN_MIN_RMS
-        and (own_best[2] - own_best[1]) >= REF_MIN_SEC * 0.6
         and own_best[0] <= REF_OWN_MAX_NOISE_SCORE
     )
     if not own_ok:
@@ -354,9 +370,13 @@ def build_qwen_phrase_ref(
             chosen = fb
 
     if chosen is None:
-        mid = (float(phrase["start"]) + float(phrase["end"])) / 2.0
-        ref_start = max(0.0, mid - REF_TARGET_SEC / 2.0)
-        ref_end = min(media_duration, ref_start + REF_TARGET_SEC)
+        p_start = float(phrase["start"])
+        p_end = float(phrase["end"])
+        ref_start, ref_end = p_start, p_end
+        if ref_end - ref_start < 0.25:
+            mid = 0.5 * (p_start + p_end)
+            ref_start = max(0.0, mid - 0.2)
+            ref_end = min(media_duration, mid + 0.2)
     else:
         _, ref_start, ref_end, _rms = chosen
     if ref_end - ref_start > REF_MAX_SEC:
@@ -923,6 +943,10 @@ def coarse_split_en_by_weights(en: str, group_weights: list[float | int]) -> lis
         "when", "but", "that", "which", "who", "into", "onto", "about",
         "than", "then", "if", "while", "because", "so", "very",
         "she", "he", "it", "they", "we", "i",
+        # Mid-NP modifiers — never end a unit on "Western |" before "conscience".
+        "western", "eastern", "northern", "southern", "middle", "clear",
+        "islamic", "palestinian", "israeli", "american", "european",
+        "human", "modern", "extreme", "central",
     }
     # Never leave a cut that starts the next chunk with these (mid-PP / mid-clause).
     leading_glue = {
@@ -1290,6 +1314,20 @@ def split_utterance_into_units(
         ).strip()
         for g in groups
     ]
+    def _en_incomplete_tail(text: str) -> bool:
+        words = (text or "").strip().split()
+        if not words:
+            return False
+        last = words[-1].strip(".,;:!?\"'").lower()
+        return last in {
+            "the", "a", "an", "and", "or", "but", "of", "to", "with", "for",
+            "in", "on", "at", "by", "from", "as", "is", "are", "was", "were",
+            "when", "if", "while", "because", "that", "which", "who",
+            "western", "eastern", "northern", "southern", "middle", "clear",
+            "islamic", "palestinian", "israeli", "american", "european",
+            "human", "modern", "extreme", "central",
+        }
+
     broken_phrase_en = any(
         re.match(
             r"^(is|are|was|were|has|have|had)\s+",
@@ -1297,6 +1335,10 @@ def split_utterance_into_units(
             flags=re.I,
         )
         for c in phrase_en_chunks
+    ) or any(
+        phrase_en_chunks[i + 1]
+        and _en_incomplete_tail(phrase_en_chunks[i] or "")
+        for i in range(len(phrase_en_chunks) - 1)
     )
     if phrase_en_chunks and all(phrase_en_chunks) and not broken_phrase_en:
         # Prefer already-aligned phrase EN (object-continuation merges, etc.).

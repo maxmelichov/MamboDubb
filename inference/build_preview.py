@@ -244,6 +244,9 @@ def _split_en_across_groups(en: str, group_weights: list[int]) -> list[str]:
             # Clause openers — never end a chunk mid-"but when …"
             "when", "if", "while", "because", "though", "although", "that",
             "which", "who", "whom", "whose", "than", "then",
+            "western", "eastern", "northern", "southern", "middle", "clear",
+            "islamic", "palestinian", "israeli", "american", "european",
+            "human", "modern", "extreme", "central",
         }
         while (
             need > 1
@@ -281,6 +284,63 @@ def _split_en_across_groups(en: str, group_weights: list[int]) -> list[str]:
     while len(chunks) < n:
         chunks.append("")
     return chunks[:n]
+
+
+_REL_CLAUSE_START = re.compile(
+    r"^(that|which|who|whom|whose)\b",
+    re.I,
+)
+
+# Incomplete clause / NP ends — never leave these as the last spoken word of a
+# phrase when the next phrase continues the same English unit (1:52
+# "Western.|conscience" mid-NP cut).
+_INCOMPLETE_EN_TAIL = {
+    "the", "a", "an", "and", "or", "but", "of", "to", "with", "for",
+    "in", "on", "at", "by", "from", "as", "is", "are", "was", "were",
+    "when", "if", "while", "because", "though", "although", "that",
+    "which", "who", "whom", "whose", "than", "then",
+    # Mid-modifier adjectives that need their head noun on the same phrase.
+    "western", "eastern", "northern", "southern", "middle", "clear",
+    "islamic", "palestinian", "israeli", "american", "european",
+    "human", "modern", "extreme", "central",
+}
+
+_TRAILING_DANGLING_EN = re.compile(
+    r"^(.*?)\b("
+    r"the|a|an|and|or|but|of|to|with|for|in|on|at|by|from|as|"
+    r"when|if|while|because|though|although|that|which|who|whom|whose|than|then|"
+    r"western|eastern|northern|southern|middle|clear|"
+    r"islamic|palestinian|israeli|american|european|human|modern|extreme|central"
+    r")(?:\s*[.,;:]*)?$",
+    re.I | re.S,
+)
+
+
+def _en_ends_incomplete(text: str) -> bool:
+    words = (text or "").strip().split()
+    if not words:
+        return False
+    last = words[-1].strip(".,;:!?\"'").lower()
+    return last in _INCOMPLETE_EN_TAIL
+
+
+def phrase_en_cuts_broken(phrases: list[dict]) -> bool:
+    """True when adjacent phrase EN is cut mid-clause / mid-NP / mid-VP."""
+    ens = [(p.get("text_en") or "").strip() for p in phrases]
+    for i, en in enumerate(ens):
+        if not en:
+            continue
+        if re.match(
+            r"^(is|are|was|were|has|have|had)\s+",
+            en,
+            flags=re.I,
+        ):
+            return True
+        if i > 0 and _REL_CLAUSE_START.match(en):
+            return True
+        if i + 1 < len(ens) and ens[i + 1] and _en_ends_incomplete(en):
+            return True
+    return False
 
 
 def distribute_en_to_phrases(en: str, phrases: list[dict]) -> None:
@@ -437,9 +497,7 @@ def distribute_en_to_phrases(en: str, phrases: list[dict]) -> None:
                 return
 
     words = en.split()
-    dangling = {
-        "the", "a", "an", "and", "or", "but", "of", "to", "with", "for",
-        "in", "on", "at", "by", "from", "as", "is", "are", "was", "were",
+    dangling = set(_INCOMPLETE_EN_TAIL) | {
         "it", "its", "she", "her", "he", "his", "they", "their", "we", "our",
     }
     assigned = 0
@@ -464,12 +522,16 @@ def distribute_en_to_phrases(en: str, phrases: list[dict]) -> None:
                     if abs((k - assigned) - n) <= 5:
                         n = k - assigned
                         break
-            while (
-                n > 1
-                and assigned + n < len(words)
-                and words[assigned + n - 1].strip(".,;:!?\"'").lower() in dangling
-            ):
-                n -= 1
+            # Grow past incomplete tails ("… for the Western | conscience").
+            max_n = len(words) - assigned - remaining_phrases
+            guard = 0
+            while assigned + n < len(words) and n < max_n and guard < 12:
+                last = words[assigned + n - 1].strip(".,;:!?\"'").lower()
+                if last in dangling:
+                    n += 1
+                    guard += 1
+                    continue
+                break
             rel = {"that", "which", "who", "whom", "whose"}
             while (
                 assigned + n < len(words) - remaining_phrases
@@ -492,22 +554,6 @@ def distribute_en_to_phrases(en: str, phrases: list[dict]) -> None:
         p["text_en"] = text
 
     _repair_dangling_en_phrases(phrases)
-
-
-
-_REL_CLAUSE_START = re.compile(
-    r"^(that|which|who|whom|whose)\b",
-    re.I,
-)
-
-
-_TRAILING_DANGLING_EN = re.compile(
-    r"^(.*?)\b("
-    r"the|a|an|and|or|but|of|to|with|for|in|on|at|by|from|as|"
-    r"when|if|while|because|though|although|that|which|who|whom|whose|than|then"
-    r")(?:\s*[.,;:]*)?$",
-    re.I | re.S,
-)
 
 
 def _repair_dangling_en_phrases(phrases: list[dict]) -> None:
@@ -542,9 +588,38 @@ def _repair_dangling_en_phrases(phrases: list[dict]) -> None:
                 prev[key] = phrases[i][key]
         phrases.pop(i)
 
-    # Trailing dangling mid-clause ("… but when.") — rejoin and re-split so
-    # talking stays complete. Prefer a comma cut that leaves a short adverbial
-    # tail on the post-pause phrase when a hard pause follows.
+    # Trailing dangling mid-clause ("… but when." / "… Western.") — rejoin and
+    # re-split so talking stays complete. Prefer a comma cut that leaves a short
+    # adverbial tail on the post-pause phrase when a hard pause follows.
+    # First: pull completing head words onto the incomplete phrase (soft or hard).
+    i = 0
+    while i < len(phrases) - 1:
+        cur = phrases[i]
+        nxt = phrases[i + 1]
+        cur_en = (cur.get("text_en") or "").strip()
+        nxt_en = (nxt.get("text_en") or "").strip()
+        if not cur_en or not nxt_en or not _en_ends_incomplete(cur_en):
+            i += 1
+            continue
+        cur_words = cur_en.split()
+        nxt_words = nxt_en.split()
+        pulled = 0
+        while nxt_words and _en_ends_incomplete(" ".join(cur_words)) and pulled < 3:
+            cur_words.append(nxt_words.pop(0))
+            pulled += 1
+        if pulled:
+            cur["text_en"] = " ".join(cur_words).strip()
+            nxt["text_en"] = " ".join(nxt_words).strip()
+            if not nxt["text_en"]:
+                cur["text"] = (
+                    f"{(cur.get('text') or '').strip()} {(nxt.get('text') or '').strip()}"
+                ).strip()
+                cur["end"] = float(nxt["end"])
+                cur["pause_after"] = float(nxt.get("pause_after") or 0.0)
+                phrases.pop(i + 1)
+                continue
+        i += 1
+
     i = 0
     while i < len(phrases) - 1:
         cur = phrases[i]
@@ -3127,14 +3202,7 @@ def main() -> None:
                     for p in phrases
                     if (p.get("text") or "").strip()
                 )
-                broken_phrase = any(
-                    re.match(
-                        r"^(is|are|was|were|has|have|had)\s+",
-                        (p.get("text_en") or "").strip(),
-                        flags=re.I,
-                    )
-                    for p in phrases
-                )
+                broken_phrase = phrase_en_cuts_broken(phrases)
                 if is_english_text(en) and (
                     broken_phrase
                     or not (args.skip_translate and phrase_en_ok)
@@ -3174,16 +3242,8 @@ def main() -> None:
         en = (seg.get("text_en") or "").strip()
         if not is_english_text(en):
             continue
-        if any(not (p.get("text_en") or "").strip() for p in phrases) or any(
-            _REL_CLAUSE_START.match((p.get("text_en") or "").strip())
-            for p in phrases[1:]
-        ) or any(
-            re.match(
-                r"^(is|are|was|were|has|have|had)\s+",
-                (p.get("text_en") or "").strip(),
-                flags=re.I,
-            )
-            for p in phrases
+        if any(not (p.get("text_en") or "").strip() for p in phrases) or phrase_en_cuts_broken(
+            phrases
         ):
             distribute_en_to_phrases(en, phrases)
             refresh_segment_fields(seg)
