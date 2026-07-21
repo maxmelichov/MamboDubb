@@ -27,8 +27,22 @@ Guidance for AI agents and humans working in this repository.
 > - Translation / EN split / pause packing → `inference/build_preview.py`, `inference/translate*.py`
 > - TTS fit / overrun into pause / unit split → `inference/tts_qwen.py`
 > - Name respell / spoken forms → `prepare_english_tts_text` / glossary in `tts_qwen.py`
-> - Timing / phrases → `inference/segment_merge.py`
+> - Timing / phrases / elastic placement → `inference/segment_merge.py` (`plan_dub_placement`)
 > - Always cover with `tests/test_segment_merge_and_tts.py` (or adjacent tests)
+>
+> ## ⛔ ALSO: DO NOT REBUILD FROM ZERO
+>
+> **Do not throw away working pipeline behavior and redesign timing / fit / mix
+> from scratch every time something sounds wrong.**
+>
+> - **Iterate** on the current never-cut elastic packer (`plan_dub_placement`,
+>   `place_start` / `place_end`, gentle atempo, audible duck) — tune constants,
+>   fix edge cases, extend tests.
+> - **Do not** rewrite alignment, TTS fit, or remix as a brand-new parallel
+>   system, reintroduce mid-sentence trimming, or discard `source_*` / `place_*`
+>   semantics “to start clean.”
+> - Prefer the smallest change that preserves what already works (onset
+>   alignment, KEEP locks, no-cut speech, music under dubs).
 
 ## What this project is
 

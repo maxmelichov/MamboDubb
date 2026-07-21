@@ -448,24 +448,29 @@ def test_retag_english_sandwich():
 def test_fit_max_rate_capped():
     from inference.tts_qwen import (
         FIT_MAX_RATE,
+        FIT_MAX_RATE_GENTLE,
+        FIT_MAX_RATE_HARD,
         FIT_MIN_RATE,
         UNIT_SPLIT_PAUSE_SEC,
     )
 
     assert FIT_MIN_RATE <= 0.90 + 1e-9
-    assert FIT_MAX_RATE <= 1.25 + 1e-9
+    assert FIT_MAX_RATE <= 1.15 + 1e-9
+    assert FIT_MAX_RATE_GENTLE <= 1.15 + 1e-9
+    assert FIT_MAX_RATE_HARD <= 1.50 + 1e-9
     assert FIT_MIN_RATE < 1.0 <= FIT_MAX_RATE
     assert UNIT_SPLIT_PAUSE_SEC >= 1.0
 
 
-def test_assemble_disables_bleed_before_keep(tmp_path):
+def test_assemble_keeps_full_clip_before_keep(tmp_path):
+    """Never-cut assemble: long unit audio is kept even when next is KEEP."""
     import numpy as np
     import soundfile as sf
 
-    from inference.tts_qwen import KEEP_YIELD_GUARD_SEC, assemble_on_hebrew_timeline
+    from inference.tts_qwen import assemble_on_hebrew_timeline, wav_duration
 
     sr = 44100
-    # Phrase clip longer than its HE slot — would bleed without KEEP guard.
+    # Phrase clip longer than its HE slot — must keep full length (packer yields).
     tone = (0.2 * np.sin(2 * np.pi * 440 * np.arange(int(1.0 * sr)) / sr)).astype(
         np.float32
     )
@@ -485,12 +490,11 @@ def test_assemble_disables_bleed_before_keep(tmp_path):
         10.5,
         out_keep,
         sample_rate=sr,
-        hard_end=10.5 - KEEP_YIELD_GUARD_SEC,
+        hard_end=10.38,
         next_is_keep=True,
     )
-    audio, _ = sf.read(str(out_keep), dtype="float32")
-    # Canvas must not extend past hard_end (~0.38s of active audio max).
-    assert len(audio) / sr <= (0.5 - KEEP_YIELD_GUARD_SEC) + 0.05
+    # Full 1.0s clip must survive (canvas grows; no mid-sentence chop).
+    assert abs(wav_duration(out_keep) - 1.0) < 0.08
 
 
 def test_drop_silent_keeps_source_speech(tmp_path):
@@ -671,6 +675,8 @@ def test_tts_overrun_constants():
         CLONE_MIN_OVERLAP,
         CLONE_MAX_TRIES,
         FIT_MAX_RATE,
+        FIT_MAX_RATE_GENTLE,
+        FIT_MAX_RATE_HARD,
         FIT_MIN_RATE,
         REF_MIN_SEC,
         KEEP_YIELD_GUARD_SEC,
@@ -682,7 +688,8 @@ def test_tts_overrun_constants():
     assert 0.25 <= CLONE_MIN_OVERLAP <= 0.50
     assert CLONE_MAX_TRIES >= 2
     assert REF_MIN_SEC >= 2.0
-    assert FIT_MIN_RATE < FIT_MAX_RATE
+    assert FIT_MIN_RATE < FIT_MAX_RATE <= FIT_MAX_RATE_GENTLE + 1e-9
+    assert FIT_MAX_RATE_HARD >= 1.40
     assert KEEP_YIELD_GUARD_SEC >= 0.08
     assert SHORT_SLOT_OVERRUN_CAP_SEC <= 0.4
     assert TIGHT_NEXT_GAP_SEC <= 0.35
@@ -1131,6 +1138,164 @@ def test_fit_exact_window_pads_short_clip(tmp_path):
     assert abs(dur - 2.0) < 0.05
 
 
+def test_fit_exact_window_never_trims_long_clip(tmp_path):
+    """Long EN into a short HE slot must keep full speech (no hard_window_fade)."""
+    import numpy as np
+    import soundfile as sf
+    from inference.tts_qwen import FIT_MAX_RATE_GENTLE, fit_exact_window, wav_duration
+
+    sr = 44100
+    src = tmp_path / "long.wav"
+    dst = tmp_path / "fit.wav"
+    # 2.0s of audio into a 1.0s HE window → gentle speedup, keep leftover.
+    sf.write(str(src), np.ones(2 * sr, dtype=np.float32) * 0.1, sr)
+    rate = fit_exact_window(
+        src,
+        dst,
+        1.0,
+        sample_rate=sr,
+        max_rate=FIT_MAX_RATE_GENTLE,
+        allow_overrun=False,  # even when False, never trim
+    )
+    assert rate <= FIT_MAX_RATE_GENTLE + 1e-6
+    dur = wav_duration(dst)
+    # After atempo ≤1.15, still longer than 1.0s target — must not be chopped to 1.0.
+    assert dur > 1.05
+    assert abs(dur - (2.0 / rate)) < 0.08
+
+
+def test_plan_dub_placement_closes_gaps_and_keeps_keep():
+    from inference.segment_merge import MAX_DRIFT_SEC, plan_dub_placement
+
+    segs = [
+        {
+            "speaker_id": "A",
+            "language": "he",
+            "keep_original": False,
+            "source_start": 59.0,
+            "source_end": 61.0,
+            "start": 59.0,
+            "end": 61.0,
+            "tts_fit": "dummy1.wav",
+            "tts_clip_sec": 2.0,
+        },
+        {
+            "speaker_id": "B",
+            "language": "he",
+            "keep_original": False,
+            "source_start": 62.0,
+            "source_end": 76.0,
+            "start": 62.0,
+            "end": 76.0,
+            "tts_fit": "dummy2.wav",
+            "tts_clip_sec": 14.0,
+        },
+        {
+            "speaker_id": "C",
+            "language": "en",
+            "keep_original": True,
+            "source_start": 90.0,
+            "source_end": 95.0,
+            "start": 90.0,
+            "end": 95.0,
+        },
+    ]
+    n = plan_dub_placement(segs, media_duration=100.0)
+    assert n == 2
+    # Gap 61→62 closed: seg2 starts near seg1 end (within inter_gap).
+    assert segs[1]["place_start"] <= 62.0
+    assert segs[1]["place_start"] >= segs[0]["place_end"] - 1e-3
+    assert abs(segs[1]["place_drift"]) <= MAX_DRIFT_SEC + 1e-6
+    # KEEP locked to source.
+    assert segs[2]["place_start"] == 90.0
+    assert segs[2]["place_end"] == 95.0
+    assert segs[2]["place_speed"] == 1.0
+    # Full clip lengths preserved (no trim).
+    assert abs(segs[0]["place_end"] - segs[0]["place_start"] - 2.0) < 0.02
+    assert abs(segs[1]["place_end"] - segs[1]["place_start"] - 14.0) < 0.02
+
+
+def test_plan_dub_placement_speeds_before_keep():
+    """Dense run that overruns a KEEP anchor gets uniform speed-up, never trim."""
+    from inference.segment_merge import plan_dub_placement
+
+    segs = [
+        {
+            "speaker_id": "A",
+            "language": "he",
+            "keep_original": False,
+            "source_start": 10.0,
+            "source_end": 11.0,
+            "start": 10.0,
+            "end": 11.0,
+            "tts_fit": "a.wav",
+            "tts_clip_sec": 1.8,  # longer than HE slot
+        },
+        {
+            "speaker_id": "B",
+            "language": "he",
+            "keep_original": False,
+            "source_start": 11.1,
+            "source_end": 12.0,
+            "start": 11.1,
+            "end": 12.0,
+            "tts_fit": "b.wav",
+            "tts_clip_sec": 1.5,
+        },
+        {
+            "speaker_id": "K",
+            "language": "en",
+            "keep_original": True,
+            "source_start": 12.5,
+            "source_end": 14.0,
+            "start": 12.5,
+            "end": 14.0,
+        },
+    ]
+    plan_dub_placement(segs, media_duration=20.0)
+    # Must speed up to finish before KEEP @ 12.5 − guard.
+    assert segs[0]["place_speed"] > 1.01
+    assert segs[1]["place_speed"] == segs[0]["place_speed"]
+    assert segs[1]["place_end"] <= 12.5 - 0.10 + 0.05
+    # KEEP untouched.
+    assert segs[2]["place_start"] == 12.5
+
+
+def test_plan_dub_placement_last_before_gap_finishes():
+    """Last dub before a big gap may overrun its source_end (let it finish)."""
+    from inference.segment_merge import plan_dub_placement
+
+    segs = [
+        {
+            "speaker_id": "A",
+            "language": "he",
+            "keep_original": False,
+            "source_start": 5.0,
+            "source_end": 7.0,
+            "start": 5.0,
+            "end": 7.0,
+            "tts_fit": "a.wav",
+            "tts_clip_sec": 3.0,  # 1s longer than HE
+        },
+        {
+            "speaker_id": "B",
+            "language": "he",
+            "keep_original": False,
+            "source_start": 12.0,  # ≥1.5s gap → new run
+            "source_end": 13.0,
+            "start": 12.0,
+            "end": 13.0,
+            "tts_fit": "b.wav",
+            "tts_clip_sec": 1.0,
+        },
+    ]
+    plan_dub_placement(segs, media_duration=30.0)
+    # First run finishes into the gap (no forced chipmunk unless needed).
+    assert segs[0]["place_speed"] == 1.0
+    assert segs[0]["place_end"] >= 8.0 - 0.05
+    assert segs[1]["place_start"] == 12.0
+
+
 def test_assert_tts_coverage_blocks_missing():
     from inference.build_preview import assert_tts_coverage
 
@@ -1165,8 +1330,8 @@ def test_suppress_vocal_leak_keeps_music_floor():
     bg = np.ones((n, 1), dtype=np.float32) * 0.05
     voc = np.zeros(n, dtype=np.float32)
     voc[sr // 2 : sr // 2 + sr // 4] = 0.2
-    cleaned = suppress_vocal_leak_in_bed(bg, voc, sr, speech_floor=0.15)
-    # Never hard-muted to zero.
-    assert float(np.min(np.abs(cleaned))) >= 0.05 * 0.12
+    cleaned = suppress_vocal_leak_in_bed(bg, voc, sr, speech_floor=0.50)
+    # Never hard-muted; floor keeps music clearly present under speech.
+    assert float(np.min(np.abs(cleaned))) >= 0.05 * 0.45
     # Music still present overall.
     assert float(np.mean(np.abs(cleaned))) > 0.01

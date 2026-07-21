@@ -2,9 +2,10 @@
 """Qwen3-TTS 1.7B-Base zero-shot voice clone for DubbingQwen (Phase 4).
 
 Clones from each segment's own vocal window (~3–4.5s Hebrew ref), then
-synthesizes English and fits each unit isochronously to its Hebrew [start,end]
-(rate 0.90–1.25, escalate to ~1.40, then boundary-aware trim). Units split only
-at pauses ≥1.2s. Clone verify + regenerate for garbled/chipmunk clips.
+synthesizes English and gently fits toward the Hebrew [start,end] (rate
+0.90–1.15). Never trims mid-sentence — overrun is resolved later by the
+elastic gap-closing packer (``plan_dub_placement``). Units split only at
+pauses ≥1.2s. Clone verify + regenerate for garbled/chipmunk clips.
 
 Model: Qwen/Qwen3-TTS-12Hz-1.7B-Base (https://arxiv.org/abs/2601.15621)
   - x_vector_only=True (default): speaker embedding from ref audio
@@ -35,24 +36,25 @@ from inference.tts_f5 import (
     wav_duration,
 )
 
-# Isochronous fit: stretch/compress each unit toward its Hebrew [start,end].
-# Small HE breaths collapse; only pauses >= UNIT_SPLIT_PAUSE_SEC stay as silence.
-FIT_MAX_RATE = 1.25
-FIT_MAX_RATE_HARD = 1.40  # last-resort atempo before boundary trim
+# Gentle per-unit fit toward the Hebrew [start,end]. Never trim — overrun is
+# handled by the elastic packer (plan_dub_placement) with a higher hard cap.
+FIT_MAX_RATE_GENTLE = 1.15
+FIT_MAX_RATE = FIT_MAX_RATE_GENTLE  # alias: normal fit never exceeds gentle
+FIT_MAX_RATE_HARD = 1.50  # packer-only uniform run speed-up (never trim)
 FIT_MIN_RATE = 0.90
-FIT_SPEEDUP_THRESHOLD = 1.0  # always fit toward the HE window (no free overrun)
+FIT_SPEEDUP_THRESHOLD = 1.0  # always fit toward the HE window when short
 UNIT_SPLIT_PAUSE_SEC = 1.2  # only split TTS units at real mid-utterance silence
 # Keep big pauses as real silence, but cap so a long hole doesn't feel "stuck".
 MAX_MID_SILENCE_SEC = 1.2
 # Long same-speaker turns without a big pause still need time anchors or EN drifts.
 MAX_UNIT_SEC = 10.0
-# Shorten before audible speedup at/above FIT_MAX_RATE.
+# Shorten before audible speedup at/above FIT_MAX_RATE_GENTLE.
 SHORTEN_SYL_PER_SEC = 3.6
 SHORTEN_MAX_WORD_DROP = 0.40
 # Legacy CLI default (pause compaction opt-in; units use UNIT_SPLIT_PAUSE_SEC).
 DEFAULT_MAX_DUB_PAUSE = 0.0
 # Kept for tests / callers that still import the old helpers (no longer hot path).
-FIT_MAX_RATE_SHORT = 1.15
+FIT_MAX_RATE_SHORT = FIT_MAX_RATE_GENTLE
 SHORT_SLOT_SEC = 1.50
 SHORTEN_MIN_SLOT_SEC = 1.0
 SHORT_SLOT_OVERRUN_CAP_SEC = 0.20
@@ -74,10 +76,12 @@ CLONE_MIN_OVERLAP = 0.35
 CLONE_MAX_TRIES = 3
 CLONE_MIN_SEC_PER_WORD = 0.18  # below this → likely chipmunk / truncated
 CLONE_MAX_SEC_PER_WORD = 0.95  # above this → likely stalled / garbled drawl
-# Boundary-aware trim: look back for silence before hard window end.
+# Boundary-aware trim helper (kept for tests; no longer used on the fit hot path).
 BOUNDARY_TRIM_LOOKBACK_SEC = 0.45
 BOUNDARY_TRIM_RMS = 0.012
 BOUNDARY_TRIM_MIN_SILENCE_SEC = 0.04
+# Intra-segment unit packing: small natural pause when closing unit gaps.
+UNIT_INTER_GAP_SEC = 0.08
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -608,23 +612,24 @@ def fit_exact_window(
     *,
     sample_rate: int = 44100,
     target_n: int | None = None,
-    max_rate: float = FIT_MAX_RATE,
+    max_rate: float = FIT_MAX_RATE_GENTLE,
     min_rate: float = FIT_MIN_RATE,
-    allow_overrun: bool = False,
+    allow_overrun: bool = True,
     hard_max_rate: float = FIT_MAX_RATE_HARD,
     pad_short: bool = True,
 ) -> float:
-    """Isochronous fit toward the Hebrew speaking window.
+    """Gently fit toward the Hebrew speaking window — never trim speech.
 
     Escalation:
-      1. rate in [min_rate, max_rate] (default 0.90–1.25) to match HE duration
-      2. if still too long → push up to hard_max_rate (~1.40)
-      3. if still too long → soft-fade pad to target (no mid-word chop); only
-         boundary-trim when hard_max still overruns and allow_overrun is False
+      1. rate in [min_rate, max_rate] (default 0.90–1.15) toward HE duration
+      2. if still too long → keep full length (overrun); packer resolves later
+      3. if short → stretch down to min_rate, then pad to ``target_n``
 
-    Short clips are time-stretched toward the window (down to min_rate) and
-    the canvas is padded with silence to ``target_n`` so lips don't outlast audio.
+    ``allow_overrun`` is kept for API compatibility; overrun is always kept
+    (never boundary-trim / hard-window-fade). ``hard_max_rate`` is unused here
+    (reserved for the elastic packer's uniform run speed-up).
     """
+    del hard_max_rate  # packer-only; per-unit fit stays gentle + never-cut
     target_sec = max(0.2, float(target_sec))
     if target_n is None:
         target_n = int(round(target_sec * sample_rate))
@@ -635,29 +640,16 @@ def fit_exact_window(
 
     # rate>1 → faster / shorter; rate<1 → slower / longer
     natural = actual / (target_n / sample_rate)
-    exact = False
-    if natural > hard_max_rate:
-        rate = hard_max_rate
-        exact = not allow_overrun
-    elif natural > max_rate:
-        if allow_overrun:
-            rate = max_rate
-            exact = False
-        else:
-            rate = min(natural, hard_max_rate)
-            exact = rate >= hard_max_rate - 0.01 or natural > hard_max_rate
+    if natural > max_rate:
+        # Cap at gentle max; keep leftover overrun (never trim).
+        rate = max_rate
     elif natural >= FIT_SPEEDUP_THRESHOLD:
-        # Fit toward the HE window (compress or keep 1.0 if already matching).
         rate = min(max(natural, 1.0), max_rate)
-        exact = False
     elif min_rate <= natural < 1.0:
-        # Mildly short: stretch toward the window so EN fills the HE slot.
         rate = max(natural, min_rate)
-        exact = False
     else:
         # Clearly short (natural < min_rate): stretch to min_rate, then pad.
         rate = min_rate
-        exact = False
 
     work = src
     if abs(rate - 1.0) > 0.005:
@@ -675,36 +667,20 @@ def fit_exact_window(
     pad_samples = 0
     removed_samples = 0
 
-    # Prefer filling the Hebrew canvas: pad short audio; only trim when still
-    # overrunning after hard_max_rate and overrun is forbidden.
+    # Pad short audio to the HE canvas; never trim long audio.
     if len(audio) < target_n and pad_short:
         pad_samples = target_n - len(audio)
         pad = np.zeros(pad_samples, dtype=np.float32)
         canvas_action = "pad"
-        # Soft fade into pad so the tail doesn't click.
         fade = min(int(0.04 * sample_rate), max(1, len(audio) // 10))
         if fade > 1 and len(audio) > fade:
             audio = audio.copy()
             audio[-fade:] *= np.linspace(1.0, 0.85, fade, dtype=np.float32)
         audio = np.concatenate([audio, pad])
-    elif (exact or not allow_overrun) and rate >= hard_max_rate - 0.01 and len(audio) > target_n:
-        # Last resort only — soft boundary trim, never a hard mid-word chop.
-        before_trim = len(audio)
-        audio = boundary_aware_trim(
-            audio, target_n, sample_rate=sample_rate
-        )
-        removed_samples = max(0, before_trim - len(audio))
-        canvas_action = "boundary_trim"
-    elif len(audio) > target_n and not allow_overrun:
-        # Mild overrun after soft max_rate: soft-fade to target without looking
-        # for silence (avoids cutting a word when no quiet region exists).
-        removed_samples = len(audio) - target_n
-        take = audio[:target_n].copy()
-        fade = min(int(0.08 * sample_rate), max(1, target_n // 8))
-        if fade > 1:
-            take[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)
-        audio = take
-        canvas_action = "hard_window_fade"
+    elif len(audio) > target_n:
+        # Keep full speech; elastic packer closes gaps / speeds the run later.
+        canvas_action = "keep_overrun"
+        removed_samples = 0
 
     dst.parent.mkdir(parents=True, exist_ok=True)
     sf.write(str(dst), audio, sample_rate)
@@ -726,7 +702,7 @@ def fit_exact_window(
             "action": canvas_action,
             "padSec": round(pad_samples / sample_rate, 4),
             "removedSec": round(removed_samples / sample_rate, 4),
-            "allowOverrun": bool(allow_overrun),
+            "allowOverrun": True,
         },
     )
     # endregion
@@ -1455,7 +1431,7 @@ def voice_similarity(clone_wav: Path, ref_wav: Path) -> float:
 # remains allowed when the next segment is also dubbed.
 KEEP_YIELD_GUARD_SEC = 0.12
 # Soft bleed into the next dub onset (crossfade); never used before KEEP.
-# Kept tiny under isochronous HE-window fit — prefer compress over overrun.
+# Under never-cut assemble this is informational — units keep full length.
 GAP_BLEED_SEC = 0.20
 
 
@@ -1471,36 +1447,58 @@ def assemble_on_hebrew_timeline(
     next_is_keep: bool = False,
     gap_bleed_sec: float | None = None,
 ) -> Path:
-    """Place each phrase clip at its (possibly compacted) start with soft mix.
+    """Place each unit clip back-to-back — never trim mid-sentence.
 
-    Clips may overrun a short phrase into the following pause, but not past
-    `hard_end` (next segment start). Overlaps are crossfaded instead of
-    overwritten so previous tails are not erased.
-
-    When `next_is_keep` is True, disable gap bleed past the last phrase so the
-    dub yields cleanly to the original-language speaker.
+    Units keep their full synthesized length. Small intra-segment gaps are
+    closed (``UNIT_INTER_GAP_SEC``). Overlaps are crossfaded. ``hard_end`` /
+    ``next_is_keep`` no longer truncate audio; the elastic packer speeds the
+    whole segment clip when a KEEP anchor requires it.
     """
-    limit_t = float(hard_end) if hard_end is not None else float(seg_end)
-    bleed = 0.0 if next_is_keep else (
-        GAP_BLEED_SEC if gap_bleed_sec is None else float(gap_bleed_sec)
-    )
-    last_needed = float(seg_end)
-    for phrase in plan:
+    del hard_end, gap_bleed_sec, next_is_keep  # packer owns yield / speed-up
+    inter = float(UNIT_INTER_GAP_SEC)
+    # Build placement plan: close gaps, keep full clip lengths.
+    place_abs: list[tuple[float, float, Path]] = []
+    cursor = float(seg_start)
+    for j, phrase in enumerate(plan):
         clip = Path(phrase.get("tts_fit") or "")
-        if clip.is_file():
-            last_needed = max(last_needed, float(phrase["start"]) + wav_duration(clip))
-    last_needed = min(last_needed, limit_t)
+        if not clip.is_file():
+            continue
+        dur = wav_duration(clip)
+        if dur <= 0.01:
+            continue
+        src_a = float(phrase["start"])
+        if not place_abs:
+            p0 = max(float(seg_start), src_a)
+        else:
+            prev_end = place_abs[-1][1]
+            orig_gap = max(0.0, src_a - float(plan[j - 1].get("end") or src_a))
+            # Prefer source onset when there is room; otherwise abut with a
+            # tiny natural pause (never leave a multi-second hole inside a unit pack).
+            gap = min(orig_gap, inter) if orig_gap > 1e-3 else 0.0
+            p0 = max(prev_end + gap, min(src_a, prev_end + inter))
+            if p0 < prev_end:
+                p0 = prev_end
+        p1 = p0 + dur
+        place_abs.append((p0, p1, clip))
+        cursor = p1
 
-    seg_a = int(round(seg_start * sample_rate))
-    seg_b = int(round(last_needed * sample_rate))
+    if not place_abs:
+        # Empty canvas of the HE window length so callers still get a file.
+        n = max(1, int(round(max(0.25, float(seg_end) - float(seg_start)) * sample_rate)))
+        canvas = np.zeros(n, dtype=np.float32)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        sf.write(str(out_path), canvas, sample_rate)
+        return out_path
+
+    canvas_start = float(seg_start)
+    canvas_end = max(float(seg_end), place_abs[-1][1])
+    seg_a = int(round(canvas_start * sample_rate))
+    seg_b = int(round(canvas_end * sample_rate))
     n = max(1, seg_b - seg_a)
     canvas = np.zeros(n, dtype=np.float32)
     fade_n = max(1, int(round(crossfade_sec * sample_rate)))
 
-    for j, phrase in enumerate(plan):
-        clip = Path(phrase["tts_fit"])
-        if not clip.is_file():
-            continue
+    for p0, _p1, clip in place_abs:
         audio, sr = sf.read(str(clip), dtype="float32", always_2d=False)
         if getattr(audio, "ndim", 1) > 1:
             audio = np.mean(audio, axis=-1).astype(np.float32)
@@ -1527,50 +1525,23 @@ def assemble_on_hebrew_timeline(
             if getattr(audio, "ndim", 1) > 1:
                 audio = np.mean(audio, axis=-1).astype(np.float32)
 
-        p_a = int(round(float(phrase["start"]) * sample_rate))
-        next_t = (
-            float(plan[j + 1]["start"]) - 0.02
-            if j + 1 < len(plan)
-            else limit_t
-        )
-        # Soft budget: allow slight overrun into the next gap, but not past next onset.
-        max_len = max(0, int(round(next_t * sample_rate)) - p_a)
-        # Extra headroom into the pause between phrases before hard cut.
-        # Disabled when the next segment is KEEP (would step on original speech).
-        if j + 1 < len(plan) and bleed > 0:
-            max_len = max(max_len, int(round((next_t + bleed) * sample_rate)) - p_a)
-            max_len = min(max_len, int(round(limit_t * sample_rate)) - p_a)
-        offset = p_a - seg_a
+        offset = int(round(p0 * sample_rate)) - seg_a
         if offset < 0:
             audio = audio[-offset:]
             offset = 0
-        take = min(len(audio), max_len, n - offset)
+        take = min(len(audio), n - offset)
         if take <= 0 or offset >= n:
-            if len(audio) > max_len + sample_rate // 10:
-                lost = (len(audio) - max(0, max_len)) / sample_rate
-                print(
-                    f"      WARN: truncating phrase {j} by {lost:.2f}s "
-                    f"(would overrun next onset)",
-                    file=sys.stderr,
+            # Grow canvas if a unit extends past the initial estimate.
+            extra = offset + len(audio) - n
+            if extra > 0:
+                canvas = np.concatenate(
+                    [canvas, np.zeros(extra, dtype=np.float32)]
                 )
-            continue
-        # Boundary-aware trim when the clip would overrun the next onset —
-        # never a raw mid-word sample chop.
-        if take < len(audio):
-            trimmed = boundary_aware_trim(
-                audio, take, sample_rate=sample_rate
-            )
-            lost = (len(audio) - len(trimmed)) / sample_rate
-            if lost > 0.08:
-                print(
-                    f"      WARN: boundary-trim phrase {j} lost {lost:.2f}s",
-                    file=sys.stderr,
-                )
-            chunk = trimmed
-            take = len(chunk)
-        else:
-            chunk = audio[:take].copy()
-        # Crossfade mix into existing canvas (don't erase previous tails).
+                n = len(canvas)
+                take = len(audio)
+            else:
+                continue
+        chunk = audio[:take].copy()
         dest = canvas[offset : offset + take]
         overlap = min(fade_n, take, len(dest))
         if overlap > 1 and float(np.max(np.abs(dest[:overlap]))) > 1e-4:
@@ -2056,30 +2027,24 @@ def synthesize_segments_qwen(
             he_text = (unit.get("text_he") or orig_he or "um").strip() or "um"
             u_start = float(unit.get("source_start") or unit["start"])
             u_end = float(unit.get("source_end") or unit["end"])
-            # Isochronous: fit to the Hebrew ASR chunk [source_start, source_end].
+            # Fit toward the HE lips window; never trim — overrun kept for packer.
             he_slot_sec = max(0.25, u_end - u_start)
             raw_pause = float(unit.get("raw_pause_after") or 0.0)
+            # Always allow overrun: unit audio keeps full length; elastic packer
+            # closes gaps / speeds the run before KEEP or locked anchors.
+            allow_overrun = True
             if j + 1 < len(units):
-                # Cap at next unit onset. If a real pause follows, allow speech to
-                # finish into that slack instead of mid-clause cutting.
                 nxt_u = units[j + 1]
                 hard_cap = float(nxt_u.get("source_start") or nxt_u["start"]) - 0.02
-                allow_overrun = raw_pause >= 0.25
             else:
-                # Last unit: yield before KEEP; tiny bleed only into following dub gap.
                 hard_cap = (
                     next_start - yield_guard
                     if next_is_keep
                     else min(next_start + SHORT_SLOT_OVERRUN_CAP_SEC, media_duration)
                 )
-                allow_overrun = (not next_is_keep) and (hard_cap - u_end) >= 0.25
-            hard_cap = max(hard_cap, u_start + 0.25)
-            # Fit/pad toward the HE lips window; overrun (when allowed) may extend
-            # past u_end into the following pause up to hard_cap on assemble.
-            window_sec = min(he_slot_sec, max(0.25, hard_cap - u_start))
-            window_end = min(u_start + window_sec, hard_cap)
-            if allow_overrun:
-                window_end = hard_cap
+            hard_cap = max(hard_cap, u_start + he_slot_sec, u_start + 0.25)
+            window_sec = he_slot_sec
+            window_end = hard_cap
 
             # Build / pick clone refs — bank first (stable identity), then local.
             alt_refs: list[dict] = []
@@ -2326,15 +2291,14 @@ def synthesize_segments_qwen(
                     seg["tts_failed"] = True
                     continue
 
-            # Shorten-retry if natural rate would exceed FIT_MAX_RATE.
-            # Skip when a following pause can absorb the overrun — don't cut
-            # talking mid-sentence just to squeeze into the HE lips window.
+            # Shorten-retry if natural rate would exceed gentle max.
+            # Prefer shorten over chipmunk; never trim the waveform.
             raw_sec = wav_duration(best_fit_src)
             natural = raw_sec / max(window_sec, 0.25)
             overrun_sec = max(0.0, raw_sec - window_sec)
-            pause_can_absorb = allow_overrun and overrun_sec <= max(0.0, raw_pause - 0.05)
+            pause_can_absorb = overrun_sec <= max(0.0, raw_pause - 0.05)
             if (
-                natural > FIT_MAX_RATE
+                natural > FIT_MAX_RATE_GENTLE
                 and shorten_en_fn is not None
                 and not pause_can_absorb
             ):
@@ -2396,9 +2360,9 @@ def synthesize_segments_qwen(
                 best_fit_src,
                 fitted_unit,
                 window_sec,
-                max_rate=FIT_MAX_RATE,
+                max_rate=FIT_MAX_RATE_GENTLE,
                 min_rate=FIT_MIN_RATE,
-                allow_overrun=allow_overrun,
+                allow_overrun=True,
             )
             rates.append(rate)
             actual = wav_duration(fitted_unit)
@@ -2407,7 +2371,7 @@ def synthesize_segments_qwen(
             if abs(delta) < 0.04:
                 note = "exact"
             elif delta > 0:
-                note = f"overrun +{delta:.2f}s (capped)"
+                note = f"overrun +{delta:.2f}s (kept for packer)"
             else:
                 note = f"short {-delta:.2f}s (stretched toward HE)"
             print(
@@ -2415,9 +2379,7 @@ def synthesize_segments_qwen(
                 f"@ rate={rate:.3f} he={he_slot:.2f}s ({note})",
                 file=sys.stderr,
             )
-            place_end = u_end  # always occupy the full Hebrew ASR window
-            if actual > he_slot_sec + 0.04:
-                place_end = min(u_start + actual, window_end)
+            place_end = u_start + actual  # full clip; never trim to HE end
             place_plan.append(
                 {
                     "start": u_start,
@@ -2456,29 +2418,24 @@ def synthesize_segments_qwen(
         seg["spoken_end"] = round(spoken_end, 3)
 
         fitted = tts_dir / f"seg_{i:02d}_fit.wav"
-        # Isochronous: hard-end at next onset (tiny yield before KEEP).
-        if next_is_keep:
-            hard_end = next_start - yield_guard
-        else:
-            hard_end = next_start + SHORT_SLOT_OVERRUN_CAP_SEC
-        # Assemble on the ASR Hebrew timeline so clips fill source windows.
+        # Assemble full unit audio (never trim). Elastic packer owns KEEP yield.
         assemble_on_hebrew_timeline(
             place_plan,
             start,
             end,
             fitted,
             sample_rate=44100,
-            hard_end=hard_end,
+            hard_end=None,
             next_is_keep=next_is_keep,
-            gap_bleed_sec=0.0 if next_is_keep else SHORT_SLOT_OVERRUN_CAP_SEC,
+            gap_bleed_sec=0.0,
         )
         spoken = wav_duration(fitted)
-        seg["spoken_end"] = round(min(start + spoken, hard_end), 3)
+        seg["spoken_end"] = round(start + spoken, 3)
         seg["tts_end"] = seg["spoken_end"]
+        seg["tts_clip_sec"] = round(spoken, 3)
         seg["duration"] = round(float(seg["end"]) - start, 3)
         print(
-            f"    timeline {spoken:.2f}s ({len(place_plan)} unit(s) @ HE-window fit, "
-            f"hard_end={hard_end:.2f})",
+            f"    timeline {spoken:.2f}s ({len(place_plan)} unit(s), never-cut assemble)",
             file=sys.stderr,
         )
         seg.pop("tts_text", None)

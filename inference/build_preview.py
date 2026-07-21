@@ -32,6 +32,7 @@ from pathlib import Path
 import torch
 
 from inference.segment_merge import (
+    apply_place_speeds,
     clamp_segment_phrases,
     clamp_segment_timeline,
     dedupe_repeated_sentences,
@@ -39,6 +40,7 @@ from inference.segment_merge import (
     is_continuation_start,
     merge_short_phrases,
     needs_object_continuation,
+    plan_dub_placement,
     refresh_segment_fields,
     rehydrate_missing_asr_segments,
     restore_asr_phrase_boundaries,
@@ -2001,7 +2003,7 @@ def build_dubbed_track(
     workdir: Path,
     *,
     bg_gain: float = 0.55,
-    duck_gain: float = 0.45,
+    duck_gain: float = 0.60,
     speech_gain: float = 1.2,
     speech_target_rms: float = 0.085,
     vocals: Path | None = None,
@@ -2078,13 +2080,6 @@ def build_dubbed_track(
             bg_env[idx] = min(bg_env[idx], max(level, target))
 
     for seg in segments:
-        a = float(seg.get("source_start") or seg.get("start") or 0.0)
-        b = float(seg.get("source_end") or seg.get("end") or 0.0)
-        # Tail guard: extend duck slightly past ASR end so residual HE tails
-        # (e.g. "רבה") stay under the duck floor even if TTS ended early.
-        b_guard = b + 0.35
-        if b_guard <= a:
-            continue
         keep = bool(seg.get("keep_original") or seg.get("keep_uses_source"))
         failed = bool(seg.get("tts_failed"))
         is_dub = (
@@ -2092,12 +2087,38 @@ def build_dubbed_track(
             and (seg.get("language") or "he") == "he"
         )
         if keep:
+            a = float(seg.get("source_start") or seg.get("start") or 0.0)
+            b = float(seg.get("source_end") or seg.get("end") or 0.0)
+            if b <= a:
+                continue
             # KEEP brings full source mix — bed silenced under the KEEP clip
             # with equal-power edges applied when placing speech.
             _apply_duck(a, b, 0.0, attack=0.04, release=0.06)
         elif is_dub:
+            # Duck under the *placed* voice (may drift from ASR source window).
+            a = float(
+                seg.get("place_start")
+                or seg.get("source_start")
+                or seg.get("start")
+                or 0.0
+            )
+            b = float(
+                seg.get("place_end")
+                or seg.get("spoken_end")
+                or seg.get("source_end")
+                or seg.get("end")
+                or 0.0
+            )
+            b_guard = b + 0.20
+            if b_guard <= a:
+                continue
             # Successful or failed: keep music at duck floor (never hard mute).
             _apply_duck(a, b_guard, duck, attack=0.08, release=0.18)
+        elif failed:
+            a = float(seg.get("source_start") or seg.get("start") or 0.0)
+            b = float(seg.get("source_end") or seg.get("end") or 0.0)
+            if b + 0.35 > a:
+                _apply_duck(a, b + 0.35, duck, attack=0.08, release=0.18)
 
     for gap in speech_gaps or []:
         # Uncovered speech energy: duck (not mute) so music stays continuous.
@@ -2130,13 +2151,25 @@ def build_dubbed_track(
             missing_tts += 1
             continue
         clip = _load_mono(path, sr)
-        # Place at immutable ASR start so lips and audio share the same onset.
-        i0 = int(round(float(seg.get("source_start") or seg["start"]) * sr))
+        keep = bool(seg.get("keep_original") or seg.get("keep_uses_source"))
+        # KEEP stays locked to ASR onset; dubs use elastic place_start.
+        if keep:
+            i0 = int(round(float(seg.get("source_start") or seg["start"]) * sr))
+        else:
+            i0 = int(
+                round(
+                    float(
+                        seg.get("place_start")
+                        or seg.get("source_start")
+                        or seg["start"]
+                    )
+                    * sr
+                )
+            )
         if i0 >= n_samples or len(clip) == 0:
             continue
         i1 = min(n_samples, i0 + len(clip))
         take = clip[: i1 - i0].copy()
-        keep = bool(seg.get("keep_original") or seg.get("keep_uses_source"))
         fade = min(int(0.015 * sr), len(take) // 4)
         if keep:
             if fade > 1:
@@ -2407,24 +2440,46 @@ def run_dub_qa(segments: list[dict], dubbed: Path, workdir: Path) -> Path:
         "segments": [],
         "coverage": [],
         "early_ends": [],
+        "truncations": [],
+        "drift": [],
         "music_jumps": [],
     }
-    # Coverage gate summary.
+    # Coverage gate summary — honest spoken length vs clip length + drift.
     for i, seg in enumerate(segments):
         if seg.get("keep_original") or (seg.get("language") or "he") != "he":
             continue
         src_a = float(seg.get("source_start") or seg.get("start") or 0.0)
         src_b = float(seg.get("source_end") or seg.get("end") or 0.0)
-        spoken = float(seg.get("spoken_end") or seg.get("tts_end") or src_b)
+        place_a = float(seg.get("place_start") or src_a)
+        place_b = float(seg.get("place_end") or seg.get("spoken_end") or src_b)
+        spoken = place_b
         early = max(0.0, src_b - spoken)
+        drift = place_a - src_a
         fitted = seg.get("tts_fit")
+        clip_sec = None
+        trunc_sec = 0.0
+        if fitted and Path(fitted).is_file():
+            try:
+                clip_sec = float(f5_wav_duration(Path(fitted)))
+                # Truncation = clip longer than what the mix window can hold
+                # relative to recorded place span (should be ~0 under never-cut).
+                placed_span = max(0.0, place_b - place_a)
+                trunc_sec = max(0.0, clip_sec - placed_span - 0.05)
+            except Exception:
+                clip_sec = float(seg.get("tts_clip_sec") or 0.0) or None
         row_cov = {
             "index": i,
             "speaker_id": seg.get("speaker_id"),
             "source_start": src_a,
             "source_end": src_b,
+            "place_start": round(place_a, 3),
+            "place_end": round(place_b, 3),
+            "place_speed": seg.get("place_speed"),
+            "place_drift": round(drift, 3),
             "spoken_end": spoken,
             "early_end_sec": round(early, 3),
+            "clip_sec": round(clip_sec, 3) if clip_sec is not None else None,
+            "truncation_sec": round(trunc_sec, 3),
             "tts_failed": bool(seg.get("tts_failed")),
             "has_tts": bool(fitted) and Path(fitted).is_file() if fitted else False,
             "tts_speed_used": seg.get("tts_speed_used"),
@@ -2432,6 +2487,10 @@ def run_dub_qa(segments: list[dict], dubbed: Path, workdir: Path) -> Path:
         report["coverage"].append(row_cov)
         if early >= 0.35:
             report["early_ends"].append(row_cov)
+        if trunc_sec >= 0.08:
+            report["truncations"].append(row_cov)
+        if abs(drift) >= 0.05:
+            report["drift"].append(row_cov)
 
     try:
         from faster_whisper import WhisperModel
@@ -2505,6 +2564,19 @@ def run_dub_qa(segments: list[dict], dubbed: Path, workdir: Path) -> Path:
             "speaker_id": seg.get("speaker_id"),
             "start": float(seg.get("source_start") or seg["start"]),
             "end": float(seg.get("source_end") or seg["end"]),
+            "place_start": float(seg.get("place_start") or seg.get("source_start") or seg["start"]),
+            "place_end": float(
+                seg.get("place_end")
+                or seg.get("spoken_end")
+                or seg.get("source_end")
+                or seg["end"]
+            ),
+            "place_drift": round(
+                float(seg.get("place_start") or seg.get("source_start") or seg["start"])
+                - float(seg.get("source_start") or seg["start"]),
+                3,
+            ),
+            "place_speed": seg.get("place_speed"),
             "text_en": en[:200],
             "asr": asr[:200],
             "word_overlap": round(overlap, 3),
@@ -2514,7 +2586,12 @@ def run_dub_qa(segments: list[dict], dubbed: Path, workdir: Path) -> Path:
                 max(
                     0.0,
                     float(seg.get("source_end") or seg["end"])
-                    - float(seg.get("spoken_end") or seg.get("tts_end") or seg["end"]),
+                    - float(
+                        seg.get("place_end")
+                        or seg.get("spoken_end")
+                        or seg.get("tts_end")
+                        or seg["end"]
+                    ),
                 ),
                 3,
             ),
@@ -2635,9 +2712,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--duck-gain",
         type=float,
-        default=0.45,
-        help="Music bed gain under HE dubs (0–1). Default 0.45 keeps music audible; "
-        "residual HE speech still gated out via vocals energy.",
+        default=0.60,
+        help="Music bed gain under HE dubs (0–1). Default 0.60 keeps music clearly "
+        "audible; residual HE speech still gated out via vocals energy.",
     )
     p.add_argument(
         "--qa",
@@ -3202,6 +3279,16 @@ def main() -> None:
         }
         out_json.write_text(json.dumps(payload_out, ensure_ascii=False, indent=2), encoding="utf-8")
         assert_tts_coverage(segments, allow_missing=bool(args.allow_missing_tts))
+        # Elastic gap-closing packer: close small gaps, never cut, speed before KEEP.
+        n_planned = plan_dub_placement(segments, total_duration)
+        n_sped = apply_place_speeds(segments)
+        print(
+            f"Elastic placement: {n_planned} dub(s) planned, "
+            f"{n_sped} clip(s) speed-adjusted",
+            file=sys.stderr,
+        )
+        payload_out["segments"] = segments
+        out_json.write_text(json.dumps(payload_out, ensure_ascii=False, indent=2), encoding="utf-8")
         dubbed = build_dubbed_track(
             segments,
             background,

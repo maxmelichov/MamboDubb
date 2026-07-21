@@ -35,6 +35,12 @@ POST_SENTENCE_MERGE_GAP = 0.80
 # Long HE clauses: split on sentence end so TTS can pause between thoughts.
 LONG_PHRASE_SPLIT_SEC = 4.5
 SENTENCE_PAUSE_SEC = 0.55
+# Elastic dub placement (never-cut packer).
+MAX_DRIFT_SEC = 0.6
+RUN_BREAK_GAP_SEC = 1.5
+INTER_GAP_SEC = 0.12
+PLACE_KEEP_GUARD_SEC = 0.12
+PLACE_MAX_SPEED = 1.50
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…؟])\s+")
 # Parliamentary thanks / address — new speech-act, not monologue continuation.
 _NEW_SPEECH_ACT = re.compile(
@@ -1761,4 +1767,252 @@ def retag_english_sandwich(
             file=sys.stderr,
         )
     return n
+
+
+def _is_keep_segment(seg: dict[str, Any]) -> bool:
+    return bool(seg.get("keep_original") or (seg.get("language") or "he") != "he")
+
+
+def _segment_clip_len(seg: dict[str, Any]) -> float:
+    """Natural TTS clip length (seconds) for elastic packing."""
+    stored = seg.get("tts_clip_sec")
+    if stored is not None:
+        try:
+            v = float(stored)
+            if v > 0.05:
+                return v
+        except (TypeError, ValueError):
+            pass
+    fitted = seg.get("tts_fit")
+    if fitted:
+        path = Path(fitted)
+        if path.is_file():
+            try:
+                from inference.tts_f5 import wav_duration
+
+                return max(0.05, float(wav_duration(path)))
+            except Exception:
+                pass
+    a = float(seg.get("source_start") or seg.get("start") or 0.0)
+    b = float(seg.get("source_end") or seg.get("end") or a)
+    return max(0.25, b - a)
+
+
+def plan_dub_placement(
+    segments: list[dict[str, Any]],
+    media_duration: float,
+    *,
+    max_drift: float = MAX_DRIFT_SEC,
+    run_break_gap: float = RUN_BREAK_GAP_SEC,
+    inter_gap: float = INTER_GAP_SEC,
+    keep_guard: float = PLACE_KEEP_GUARD_SEC,
+    max_speed: float = PLACE_MAX_SPEED,
+) -> int:
+    """Plan elastic ``place_start`` / ``place_end`` / ``place_speed`` for HE dubs.
+
+    Groups consecutive Hebrew dubs into runs bounded by KEEP/non-Hebrew segments
+    and by natural gaps ≥ ``run_break_gap``. Within a run, closes small gaps
+    (``inter_gap``), keeps onset drift ≤ ``max_drift``, and — when the run would
+    overrun a locked KEEP anchor — applies one uniform speed-up ≤ ``max_speed``.
+    Never trims speech. Last segment before a run-break gap / media end is
+    allowed to finish fully into that slack.
+
+    Mutates ``segments`` in place. Returns the number of dub segments planned.
+    """
+    n = len(segments)
+    media_duration = max(0.25, float(media_duration))
+    planned = 0
+
+    def _src_a(seg: dict[str, Any]) -> float:
+        return float(seg.get("source_start") or seg.get("start") or 0.0)
+
+    def _src_b(seg: dict[str, Any]) -> float:
+        return float(seg.get("source_end") or seg.get("end") or _src_a(seg))
+
+    # Initialize KEEP / failed / missing with locked source placement.
+    for seg in segments:
+        if _is_keep_segment(seg) or seg.get("tts_failed") or not seg.get("tts_fit"):
+            a = _src_a(seg)
+            b = _src_b(seg)
+            seg["place_start"] = round(a, 3)
+            seg["place_end"] = round(b, 3)
+            seg["place_speed"] = 1.0
+            seg["place_drift"] = 0.0
+
+    i = 0
+    while i < n:
+        seg = segments[i]
+        if (
+            _is_keep_segment(seg)
+            or seg.get("tts_failed")
+            or not seg.get("tts_fit")
+        ):
+            i += 1
+            continue
+
+        run = [i]
+        j = i + 1
+        while j < n:
+            nxt = segments[j]
+            if _is_keep_segment(nxt):
+                break
+            if nxt.get("tts_failed") or not nxt.get("tts_fit"):
+                break
+            prev_b = _src_b(segments[run[-1]])
+            cur_a = _src_a(nxt)
+            if cur_a - prev_b >= float(run_break_gap):
+                break
+            run.append(j)
+            j += 1
+
+        # Locked end: KEEP onset − guard; else next-run onset / media end (soft).
+        must_yield = False
+        if j < n and _is_keep_segment(segments[j]):
+            locked_end = _src_a(segments[j]) - float(keep_guard)
+            must_yield = True
+        elif j < n:
+            locked_end = _src_a(segments[j])
+        else:
+            locked_end = media_duration
+        locked_end = max(locked_end, _src_a(segments[run[0]]) + 0.25)
+
+        natural_lens = [_segment_clip_len(segments[k]) for k in run]
+
+        def _try_pack(speed: float) -> tuple[list[tuple[float, float]], bool]:
+            lens = [max(0.05, L / max(speed, 1.0)) for L in natural_lens]
+            places: list[tuple[float, float]] = []
+            ok = True
+            for ri, idx in enumerate(run):
+                src_a = _src_a(segments[idx])
+                if ri == 0:
+                    p0 = src_a
+                else:
+                    prev_src_b = _src_b(segments[run[ri - 1]])
+                    orig_gap = max(0.0, src_a - prev_src_b)
+                    gap = min(orig_gap, float(inter_gap)) if orig_gap > 1e-3 else 0.0
+                    # Close gaps: start right after previous end (+ tiny gap).
+                    p0 = places[-1][1] + gap
+                    if p0 < src_a - float(max_drift):
+                        p0 = src_a - float(max_drift)
+                    if p0 > src_a + float(max_drift):
+                        p0 = src_a + float(max_drift)
+                    if p0 + 1e-3 < places[-1][1]:
+                        ok = False
+                p1 = p0 + lens[ri]
+                if abs(p0 - src_a) > float(max_drift) + 1e-3:
+                    ok = False
+                places.append((p0, p1))
+            # Last segment before a soft gap may finish into the slack.
+            if places and places[-1][1] > locked_end + 1e-3:
+                if must_yield or places[-1][1] > locked_end + 0.05:
+                    ok = False
+            return places, ok
+
+        # Prefer speed 1.0; escalate uniformly up to max_speed if needed.
+        chosen_speed = 1.0
+        places, ok = _try_pack(1.0)
+        if not ok:
+            lo, hi = 1.0, float(max_speed)
+            best_places = places
+            best_speed = hi
+            for _ in range(12):
+                mid = 0.5 * (lo + hi)
+                cand, cand_ok = _try_pack(mid)
+                if cand_ok:
+                    best_places, best_speed = cand, mid
+                    hi = mid
+                else:
+                    lo = mid
+                    best_places = cand
+            places, chosen_speed = best_places, best_speed
+            # Final attempt at max_speed even if slightly imperfect (never trim).
+            if not _try_pack(chosen_speed)[1]:
+                places, _ = _try_pack(float(max_speed))
+                chosen_speed = float(max_speed)
+
+        for ri, idx in enumerate(run):
+            p0, p1 = places[ri]
+            src_a = _src_a(segments[idx])
+            segments[idx]["place_start"] = round(p0, 3)
+            segments[idx]["place_end"] = round(p1, 3)
+            segments[idx]["place_speed"] = round(float(chosen_speed), 4)
+            segments[idx]["place_drift"] = round(p0 - src_a, 3)
+            planned += 1
+
+        if abs(chosen_speed - 1.0) > 0.01:
+            print(
+                f"  Elastic pack run [{run[0]}..{run[-1]}]: "
+                f"speed={chosen_speed:.3f}× → fit before "
+                f"{'KEEP' if must_yield else 'gap/end'} @ {locked_end:.2f}s",
+                file=sys.stderr,
+            )
+        i = j
+
+    return planned
+
+
+def apply_place_speeds(
+    segments: list[dict[str, Any]],
+    *,
+    sample_rate: int = 44100,
+) -> int:
+    """Apply ``place_speed`` via atempo to ``tts_fit`` clips; refresh place_end.
+
+    Returns the number of clips rewritten. Speeds ≈1.0 are skipped. Never trims.
+    """
+    from inference.tts_f5 import atempo_chain, wav_duration
+
+    n_changed = 0
+    for seg in segments:
+        if _is_keep_segment(seg) or seg.get("tts_failed"):
+            continue
+        speed = float(seg.get("place_speed") or 1.0)
+        fitted = seg.get("tts_fit")
+        if not fitted or not Path(fitted).is_file():
+            continue
+        if abs(speed - 1.0) < 0.01:
+            # Sync place_end to actual clip length at place_start.
+            p0 = float(seg.get("place_start") or seg.get("source_start") or seg["start"])
+            dur = wav_duration(Path(fitted))
+            seg["place_end"] = round(p0 + dur, 3)
+            seg["tts_clip_sec"] = round(dur, 3)
+            continue
+        src = Path(fitted)
+        dst = src.with_name(src.stem + f"_pack{speed:.2f}".replace(".", "p") + ".wav")
+        chain = atempo_chain(speed)
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(src),
+                "-filter:a",
+                chain,
+                "-acodec",
+                "pcm_s16le",
+                "-ar",
+                str(sample_rate),
+                "-ac",
+                "1",
+                str(dst),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        seg["tts_fit"] = str(dst)
+        p0 = float(seg.get("place_start") or seg.get("source_start") or seg["start"])
+        dur = wav_duration(dst)
+        seg["place_end"] = round(p0 + dur, 3)
+        seg["tts_clip_sec"] = round(dur, 3)
+        seg["spoken_end"] = round(p0 + dur, 3)
+        # Combine with any prior gentle fit rate for QA.
+        prior = float(seg.get("tts_speed_used") or 1.0)
+        seg["tts_speed_used"] = round(prior * speed, 3)
+        n_changed += 1
+        print(
+            f"  Pack speed [{seg.get('speaker_id')}] {speed:.3f}× → {dst.name} "
+            f"({dur:.2f}s @ place {p0:.2f}-{p0 + dur:.2f})",
+            file=sys.stderr,
+        )
+    return n_changed
 

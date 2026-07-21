@@ -217,14 +217,18 @@ def suppress_vocal_leak_in_bed(
     sr: int,
     *,
     hop_sec: float = 0.02,
-    speech_floor: float = 0.12,
-    music_keep: float = 0.85,
+    speech_floor: float = 0.50,
+    music_keep: float = 0.90,
 ) -> np.ndarray:
     """Attenuate speech-dominant leakage in the music bed without muting music.
 
     Uses a smoothed time-domain vocal-energy envelope to gently duck only the
     speech-correlated portion of the bed. Music-dominant frames stay near full.
     Returns a bed with continuous gain (no binary 0/1 holes).
+
+    ``speech_floor`` defaults high (~0.50) so that under dubbed speech (where
+    the original HE vocals still key the envelope) the music stays clearly
+    audible after stacking with the remix duck envelope.
     """
     import numpy as np
 
@@ -250,17 +254,15 @@ def suppress_vocal_leak_in_bed(
         b = bg[i0:i1].mean(axis=-1) if bg.ndim > 1 else bg[i0:i1]
         v_rms = float(np.sqrt(np.mean(v * v) + 1e-12))
         b_rms = float(np.sqrt(np.mean(b * b) + 1e-12))
-        if v_rms < 0.012:
+        if v_rms < 0.015:
             frame_gain[fi] = 1.0
             continue
-        # Speech-dominant when vocals >> bed residual.
+        # Only attenuate strong speech-dominant leak; mild leak keeps music.
         ratio = v_rms / max(b_rms, 1e-4)
-        if ratio >= 2.5 and v_rms >= 0.025:
-            # Strong speech leak → keep a music floor, never hard mute.
+        if ratio >= 3.0 and v_rms >= 0.030:
             frame_gain[fi] = speech_floor
-        elif ratio >= 1.2 and v_rms >= 0.018:
-            # Mild leak → soft duck toward music_keep.
-            t = min(1.0, (ratio - 1.2) / 1.3)
+        elif ratio >= 1.8 and v_rms >= 0.022:
+            t = min(1.0, (ratio - 1.8) / 1.2)
             frame_gain[fi] = music_keep * (1.0 - t) + speech_floor * t
         else:
             frame_gain[fi] = 1.0
