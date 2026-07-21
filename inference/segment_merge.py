@@ -1829,9 +1829,49 @@ def plan_dub_placement(
     def _src_b(seg: dict[str, Any]) -> float:
         return float(seg.get("source_end") or seg.get("end") or _src_a(seg))
 
-    # Initialize KEEP / failed / missing with locked source placement.
+    def _keep_extract_window(seg: dict[str, Any]) -> tuple[float, float]:
+        """KEEP extract/placement clock (energy snap), not delayed ASR source_*."""
+        src_a = _src_a(seg)
+        src_b = _src_b(seg)
+        phrases = seg.get("phrases") or []
+        tts_a = None
+        tts_b = None
+        if phrases:
+            if phrases[0].get("tts_start") is not None:
+                tts_a = float(phrases[0]["tts_start"])
+            if phrases[0].get("spoken_end") is not None:
+                tts_b = float(phrases[0]["spoken_end"])
+        extract_a = float(tts_a if tts_a is not None else seg.get("start") or src_a)
+        extract_b = float(tts_b if tts_b is not None else seg.get("end") or src_b)
+        return extract_a, extract_b
+
+    def _keep_onset(seg: dict[str, Any]) -> float:
+        """Yield wall for dubs before a KEEP — use place/extract, not late ASR."""
+        if seg.get("place_start") is not None:
+            return float(seg["place_start"])
+        return _keep_extract_window(seg)[0]
+
+    # Initialize KEEP / failed / missing. KEEP uses extract clock (may be earlier
+    # than ASR source_start after energy snap); never re-lock to later ASR.
     for seg in segments:
-        if _is_keep_segment(seg) or seg.get("tts_failed") or not seg.get("tts_fit"):
+        if _is_keep_segment(seg):
+            src_a = _src_a(seg)
+            extract_a, extract_b = _keep_extract_window(seg)
+            existing = seg.get("place_start")
+            if existing is not None:
+                ps = float(existing)
+                # Classic delay bug: place locked to ASR while extract started earlier.
+                if abs(ps - src_a) < 0.02 and extract_a < src_a - 0.04:
+                    ps, pe = extract_a, extract_b
+                else:
+                    pe = float(seg.get("place_end") or extract_b)
+            else:
+                ps, pe = extract_a, extract_b
+            seg["place_start"] = round(ps, 3)
+            seg["place_end"] = round(pe, 3)
+            seg["place_speed"] = 1.0
+            seg["place_drift"] = round(ps - src_a, 3)
+        elif seg.get("tts_failed") or not seg.get("tts_fit"):
             a = _src_a(seg)
             b = _src_b(seg)
             seg["place_start"] = round(a, 3)
@@ -1865,10 +1905,10 @@ def plan_dub_placement(
             run.append(j)
             j += 1
 
-        # Locked end: KEEP onset − guard; else next-run onset / media end (soft).
+        # Locked end: KEEP place/extract onset − guard; else next-run / media end.
         must_yield = False
         if j < n and _is_keep_segment(segments[j]):
-            locked_end = _src_a(segments[j]) - float(keep_guard)
+            locked_end = _keep_onset(segments[j]) - float(keep_guard)
             must_yield = True
         elif j < n:
             locked_end = _src_a(segments[j])

@@ -2087,8 +2087,19 @@ def build_dubbed_track(
             and (seg.get("language") or "he") == "he"
         )
         if keep:
-            a = float(seg.get("source_start") or seg.get("start") or 0.0)
-            b = float(seg.get("source_end") or seg.get("end") or 0.0)
+            # KEEP extract window == mix onset (may be earlier than ASR source_*).
+            a = float(
+                seg.get("place_start")
+                or seg.get("start")
+                or seg.get("source_start")
+                or 0.0
+            )
+            b = float(
+                seg.get("place_end")
+                or seg.get("end")
+                or seg.get("source_end")
+                or 0.0
+            )
             if b <= a:
                 continue
             # KEEP brings full source mix — bed silenced under the KEEP clip
@@ -2152,20 +2163,17 @@ def build_dubbed_track(
             continue
         clip = _load_mono(path, sr)
         keep = bool(seg.get("keep_original") or seg.get("keep_uses_source"))
-        # KEEP stays locked to ASR onset; dubs use elastic place_start.
-        if keep:
-            i0 = int(round(float(seg.get("source_start") or seg["start"]) * sr))
-        else:
-            i0 = int(
-                round(
-                    float(
-                        seg.get("place_start")
-                        or seg.get("source_start")
-                        or seg["start"]
-                    )
-                    * sr
+        # KEEP and dubs both use place_start (KEEP = extract clock; dub = elastic).
+        i0 = int(
+            round(
+                float(
+                    seg.get("place_start")
+                    or seg.get("source_start")
+                    or seg["start"]
                 )
+                * sr
             )
+        )
         if i0 >= n_samples or len(clip) == 0:
             continue
         i1 = min(n_samples, i0 + len(clip))
@@ -2382,6 +2390,34 @@ def log_speech_gaps(segments: list[dict], vocals: Path, workdir: Path) -> list[d
         out.write_text(json.dumps({"gaps": hits}, indent=2), encoding="utf-8")
         print(f"  Wrote {out} ({len(hits)} hole(s))", file=sys.stderr)
     return hits
+
+
+def reattach_tts_clips(segments: list[dict], workdir: Path) -> int:
+    """Re-bind ``tts_fit`` from ``tts_clips/seg_XX_fit.wav`` when paths were dropped.
+
+    Used by ``--reuse-tts`` so remix can run after JSON rewrites that strip clip paths.
+    Prefer ``*_pack*.wav`` siblings when present (elastic packer outputs).
+    """
+    tts_dir = workdir / "tts_clips"
+    if not tts_dir.is_dir():
+        return 0
+    n = 0
+    for i, seg in enumerate(segments):
+        fitted = seg.get("tts_fit")
+        if fitted and Path(fitted).is_file():
+            continue
+        # Prefer latest pack-sped clip if any.
+        packs = sorted(tts_dir.glob(f"seg_{i:02d}_fit_pack*.wav"))
+        candidate = packs[-1] if packs else (tts_dir / f"seg_{i:02d}_fit.wav")
+        if candidate.is_file():
+            seg["tts_fit"] = str(candidate)
+            seg.pop("tts_failed", None)
+            n += 1
+            print(
+                f"  REATTACH [{seg.get('speaker_id')}] {candidate.name}",
+                file=sys.stderr,
+            )
+    return n
 
 
 def assert_tts_coverage(segments: list[dict], *, allow_missing: bool = False) -> list[dict]:
@@ -3198,6 +3234,8 @@ def main() -> None:
         )
         if args.reuse_tts:
             print(f"Reusing existing TTS clips (engine={args.tts_engine}).", file=sys.stderr)
+            n_reattach = reattach_tts_clips(segments, workdir)
+            print(f"  Reattached {n_reattach} clip path(s) from tts_clips/", file=sys.stderr)
         elif args.tts_engine == "qwen":
             speaker_bank = None
             use_bank = bool(args.speaker_bank)

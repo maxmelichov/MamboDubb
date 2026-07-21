@@ -1943,6 +1943,13 @@ def synthesize_segments_qwen(
             seg["tts_raw"] = str(raw)
             seg["tts_fit"] = str(fitted)
             seg["tts_speed_used"] = 1.0
+            seg["tts_clip_sec"] = round(max(end - start, 0.4), 3)
+            # Mix onset must match extract clock (energy snap), not later ASR
+            # source_start — otherwise native speech plays late on the timeline.
+            seg["place_start"] = round(start, 3)
+            seg["place_end"] = round(end, 3)
+            seg["place_speed"] = 1.0
+            seg["place_drift"] = round(start - src_start, 3)
             seg["keep_original"] = True
             seg["tts_engine"] = "keep_original"
             continue

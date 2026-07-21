@@ -1206,13 +1206,89 @@ def test_plan_dub_placement_closes_gaps_and_keeps_keep():
     assert segs[1]["place_start"] <= 62.0
     assert segs[1]["place_start"] >= segs[0]["place_end"] - 1e-3
     assert abs(segs[1]["place_drift"]) <= MAX_DRIFT_SEC + 1e-6
-    # KEEP locked to source.
+    # KEEP locked to source when extract clock matches ASR.
     assert segs[2]["place_start"] == 90.0
     assert segs[2]["place_end"] == 95.0
     assert segs[2]["place_speed"] == 1.0
     # Full clip lengths preserved (no trim).
     assert abs(segs[0]["place_end"] - segs[0]["place_start"] - 2.0) < 0.02
     assert abs(segs[1]["place_end"] - segs[1]["place_start"] - 14.0) < 0.02
+
+
+def test_plan_dub_placement_keep_uses_extract_not_late_asr():
+    """KEEP energy-snapped extract must not be re-locked to later source_start."""
+    from inference.segment_merge import plan_dub_placement
+
+    segs = [
+        {
+            "speaker_id": "EN",
+            "language": "en",
+            "keep_original": True,
+            "source_start": 2.461,
+            "source_end": 6.021,
+            # Energy snap pulled extract earlier than ASR (kan11_5m bug).
+            "start": 1.211,
+            "end": 7.507,
+            "phrases": [
+                {
+                    "text": "Qatar is probably one of Israel's most dangerous enemies.",
+                    "start": 2.461,
+                    "end": 6.021,
+                    "source_start": 2.461,
+                    "source_end": 6.021,
+                    "tts_start": 1.211,
+                    "spoken_end": 7.507,
+                    "pause_after": 0.0,
+                }
+            ],
+            # Stale packer lock to ASR (the delay bug).
+            "place_start": 2.461,
+            "place_end": 6.021,
+            "place_speed": 1.0,
+        },
+        {
+            "speaker_id": "HE",
+            "language": "he",
+            "keep_original": False,
+            "source_start": 7.557,
+            "source_end": 20.837,
+            "start": 7.557,
+            "end": 20.837,
+            "tts_fit": "he.wav",
+            "tts_clip_sec": 13.0,
+        },
+    ]
+    plan_dub_placement(segs, media_duration=30.0)
+    # Place at extract onset, not delayed ASR source_start.
+    assert abs(segs[0]["place_start"] - 1.211) < 1e-3
+    assert abs(segs[0]["place_end"] - 7.507) < 1e-3
+    assert segs[0]["place_drift"] < -0.5
+    # source_* stays ASR for captions.
+    assert segs[0]["source_start"] == 2.461
+
+
+def test_plan_dub_placement_preserves_stamped_keep_place():
+    """KEEP place_* stamped by TTS extract path is preserved when not ASR-locked."""
+    from inference.segment_merge import plan_dub_placement
+
+    segs = [
+        {
+            "speaker_id": "EN",
+            "language": "en",
+            "keep_original": True,
+            "source_start": 2.461,
+            "source_end": 6.021,
+            "start": 1.211,
+            "end": 7.507,
+            "place_start": 1.211,
+            "place_end": 7.507,
+            "place_speed": 1.0,
+            "place_drift": -1.25,
+        }
+    ]
+    plan_dub_placement(segs, media_duration=20.0)
+    assert segs[0]["place_start"] == 1.211
+    assert segs[0]["place_end"] == 7.507
 
 
 def test_plan_dub_placement_speeds_before_keep():
