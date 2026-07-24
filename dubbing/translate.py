@@ -67,7 +67,9 @@ def _translate_instruction(text: str, source: str, target: str, context: str = "
         f"clause, every detail and any repeated emphasis; preserve all names, "
         f"organizations, numbers and specific references, using their established {tgt} "
         f"names and respecting grammatical gender. Do not summarize, shorten, omit, or "
-        f"translate word-for-word. Output only the {tgt} translation, nothing else.\n\n"
+        f"translate word-for-word. Write full words, no contractions (\"we are\" not "
+        f"\"we're\", \"do not\" not \"don't\") so the text-to-speech reads them clearly. "
+        f"Output only the {tgt} translation, nothing else.\n\n"
         f"{src}: {text}"
     )
 
@@ -209,8 +211,11 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
     finally:
         free(model)
     manifest.save(workdir, m)
-    missing = [s["id"] for s in segments if not (s.get("text_en") or "").strip()]
-    assert not missing, f"segments without text_en: {missing}"
+    # Dubbed segments must have a translation; kept segments need not (an
+    # "uncovered" keep is untranscribed audio that only plays as original sound).
+    missing = [s["id"] for s in segments
+               if not s.get("keep") and not (s.get("text_en") or "").strip()]
+    assert not missing, f"dubbed segments without text_en: {missing}"
 
 
 def free(model) -> None:

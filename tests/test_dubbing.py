@@ -164,8 +164,9 @@ class _FakeWord:
 
 
 class _FakeSeg:
-    def __init__(self, text):
+    def __init__(self, text, avg_logprob=-0.2):
         self.text = text
+        self.avg_logprob = avg_logprob
         self.words = [_FakeWord(w + " ", i * 0.3, i * 0.3 + 0.25)
                       for i, w in enumerate(text.split())]
 
@@ -185,6 +186,7 @@ def _detect(monkeypatch, regions, langs, texts, **kw):
     from dubbing import audio
     monkeypatch.setattr(audio, "decode_mono", lambda *a, **k: [0.0])
     monkeypatch.setattr(transcript, "vad_regions", lambda *a, **k: regions)
+    monkeypatch.setattr(transcript, "_extend_english_end", lambda en, sw, b, limit: b)
     seq = iter(langs)
     monkeypatch.setattr(transcript, "detect_language", lambda lid, clip: next(seq))
     model = _FakeEnModel(texts)

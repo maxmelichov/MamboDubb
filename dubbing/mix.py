@@ -20,8 +20,9 @@ import soundfile as sf
 
 from . import audio
 
-BG_GAIN = 0.55         # music bed level under speech
-DUCK_DUB = 0.82        # bed ducking under a dubbed line
+BG_GAIN = 0.68         # music bed level under speech
+DUCK_DUB = 0.86        # bed ducking under a dubbed line (gentle: the bed should
+                       # sit with the dub, not disappear under it)
 DUCK_KEEP = 0.0        # original audio already contains its own bed
 SPEECH_GAIN = 1.2
 SPEECH_RMS = 0.085     # per-clip loudness target for dubbed speech

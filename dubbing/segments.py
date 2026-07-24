@@ -528,7 +528,9 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
     levels = audio.frame_rms(audio.decode_mono(workdir / m["files"]["vocals"], 16000),
                              16000, 0.1)
     extend_keeps_to_speech_end(segs, levels, 0.1, total or len(levels) * 0.1)
-    fill_uncovered_audible(segs, levels, 0.1, total or len(levels) * 0.1)
+    # Note: audible stretches no segment covers are left to the background bed
+    # (vocals removed) rather than kept as original audio — a mislabelled Hebrew
+    # region must never play its source voice; only English keeps play as-is.
     m["segments"] = segs
     m["speakers"] = {
         spk: {"dur": round(sum(s["end"] - s["start"] for s in segs if s["speaker"] == spk), 2)}
