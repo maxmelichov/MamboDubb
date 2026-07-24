@@ -1,6 +1,0 @@
-demucs
-pyannote.audio
-ffmpeg-python
-python-dotenv
-yt-dlp
-faster-whisper
