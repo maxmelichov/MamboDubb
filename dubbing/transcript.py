@@ -43,6 +43,10 @@ VAD_MIN_SEC = 0.6      # ignore speech blips shorter than this (a short English 
 SPAN_TAIL_LOGPROB = -0.5  # while the English model reads this confidently past the LID
 SPAN_TAIL_STEP = 0.5      # boundary, in steps of this, the trailing word is still English
 SPAN_TAIL_MAX = 1.5       # ...extend the span up to this far to let the speaker finish
+SPAN_END_PAD = 0.25       # keep a span's end no further than this past its last English
+                          # word: _extend_english_end widens the *decode* window to
+                          # catch a trailing word, but the span must not then claim the
+                          # Hebrew beyond it — a keep span there plays the source voice.
 # VoxLingua107 reports languages by their old ISO-639 codes; map to ours.
 _LID_ALIAS = {"iw": "he", "in": "id", "ji": "yi"}
 
@@ -312,6 +316,14 @@ def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: floa
         segs = list(segs)
         text = " ".join(s.text.strip() for s in segs).strip()
         got = [w for s in segs for w in (s.words or []) if (w.word or "").strip()]
+        if got:
+            # The decode window `b` was widened by _extend_english_end to catch a
+            # trailing English word, but the re-transcription only emits words where
+            # English is actually spoken. Clamp the span to its last English word so
+            # it never claims the Hebrew tail beyond — a keep span there plays the
+            # source voice (the "I can hear the Hebrew speaker" bleed) and steals
+            # those seconds from the dub that should cover them.
+            b = min(b, round(a + float(got[-1].end) + SPAN_END_PAD, 3))
         span_words = ([{"t": round(a + float(w.start), 3), "text": w.word.strip()} for w in got]
                       or [{"t": round(a, 3), "text": tok} for tok in text.split()]
                       or [{"t": round(a, 3), "text": "…"}])

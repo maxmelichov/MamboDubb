@@ -459,15 +459,23 @@ def extend_keeps_to_speech_end(segs: list[dict[str, Any]], levels, hop: float,
 
 
 def fill_uncovered_audible(segs: list[dict[str, Any]], levels, hop: float,
-                           total: float) -> None:
-    """Keep original audio for audible stretches no segment covers.
+                           total: float, is_target_lang=None) -> None:
+    """Keep original audio for audible stretches no segment covers — target only.
 
     A region the language detector mislabels as neither source nor target, and the
     ASR never transcribed, otherwise plays silent — the speaker vanishes (the "1:35
     goes quiet" gap). Cover it with original audio so it is at least heard.
+
+    But original audio is only safe to play where it is the *target* language: a
+    mislabelled source-language stretch must never air its own voice (the "I can
+    hear the Hebrew speaker" bleed). `is_target_lang(a, b)` runs VoxLingua on the
+    stretch and answers that question; without it (no LID model) nothing is filled,
+    so an uncertain region falls to the background bed rather than risk the bleed.
     """
     import numpy as np
 
+    if is_target_lang is None:
+        return
     n = len(levels)
     covered = np.zeros(n, dtype=bool)
     for s in segs:
@@ -482,7 +490,8 @@ def fill_uncovered_audible(segs: list[dict[str, Any]], levels, hop: float,
         while j < n and not covered[j]:
             j += 1
         a, b = i * hop, min(total, j * hop)
-        if b - a >= UNCOVERED_MIN and float(np.max(levels[i:j])) >= UNCOVERED_PEAK:
+        if (b - a >= UNCOVERED_MIN and float(np.max(levels[i:j])) >= UNCOVERED_PEAK
+                and is_target_lang(a, b)):
             added.append((round(a, 3), round(b, 3)))
         i = j
     for a, b in added:
@@ -528,9 +537,29 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
     levels = audio.frame_rms(audio.decode_mono(workdir / m["files"]["vocals"], 16000),
                              16000, 0.1)
     extend_keeps_to_speech_end(segs, levels, 0.1, total or len(levels) * 0.1)
-    # Note: audible stretches no segment covers are left to the background bed
-    # (vocals removed) rather than kept as original audio — a mislabelled Hebrew
-    # region must never play its source voice; only English keeps play as-is.
+    # Audible stretches no segment covers: keep the original audio only where it is
+    # the target language (VoxLingua confirms), so a missed English line is heard
+    # again without a mislabelled Hebrew region airing its source voice. Audibility
+    # is judged from the source mix, not the vocals — Demucs sometimes routes a
+    # speaker into the music stem, and that speech must still count. Falls back to
+    # no filling when the LID model is absent.
+    src = workdir / m["files"]["source_wav"]
+    src_levels = audio.frame_rms(audio.decode_mono(src, 16000), 16000, 0.1)
+    from . import transcript
+
+    lid = transcript.load_lid()
+    is_target = None
+    if lid is not None:
+        tgt = m["source"].get("tgt_lang") or "en"
+
+        def is_target(a: float, b: float) -> bool:
+            clip = audio.decode_mono(src, 16000, start=a,
+                                     end=min(b, a + transcript.LID_WINDOW))
+            lang, prob = transcript.detect_language(lid, clip)
+            return lang == tgt and prob >= transcript.LID_MIN_PROB
+
+    fill_uncovered_audible(segs, src_levels, 0.1, total or len(src_levels) * 0.1,
+                           is_target_lang=is_target)
     m["segments"] = segs
     m["speakers"] = {
         spk: {"dur": round(sum(s["end"] - s["start"] for s in segs if s["speaker"] == spk), 2)}

@@ -200,7 +200,10 @@ def test_detect_spoken_target_spans_keeps_only_target_language(monkeypatch):
                     [("en", 0.9), ("he", 1.0)], ["Qatar is a dangerous enemy"])
     assert len(spans) == 1
     assert spans[0]["text"] == "Qatar is a dangerous enemy"
-    assert (spans[0]["start"], spans[0]["end"]) == (2.0, 4.0)   # VAD boundaries, uncut
+    # Start is the VAD onset; end is clamped to the last English word (1.45s into
+    # the clip) + SPAN_END_PAD, never the raw VAD/extended boundary — so the span
+    # cannot claim the source-language tail that follows the last English word.
+    assert (spans[0]["start"], spans[0]["end"]) == (2.0, 3.7)
 
 
 def test_detect_spoken_target_spans_rejects_low_confidence(monkeypatch):
