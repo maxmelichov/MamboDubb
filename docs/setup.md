@@ -5,71 +5,67 @@
 - macOS on Apple Silicon (M-series)
 - [uv](https://docs.astral.sh/uv/) (`brew install uv`)
 - [ffmpeg](https://ffmpeg.org/) (`brew install ffmpeg`)
-- [SoX](http://sox.sourceforge.net/) (`brew install sox`) — required by Qwen3-TTS speech tokenizer normalization
-- Hugging Face account + token (for gated **Pyannote** models)
+- [SoX](http://sox.sourceforge.net/) (`brew install sox`) — Qwen3-TTS text normalization
+- Hugging Face account + token (for the gated **Pyannote** diarization models)
 
 ## Install
 
 ```bash
 cd DubbingQwen
 uv sync
-cp .env.example .env
+cp .env.example .env      # then set HF_TOKEN=hf_...
 ```
 
-Edit `.env` and set `HF_TOKEN=hf_...`.
-
-Accept the Pyannote model terms (required once per account):
+Accept the Pyannote model terms once per account:
 
 - https://huggingface.co/pyannote/speaker-diarization-3.1
 - https://huggingface.co/pyannote/segmentation-3.0
 
+Without a token the pipeline still runs — diarization falls back to a single speaker
+and the report says so.
+
 ## Models
 
-- **Whisper (CT2):** [`ivrit-ai/whisper-large-v3-turbo-ct2`](https://huggingface.co/ivrit-ai/whisper-large-v3-turbo-ct2) under `models/whisper-large-v3-turbo-ct2`.
-- **TranslateGemma (optional CLI):** under `models/translategemma-4b-it` — `inference/translate.py` only. **`build_preview` uses mlx-lm** (default `mlx-community/Qwen2.5-7B-Instruct-4bit`); TranslateGemma often returns empty on this stack.
-- **Qwen3-TTS Base (1.7B):** zero-shot clone under `models/Qwen3-TTS-12Hz-1.7B-Base`.
+All local, under `models/`:
 
 ```bash
-uv run hf download ivrit-ai/whisper-large-v3-turbo-ct2 \
-  --local-dir models/whisper-large-v3-turbo-ct2
-
+# Translation (bfloat16 on MPS)
 uv run hf download google/translategemma-4b-it \
   --local-dir models/translategemma-4b-it
 
+# Speech synthesis, zero-shot voice cloning
 uv run hf download Qwen/Qwen3-TTS-12Hz-1.7B-Base \
   --local-dir models/Qwen3-TTS-12Hz-1.7B-Base
+
+# English ASR used to verify each generated clip
+uv run hf download Systran/faster-whisper-base.en \
+  --local-dir models/faster-whisper-base.en
+
+# Source-language ASR — only needed for videos that have no captions
+uv run hf download ivrit-ai/whisper-large-v3-turbo-ct2 \
+  --local-dir models/whisper-large-v3-turbo-ct2
 ```
 
-`uv sync` pins Python to `>=3.11,<3.14` (typically 3.12) for ML wheel compatibility.
-
-If Pyannote / LatentSync hit missing MPS ops:
-
-```bash
-export PYTORCH_ENABLE_MPS_FALLBACK=1
-```
+Demucs (`htdemucs_ft`) and Pyannote download themselves on first use.
 
 ## Verify
 
 ```bash
-which sox ffmpeg
-uv run python inference/transcribe.py --help
-uv run python inference/translate.py --help
-uv run python inference/extract_pipeline.py --help
-uv run python inference/build_preview.py --help
+uv run python -m dubbing --help
+uv run python -m pytest tests/test_dubbing.py -q
 ```
 
-Smoke-test ASR (needs a short Hebrew audio/video file):
+Then dub the first few minutes of something:
 
 ```bash
-uv run python inference/transcribe.py path/to/clip.wav --timestamps
+uv run python -m dubbing "https://www.youtube.com/watch?v=VIDEO_ID" --duration 300
 ```
 
-Smoke-test translation:
+Read `report.json` in the run directory afterwards — it lists anything that needs a
+human ear.
 
-```bash
-uv run python inference/translate.py -s he -t en "שלום, מה שלומך?"
-```
+## Notes
 
-## Dependency source of truth
-
-`pyproject.toml` is authoritative. Prefer `uv sync` / `uv add` over editing requirement lists by hand.
+- `pyproject.toml` is the dependency source of truth; use `uv sync` / `uv add`.
+- If Pyannote hits missing MPS ops: `export PYTORCH_ENABLE_MPS_FALLBACK=1`
+  (the pipeline sets this itself).

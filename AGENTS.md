@@ -1,150 +1,84 @@
 # AGENTS.md
 
-Guidance for AI agents and humans working in this repository.
+Local video dubbing: a video plus its transcript goes in, a dubbed video comes out.
+Everything runs on this machine — no API calls, no cloud.
 
-> ## ⛔ EXTREME NOTICE — NO LOCAL / ONE-OFF OUTPUT FIXES
->
-> **THIS KEEPS HAPPENING. IT MUST STOP.**
->
-> When dubbing quality is wrong (bad translation, missing TTS, mid-sentence cuts,
-> wrong org names, silence holes, bad timing):
->
-> 1. **Fix the pipeline code** in `inference/` (and add/adjust tests).
-> 2. **Prove the systemic fix** so the *next* full run is correct by default.
-> 3. **Do NOT** hand-edit `outputs/**/translated_segments.json`, patch one
->    `text_en`, “just re-TTS segments 3,6”, or otherwise bandage a single run.
->
-> Forbidden patterns (examples of what agents have done wrong):
-> - Editing one phrase in `outputs/kan11_5m/translated_segments.json` and calling it done
-> - `--tts-segments 3,6` as a substitute for fixing MT / pause / fit / glossary bugs
-> - Rewriting names in JSON while a TTS glossary still silently changes them again
-> - “Quick local fix now, systemic later”
->
-> Allowed only if the user **explicitly** asks for a one-off patch to a run.
-> Even then: still fix the root cause in code in the same session unless told not to.
->
-> Root-cause homes (use these, not `outputs/`):
-> - Translation / EN split / pause packing → `inference/build_preview.py`, `inference/translate*.py`
-> - TTS fit / overrun into pause / unit split → `inference/tts_qwen.py`
-> - Name respell / spoken forms → `prepare_english_tts_text` / glossary in `tts_qwen.py`
-> - Timing / phrases / elastic placement → `inference/segment_merge.py` (`plan_dub_placement`)
-> - Always cover with `tests/test_segment_merge_and_tts.py` (or adjacent tests)
->
-> ## ⛔ ALSO: DO NOT REBUILD FROM ZERO
->
-> **Do not throw away working pipeline behavior and redesign timing / fit / mix
-> from scratch every time something sounds wrong.**
->
-> - **Iterate** on the current never-cut elastic packer (`plan_dub_placement`,
->   `place_start` / `place_end`, gentle atempo, audible duck) — tune constants,
->   fix edge cases, extend tests.
-> - **Do not** rewrite alignment, TTS fit, or remix as a brand-new parallel
->   system, reintroduce mid-sentence trimming, or discard `source_*` / `place_*`
->   semantics “to start clean.”
-> - Prefer the smallest change that preserves what already works (onset
->   alignment, KEEP locks, no-cut speech, music under dubs).
-
-## What this project is
-
-**DubbingQwen** is a local Apple Silicon pipeline that turns Hebrew documentary / news video into English dubs:
-
-1. Separate vocals from background music (Demucs)
-2. Diarize + transcribe Hebrew (Pyannote + ivrit-ai Whisper)
-3. Duration-aware translation (TranslateGemma / local LLM)
-4. Zero-shot TTS (Qwen3-TTS 1.7B-Base clone from vocal refs; F5 optional)
-5. Active-speaker-gated lip-sync (TalkNet/SyncNet → LatentSync)
-6. Remix background + dubbed vocals with ducking (FFmpeg)
-
-Build **one phase at a time**. Do not wire the full end-to-end pipeline until Phase 1–2 JSON output is solid.
-
-## Tooling (required)
-
-- **Package manager:** [`uv`](https://docs.astral.sh/uv/) only. Do not introduce Poetry/pipenv/conda.
-- **Python:** `>=3.11,<3.14` (pin via `uv sync`; prefer 3.12 on Mac).
-- **Install:** `uv sync`
-- **Run:** `uv run …` (never assume a manually activated venv is present).
-- **Secrets:** `.env` holds `HF_TOKEN`. Never commit `.env`. Use `.env.example` as the template.
-
-## Layout
-
-| Path | Role |
-|------|------|
-| `inference/` | First-party CLIs (`transcribe`, `translate`, `extract_pipeline`) |
-| `models/` | Local HF checkpoints (gitignored) |
-| `docs/` | Architecture and phase docs |
-| `third_party/LatentSync` | Upstream lip-sync (Plan A; MPS may need fallbacks) |
-| `third_party/Qwen3-TTS` | Upstream TTS |
-| `outputs/` | Run artifacts (gitignored) |
-| `pyproject.toml` | Source of truth for dependencies |
-
-Legacy wrappers `inference_whisper_ivrit.py` / `inference_translategemma.py` only re-export the `inference/` CLIs.
-
-## Conventions
-
-- Prefer small, isolated scripts with clear CLI args over a mega-orchestrator.
-- Write run artifacts under `outputs/<run_id>/`.
-- JSON segment schema for Phase 1–2:
-
-```json
-{
- "source": "...",
- "vocals": "...",
- "background": "...",
- "segments": [
- {
-   "speaker_id": "SPEAKER_00",
-   "start": 0.0,
-   "end": 1.2,
-   "duration": 1.2,
-   "language": "he",
-   "keep_original": false,
-   "text": "...",
-   "phrases": [{"text": "...", "start": 0.0, "end": 1.2, "pause_after": 0.0}]
- }
- ]
-}
-```
-
-Non-Hebrew turns (`language` ≠ `he`, `keep_original: true`) keep the original vocals (EN/AR/…). Only Hebrew is translated + TTS'd.
-
-- On Apple Silicon: Whisper via **faster-whisper** + [`ivrit-ai/whisper-large-v3-turbo-ct2`](https://huggingface.co/ivrit-ai/whisper-large-v3-turbo-ct2); TranslateGemma / Pyannote / F5 via PyTorch MPS. Set `PYTORCH_ENABLE_MPS_FALLBACK=1` if LatentSync or Pyannote hits missing ops.
-- Do not download huge models into the repo root; always use `models/<name>/` via `uv run hf download …`.
-- Do not commit `*.wav` / `*.mp4` / `models/` / `.env`.
-
-## Current priority (Phase 1–2)
-
-Make `uv run python inference/extract_pipeline.py <video>` reliable:
-
-1. `ffmpeg` → `source.wav`
-2. Demucs → `vocals.wav` + `background.wav`
-3. Pyannote → speaker turns
-4. faster-whisper (word timestamps) ∩ turns → `segments.json`
-
-Next phases (translation, TTS, ASD, LatentSync) should consume that JSON — do not reinvent timestamps.
-
-## Commands agents should know
+## Run it
 
 ```bash
-uv sync
-cp .env.example .env   # then set HF_TOKEN
-
-uv run python inference/transcribe.py path/to/audio.wav --timestamps
-uv run python inference/translate.py -s he -t en "שלום"
-uv run python inference/extract_pipeline.py path/to/video.mp4
-uv run python inference/build_preview.py outputs/<run> --skip-translate
-# Legacy F5:
-uv run python inference/build_preview.py outputs/<run> --skip-translate --tts-engine f5
-
-uv run hf download google/translategemma-4b-it --local-dir models/translategemma-4b-it
-uv run hf download ivrit-ai/whisper-large-v3-turbo-ct2 --local-dir models/whisper-large-v3-turbo-ct2
-uv run hf download Qwen/Qwen3-TTS-12Hz-1.7B-Base --local-dir models/Qwen3-TTS-12Hz-1.7B-Base
+uv run python -m dubbing "https://www.youtube.com/watch?v=VIDEO_ID"
+uv run python -m dubbing input.mp4 --captions captions.json3 -o outputs/myrun
+uv run python -m dubbing "<url>" --duration 320          # first N seconds, for iterating
+uv run python -m dubbing "<url>" --force translate       # redo one stage
+uv run python -m dubbing "<url>" --transcript captions    # use captions instead of ASR
+uv run python -m pytest tests/test_dubbing.py -q
 ```
 
-## Hard constraints
+Stages run in order and each is skipped when its inputs and outputs are unchanged, so
+re-running is cheap and an interrupted run resumes where it stopped. `--force <stage>`
+re-runs one stage; everything downstream of it invalidates automatically.
 
-- **No local output band-aids.** See the EXTREME NOTICE at the top. Fix `inference/` + tests, not `outputs/`.
-- Never force-push, amend shared history, or skip hooks unless the user asks.
-- Never write exploits or attack tooling.
-- Never print or commit secrets from `.env`.
-- Prefer editing existing files over adding parallel duplicate scripts.
-- Keep docs accurate when changing CLI flags or JSON schema.
+## The pipeline
+
+`fetch → stems → transcript → segments → translate → tts → timeline → mix → report`
+
+One module per stage in `dubbing/`, all state in `outputs/<run>/manifest.json`.
+
+| Stage | Does | Key output |
+|---|---|---|
+| fetch | yt-dlp video + captions, ffmpeg → 44.1kHz wav | `source.wav`, `captions.json3` |
+| stems | Demucs `htdemucs_ft` | `stems/{vocals,background}.wav` |
+| transcript | local Whisper on `source.wav`; captions mark target-language spans | `words.json` |
+| segments | words → segments; Pyannote labels speakers | `manifest.segments` |
+| translate | TranslateGemma-4B, windowed + standalone | `segment.text_en` |
+| tts | Qwen3-TTS zero-shot clone, verified | `clips/*.wav` |
+| timeline | places every clip | `segment.place` |
+| mix | duck bed, add speech, mux | `dub.wav`, `preview.mp4` |
+| report | coverage + warnings, fails on gaps | `report.json` |
+
+## Invariants — do not break these
+
+Each one exists because it was a real bug class. Changing a stage means keeping them
+true, not working around them.
+
+1. **Never silent.** Every segment ends up either dubbed or playing its original audio.
+   TTS that cannot be verified falls back to `keep`, never to nothing.
+2. **Never truncated, never overlapping.** `timeline.place()` is the only thing that
+   decides where audio goes, and it asserts non-overlap and that every clip's slot is at
+   least as long as its audio. `mix` *adds* into the output and asserts the span was
+   empty; there is no overwrite path.
+3. **Speech presence never comes from the vocals stem.** Demucs routes speech into the
+   music stem often enough that trusting it silently drops whole passages. ASR runs on
+   the full mix and the dead-air scan reads `source.wav`. The vocals stem is only for
+   clone references and diarization.
+4. **Transcribe locally; trust captions only about script.** Auto-captions mangle the
+   words that matter (`שייחה מוזה … בקטאר` → `ש חמוזה … בקטב`) and no translator recovers
+   from that. Captions are still authoritative for *where* the target language is spoken:
+   those spans become kept segments outright, because ASR in the source language either
+   garbles or skips them.
+5. **One TTS call per segment.** No sub-unit splitting, so no way for half a line to
+   vanish.
+6. **Shortening is bounded and logged.** A line is only shortened when it would otherwise
+   drift past `DRIFT_MAX`, it must keep every name, number and negation, and every
+   instance appears in `report.json`.
+7. **No per-video content.** No glossaries, no name-specific regexes, no
+   `if segment_id == 17`. A rule that only helps one video is a bug in the general rule —
+   fix the general rule.
+8. **The manifest stays small.** `manifest.SEGMENT_KEYS` is a whitelist enforced on save.
+   If a stage needs a new field, add it there deliberately.
+
+## Working on this
+
+- Fix causes in `dubbing/`, then re-run. Do not hand-edit anything under `outputs/`.
+- The pure logic (segmentation, placement, translation guards) is unit tested without
+  models in `tests/test_dubbing.py` — add a test alongside the change.
+- Bump a stage's tag in `manifest.STAGE_TAGS` when its logic changes; that invalidates
+  its cached output and everything after it.
+- `uv` only. Python 3.12. Secrets in `.env` (`HF_TOKEN` for Pyannote).
+
+## Device notes (Apple Silicon)
+
+- TranslateGemma: **bfloat16 on MPS** — float16 produces pad-only output.
+- Qwen3-TTS: **float32 on MPS** — float16 NaNs in the code predictor.
+- faster-whisper: **CPU only** (CTranslate2 has no MPS backend).
+- Models are sequential, never co-resident: the translator is freed before TTS loads.

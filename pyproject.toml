@@ -5,49 +5,45 @@ description = "Local Hebrew→English video dubbing pipeline for Apple Silicon"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
-    # Transcribe (ivrit-ai Whisper CT2 via faster-whisper)
+    # ASR: transcript fallback (ivrit-ai Whisper CT2) + English clone verification
     "faster-whisper>=1.1.0",
-    # Optional MLX helpers (not used for default ASR)
-    "mlx-whisper>=0.4.0",
-    "mlx>=0.20.0",
-    # Translate (mlx-lm; TranslateGemma transformers path is broken / pad-only)
-    "mlx-lm>=0.22.0",
+    # Translation: TranslateGemma-4B (needs bfloat16 on MPS)
     "torch>=2.4.0",
     "transformers>=4.50.0",
     "accelerate>=1.0.0",
     "sentencepiece>=0.2.0",
-    # Extract / Phase 1–2 (Demucs + Pyannote)
+    # Stems + diarization
     "demucs>=4.0.1",
     "pyannote.audio>=3.1.0",
-    "ffmpeg-python>=0.2.0",
-    "python-dotenv>=1.0.0",
+    # Input + audio handling
     "yt-dlp>=2025.1.0",
-    # Shared tooling
+    "soundfile>=0.12.1",
+    "numpy>=1.26",
+    "python-dotenv>=1.0.0",
+    # Speech synthesis
+    "qwen-tts",
     "huggingface-hub>=0.26.0",
     "hf>=0.0.1",
-    "f5-tts>=1.1.0",
-    "qwen-tts",
+    "mlx-lm>=0.29.1",
+    "silero-vad>=6.2.1",
+    "speechbrain>=1.1.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "ruff>=0.9.0",
+    "pytest>=8.0",
 ]
 
 [project.scripts]
-dq-transcribe = "inference.transcribe:main"
-dq-translate = "inference.translate:main"
-dq-extract = "inference.extract_pipeline:main"
-dq-tts = "inference.tts_qwen:main"
-dq-tts-f5 = "inference.tts_f5:main"
-dq-preview = "inference.build_preview:main"
+dub = "dubbing.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["inference"]
+packages = ["dubbing"]
 
 [tool.uv]
 package = true
