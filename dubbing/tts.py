@@ -103,6 +103,40 @@ def max_new_tokens(text: str) -> int:
 # --------------------------------------------------------------------------- refs
 
 
+PAUSE_MAX = 0.35    # an internal TTS silence longer than this is unnatural
+PAUSE_KEEP = 0.12   # ... and is compressed down to this
+
+
+def _trim_internal_silence(wav: np.ndarray, sr: int, *, floor: float = 0.015) -> np.ndarray:
+    """Compress over-long silences inside a generated clip.
+
+    Qwen sometimes drops a ~1s pause before a trailing phrase (a comma before
+    "par excellence"), which the placement then can't hide. Runs of silence longer
+    than PAUSE_MAX are shortened to PAUSE_KEEP; speech is untouched.
+    """
+    x = np.asarray(wav, dtype=np.float32)
+    hop = max(1, int(0.02 * sr))
+    n = len(x) // hop
+    if n < 2:
+        return x
+    rms = np.sqrt((x[: n * hop].reshape(n, hop) ** 2).mean(axis=1) + 1e-9)
+    silent = rms < floor
+    keep_f, max_f = max(1, int(PAUSE_KEEP / 0.02)), int(PAUSE_MAX / 0.02)
+    pieces: list[np.ndarray] = []
+    i = 0
+    while i < n:
+        j = i
+        while j < n and silent[j] == silent[i]:
+            j += 1
+        seg = x[i * hop : j * hop]
+        if silent[i] and (j - i) > max_f:
+            seg = seg[: keep_f * hop]
+        pieces.append(seg)
+        i = j
+    pieces.append(x[n * hop :])
+    return np.concatenate(pieces) if pieces else x
+
+
 def best_ref_window(voc: np.ndarray, a: float, b: float, target: float
                     ) -> tuple[float, float, float, float] | None:
     """Cleanest `target`-second window in [a, b] → (start, end, noise, rms)."""
@@ -192,46 +226,32 @@ class Engine:
             info["ref_span"] = [round(start, 2), round(end, 2)]
             info["ref_noise"] = round(score, 2)
 
-    def _speaker_bounds(self, seg: dict[str, Any]) -> tuple[float, float]:
-        """Widest window around the segment that stays within its own voice.
-
-        Starts a few seconds either side of the segment, then clamps away from any
-        segment diarization assigned to a *different* speaker — so widening a short
-        line to get enough reference audio can only ever reach neighbouring audio of
-        the same person, never blend in someone else's voice. When the neighbours
-        are all different speakers this collapses to the segment's own span.
-        """
-        total = len(self.vocals) / REF_SR
-        lo = max(0.0, seg["start"] - REF_TARGET_SEC)
-        hi = min(total, seg["end"] + REF_TARGET_SEC)
-        for s in self.m["segments"]:
-            if s["id"] == seg["id"] or s.get("speaker") == seg.get("speaker"):
-                continue
-            if s["end"] <= seg["start"]:
-                lo = max(lo, s["end"])
-            elif s["start"] >= seg["end"]:
-                hi = min(hi, s["start"])
-        return lo, hi
-
     def ref_for(self, seg: dict[str, Any]) -> tuple[Path, str] | None:
         """The segment's own aligned voice — whoever actually speaks in this window.
 
-        The reference is cut from the audio we are about to dub over, so the cloned
-        voice is the real speaker at that moment. It never borrows a canonical clip
-        from a distant part of the video. Short lines widen only within their own
-        speaker (`_speaker_bounds`), so the clone is never blended with a neighbour.
+        The reference is cut strictly from the segment's own `[start, end]`, so the
+        cloned voice is the real speaker at that exact moment. It deliberately does
+        NOT widen into neighbouring segments: diarization here is unreliable —
+        ECAPA shows two segments labelled the same speaker can be different voices —
+        so widening by label blends another person into the clone (the audible
+        wrong-speaker/voice-switch around 1:11). A short line simply gets a shorter
+        reference of the correct voice.
         """
-        lo, hi = self._speaker_bounds(seg)
-        got = best_ref_window(self.vocals, lo, hi, REF_TARGET_SEC)
+        span = seg["end"] - seg["start"]
+        got = best_ref_window(self.vocals, seg["start"], seg["end"], min(REF_TARGET_SEC, span))
         if got and got[3] >= REF_MIN_RMS:
             start, end, _score, _rms = got
-            path = self.refs / f"seg_{seg['id']:04d}.wav"
+            # Name the clip by its audio window, never the segment id: ids shift
+            # between runs as segmentation changes, so an id-named file goes stale
+            # and clones a different moment's voice (the "1:19 voice at 1:33" bug).
+            # A window-named file, and a window-based cache key, cannot.
+            path = self.refs / f"ref_{start:.2f}-{end:.2f}.wav"
             if not path.is_file():
                 sf.write(str(path), self.vocals[int(start * REF_SR) : int(end * REF_SR)],
                          REF_SR)
-            return path, f"seg{seg['id']}:{start:.2f}-{end:.2f}"
-        # Only if the aligned window is essentially silent: the speaker's canonical
-        # clip, if one was built, else no reference (the synth uses its default voice).
+            return path, f"ref:{start:.2f}-{end:.2f}"
+        # Only if the aligned window is too short or essentially silent: the
+        # speaker's canonical clip, if one was built, else the synth default voice.
         info = self.m["speakers"].get(seg["speaker"]) or {}
         if info.get("ref"):
             return self.workdir / info["ref"], f"{seg['speaker']}:canonical"
@@ -402,7 +422,7 @@ class _Synth:
         )
         out.parent.mkdir(parents=True, exist_ok=True)
         raw = out.with_suffix(".raw.wav")
-        sf.write(str(raw), np.asarray(wavs[0], dtype=np.float32), sr)
+        sf.write(str(raw), _trim_internal_silence(np.asarray(wavs[0], dtype=np.float32), sr), sr)
         audio.run(["ffmpeg", "-y", "-v", "error", "-i", str(raw), "-acodec", "pcm_s16le",
                    "-ar", str(audio.SR), "-ac", "1", str(out)])
         raw.unlink(missing_ok=True)

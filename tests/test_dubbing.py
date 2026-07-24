@@ -96,8 +96,10 @@ def test_placement_is_a_fixed_point_once_applied():
                for it, p in zip(items, first)]
     second = timeline.place(applied)
     for a, b in zip(first, second):
-        assert a["start"] == pytest.approx(b["start"], abs=1e-6)
-        assert a["end"] == pytest.approx(b["end"], abs=1e-6)
+        # 2ms tolerance: a stretched clip's rate is rounded to 4 dp in the output,
+        # so reconstructing dur from it drifts sub-frame — harmless for placement.
+        assert a["start"] == pytest.approx(b["start"], abs=2e-3)
+        assert a["end"] == pytest.approx(b["end"], abs=2e-3)
 
 
 def test_escalates_speed_only_when_running_late():
@@ -105,7 +107,8 @@ def test_escalates_speed_only_when_running_late():
     assert tight == pytest.approx(3.0 / 2.9)          # exact gentle fit
     hard = timeline.rate_for(dur=6.0, slot=3.0, drift_in=0.0, stretchable=True)
     assert hard == timeline.RATE_MAX                  # cannot fit; capped
-    assert timeline.rate_for(2.0, 5.0, 0.0, True) == 1.0
+    assert timeline.rate_for(2.0, 5.0, 0.0, True) == pytest.approx(timeline.RATE_MIN)  # short dub stretched to the floor
+    assert timeline.rate_for(4.5, 5.0, 0.0, True) == pytest.approx(4.5 / 5.0)          # mild: fills the slot
     assert timeline.rate_for(2.0, 0.0, 0.0, True) == 1.0
     assert timeline.rate_for(2.0, 0.0, 1.0, True) == timeline.RATE_PREF
 
@@ -190,24 +193,24 @@ def _detect(monkeypatch, regions, langs, texts, **kw):
 
 
 def test_detect_spoken_target_spans_keeps_only_target_language(monkeypatch):
-    # region 1 is English → a span at the VAD boundaries; region 2 is Hebrew → dropped.
-    spans = _detect(monkeypatch, [(2.0, 6.0), (8.0, 12.0)],
+    # Regions <= LID_WINDOW so each is one chunk; region 1 English -> span, 2 Hebrew.
+    spans = _detect(monkeypatch, [(2.0, 4.0), (8.0, 10.0)],
                     [("en", 0.9), ("he", 1.0)], ["Qatar is a dangerous enemy"])
     assert len(spans) == 1
     assert spans[0]["text"] == "Qatar is a dangerous enemy"
-    assert (spans[0]["start"], spans[0]["end"]) == (2.0, 6.0)   # VAD boundaries, uncut
+    assert (spans[0]["start"], spans[0]["end"]) == (2.0, 4.0)   # VAD boundaries, uncut
 
 
 def test_detect_spoken_target_spans_rejects_low_confidence(monkeypatch):
     # English but below the LID confidence floor → not kept.
-    spans = _detect(monkeypatch, [(2.0, 6.0)], [("en", 0.4)], ["whatever"])
+    spans = _detect(monkeypatch, [(2.0, 4.0)], [("en", 0.4)], ["whatever"])
     assert spans == []
 
 
 def test_detect_spoken_target_spans_skips_known_ranges(monkeypatch):
     # English and confident, but already covered by a caption/recovered span.
-    spans = _detect(monkeypatch, [(2.0, 6.0)], [("en", 0.9)], ["x y"],
-                    known=[(1.0, 6.5)])
+    spans = _detect(monkeypatch, [(2.0, 4.0)], [("en", 0.9)], ["x y"],
+                    known=[(1.0, 4.5)])
     assert spans == []
 
 
@@ -279,13 +282,15 @@ def test_keep_tail_extends_through_trailing_speech():
     assert segs[1]["end"] == 3.0           # non-keep segment untouched
 
 
-def test_keep_tail_stops_at_next_segment():
-    # Continuous speech, but the extension never crosses into the next segment.
-    levels = [0.05] * 30
+def test_keep_tail_stops_at_the_next_segment():
+    # The extension never crosses into the next segment (keep or dub) — the
+    # language boundary is handled upstream by the detector.
+    levels = [0.05] * 30                        # continuous speech
     segs = [{"id": 0, "start": 0.0, "end": 0.5, "speaker": "A", "keep": True},
             {"id": 1, "start": 1.0, "end": 3.0, "speaker": "B", "keep": False}]
     segments.extend_keeps_to_speech_end(segs, levels, 0.1, 3.0)
-    assert segs[0]["end"] == pytest.approx(1.0)
+    assert segs[0]["end"] == pytest.approx(1.0)  # stops at the next segment's start
+    assert segs[1]["start"] == 1.0               # untouched
 
 
 def test_split_on_pause():

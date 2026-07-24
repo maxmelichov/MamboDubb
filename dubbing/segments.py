@@ -32,6 +32,8 @@ SENTENCE_END = re.compile(r"[.!?…]['\"»׳״]?$")
 KEEP_TAIL_MAX = 2.5      # longest trailing original audio a keep segment may reclaim
 KEEP_TAIL_FLOOR = 0.008  # vocal energy above this is still speech, not a pause
 KEEP_TAIL_SILENCE = 0.35 # this much quiet ends the tail
+UNCOVERED_MIN = 0.6      # shortest audible gap worth keeping as original audio
+UNCOVERED_PEAK = 0.04    # a gap needs energy this loud somewhere to count as speech
 
 LATIN = re.compile(r"[A-Za-z]")
 HEBREW = re.compile(r"[֐-׿]")
@@ -429,14 +431,17 @@ def extend_keeps_to_speech_end(segs: list[dict[str, Any]], levels, hop: float,
     before an English speaker actually stops (and Whisper's word-end timestamps
     bunch early), so the segment boundary lands mid-sentence and the tail is
     clipped. Walk the vocal energy forward from the boundary, reclaiming speech
-    until a real pause or the next segment — whichever comes first.
+    until a real pause or the next segment — whichever comes first. The
+    English/Hebrew boundary itself is handled precisely upstream by the language
+    detector (transcript.detect_spoken_target_spans), so this never eats into a
+    neighbour: it only recovers a VAD trim within a keep's own trailing silence.
     """
     n = len(levels)
     for i, s in enumerate(segs):
         if not s.get("keep"):
             continue
-        nxt = segs[i + 1]["start"] if i + 1 < len(segs) else total
-        limit = min(nxt, s["end"] + KEEP_TAIL_MAX)
+        nxt_start = segs[i + 1]["start"] if i + 1 < len(segs) else total
+        limit = min(nxt_start, s["end"] + KEEP_TAIL_MAX)
         end, silence, t = s["end"], 0.0, s["end"]
         while t < limit - 1e-9:
             j = int(t / hop)
@@ -453,6 +458,42 @@ def extend_keeps_to_speech_end(segs: list[dict[str, Any]], levels, hop: float,
             s["end"] = round(end, 3)
 
 
+def fill_uncovered_audible(segs: list[dict[str, Any]], levels, hop: float,
+                           total: float) -> None:
+    """Keep original audio for audible stretches no segment covers.
+
+    A region the language detector mislabels as neither source nor target, and the
+    ASR never transcribed, otherwise plays silent — the speaker vanishes (the "1:35
+    goes quiet" gap). Cover it with original audio so it is at least heard.
+    """
+    import numpy as np
+
+    n = len(levels)
+    covered = np.zeros(n, dtype=bool)
+    for s in segs:
+        covered[max(0, int(s["start"] / hop)) : min(n, int(s["end"] / hop) + 1)] = True
+    added: list[tuple[float, float]] = []
+    i = 0
+    while i < n:
+        if covered[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and not covered[j]:
+            j += 1
+        a, b = i * hop, min(total, j * hop)
+        if b - a >= UNCOVERED_MIN and float(np.max(levels[i:j])) >= UNCOVERED_PEAK:
+            added.append((round(a, 3), round(b, 3)))
+        i = j
+    for a, b in added:
+        segs.append({"id": -1, "start": a, "end": b, "speaker": "SPEAKER_00",
+                     "text": "", "keep": True, "keep_reason": "uncovered"})
+    if added:
+        segs.sort(key=lambda s: s["start"])
+        for k, s in enumerate(segs):
+            s["id"] = k
+
+
 def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
         spans: list[dict[str, Any]] | None = None) -> None:
     turns = diarize(workdir / m["files"]["vocals"])
@@ -466,7 +507,16 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
             seg["id"] = i
     mark_keep(segs, spans)
 
-    lost = unsegmented_words(words, segs, spans or [])
+    # Drop sub-word noise fragments (a lone "ב", stray glyphs). Kept as original
+    # audio they play a jarring one-letter blip of the source voice between dubbed
+    # lines; letting those seconds fall to the background bed is far smoother. Their
+    # (sub-two-letter) words carry no meaning, so nothing is lost.
+    segs = [s for s in segs if s.get("keep_reason") != "no_text"]
+    for i, seg in enumerate(segs):
+        seg["id"] = i
+
+    lost = [w for w in unsegmented_words(words, segs, spans or [])
+            if len(re.sub(r"[^A-Za-z֐-׿]", "", w["text"])) >= 2]
     assert not lost, (
         f"{len(lost)} transcript words fell outside every segment, starting at "
         f"{lost[0]['t']:.2f}s ({lost[0]['text']!r}) — they would never be heard"
@@ -478,6 +528,7 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
     levels = audio.frame_rms(audio.decode_mono(workdir / m["files"]["vocals"], 16000),
                              16000, 0.1)
     extend_keeps_to_speech_end(segs, levels, 0.1, total or len(levels) * 0.1)
+    fill_uncovered_audible(segs, levels, 0.1, total or len(levels) * 0.1)
     m["segments"] = segs
     m["speakers"] = {
         spk: {"dur": round(sum(s["end"] - s["start"] for s in segs if s["speaker"] == spk), 2)}

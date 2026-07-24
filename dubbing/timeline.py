@@ -32,6 +32,9 @@ MIN_SEAM = 0.005      # …and between two that ran together: inaudible, but eno
                       # that millisecond rounding can never make them overlap
 RATE_PREF = 1.15      # compression we are willing to apply without thinking
 RATE_MAX = 1.30       # hard ceiling, only used when already running late
+RATE_MIN = 0.82       # slowest we stretch a short dub to fill its slot (below this
+                      # it drawls); keeps a much-shorter English line from finishing
+                      # early and leaving a silent tail
 DRIFT_SOFT = 0.50     # lateness that justifies escalating to RATE_MAX
 DRIFT_MAX = 1.50      # lateness that justifies asking for a shorter translation
 SHORTEN_ROUNDS = 2
@@ -46,7 +49,10 @@ def rate_for(dur: float, slot: float, drift_in: float, stretchable: bool) -> flo
         # we are already behind and need to claw time back.
         return RATE_PREF if drift_in > DRIFT_SOFT else 1.0
     if slot >= dur:
-        return 1.0
+        # The dub is shorter than its slot: play it at 1.0 and it finishes early,
+        # leaving a silent tail. Stretch it to fill the slot, but never below
+        # RATE_MIN (a drawl is worse than a little silence).
+        return max(RATE_MIN, dur / slot)
     need = dur / slot
     rate = min(RATE_PREF, need)
     if dur / rate - slot > DRIFT_SOFT:

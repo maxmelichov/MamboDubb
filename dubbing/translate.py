@@ -51,16 +51,24 @@ def _run(tokenizer, model, user_text: str, max_new_tokens: int) -> str:
     return out.strip()
 
 
-def _translate_instruction(text: str, source: str, target: str) -> str:
-    """Comprehension prompt: faithful and complete, not literal or summarised."""
+def _translate_instruction(text: str, source: str, target: str, context: str = "") -> str:
+    """Comprehension prompt: faithful and complete, not literal or summarised.
+
+    `context` is an optional per-video note — who and what the video is about, and
+    the established spellings of names the ASR tends to mangle. The model uses it to
+    render "שייח' עמוזה" (a mistranscription) as "Sheikha Moza" rather than guessing.
+    """
     src, tgt = _lang(source), _lang(target)
+    hint = f"{context.strip()}\n\n" if context and context.strip() else ""
     return (
+        f"{hint}"
         f"Translate the following {src} text into clear, natural {tgt} for subtitles. "
         f"Understand the meaning and translate it faithfully and completely: keep every "
         f"clause, every detail and any repeated emphasis; preserve all names, "
         f"organizations, numbers and specific references, using their established {tgt} "
-        f"names. Do not summarize, shorten, omit, or translate word-for-word. Output only "
-        f"the {tgt} translation, nothing else.\n\n{src}: {text}"
+        f"names and respecting grammatical gender. Do not summarize, shorten, omit, or "
+        f"translate word-for-word. Output only the {tgt} translation, nothing else.\n\n"
+        f"{src}: {text}"
     )
 
 
@@ -98,11 +106,12 @@ def load(device: str | None = None):
 
 
 def generate(tokenizer, model, text: str, *, source: str, target: str,
-             device=None, max_new_tokens: int = 400) -> str:
+             context: str = "", device=None, max_new_tokens: int = 400) -> str:
     src = (text or "").strip()
     if not src:
         return ""
-    return _run(tokenizer, model, _translate_instruction(src, source, target), max_new_tokens)
+    return _run(tokenizer, model, _translate_instruction(src, source, target, context),
+                max_new_tokens)
 
 
 def _proper_nouns(text: str) -> set[str]:
@@ -126,7 +135,7 @@ def _has_negation(text: str) -> bool:
 
 
 def shorten(processor, model, source_text: str, current_en: str, max_words: int, *,
-            source: str, target: str, device=None) -> str | None:
+            source: str, target: str, context: str = "", device=None) -> str | None:
     """Re-translate the source more concisely. None if meaning would be at risk.
 
     Re-translating (rather than compressing the English) keeps the model on its
@@ -136,7 +145,9 @@ def shorten(processor, model, source_text: str, current_en: str, max_words: int,
     have = len((current_en or "").split())
     want = max(3, min(max_words, have - 1))
     src, tgt = _lang(source), _lang(target)
+    hint = f"{context.strip()}\n\n" if context and context.strip() else ""
     instruction = (
+        f"{hint}"
         f"Translate the following {src} text into {tgt} as concisely as possible, in at "
         f"most {want} words, while keeping every name, number and negation. Output only "
         f"the {tgt} translation.\n\n{src}: {source_text}"
@@ -172,19 +183,18 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
     todo = [s for s in dub if not (s.get("text_en") or "").strip()]
     if not todo:
         return
+    context = m["source"].get("context") or ""
     processor, model, device = load()
     try:
         for n, seg in enumerate(dub, 1):
             if (seg.get("text_en") or "").strip():
                 continue
-            # Translate each segment on its own. This model is a dedicated
-            # translator, not an instruction-follower: asking it to translate a
-            # marked multi-segment window makes it paraphrase and drift a clause
-            # onto its neighbour ("Muslim Brotherhood agenda" came back as "axis
-            # of evil agenda" that way). Standalone output is deterministic and
-            # faithful, which matters more for a dub than resolving a pronoun.
+            # Translate each segment on its own — standalone output is deterministic
+            # and faithful, which matters more for a dub than resolving a pronoun; a
+            # marked multi-segment window makes the model drift a clause onto its
+            # neighbour. The per-video `context` supplies names the ASR mangles.
             text = generate(processor, model, seg["text"], source=source,
-                            target=target, device=device)
+                            target=target, context=context, device=device)
             if is_target_text(text):
                 seg["text_en"] = text.strip()
             else:

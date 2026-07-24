@@ -35,9 +35,14 @@ LID_MODEL = REPO_ROOT / "models" / "lang-id-voxlingua107-ecapa"
 LID_MIN_PROB = 0.60    # VoxLingua confidence to trust a language label
 LID_WINDOW = 4.0       # language-ID in windows this size so a long monologue that
                        # switches language partway is caught, not labelled by majority
+VAD_THRESHOLD = 0.4    # a touch more sensitive than Silero's 0.5 default
+VAD_PAD_MS = 150       # pad speech edges so soft word starts/ends are not trimmed
 VAD_MERGE_GAP = 0.5    # join speech regions separated by less than this
 VAD_MIN_SEC = 0.6      # ignore speech blips shorter than this (a short English tail
                        # like "just want to help" must still be kept, not clipped)
+SPAN_TAIL_LOGPROB = -0.5  # while the English model reads this confidently past the LID
+SPAN_TAIL_STEP = 0.5      # boundary, in steps of this, the trailing word is still English
+SPAN_TAIL_MAX = 1.5       # ...extend the span up to this far to let the speaker finish
 # VoxLingua107 reports languages by their old ISO-639 codes; map to ours.
 _LID_ALIAS = {"iw": "he", "in": "id", "ji": "yi"}
 
@@ -185,7 +190,8 @@ def vad_regions(vad, source_wav: Path, *, sr: int = 16000,
     from . import audio
 
     wav = torch.from_numpy(audio.decode_mono(source_wav, sr).astype("float32"))
-    stamps = get_speech_timestamps(wav, vad, sampling_rate=sr, return_seconds=True)
+    stamps = get_speech_timestamps(wav, vad, sampling_rate=sr, return_seconds=True,
+                                   threshold=VAD_THRESHOLD, speech_pad_ms=VAD_PAD_MS)
     regions: list[list[float]] = []
     for t in stamps:
         a, b = float(t["start"]), float(t["end"])
@@ -249,6 +255,30 @@ def language_segments(vad, lid, source_wav: Path, *, win: float = LID_WINDOW,
     return [(s, e, lang) for s, e, lang in merged]
 
 
+def _extend_english_end(en_model, source_wav: Path, b: float, limit: float) -> float:
+    """Grow an English span end while the English model still reads English past it.
+
+    Used to reclaim a trailing word ("...children") the coarse LID window placed on
+    the Hebrew side. The English-only model decodes real English with high
+    avg_logprob and Hebrew as low-confidence gibberish, so the logprob is the stop.
+    """
+    from . import audio
+
+    while b + 0.25 < limit:
+        end = min(b + SPAN_TAIL_STEP, limit)
+        segs, _info = en_model.transcribe(audio.decode_mono(source_wav, 16000, start=b, end=end),
+                                          language="en", beam_size=5, vad_filter=False)
+        segs = list(segs)
+        if not segs:
+            break
+        lp = sum(s.avg_logprob for s in segs) / len(segs)
+        text = " ".join(s.text.strip() for s in segs).strip()
+        if lp < SPAN_TAIL_LOGPROB or len(text) < 2:
+            break
+        b = end
+    return round(b, 3)
+
+
 def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: float,
                                target: str, *, known: list[tuple[float, float]] | None = None
                                ) -> list[dict[str, Any]]:
@@ -263,12 +293,19 @@ def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: floa
     from . import audio
 
     known = known or []
+    lsegs = language_segments(vad, lid, source_wav)
     spans: list[dict[str, Any]] = []
-    for a, b, lang in language_segments(vad, lid, source_wav):
+    for i, (a, b, lang) in enumerate(lsegs):
         if lang != target or b - a < VAD_MIN_SEC:
             continue
         if any(a < kb and ka < b for ka, kb in known):
             continue
+        # The coarse LID window can put a short trailing word ("...children") on the
+        # Hebrew side; the English-only model, by contrast, reads it as confident
+        # English. Step the end forward while it keeps reading English, so the
+        # speaker finishes — bounded so it can't run into the real Hebrew.
+        nxt = lsegs[i + 1][0] if i + 1 < len(lsegs) else total
+        b = _extend_english_end(en_model, source_wav, b, min(b + SPAN_TAIL_MAX, nxt + 0.6, total))
         clip = audio.decode_mono(source_wav, 16000, start=a, end=b)
         segs, _info = en_model.transcribe(clip, language=target, beam_size=5,
                                           vad_filter=False, word_timestamps=True)

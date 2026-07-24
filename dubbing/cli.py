@@ -38,6 +38,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--src", default="he", help="source language code (default: he)")
     p.add_argument("--tgt", default="en", help="target language code (default: en)")
     p.add_argument("--duration", type=float, help="only dub the first N seconds")
+    p.add_argument("--context", help="one-line note on who/what the video is about and "
+                   "the spellings of names the ASR mangles — steers the translator")
     p.add_argument("--transcript", choices=("auto", "captions", "asr"), default="auto",
                    help="where the transcript comes from (default: captions if present)")
     p.add_argument("--stages", help=f"comma-separated subset of: {','.join(STAGES)}")
@@ -64,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
     })
     m["source"].update({"input": args.source, "src_lang": args.src, "tgt_lang": args.tgt,
                         "duration_limit": args.duration})
+    if args.context is not None:
+        m["source"]["context"] = args.context
 
     if args.force == "all":
         m["stages"], m["progress"] = {}, {}
@@ -86,7 +90,8 @@ def main(argv: list[str] | None = None) -> int:
         "stems": {},
         "transcript": {"src": args.src, "tgt": args.tgt, "prefer": args.transcript},
         "segments": {},
-        "translate": {"src": args.src, "tgt": args.tgt},
+        "translate": {"src": args.src, "tgt": args.tgt,
+                      "context": m["source"].get("context") or ""},
         "tts": {},
         "timeline": {},
         "mix": {},
@@ -184,7 +189,8 @@ def _retimers(m, workdir: Path, engine, args):
             for seg, max_words in requests:
                 out[seg["id"]] = translate.shorten(
                     processor, model, seg["text"], seg["text_en"], max_words,
-                    source=args.src, target=args.tgt, device=device,
+                    source=args.src, target=args.tgt,
+                    context=m["source"].get("context") or "", device=device,
                 )
                 if not out[seg["id"]]:
                     print(f"  timeline: seg {seg['id']} kept full length "
