@@ -40,6 +40,7 @@ in colors that…"). A wrong word beats a reversed meaning, so it stays.
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -50,7 +51,6 @@ MODEL_PATH = REPO_ROOT / "models" / "gemma-4-12B-it-6bit"
 HUB_ID = "mlx-community/gemma-4-12B-it-6bit"
 
 _LATIN = re.compile(r"[A-Za-z]")
-_HEBREW = re.compile(r"[֐-׿]")
 _NEGATIONS = {"not", "no", "never", "cannot", "none", "without", "nor", "n't"}
 
 _LANG_NAMES = {"he": "Hebrew", "en": "English", "ar": "Arabic", "fr": "French",
@@ -102,7 +102,10 @@ def _run(tokenizer, model, user_text: str, max_new_tokens: int) -> str:
     return _strip_editorial(out)
 
 
-_NOTE = re.compile(r"\n\s*[*_(]*\s*(?:note|translation note|n\.b\.)\b.*\Z", re.S | re.I)
+# A trailing block on its own line that opens with a mark or the word "note": a
+# subtitle line never has one, and the model's asides always arrive in that shape,
+# whatever wording (or target language) it dresses them in.
+_NOTE = re.compile(r"\n\s*(?:[*_(\[]|note\b|n\.b\.).*\Z", re.S | re.I)
 _BRACKET_ALT = re.compile(r"\[([^\[\]/]{1,40}?)(?:\s*/\s*[^\[\]]{1,40})?\]")
 
 
@@ -162,9 +165,8 @@ def _translate_instruction(text: str, source: str, target: str, context: str = "
         f"organizations, numbers and specific references, using their established {tgt} "
         f"names and respecting grammatical gender. A word or phrase the source has "
         f"borrowed from a third language and spelled phonetically in its own alphabet "
-        f"is written in its standard {tgt} form — \"par excellence\", not \"per "
-        f"excellence\" — never transliterated back letter by letter. "
-        f"Do not summarize, shorten, omit, or "
+        f"is written in the standard spelling it has in {tgt}, never transliterated "
+        f"back letter by letter. Do not summarize, shorten, omit, or "
         f"translate word-for-word. Write full words, no contractions (\"we are\" not "
         f"\"we're\", \"do not\" not \"don't\") so the text-to-speech reads them clearly.{tail} "
         f"Output only the {tgt} translation, nothing else — no notes, no comments, no "
@@ -217,8 +219,33 @@ def is_target_text(text: str) -> bool:
     if len(t) < 2:
         return False
     lat = len(_LATIN.findall(t))
-    heb = len(_HEBREW.findall(t))
-    return lat >= 2 and lat > heb
+    # Any other script, not Hebrew specifically: the guard is "did it actually
+    # translate", which must hold whatever the source language is.
+    other = sum(1 for ch in t if ch.isalpha() and not _LATIN.match(ch))
+    return lat >= 2 and lat > other
+
+
+def _special_token_map(path: str) -> dict[str, Any]:
+    """`extra_special_tokens` as the mapping transformers 4.x wants, from the model.
+
+    Reads the model's own tokenizer_config rather than assuming which tokens it
+    declares, so this keeps working for the next model that ships a list — and for one
+    that lists several. A token is keyed by a name derived from itself (`<|video|>` →
+    `video_token`), which is only ever used as an attribute name on the tokenizer.
+    """
+    config = Path(path) / "tokenizer_config.json"
+    declared: Any = None
+    if config.is_file():
+        try:
+            declared = json.loads(config.read_text(encoding="utf-8")).get("extra_special_tokens")
+        except (OSError, ValueError):
+            declared = None
+    if isinstance(declared, dict):
+        return {"extra_special_tokens": declared}          # already the shape 4.x wants
+    listed = [t for t in (declared or []) if isinstance(t, str)]
+    mapping = {f"{re.sub(r'[^a-z0-9]+', '_', t.lower()).strip('_') or 'extra'}_token": t
+               for t in listed}
+    return {"extra_special_tokens": mapping}
 
 
 def load(device: str | None = None):
@@ -234,12 +261,12 @@ def load(device: str | None = None):
     try:
         model, tokenizer = mlx_lm.load(path)
     except AttributeError:
-        # Gemma 4's tokenizer_config.json writes extra_special_tokens as a list, which
-        # transformers 5 accepts and 4.x (pinned here by qwen-tts) does not — it calls
-        # .keys() on it. Passing a mapping overrides the file and loads the same
-        # tokenizer. Harmless to retry: nothing else in load() has taken effect yet.
-        model, tokenizer = mlx_lm.load(
-            path, tokenizer_config={"extra_special_tokens": {"video_token": "<|video|>"}})
+        # A tokenizer_config.json written for transformers 5 can list
+        # extra_special_tokens, where 4.x (pinned here by qwen-tts) expects a mapping
+        # and calls .keys() on it. Rebuild the mapping from whatever this model
+        # actually declares — naming each token after itself — and let it override the
+        # file. Harmless to retry: nothing else in load() has taken effect yet.
+        model, tokenizer = mlx_lm.load(path, tokenizer_config=_special_token_map(path))
     # Gemma ends a turn with a turn marker, not <eos>. Without it in the stop set
     # generation runs to max_tokens every time — slow, and the text trails a wall
     # of end-of-turn tokens. Register both generations' markers (Gemma 4 already

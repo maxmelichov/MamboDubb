@@ -39,6 +39,15 @@ VAD_THRESHOLD = 0.4    # a touch more sensitive than Silero's 0.5 default
 VAD_PAD_MS = 150       # pad speech edges so soft word starts/ends are not trimmed
 VAD_MERGE_GAP = 0.5    # join speech regions separated by less than this
 LID_SHORT = 1.5        # a run shorter than this is below what the LID can call alone
+FOREIGN_MIN_SEC = 1.5  # a run in a third language must be at least this long to keep:
+                       # no ASR here can read it, so the classifier is the only witness
+FOREIGN_MIN_PROB = 0.85  # ...and must be this sure, well above LID_MIN_PROB
+FOREIGN_WINDOW = 8.0   # how much of the run to judge it on
+FOREIGN_SRC_LOGPROB = -0.5  # ...and the source ASR must FAIL to read it this well. Its
+                       # confidence is the honest witness: on this video it read real
+                       # Arabic at -0.64 as garbled non-words, but read the stretches
+                       # the classifier mislabelled `mi` and `nl` at -0.38/-0.34 as
+                       # clean Hebrew. Without this the label alone airs the narrator.
 VAD_MIN_SEC = 0.6      # ignore speech blips shorter than this (a short English tail
                        # like "just want to help" must still be kept, not clipped)
 SPAN_TAIL_LOGPROB = -0.5  # while the English model reads this confidently past the LID
@@ -62,6 +71,10 @@ GAP_PAD = 0.35
 # Caption chrome: sound tags and speaker arrows carry no speech.
 _CHROME = re.compile(r"[\[\(](?:[^\]\)]{0,40})[\]\)]")
 _ARROWS = re.compile(r">>+")
+# Bidi and zero-width formatting marks. The Hebrew ASR emits them at direction
+# changes; they are invisible, carry no speech, and travel into the translator's
+# prompt and the TTS text if left in.
+_INVISIBLE = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
 # Everything that is not a letter/digit, for comparing repeated words regardless
 # of the trailing punctuation a looped phrase tends to end on.
 _WORD_PUNCT = re.compile(r"[^\w]", re.UNICODE)
@@ -73,6 +86,7 @@ def clean_token(raw: str) -> tuple[str, bool]:
     brk = bool(_ARROWS.search(text))
     text = _ARROWS.sub(" ", text)
     text = _CHROME.sub(" ", text)
+    text = _INVISIBLE.sub("", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text, brk
 
@@ -163,6 +177,8 @@ def collapse_repeats(words: list[dict[str, Any]], *, max_ngram: int = 4,
 
 
 _SPLIT_MARK = re.compile(r"^['׳`’\-–]")
+MARK_JOIN_GAP = 0.4    # a mark-initial token further than this from the word before it
+                       # starts something new; only an adjacent one is a split word
 
 
 def join_split_marks(words: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -182,9 +198,10 @@ def join_split_marks(words: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for w in words:
         prev = out[-1] if out else None
+        gap = w["t"] - float(prev.get("end", prev["t"])) if prev else 0.0
         if (prev and _SPLIT_MARK.match(w.get("text") or "")
                 and (prev.get("text") or "") and not prev["text"].endswith((".", "!", "?"))
-                and not w.get("brk")):
+                and not w.get("brk") and gap <= MARK_JOIN_GAP):
             prev["text"] += w["text"]
             if w.get("end") is not None:
                 prev["end"] = w["end"]
@@ -295,7 +312,8 @@ def language_segments(vad, lid, source_wav: Path, *, win: float = LID_WINDOW,
     return [(s, e, lang) for s, e, lang in merged]
 
 
-def _extend_english_end(en_model, source_wav: Path, b: float, limit: float) -> float:
+def _extend_english_end(en_model, source_wav: Path, b: float, limit: float,
+                        target: str = "en") -> float:
     """Grow an English span end while the English model still reads English past it.
 
     Used to reclaim a trailing word ("...children") the coarse LID window placed on
@@ -307,7 +325,7 @@ def _extend_english_end(en_model, source_wav: Path, b: float, limit: float) -> f
     while b + 0.25 < limit:
         end = min(b + SPAN_TAIL_STEP, limit)
         segs, _info = en_model.transcribe(audio.decode_mono(source_wav, 16000, start=b, end=end),
-                                          language="en", beam_size=5, vad_filter=False)
+                                          language=target, beam_size=5, vad_filter=False)
         segs = list(segs)
         if not segs:
             break
@@ -343,7 +361,7 @@ def _voice_pause_after(source_wav: Path, start: float, limit: float) -> float | 
 
 
 def _reclaim_leading_fragment(en_model, source_wav: Path, cand: float, a: float,
-                              b: float) -> float:
+                              b: float, target: str = "en") -> float:
     """Take back the fragment VAD broke off the front of an utterance, if it is speech.
 
     The counterpart of `_extend_english_end`, for the same failure at the other edge:
@@ -365,7 +383,7 @@ def _reclaim_leading_fragment(en_model, source_wav: Path, cand: float, a: float,
         return round(a, 3)
     segs, _info = en_model.transcribe(
         audio.decode_mono(source_wav, 16000, start=cand, end=min(b, cand + LID_WINDOW)),
-        language="en", beam_size=5, vad_filter=False, word_timestamps=True)
+        language=target, beam_size=5, vad_filter=False, word_timestamps=True)
     segs = list(segs)
     if not segs:
         return round(a, 3)
@@ -376,16 +394,49 @@ def _reclaim_leading_fragment(en_model, source_wav: Path, cand: float, a: float,
     return round(cand, 3)
 
 
+def _sounds_foreign(lid, src_model, source_wav: Path, a: float, b: float,
+                    source: str) -> str | None:
+    """The language of a whole run, when it is confidently not the source language.
+
+    The per-window labels are made on `win`-second slices and are unreliable on short
+    ones — a 0.9s fragment came back `mi`, Maori, at p≥0.6. Re-asking over the entire
+    run gives the classifier its best shot, and a third language has to clear a higher
+    bar than the target does: the target's transcription can be checked against an ASR
+    that reads it, while nothing here can read Arabic, so the classifier is the only
+    witness and a wrong yes airs the source speaker's own voice.
+    """
+    from . import audio
+
+    if b - a < FOREIGN_MIN_SEC or src_model is None:
+        return None
+    clip = audio.decode_mono(source_wav, 16000, start=a, end=min(b, a + FOREIGN_WINDOW))
+    lang, prob = detect_language(lid, clip)
+    if lang is None or lang == source or prob < FOREIGN_MIN_PROB:
+        return None
+    # Second opinion, and the one that decides: if the source-language ASR reads this
+    # confidently, it is the source language and the label was wrong.
+    segs, _info = src_model.transcribe(clip, language=source, beam_size=5, vad_filter=False)
+    segs = list(segs)
+    if segs and sum(s.avg_logprob for s in segs) / len(segs) >= FOREIGN_SRC_LOGPROB:
+        return None
+    return lang
+
+
 def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: float,
-                               target: str, *, known: list[tuple[float, float]] | None = None
+                               target: str, *, source: str = "", src_model=None,
+                               known: list[tuple[float, float]] | None = None
                                ) -> list[dict[str, Any]]:
-    """Speech regions actually spoken in the target language, as original-audio spans.
+    """Speech regions not spoken in the source language, as original-audio spans.
 
     Silero VAD gives the precise start/end of every utterance; VoxLingua107 says
-    which language each window is. A run the language model calls the target language
-    is kept as original audio (the Hebrew-tuned ASR would only render it as
-    gibberish). The English-only model runs once per such run — for the subtitle
-    text, not to guess the language — and the span uses the VAD boundaries.
+    which language each window is. A run the classifier calls anything other than the
+    source language is kept as original audio, because the source-tuned ASR renders it
+    as gibberish and dubbing that is worse than not dubbing it at all.
+
+    The target language gets the fuller treatment: an ASR that actually reads it
+    supplies the subtitle text and refines both edges. A third language — Arabic in a
+    Hebrew documentary — is kept as-is with no subtitle, since no model here can read
+    it, and it has to clear a higher confidence bar for the same reason.
     """
     from . import audio
 
@@ -393,21 +444,32 @@ def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: floa
     lsegs = language_segments(vad, lid, source_wav)
     spans: list[dict[str, Any]] = []
     for i, (a, b, lang) in enumerate(lsegs):
-        if lang != target or b - a < VAD_MIN_SEC:
+        if lang is None or lang == source or b - a < VAD_MIN_SEC:
             continue
         if any(a < kb and ka < b for ka, kb in known):
+            continue
+        if lang != target:
+            # No ASR here reads this language, so the span is the classifier's word
+            # alone — confirmed over the whole run — and carries no subtitle text.
+            confirmed = _sounds_foreign(lid, src_model, source_wav, a, b, source)
+            if confirmed is None:
+                continue
+            spans.append({"start": round(a, 3), "end": round(min(total, b), 3),
+                          "lang": confirmed, "text": "…",
+                          "words": [{"t": round(a, 3), "text": "…"}]})
             continue
         # The coarse LID window can put a short trailing word ("...children") on the
         # Hebrew side; the English-only model, by contrast, reads it as confident
         # English. Step the end forward while it keeps reading English, so the
         # speaker finishes — bounded so it can't run into the real Hebrew.
         nxt = lsegs[i + 1][0] if i + 1 < len(lsegs) else total
-        b = _extend_english_end(en_model, source_wav, b, min(b + SPAN_TAIL_MAX, nxt + 0.6, total))
+        b = _extend_english_end(en_model, source_wav, b,
+                                min(b + SPAN_TAIL_MAX, nxt + 0.6, total), target)
         # Same at the leading edge, when the run just before is a fragment VAD broke
         # off this one — near enough to be the same breath, and not itself English
         # (that would already be a span of its own).
         if i and lsegs[i - 1][2] != target and a - lsegs[i - 1][1] <= VAD_MERGE_GAP:
-            a = _reclaim_leading_fragment(en_model, source_wav, lsegs[i - 1][0], a, b)
+            a = _reclaim_leading_fragment(en_model, source_wav, lsegs[i - 1][0], a, b, target)
         clip = audio.decode_mono(source_wav, 16000, start=a, end=b)
         segs, _info = en_model.transcribe(clip, language=target, beam_size=5,
                                           vad_filter=False, word_timestamps=True)
@@ -440,7 +502,7 @@ def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: floa
                       or [{"t": round(a, 3), "text": tok} for tok in text.split()]
                       or [{"t": round(a, 3), "text": "…"}])
         spans.append({"start": round(a, 3), "end": round(min(total, b), 3),
-                      "text": text or "…", "words": span_words})
+                      "lang": target, "text": text or "…", "words": span_words})
         print(f"  transcript: {target}-spoken {a:.1f}-{b:.1f}s: {text[:60]}",
               file=sys.stderr)
     return spans
@@ -618,7 +680,8 @@ def run(m: dict[str, Any], workdir: Path, *, src_lang: str, tgt_lang: str = "en"
             if en_model is not None and vad is not None and lid is not None:
                 en_spans = detect_spoken_target_spans(
                     en_model, vad, lid, vocals if vocals.is_file() else source_wav,
-                    float(limit or m["source"]["duration"]), tgt_lang)
+                    float(limit or m["source"]["duration"]), tgt_lang,
+                    source=src_lang, src_model=model)
             origin = "asr"
         except Exception as exc:
             if prefer == "asr" or not caption_words:

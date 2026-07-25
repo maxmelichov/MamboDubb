@@ -36,6 +36,8 @@ UNCOVERED_MIN = 0.6      # shortest audible gap worth keeping as original audio
 UNCOVERED_PEAK = 0.04    # a gap needs energy this loud somewhere to count as speech
 UNCOVERED_HEAD_MAX = 1.0 # how far into an uncovered gap to look for the pause that
                          # ends the previous speaker, before giving up and starting
+SPLICE_MIN_REMNANT = 0.4 # a trimmed piece shorter than this holds no speakable line
+WORD_OVERLAP = 0.05      # a word must overlap a piece by more than this to belong to it
 
 LATIN = re.compile(r"[A-Za-z]")
 HEBREW = re.compile(r"[֐-׿]")
@@ -328,6 +330,7 @@ def splice_foreign_spans(segs: list[dict[str, Any]], spans: list[dict[str, Any]]
     if not spans:
         return segs
 
+    ends = word_ends(words) if words else []
     kept: list[dict[str, Any]] = []
     for seg in segs:
         pieces = _residues(seg, spans)
@@ -341,17 +344,18 @@ def splice_foreign_spans(segs: list[dict[str, Any]], spans: list[dict[str, Any]]
         for a, b in pieces:
             # Only a trimmed remnant may be discarded, and only when it is too short
             # to hold speech or holds none — otherwise its words vanish from the output.
-            if b - a < 0.4:
+            if b - a < SPLICE_MIN_REMNANT:
                 continue
             piece = dict(seg, start=a, end=b)
-            # Redistributing the text is only right when the segment actually broke
-            # into several pieces and each needs its own share. A segment merely
-            # trimmed at one edge keeps every word it had: the trim follows a span
-            # boundary, not a word boundary, and a word straddling it would otherwise
-            # be dropped — "היא צובעת את קטאר" lost its verb that way and was dubbed
-            # as "Qatar in colors…", which reads like a translation failure and is not.
-            if words is not None and len(pieces) > 1:
-                said = [w["text"] for w in words if a - 0.05 <= w["t"] < b]
+            # A word belongs to this piece if it *overlaps* it. Neither edge rule works
+            # alone: keeping only words that start inside drops one straddling the trim
+            # ("היא צובעת את קטאר" lost its verb and was dubbed "Qatar in colors…"),
+            # while keeping the segment's whole text drags in what the source-language
+            # ASR hallucinated over the target-language speech inside the span, which is
+            # nonsense that then fails translation and airs the original instead.
+            if words is not None:
+                said = [w["text"] for w, end in zip(words, ends)
+                        if end > a + WORD_OVERLAP and w["t"] < b - WORD_OVERLAP]
                 if not said:
                     continue
                 piece["text"] = " ".join(said)
@@ -404,15 +408,22 @@ def mark_keep(segments: list[dict[str, Any]],
               spans: list[dict[str, Any]] | None = None) -> None:
     """Flag segments whose original audio should play instead of a dub.
 
-    Two content-free rules: the caption text is already in the target script, or
-    the speaker is predominantly a target-language speaker (auto-captions often
-    render their speech phonetically in the source script, which the per-segment
-    test alone would miss).
+    Three content-free rules: the segment came out of a detected non-source-language
+    span, its text is already in the target script, or its speaker is predominantly a
+    target-language speaker (auto-captions often render their speech phonetically in
+    the source script, which the per-segment test alone would miss).
+
+    The span rule has to be structural. A span in a language no ASR here reads carries
+    no text at all, and judging it by script would file it as transcript noise and drop
+    it — airing nothing where somebody is speaking.
     """
     def letters(text: str) -> int:
         return len(LATIN.findall(text or "")) + len(HEBREW.findall(text or ""))
 
-    del spans   # target-language spans are handled structurally by splice_foreign_spans
+    ranges = [(s["start"], s["end"]) for s in (spans or []) if s.get("words")]
+
+    def from_span(seg: dict[str, Any]) -> bool:
+        return any(a - 0.05 <= seg["start"] and seg["end"] <= b + 0.05 for a, b in ranges)
     totals: dict[str, list[float]] = {}
     for seg in segments:
         if letters(seg["text"]) < 2:
@@ -426,7 +437,11 @@ def mark_keep(segments: list[dict[str, Any]],
         spk for spk, (total, lat) in totals.items() if total > 0 and lat / total >= SPEAKER_EN_RATIO
     }
     for seg in segments:
-        if letters(seg["text"]) < 2:
+        if from_span(seg):
+            # Not the source language, whatever it is: play it as it was recorded.
+            seg["keep"] = True
+            seg["keep_reason"] = "latin" if latin_ratio(seg["text"]) > 0.5 else "foreign"
+        elif letters(seg["text"]) < 2:
             # Transcript noise (stray glyphs). Nothing to translate, so let the
             # original audio through rather than leaving a hole.
             seg["keep"], seg["keep_reason"] = True, "no_text"

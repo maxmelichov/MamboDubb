@@ -136,6 +136,8 @@ def test_chrome_and_arrows_are_stripped():
     assert transcript.clean_token(">>") == ("", True)
     assert transcript.clean_token(">> שלום") == ("שלום", True)
     assert transcript.clean_token(" word ") == ("word", False)
+    # Invisible bidi marks the Hebrew ASR emits at direction changes carry no speech.
+    assert transcript.clean_token("\u202bהיא") == ("היא", False)
 
 
 def test_collapse_repeats_drops_looped_hallucinations():
@@ -159,7 +161,9 @@ def test_collapse_repeats_keeps_ordinary_doubling():
 
 
 def test_join_split_marks_rejoins_a_geresh_word():
-    w = lambda t, s: {"t": t, "end": t + 0.2, "text": s}
+    def w(t, s):
+        return {"t": t, "end": t + 0.2, "text": s}
+
     # Whisper splits ג'יהאד into "לג" + "'יהאד", stranding the preposition ל and
     # turning "calls for jihad" into "calls jihad"; likewise "אל" + "-קאעידה".
     out = transcript.join_split_marks([w(0.0, "שקוראת"), w(0.4, "לג"), w(0.6, "'יהאד."),
@@ -170,6 +174,10 @@ def test_join_split_marks_rejoins_a_geresh_word():
     # swallowed.
     kept = transcript.join_split_marks([w(0.0, "סוף."), w(0.4, "-אחר כך")])
     assert [x["text"] for x in kept] == ["סוף.", "-אחר כך"]
+    # And a mark-initial token a pause away belongs to whatever comes next, not to the
+    # word before it.
+    apart = transcript.join_split_marks([w(0.0, "מילה"), w(3.0, "-ועוד")])
+    assert [x["text"] for x in apart] == ["מילה", "-ועוד"]
 
 
 class _FakeWord:
@@ -206,11 +214,12 @@ def _detect(monkeypatch, regions, langs, texts, *, pause=None, extend_to=None, *
     monkeypatch.setattr(audio, "decode_mono", lambda *a, **k: [0.0])
     monkeypatch.setattr(transcript, "vad_regions", lambda *a, **k: regions)
     monkeypatch.setattr(transcript, "_extend_english_end",
-                        lambda en, sw, b, limit: b if extend_to is None else extend_to)
+                        lambda en, sw, b, limit, tgt="en": b if extend_to is None else extend_to)
     monkeypatch.setattr(transcript, "_voice_pause_after", lambda sw, start, limit: pause)
     seq = iter(langs)
     monkeypatch.setattr(transcript, "detect_language", lambda lid, clip: next(seq))
     model = _FakeEnModel(texts)
+    kw.setdefault("source", "he")
     return transcript.detect_spoken_target_spans(
         model, object(), object(), "voc.wav", 320.0, "en", **kw)
 
@@ -252,6 +261,50 @@ def test_voice_pause_needs_more_than_a_plosive_gap(monkeypatch):
     # Two in a row is a pause, reported at its first frame.
     monkeypatch.setattr(audio, "frame_rms", lambda *a, **k: [0.09, 0.09, 0.001, 0.001])
     assert transcript._voice_pause_after("voc.wav", 100.0, 100.0 + 4 * hop) == 100.0 + 2 * hop
+
+
+def test_a_third_language_is_kept_as_is(monkeypatch):
+    # Arabic in a Hebrew documentary: no ASR here reads it, so it is kept as recorded,
+    # with no subtitle text — dubbing it from the source model's gibberish is worse.
+    monkeypatch.setattr(transcript, "_sounds_foreign",
+                        lambda lid, mdl, sw, a, b, src: "ar")
+    spans = _detect(monkeypatch, [(2.0, 6.0), (8.0, 10.0)],
+                    [("ar", 0.9), ("he", 1.0)], [])
+    assert len(spans) == 1
+    assert (spans[0]["start"], spans[0]["end"], spans[0]["lang"]) == (2.0, 6.0, "ar")
+    assert spans[0]["text"] == "…"
+
+    # The source language itself is never kept — that is what gets dubbed.
+    assert _detect(monkeypatch, [(2.0, 6.0)], [("he", 1.0)], []) == []
+
+    # And an unconfirmed third language is left to the dub rather than aired blind.
+    monkeypatch.setattr(transcript, "_sounds_foreign",
+                        lambda lid, mdl, sw, a, b, src: None)
+    assert _detect(monkeypatch, [(2.0, 6.0)], [("ar", 0.9)], []) == []
+
+
+def test_sounds_foreign_demands_more_than_the_window_labels(monkeypatch):
+    from dubbing import audio
+    monkeypatch.setattr(audio, "decode_mono", lambda *a, **k: [0.0])
+    monkeypatch.setattr(transcript, "detect_language", lambda lid, clip: ("ar", 0.9))
+    unreadable = type("M", (), {"transcribe": lambda self, *a, **k: (
+        iter([_FakeSeg("gibberish", avg_logprob=-0.64)]), object())})()
+    readable = type("M", (), {"transcribe": lambda self, *a, **k: (
+        iter([_FakeSeg("clean source sentence", avg_logprob=-0.34)]), object())})()
+    sounds = transcript._sounds_foreign
+    # Too short for the classifier to be the only witness.
+    assert sounds(object(), unreadable, "voc.wav", 0.0, 1.0, "he") is None
+    assert sounds(object(), unreadable, "voc.wav", 0.0, 4.0, "he") == "ar"
+    # The source ASR reads it fine → the label was wrong and this is the source
+    # language; airing it would put the narrator's own voice on top of the dub.
+    assert sounds(object(), readable, "voc.wav", 0.0, 4.0, "he") is None
+    # Without the witness at all, nothing is kept blind.
+    assert sounds(object(), None, "voc.wav", 0.0, 4.0, "he") is None
+    # Not sure enough, or it is the source language after all.
+    monkeypatch.setattr(transcript, "detect_language", lambda lid, clip: ("ar", 0.7))
+    assert sounds(object(), unreadable, "voc.wav", 0.0, 4.0, "he") is None
+    monkeypatch.setattr(transcript, "detect_language", lambda lid, clip: ("he", 0.99))
+    assert sounds(object(), unreadable, "voc.wav", 0.0, 4.0, "he") is None
 
 
 def test_leading_fragment_is_reclaimed_when_it_is_speech(monkeypatch):
@@ -486,6 +539,21 @@ def test_foreign_spans_become_their_own_segments():
     assert not out[0]["keep"] and not out[2]["keep"]
 
 
+def test_trimmed_segment_keeps_straddling_words_but_not_the_span_s():
+    # The source-language ASR hallucinates over target-language speech, so a trim must
+    # drop what lies inside the span — but a word straddling the boundary is this
+    # segment's own and has to survive, or the line loses its verb.
+    words = [{"t": 9.0, "end": 9.4, "text": "hallucinated"},      # inside the span
+             {"t": 9.9, "end": 10.6, "text": "straddling"},       # crosses the boundary
+             {"t": 10.7, "end": 11.2, "text": "inside"}]
+    asr = [{"id": 0, "start": 9.0, "end": 11.2, "speaker": "A", "text": "…"}]
+    spans = [{"start": 8.8, "end": 10.2, "text": "the other speaker",
+              "words": [{"t": 8.8, "text": "the"}]}]
+    out = segments.splice_foreign_spans(asr, spans, words)
+    trimmed = [s for s in out if s["start"] == 10.2]
+    assert trimmed and trimmed[0]["text"] == "straddling inside"
+
+
 def test_speech_between_two_spans_inside_one_segment_survives():
     # A Hebrew sentence interrupted twice by English is more than half span by area;
     # judging it on total overlap dropped it whole and lost the Hebrew in between.
@@ -530,6 +598,24 @@ def test_uncovered_keep_waits_for_the_previous_speaker_to_stop():
                                     voice_levels=[0.09] * 65)
     added = [s for s in segs if s.get("keep_reason") == "uncovered"]
     assert added and added[0]["start"] == pytest.approx(1.6, abs=hop)
+
+
+def test_a_foreign_span_is_kept_even_with_no_text():
+    # A span in a language nothing here reads carries no words to judge by script.
+    # Judged that way it would be filed as transcript noise and dropped, leaving
+    # silence where somebody is speaking, so the span itself is what marks it.
+    spans = [{"start": 10.0, "end": 14.0, "lang": "ar", "text": "…",
+              "words": [{"t": 10.0, "text": "…"}]}]
+    segs = [{"id": 0, "start": 0.0, "end": 5.0, "speaker": "A", "text": "עברית"},
+            {"id": 1, "start": 10.0, "end": 14.0, "speaker": "B", "text": "…"}]
+    segments.mark_keep(segs, spans)
+    assert (segs[1]["keep"], segs[1]["keep_reason"]) == (True, "foreign")
+    assert not segs[0]["keep"]          # the source language is still dubbed
+    # A target-language span keeps its own reason, so the report still tells them apart.
+    en = [{"id": 0, "start": 10.0, "end": 14.0, "speaker": "B", "text": "Frankly, I agree."}]
+    segments.mark_keep(en, [{"start": 10.0, "end": 14.0, "lang": "en",
+                             "text": "Frankly, I agree.", "words": [{"t": 10.0, "text": "x"}]}])
+    assert en[0]["keep_reason"] == "latin"
 
 
 def test_span_segments_tile_the_whole_passage():
@@ -603,6 +689,9 @@ def test_is_target_text():
     assert translate.is_target_text("Hello there")
     assert not translate.is_target_text("שלום עולם")
     assert not translate.is_target_text("")
+    # Any untranslated script, not Hebrew alone.
+    assert not translate.is_target_text("مرحبا بالعالم")
+    assert not translate.is_target_text("Привет мир")
 
 
 def test_adjacent_repeat_detects_only_the_collapse():
@@ -633,6 +722,10 @@ def test_strip_editorial_removes_brackets_and_notes():
     # A trailing translator's note goes with it.
     assert strip("In the end, it is a state.\n\n*(Note: the Hebrew appears garbled.)*") == \
         "In the end, it is a state."
+    # Any trailing aside on its own line, however it is worded.
+    assert strip("It is a state.\n(The source text appears to be corrupted.)") == "It is a state."
+    # An inline parenthesis is part of the line and stays.
+    assert strip("It is a state (a small one) after all.") == "It is a state (a small one) after all."
     # Clean output is untouched.
     assert strip("Through Qatari gas, Qatar is bribing Europe.") == \
         "Through Qatari gas, Qatar is bribing Europe."
