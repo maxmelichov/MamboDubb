@@ -206,6 +206,26 @@ def test_detect_spoken_target_spans_keeps_only_target_language(monkeypatch):
     assert (spans[0]["start"], spans[0]["end"]) == (2.0, 3.7)
 
 
+def test_leading_fragment_is_reclaimed_when_it_is_speech(monkeypatch):
+    # VAD breaks "Frankly," off the front of an English sentence and the classifier
+    # calls the 0.9s fragment Maori; the English model, hearing it with the run it
+    # abuts, reads it as confident English with a word inside the fragment.
+    from dubbing import audio
+    monkeypatch.setattr(audio, "decode_mono", lambda *a, **k: [0.0])
+    english = _FakeEnModel(["Frankly I had the same"])
+    assert transcript._reclaim_leading_fragment(english, "voc.wav", 270.8, 272.0, 277.5) == 270.8
+
+    # Gibberish behind it (Hebrew read by the English model) is refused...
+    class _Gibberish:
+        def transcribe(self, *a, **k):
+            return iter([_FakeSeg("...", avg_logprob=-1.2)]), object()
+
+    assert transcript._reclaim_leading_fragment(_Gibberish(), "voc.wav", 270.8, 272.0, 277.5) == 272.0
+    # ...and so is a fragment too long to be a broken-off word.
+    assert transcript._reclaim_leading_fragment(
+        _FakeEnModel(["Frankly I had the same"]), "voc.wav", 268.0, 272.0, 277.5) == 272.0
+
+
 def test_detect_spoken_target_spans_rejects_low_confidence(monkeypatch):
     # English but below the LID confidence floor → not kept.
     spans = _detect(monkeypatch, [(2.0, 4.0)], [("en", 0.4)], ["whatever"])
@@ -561,6 +581,28 @@ def test_prompt_prefers_the_models_own_chat_template():
     assert translate._prompt(Tok(), "text") == [1, 2, 3]
     # Without one, fall back to writing Gemma 3's markers by hand.
     assert translate._prompt(NoTemplate(), "text").startswith("<start_of_turn>user\ntext")
+
+
+def test_preceding_line_is_context_never_content(monkeypatch):
+    # "יגנו עליה" alone reads as "condemn her"; the line before settles it as "defend".
+    # It must reach the prompt marked as background, and never be translated itself.
+    seen = {}
+
+    def capture(tok, mdl, prompt, n):
+        seen["p"] = prompt
+        return "They will defend her."
+
+    monkeypatch.setattr(translate, "_run", capture)
+    translate.generate(None, None, "יגנו עליה", source="he", target="en",
+                       preceding="יעשו הכל כדי להגן על קטאר")
+    prompt = seen["p"]
+    assert "להגן על קטאר" in prompt
+    assert "do not translate it" in prompt
+    assert prompt.rstrip().endswith("Hebrew: יגנו עליה")     # the segment is the last word
+    # Without one the prompt is unchanged.
+    seen.clear()
+    translate.generate(None, None, "יגנו עליה", source="he", target="en")
+    assert "background only" not in seen["p"]
 
 
 def test_generate_repairs_a_repeated_word(monkeypatch):

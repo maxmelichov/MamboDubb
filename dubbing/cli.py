@@ -184,13 +184,16 @@ def _retimers(m, workdir: Path, engine, args):
     def shorten_many(requests):
         engine.close()
         processor, model, device = translate.load()
+        segs = m["segments"]
+        before = {s["id"]: prev["text"] for prev, s in zip(segs, segs[1:])}
         out: dict[int, str | None] = {}
         try:
             for seg, max_words in requests:
                 out[seg["id"]] = translate.shorten(
                     processor, model, seg["text"], seg["text_en"], max_words,
                     source=args.src, target=args.tgt,
-                    context=m["source"].get("context") or "", device=device,
+                    context=m["source"].get("context") or "",
+                    preceding=before.get(seg["id"], ""), device=device,
                 )
                 if not out[seg["id"]]:
                     print(f"  timeline: seg {seg['id']} kept full length "

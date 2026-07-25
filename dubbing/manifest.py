@@ -20,9 +20,9 @@ from . import STAGES
 STAGE_TAGS = {
     "fetch": "fetch/v1",
     "stems": "stems/v1",
-    "transcript": "transcript/v15",
+    "transcript": "transcript/v17",
     "segments": "segments/v17",
-    "translate": "translate/v10",
+    "translate": "translate/v12",
     "tts": "tts/v7",
     "timeline": "timeline/v7",
     "mix": "mix/v4",

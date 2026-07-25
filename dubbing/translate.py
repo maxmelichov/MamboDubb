@@ -29,6 +29,13 @@ of the Qatar piece against nine things the Hebrew must survive — "הגז הק�
 For reference the Gemma 3 12B 4-bit it replaces scored 7/9. Below 6 bits this model
 does not hold Hebrew, so trading precision for memory is a real quality decision, not
 a free one — but if 9.7 GB is too much, MODEL_PATH is the only line to change.
+
+Those scores are for a segment translated alone. Showing the model the previous line
+(see `_PRECEDING`) trades one of them — "שתי ההפיכות" comes back as "two reversals"
+rather than "two coups", though "who overthrew his father" still carries it — for two
+worse failures it fixes: "יגנו עליה" flipping from "defend her" to "condemn her", and
+a segment losing its subject entirely ("Qatar in colors that…" for "She paints Qatar
+in colors that…"). A wrong word beats a reversed meaning, so it stays.
 """
 
 from __future__ import annotations
@@ -113,25 +120,51 @@ def _strip_editorial(text: str) -> str:
     return re.sub(r"\s{2,}", " ", text).strip()
 
 
+# Shown before the sentence to translate when the previous line is known. Worded to
+# break a tie and nothing more: given free rein the model also starts borrowing the
+# previous line's register, which cost "two coups" ("שתי ההפיכות") its meaning and
+# turned it into "two shifts" after a neighbour about steering the country.
+_PRECEDING = (
+    "The line spoken just before was: {prev}\n"
+    "It is background only. Use it solely to resolve a word that is ambiguous on its "
+    "own; do not translate it, do not let its words into your answer, and do not let "
+    "it change any wording the sentence below already settles.\n\n"
+)
+
+
 def _translate_instruction(text: str, source: str, target: str, context: str = "",
-                           extra: str = "") -> str:
+                           extra: str = "", preceding: str = "") -> str:
     """Comprehension prompt: faithful and complete, not literal or summarised.
 
     `context` is an optional per-video note — who and what the video is about, and
     the established spellings of names the ASR tends to mangle. The model uses it to
     render "שייח' עמוזה" (a mistranscription) as "Sheikha Moza" rather than guessing.
     `extra` is an optional extra sentence appended on a retry (see `_repair_repeat`).
+
+    `preceding` is the line spoken just before this one, shown as context and never
+    translated. A segment on its own can be genuinely ambiguous: "יגנו עליה" is
+    "they will defend her", but every model tested — Gemma 3 and 4 alike, at every
+    quantisation — read it as "they will condemn her" with nothing around it, and
+    every one of them got it right once it could see the previous sentence ("…they
+    will do everything to protect Qatar"). One line back is enough, and it stays
+    strictly context: translating a window instead lets a clause drift from one
+    segment onto its neighbour, which is why the segments are separate to begin with.
     """
     src, tgt = _lang(source), _lang(target)
     hint = f"{context.strip()}\n\n" if context and context.strip() else ""
     tail = f" {extra.strip()}" if extra and extra.strip() else ""
+    before = _PRECEDING.format(prev=preceding.strip()) if preceding and preceding.strip() else ""
     return (
-        f"{hint}"
+        f"{hint}{before}"
         f"Translate the following {src} text into clear, natural {tgt} for subtitles. "
         f"Understand the meaning and translate it faithfully and completely: keep every "
         f"clause, every detail and any repeated emphasis; preserve all names, "
         f"organizations, numbers and specific references, using their established {tgt} "
-        f"names and respecting grammatical gender. Do not summarize, shorten, omit, or "
+        f"names and respecting grammatical gender. A word or phrase the source has "
+        f"borrowed from a third language and spelled phonetically in its own alphabet "
+        f"is written in its standard {tgt} form — \"par excellence\", not \"per "
+        f"excellence\" — never transliterated back letter by letter. "
+        f"Do not summarize, shorten, omit, or "
         f"translate word-for-word. Write full words, no contractions (\"we are\" not "
         f"\"we're\", \"do not\" not \"don't\") so the text-to-speech reads them clearly.{tail} "
         f"Output only the {tgt} translation, nothing else — no notes, no comments, no "
@@ -231,17 +264,20 @@ def load(device: str | None = None):
 
 
 def generate(tokenizer, model, text: str, *, source: str, target: str,
-             context: str = "", device=None, max_new_tokens: int = 400) -> str:
+             context: str = "", preceding: str = "", device=None,
+             max_new_tokens: int = 400) -> str:
     src = (text or "").strip()
     if not src:
         return ""
-    out = _run(tokenizer, model, _translate_instruction(src, source, target, context),
+    out = _run(tokenizer, model,
+               _translate_instruction(src, source, target, context, preceding=preceding),
                max_new_tokens)
-    return _repair_repeat(tokenizer, model, src, out, source, target, context, max_new_tokens)
+    return _repair_repeat(tokenizer, model, src, out, source, target, context,
+                          max_new_tokens, preceding)
 
 
 def _repair_repeat(tokenizer, model, src: str, out: str, source: str, target: str,
-                   context: str, max_new_tokens: int) -> str:
+                   context: str, max_new_tokens: int, preceding: str = "") -> str:
     """Fix an "education, education" collapse if the first pass produced one.
 
     Greedy decoding is faithful but occasionally flattens two distinct source words
@@ -257,7 +293,8 @@ def _repair_repeat(tokenizer, model, src: str, out: str, source: str, target: st
     extra = (f"If the source lists several items, give each a distinct {tgt} word — "
              f"do not write the same word twice in a row or in a list.")
     retry = _run(tokenizer, model,
-                 _translate_instruction(src, source, target, context, extra=extra),
+                 _translate_instruction(src, source, target, context, extra=extra,
+                                        preceding=preceding),
                  max_new_tokens)
     if is_target_text(retry) and not _adjacent_repeat(retry):
         return retry
@@ -287,19 +324,25 @@ def _has_negation(text: str) -> bool:
 
 
 def shorten(processor, model, source_text: str, current_en: str, max_words: int, *,
-            source: str, target: str, context: str = "", device=None) -> str | None:
+            source: str, target: str, context: str = "", preceding: str = "",
+            device=None) -> str | None:
     """Re-translate the source more concisely. None if meaning would be at risk.
 
     Re-translating (rather than compressing the English) keeps the model on its
     task, and the guards below refuse any rewrite that drops a number, a name, or
-    a negation.
+    a negation. It carries `preceding` for the same reason `generate` does: this
+    starts from the source again, so without it the shortened line could come back
+    with the word sense the full translation had just got right.
     """
     have = len((current_en or "").split())
     want = max(3, min(max_words, have - 1))
     src, tgt = _lang(source), _lang(target)
     hint = f"{context.strip()}\n\n" if context and context.strip() else ""
+    before = (f"The line spoken just before was: {preceding.strip()}\n"
+              f"It is background only — do not translate it and do not let any of its "
+              f"words into your answer.\n\n") if preceding and preceding.strip() else ""
     instruction = (
-        f"{hint}"
+        f"{hint}{before}"
         f"Translate the following {src} text into {tgt} as concisely as possible, in at "
         f"most {want} words, while keeping every name, number and negation. Output only "
         f"the {tgt} translation.\n\n{src}: {source_text}"
@@ -336,6 +379,10 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
     if not todo:
         return
     context = m["source"].get("context") or ""
+    # What was said just before each segment, kept or dubbed — the line the viewer
+    # has already heard. Only ever shown to the model as background (see
+    # `_translate_instruction`); the segment translated is still the segment alone.
+    before = {s["id"]: prev["text"] for prev, s in zip(segments, segments[1:])}
     processor, model, device = load()
     try:
         for n, seg in enumerate(dub, 1):
@@ -344,9 +391,11 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
             # Translate each segment on its own — standalone output is deterministic
             # and faithful, which matters more for a dub than resolving a pronoun; a
             # marked multi-segment window makes the model drift a clause onto its
-            # neighbour. The per-video `context` supplies names the ASR mangles.
+            # neighbour. The per-video `context` supplies names the ASR mangles, and
+            # the preceding line settles a word sense the sentence alone cannot.
             text = generate(processor, model, seg["text"], source=source,
-                            target=target, context=context, device=device)
+                            target=target, context=context,
+                            preceding=before.get(seg["id"], ""), device=device)
             if is_target_text(text):
                 seg["text_en"] = text.strip()
             else:

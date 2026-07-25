@@ -38,6 +38,7 @@ LID_WINDOW = 4.0       # language-ID in windows this size so a long monologue th
 VAD_THRESHOLD = 0.4    # a touch more sensitive than Silero's 0.5 default
 VAD_PAD_MS = 150       # pad speech edges so soft word starts/ends are not trimmed
 VAD_MERGE_GAP = 0.5    # join speech regions separated by less than this
+LID_SHORT = 1.5        # a run shorter than this is below what the LID can call alone
 VAD_MIN_SEC = 0.6      # ignore speech blips shorter than this (a short English tail
                        # like "just want to help" must still be kept, not clipped)
 SPAN_TAIL_LOGPROB = -0.5  # while the English model reads this confidently past the LID
@@ -283,6 +284,40 @@ def _extend_english_end(en_model, source_wav: Path, b: float, limit: float) -> f
     return round(b, 3)
 
 
+def _reclaim_leading_fragment(en_model, source_wav: Path, cand: float, a: float,
+                              b: float) -> float:
+    """Take back the fragment VAD broke off the front of an utterance, if it is speech.
+
+    The counterpart of `_extend_english_end`, for the same failure at the other edge:
+    VAD splits a soft first word into a region of its own ("Frankly," at 270.80-271.70,
+    then "I had the same concerns…" from 272.00), and the language classifier cannot
+    judge a fragment that short — it labelled that one `mi`, Maori, confidently. So the
+    run started on the speaker's *second* word and the viewer heard them from the
+    middle of their own sentence (4:31, "the VAD wakes up too late").
+
+    The English-only model decides instead, reading the fragment together with the run
+    it abuts: real English comes back confident with a word placed inside the fragment,
+    while Hebrew decodes as low-confidence gibberish and is refused. Bounded to a
+    fragment of `LID_SHORT`, so a mistake costs a moment of source voice at a boundary
+    and never a whole utterance.
+    """
+    from . import audio
+
+    if not 0.0 < a - cand <= LID_SHORT:
+        return round(a, 3)
+    segs, _info = en_model.transcribe(
+        audio.decode_mono(source_wav, 16000, start=cand, end=min(b, cand + LID_WINDOW)),
+        language="en", beam_size=5, vad_filter=False, word_timestamps=True)
+    segs = list(segs)
+    if not segs:
+        return round(a, 3)
+    lp = sum(s.avg_logprob for s in segs) / len(segs)
+    starts = [float(w.start) for s in segs for w in (s.words or []) if (w.word or "").strip()]
+    if lp < SPAN_TAIL_LOGPROB or not starts or cand + min(starts) >= a - 0.05:
+        return round(a, 3)
+    return round(cand, 3)
+
+
 def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: float,
                                target: str, *, known: list[tuple[float, float]] | None = None
                                ) -> list[dict[str, Any]]:
@@ -310,6 +345,11 @@ def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: floa
         # speaker finishes — bounded so it can't run into the real Hebrew.
         nxt = lsegs[i + 1][0] if i + 1 < len(lsegs) else total
         b = _extend_english_end(en_model, source_wav, b, min(b + SPAN_TAIL_MAX, nxt + 0.6, total))
+        # Same at the leading edge, when the run just before is a fragment VAD broke
+        # off this one — near enough to be the same breath, and not itself English
+        # (that would already be a span of its own).
+        if i and lsegs[i - 1][2] != target and a - lsegs[i - 1][1] <= VAD_MERGE_GAP:
+            a = _reclaim_leading_fragment(en_model, source_wav, lsegs[i - 1][0], a, b)
         clip = audio.decode_mono(source_wav, 16000, start=a, end=b)
         segs, _info = en_model.transcribe(clip, language=target, beam_size=5,
                                           vad_filter=False, word_timestamps=True)
