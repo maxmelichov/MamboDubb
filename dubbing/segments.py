@@ -404,8 +404,8 @@ def unsegmented_words(words: list[dict[str, Any]], segs: list[dict[str, Any]],
     return lost
 
 
-def mark_keep(segments: list[dict[str, Any]],
-              spans: list[dict[str, Any]] | None = None) -> None:
+def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None = None,
+              target: str = "en") -> None:
     """Flag segments whose original audio should play instead of a dub.
 
     Three content-free rules: the segment came out of a detected non-source-language
@@ -420,10 +420,14 @@ def mark_keep(segments: list[dict[str, Any]],
     def letters(text: str) -> int:
         return len(LATIN.findall(text or "")) + len(HEBREW.findall(text or ""))
 
-    ranges = [(s["start"], s["end"]) for s in (spans or []) if s.get("words")]
+    ranges = [(s["start"], s["end"], s.get("lang")) for s in (spans or []) if s.get("words")]
 
-    def from_span(seg: dict[str, Any]) -> bool:
-        return any(a - 0.05 <= seg["start"] and seg["end"] <= b + 0.05 for a, b in ranges)
+    def span_lang(seg: dict[str, Any]) -> str | None:
+        """The language of the span this segment came out of, or None if it did not."""
+        for a, b, lang in ranges:
+            if a - 0.05 <= seg["start"] and seg["end"] <= b + 0.05:
+                return lang or ""
+        return None
     totals: dict[str, list[float]] = {}
     for seg in segments:
         if letters(seg["text"]) < 2:
@@ -437,10 +441,14 @@ def mark_keep(segments: list[dict[str, Any]],
         spk for spk, (total, lat) in totals.items() if total > 0 and lat / total >= SPEAKER_EN_RATIO
     }
     for seg in segments:
-        if from_span(seg):
-            # Not the source language, whatever it is: play it as it was recorded.
+        lang = span_lang(seg)
+        if lang is not None:
+            # Not the source language, whatever it is: play it as it was recorded. The
+            # span's own language names it — a target-language line that happens to
+            # carry no letters ("330,000") is still the target language, not a third one.
             seg["keep"] = True
-            seg["keep_reason"] = "latin" if latin_ratio(seg["text"]) > 0.5 else "foreign"
+            seg["keep_reason"] = ("latin" if lang == target or latin_ratio(seg["text"]) > 0.5
+                                  else "foreign")
         elif letters(seg["text"]) < 2:
             # Transcript noise (stray glyphs). Nothing to translate, so let the
             # original audio through rather than leaving a hole.
@@ -594,7 +602,7 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
         segs = splice_foreign_spans(segs, spans, words)
         for i, seg in enumerate(segs):
             seg["id"] = i
-    mark_keep(segs, spans)
+    mark_keep(segs, spans, m["source"].get("tgt_lang") or "en")
 
     # Drop sub-word noise fragments (a lone "ב", stray glyphs). Kept as original
     # audio they play a jarring one-letter blip of the source voice between dubbed

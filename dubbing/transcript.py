@@ -43,6 +43,8 @@ FOREIGN_MIN_SEC = 1.5  # a run in a third language must be at least this long to
                        # no ASR here can read it, so the classifier is the only witness
 FOREIGN_MIN_PROB = 0.85  # ...and must be this sure, well above LID_MIN_PROB
 FOREIGN_WINDOW = 8.0   # how much of the run to judge it on
+FOREIGN_JOIN_GAP = 1.5 # pieces of one passage this close, in the same language, are
+                       # one passage — the windows cut a long answer into runs
 FOREIGN_SRC_LOGPROB = -0.5  # ...and the source ASR must FAIL to read it this well. Its
                        # confidence is the honest witness: on this video it read real
                        # Arabic at -0.64 as garbled non-words, but read the stretches
@@ -394,6 +396,38 @@ def _reclaim_leading_fragment(en_model, source_wav: Path, cand: float, a: float,
     return round(cand, 3)
 
 
+def _foreign_group(lsegs: list[tuple[float, float, str | None]], i: int
+                   ) -> tuple[float, float, set[int]]:
+    """The whole extent of a passage the `win`-second windows broke into pieces.
+
+    A twenty-second answer in Arabic does not arrive as one run: the classifier called
+    421.10-425.10 and 426.20-446.20 Arabic with an unlabelled sliver between them, and
+    judged alone the first piece missed the confidence bar and was dubbed from the
+    source ASR's gibberish ("The notes from Gaza are being sent to the Philippines").
+    Joined, the passage speaks for itself. Only runs of the *same* language join, and
+    only across a breath, so this never reaches over a run in another language.
+    """
+    lang = lsegs[i][2]
+    a, b = lsegs[i][0], lsegs[i][1]
+    used = {i}
+    for step, edge in ((1, "forward"), (-1, "back")):
+        j = i + step
+        while 0 <= j < len(lsegs):
+            start, end, other = lsegs[j]
+            if (start - b if edge == "forward" else a - end) > FOREIGN_JOIN_GAP:
+                break
+            if other == lang:
+                if edge == "forward":
+                    b = end
+                else:
+                    a = start
+                used.add(j)
+            elif not (other is None and end - start <= LID_SHORT):
+                break                      # a labelled neighbour ends the passage
+            j += step
+    return a, b, used
+
+
 def _sounds_foreign(lid, src_model, source_wav: Path, a: float, b: float,
                     source: str) -> str | None:
     """The language of a whole run, when it is confidently not the source language.
@@ -443,8 +477,15 @@ def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: floa
     known = known or []
     lsegs = language_segments(vad, lid, source_wav)
     spans: list[dict[str, Any]] = []
+    consumed: set[int] = set()
     for i, (a, b, lang) in enumerate(lsegs):
-        if lang is None or lang == source or b - a < VAD_MIN_SEC:
+        if lang is None or lang == source or i in consumed:
+            continue
+        if lang != target:
+            # Judge a third-language passage whole; its pieces are not decidable alone.
+            a, b, used = _foreign_group(lsegs, i)
+            consumed |= used
+        if b - a < VAD_MIN_SEC:
             continue
         if any(a < kb and ka < b for ka, kb in known):
             continue

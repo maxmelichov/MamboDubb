@@ -283,6 +283,23 @@ def test_a_third_language_is_kept_as_is(monkeypatch):
     assert _detect(monkeypatch, [(2.0, 6.0)], [("ar", 0.9)], []) == []
 
 
+def test_foreign_group_joins_the_pieces_of_one_passage():
+    # The 4s windows cut a long Arabic answer into runs with an unlabelled sliver
+    # between; judged alone the first piece misses the bar and gets dubbed from
+    # gibberish. The group is the passage.
+    runs = [(404.1, 420.1, "en"), (421.1, 425.1, "ar"), (425.1, 425.8, None),
+            (426.2, 446.2, "ar"), (446.2, 451.9, "he")]
+    a, b, used = transcript._foreign_group(runs, 1)
+    assert (a, b) == (421.1, 446.2)
+    assert used == {1, 3}
+    # It never reaches over a run in another language, even a close one.
+    runs = [(10.0, 14.0, "ar"), (14.2, 18.0, "he"), (18.1, 22.0, "ar")]
+    assert transcript._foreign_group(runs, 0)[:2] == (10.0, 14.0)
+    # Nor across a real silence.
+    runs = [(10.0, 14.0, "ar"), (30.0, 34.0, "ar")]
+    assert transcript._foreign_group(runs, 0)[:2] == (10.0, 14.0)
+
+
 def test_sounds_foreign_demands_more_than_the_window_labels(monkeypatch):
     from dubbing import audio
     monkeypatch.setattr(audio, "decode_mono", lambda *a, **k: [0.0])
@@ -616,6 +633,11 @@ def test_a_foreign_span_is_kept_even_with_no_text():
     segments.mark_keep(en, [{"start": 10.0, "end": 14.0, "lang": "en",
                              "text": "Frankly, I agree.", "words": [{"t": 10.0, "text": "x"}]}])
     assert en[0]["keep_reason"] == "latin"
+    # ...including a target-language line with no letters in it at all.
+    digits = [{"id": 0, "start": 10.0, "end": 14.0, "speaker": "B", "text": "330 ,000"}]
+    segments.mark_keep(digits, [{"start": 10.0, "end": 14.0, "lang": "en",
+                                 "text": "330,000", "words": [{"t": 10.0, "text": "x"}]}])
+    assert digits[0]["keep_reason"] == "latin"
 
 
 def test_span_segments_tile_the_whole_passage():
