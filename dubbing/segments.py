@@ -280,14 +280,45 @@ def words_to_segments(words: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def splice_foreign_spans(segs: list[dict[str, Any]],
-                         spans: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _residues(seg: dict[str, Any],
+              spans: list[dict[str, Any]]) -> list[tuple[float, float]]:
+    """The stretches of a segment that no span covers, in order.
+
+    A segment can straddle several spans — a speaker interrupted twice by English —
+    and what is left of it is then more than one piece. Subtracting the spans one at
+    a time keeps every piece rather than reasoning about the aggregate.
+    """
+    pieces = [(seg["start"], seg["end"])]
+    for s in spans:
+        cut: list[tuple[float, float]] = []
+        for a, b in pieces:
+            if s["end"] <= a or s["start"] >= b:
+                cut.append((a, b))
+                continue
+            if a < s["start"]:
+                cut.append((a, round(s["start"], 3)))
+            if s["end"] < b:
+                cut.append((round(s["end"], 3), b))
+        pieces = cut
+    return pieces
+
+
+def splice_foreign_spans(segs: list[dict[str, Any]], spans: list[dict[str, Any]],
+                         words: list[dict[str, Any]] | None = None
+                         ) -> list[dict[str, Any]]:
     """Replace transcript segments inside target-language spans with the captions'.
 
     ASR in the source language either mangles target-language speech or skips it
     entirely, which would leave those seconds with no segment and therefore no
     audio at all. The captions know where that speech is and what it says, so
     those spans become segments in their own right.
+
+    What the spans do *not* cover stays, in as many pieces as it takes. Judging a
+    segment by its total overlap instead threw away speech: a Hebrew sentence with
+    two English interjections inside it is more than half span by area, and dropping
+    it whole silently lost the Hebrew in between ("כי הבעיה היא שבאחור" at 5:00).
+    `words` supplies the text for a piece; without it a multi-piece segment can only
+    be trimmed to its longest piece.
     """
     # A span with no words of its own cannot replace what it displaces, and
     # dropping segments for it would leave those seconds silent.
@@ -297,21 +328,26 @@ def splice_foreign_spans(segs: list[dict[str, Any]],
 
     kept: list[dict[str, Any]] = []
     for seg in segs:
-        dur = max(0.05, seg["end"] - seg["start"])
-        overlap = sum(max(0.0, min(seg["end"], s["end"]) - max(seg["start"], s["start"]))
-                      for s in spans)
-        if overlap / dur > 0.5:
+        pieces = _residues(seg, spans)
+        if pieces == [(seg["start"], seg["end"])]:
+            kept.append(seg)              # untouched: kept however short
+            continue
+        if not pieces:
             continue                      # this segment is the captions' territory
-        trimmed = False
-        for s in spans:                   # trim any partial intrusion
-            if s["start"] < seg["end"] <= s["end"]:
-                seg["end"], trimmed = round(s["start"], 3), True
-            elif s["start"] <= seg["start"] < s["end"]:
-                seg["start"], trimmed = round(s["end"], 3), True
-        # Only a trimmed remnant may be discarded. An untouched segment is kept
-        # however short, or its words would vanish from the output entirely.
-        if not trimmed or seg["end"] - seg["start"] >= 0.4:
-            kept.append(seg)
+        if words is None:                 # no words to redistribute — keep the longest
+            pieces = [max(pieces, key=lambda p: p[1] - p[0])]
+        for a, b in pieces:
+            # Only a trimmed remnant may be discarded, and only when it is too short
+            # to hold speech or holds none — otherwise its words vanish from the output.
+            if b - a < 0.4:
+                continue
+            piece = dict(seg, start=a, end=b)
+            if words is not None:
+                said = [w["text"] for w in words if a - 0.05 <= w["t"] < b]
+                if not said:
+                    continue
+                piece["text"] = " ".join(said)
+            kept.append(piece)
 
     for s in spans:
         words = [{"t": w["t"], "text": w["text"], "brk": False, "spk": w.get("spk", "SPEAKER_00")}
@@ -511,7 +547,7 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
     if spans:
         span_words = [w for s in spans for w in (s.get("words") or [])]
         assign_word_speakers(span_words, turns)
-        segs = splice_foreign_spans(segs, spans)
+        segs = splice_foreign_spans(segs, spans, words)
         for i, seg in enumerate(segs):
             seg["id"] = i
     mark_keep(segs, spans)

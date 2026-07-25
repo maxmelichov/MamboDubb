@@ -21,10 +21,10 @@ STAGE_TAGS = {
     "fetch": "fetch/v1",
     "stems": "stems/v1",
     "transcript": "transcript/v15",
-    "segments": "segments/v16",
-    "translate": "translate/v8",
+    "segments": "segments/v17",
+    "translate": "translate/v10",
     "tts": "tts/v7",
-    "timeline": "timeline/v6",
+    "timeline": "timeline/v7",
     "mix": "mix/v4",
     "report": "report/v1",
 }

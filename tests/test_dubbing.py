@@ -418,6 +418,29 @@ def test_foreign_spans_become_their_own_segments():
     assert not out[0]["keep"] and not out[2]["keep"]
 
 
+def test_speech_between_two_spans_inside_one_segment_survives():
+    # A Hebrew sentence interrupted twice by English is more than half span by area;
+    # judging it on total overlap dropped it whole and lost the Hebrew in between.
+    said = "כי הבעיה היא שבאחור"
+    words = ([{"t": 0.2 + 0.3 * i, "text": w, "spk": "A"} for i, w in enumerate("אני עדיין מציע".split())]
+             + [{"t": 4.5 + 0.4 * i, "text": w, "spk": "A"} for i, w in enumerate(said.split())]
+             + [{"t": 9.2 + 0.3 * i, "text": w, "spk": "A"} for i, w in enumerate("את המילים".split())])
+    asr = [{"id": 0, "start": 0.2, "end": 10.0, "speaker": "A", "text": "…"}]
+    spans = [{"start": 1.5, "end": 4.2, "text": "I still would urge caution",
+              "words": [{"t": 1.5 + 0.4 * i, "text": w, "spk": "B"}
+                        for i, w in enumerate("I still would urge caution".split())]},
+             {"start": 8.0, "end": 10.1, "text": "I am not sure",
+              "words": [{"t": 8.0 + 0.4 * i, "text": w, "spk": "B"}
+                        for i, w in enumerate("I am not sure".split())]}]
+    out = segments.splice_foreign_spans(asr, spans, words)
+    assert said in [s["text"] for s in out]
+    assert not segments.unsegmented_words(words, out, spans)
+    # Every piece keeps clear of both spans.
+    for s in out:
+        for sp in spans:
+            assert s["end"] <= sp["start"] or s["start"] >= sp["end"] or s["text"] == sp["text"]
+
+
 def test_span_segments_tile_the_whole_passage():
     # Recovered word timings bunch up; the passage must still play end to end.
     spans = [{"start": 10.0, "end": 20.0, "text": "hello there my friend",
@@ -489,6 +512,74 @@ def test_is_target_text():
     assert translate.is_target_text("Hello there")
     assert not translate.is_target_text("שלום עולם")
     assert not translate.is_target_text("")
+
+
+def test_adjacent_repeat_detects_only_the_collapse():
+    rep = translate._adjacent_repeat
+    # The "education, education" defect (comma, coordinator, or bare adjacency).
+    assert rep("disseminating education, education and human rights") == "education"
+    assert rep("education and education, and human rights") == "education"
+    # Phrase-level emphasis, intensifiers, stopwords and clean lists are left alone.
+    assert rep("Qatar funds Hamas, Qatar funds Al-Qaeda, Qatar funds ISIS") is None
+    assert rep("a very, very extreme ideological view") is None
+    assert rep("education, learning, and human rights") is None
+    assert rep("the the report") is None
+
+
+def test_strip_adjacent_repeat_removes_the_duplicate():
+    assert (translate._strip_adjacent_repeat("education, education and human rights")
+            == "education and human rights")
+    assert translate._strip_adjacent_repeat("scholarship and scholarship") == "scholarship"
+
+
+def test_strip_editorial_removes_brackets_and_notes():
+    strip = translate._strip_editorial
+    # Gemma 4 brackets words it supplied and offers alternatives; both would be read aloud.
+    assert strip("Qatar funds ISIS, [and] Qatar funds al-Nusra") == \
+        "Qatar funds ISIS, and Qatar funds al-Nusra"
+    assert strip("a country with a [connection/link] to the Brotherhood") == \
+        "a country with a connection to the Brotherhood"
+    # A trailing translator's note goes with it.
+    assert strip("In the end, it is a state.\n\n*(Note: the Hebrew appears garbled.)*") == \
+        "In the end, it is a state."
+    # Clean output is untouched.
+    assert strip("Through Qatari gas, Qatar is bribing Europe.") == \
+        "Through Qatari gas, Qatar is bribing Europe."
+
+
+def test_prompt_prefers_the_models_own_chat_template():
+    class Tok:
+        chat_template = "…"
+
+        def apply_chat_template(self, messages, **kw):
+            assert kw["add_generation_prompt"] and kw["enable_thinking"] is False
+            return [1, 2, 3]
+
+    class NoTemplate:
+        chat_template = None
+
+    assert translate._prompt(Tok(), "text") == [1, 2, 3]
+    # Without one, fall back to writing Gemma 3's markers by hand.
+    assert translate._prompt(NoTemplate(), "text").startswith("<start_of_turn>user\ntext")
+
+
+def test_generate_repairs_a_repeated_word(monkeypatch):
+    # First pass collapses two words; the retry (with the nudge) resolves it.
+    replies = iter([
+        "disseminating education, education and human rights.",
+        "disseminating education, upbringing and human rights.",
+    ])
+    monkeypatch.setattr(translate, "_run", lambda *a, **k: next(replies))
+    out = translate.generate(None, None, "he-text", source="he", target="en")
+    assert out == "disseminating education, upbringing and human rights."
+
+
+def test_generate_strips_repeat_when_retry_also_repeats(monkeypatch):
+    # Retry still repeats → last-resort strip removes the duplicate.
+    monkeypatch.setattr(translate, "_run",
+                        lambda *a, **k: "disseminating education, education and human rights.")
+    out = translate.generate(None, None, "he-text", source="he", target="en")
+    assert out == "disseminating education and human rights."
 
 
 def test_shorten_rejects_unsafe_rewrites(monkeypatch):

@@ -16,6 +16,9 @@ resolution-markers = [
     "(python_full_version < '3.12' and platform_machine != 'x86_64' and sys_platform == 'darwin') or (python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32')",
 ]
 
+[manifest]
+overrides = [{ name = "transformers", specifier = "==4.57.3" }]
+
 [[package]]
 name = "accelerate"
 version = "1.12.0"
@@ -746,7 +749,7 @@ requires-dist = [
     { name = "faster-whisper", specifier = ">=1.1.0" },
     { name = "hf", specifier = ">=0.0.1" },
     { name = "huggingface-hub", specifier = ">=0.26.0" },
-    { name = "mlx-lm", specifier = ">=0.29.1" },
+    { name = "mlx-lm", git = "https://github.com/ml-explore/mlx-lm?rev=cf10f962b7a20e63a6df43dbf0faf06070153d40" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "pyannote-audio", specifier = ">=3.1.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
@@ -1635,8 +1638,8 @@ wheels = [
 
 [[package]]
 name = "mlx-lm"
-version = "0.29.1"
-source = { registry = "https://pypi.org/simple" }
+version = "0.31.3"
+source = { git = "https://github.com/ml-explore/mlx-lm?rev=cf10f962b7a20e63a6df43dbf0faf06070153d40#cf10f962b7a20e63a6df43dbf0faf06070153d40" }
 dependencies = [
     { name = "jinja2" },
     { name = "mlx", marker = "sys_platform == 'darwin'" },
@@ -1645,10 +1648,6 @@ dependencies = [
     { name = "pyyaml" },
     { name = "sentencepiece" },
     { name = "transformers" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/e3/62/f46e1355256a114808517947f8e83ad6be310c7288c551db0fa678f47923/mlx_lm-0.29.1.tar.gz", hash = "sha256:b99180d8f33d33a077b814e550bfb2d8a59ae003d668fd1f4b3fff62a381d34b", size = 232302, upload-time = "2025-12-16T16:58:27.959Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e5/53/913099c91d384e115ea078325efd9a0bc1ea3eb3458c694b4596cbd267f2/mlx_lm-0.29.1-py3-none-any.whl", hash = "sha256:440941b3054c2a2216e97615de584cc90fa1ea874782e20699b9895721fad8dc", size = 324884, upload-time = "2025-12-16T16:58:26.36Z" },
 ]
 
 [[package]]

@@ -3,9 +3,11 @@ cut-off speech structurally impossible.
 
 One forward pass places each clip at its source onset, or as soon after as the
 previous clip allows. Nothing is ever trimmed to fit: a clip that is too long
-for its slot is gently time-compressed, and whatever still does not fit becomes
-*drift* on the following segment. Drift is bounded, and it disappears on its own
-at the next real pause, because a start is `max(source_start, prev_end + gap)`.
+for its slot is gently time-compressed, one much shorter than its slot is gently
+time-stretched (so it does not finish early and drift out of sync), and whatever
+compression still does not fit becomes *drift* on the following segment. Drift is
+bounded, and it disappears on its own at the next real pause, because a start is
+`max(source_start, prev_end + gap)`.
 
 Placed clips are separated by a short gap, except where the source itself ran
 them together — a passage of original audio split into parts stays joined, since
@@ -190,7 +192,12 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
     # that divergence is how the previous pipeline produced overlaps.
     for it, p in zip(items, places):
         raw = workdir / it["clip"]
-        if p["rate"] > 1.01:
+        # Bake the tempo change into the clip — both a speed-up (too long for its
+        # slot) and a slow-down (a much-shorter English line stretched toward the
+        # source duration so it does not finish early and drift out of sync). Only
+        # rate ~1.0 is left untouched. The re-place below then runs at rate 1.0 on
+        # the fitted clip, so its measured length is what gets placed.
+        if abs(p["rate"] - 1.0) > 0.01:
             fitted = workdir / "clips" / f"fit_{Path(it['clip']).stem}_{p['rate']:.3f}.wav"
             if not fitted.is_file():
                 audio.atempo(raw, fitted, p["rate"])

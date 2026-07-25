@@ -24,7 +24,9 @@ dependencies = [
     "qwen-tts",
     "huggingface-hub>=0.26.0",
     "hf>=0.0.1",
-    "mlx-lm>=0.29.1",
+    # Gemma 4 (model_type gemma4_unified) is only supported after the June 2026 fix,
+    # which is past the last mlx-lm release — hence the git pin in [tool.uv.sources].
+    "mlx-lm",
     "silero-vad>=6.2.1",
     "speechbrain>=1.1.0",
 ]
@@ -47,9 +49,15 @@ packages = ["dubbing"]
 
 [tool.uv]
 package = true
+# mlx-lm asks for transformers>=5; qwen-tts pins ==4.57.3, and the two cannot both be
+# satisfied. 4.57.3 is the one that has to win (Qwen3-TTS breaks on 5.x), and mlx-lm
+# runs fine on it for this workload — it only needs transformers for the tokenizer.
+# The one incompatibility Gemma 4 does hit there is handled in translate.load().
+override-dependencies = ["transformers==4.57.3"]
 
 [tool.uv.sources]
 qwen-tts = { path = "third_party/Qwen3-TTS", editable = true }
+mlx-lm = { git = "https://github.com/ml-explore/mlx-lm", rev = "cf10f962b7a20e63a6df43dbf0faf06070153d40" }
 
 [tool.ruff]
 line-length = 100

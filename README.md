@@ -61,4 +61,4 @@ DubbingQwen/
 ## Requirements
 
 macOS on Apple Silicon, Python 3.12 via `uv`, `ffmpeg` and `sox`. Models are
-TranslateGemma-4B, Qwen3-TTS-1.7B, Demucs, Pyannote and faster-whisper — all local.
+Gemma 4 12B (MLX), Qwen3-TTS-1.7B, Demucs, Pyannote and faster-whisper — all local.

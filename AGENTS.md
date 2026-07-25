@@ -30,7 +30,7 @@ One module per stage in `dubbing/`, all state in `outputs/<run>/manifest.json`.
 | stems | Demucs `htdemucs_ft` | `stems/{vocals,background}.wav` |
 | transcript | local Whisper on `source.wav`; captions mark target-language spans | `words.json` |
 | segments | words → segments; Pyannote labels speakers | `manifest.segments` |
-| translate | TranslateGemma-4B, windowed + standalone | `segment.text_en` |
+| translate | Gemma 4 12B (MLX, QAT 4-bit), one segment at a time | `segment.text_en` |
 | tts | Qwen3-TTS zero-shot clone, verified | `clips/*.wav` |
 | timeline | places every clip | `segment.place` |
 | mix | duck bed, add speech, mux | `dub.wav`, `preview.mp4` |
@@ -78,7 +78,11 @@ true, not working around them.
 
 ## Device notes (Apple Silicon)
 
-- TranslateGemma: **bfloat16 on MPS** — float16 produces pad-only output.
+- Translation runs on **MLX**, not MPS: Gemma 4 12B at 4-bit is ~11 GB live (and
+  briefly twice that in MLX's buffer cache while loading, which `load()` clears).
+- Gemma 4 changed the turn syntax to `<|turn>role … <turn|>`, so prompts go through
+  the tokenizer's chat template, with `enable_thinking=False` to keep it from
+  reasoning instead of translating.
 - Qwen3-TTS: **float32 on MPS** — float16 NaNs in the code predictor.
 - faster-whisper: **CPU only** (CTranslate2 has no MPS backend).
 - Models are sequential, never co-resident: the translator is freed before TTS loads.

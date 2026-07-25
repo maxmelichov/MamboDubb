@@ -29,9 +29,11 @@ and the report says so.
 All local, under `models/`:
 
 ```bash
-# Translation (bfloat16 on MPS)
-uv run hf download google/translategemma-4b-it \
-  --local-dir models/translategemma-4b-it
+# Translation — Gemma 4 12B, quantisation-aware 4-bit, run through MLX (~11 GB).
+# For a tighter memory budget use gemma-4-12B-it-4bit (~6.3 GB) instead and point
+# translate.MODEL_PATH at it; see the trade-off in dubbing/translate.py.
+uv run hf download mlx-community/gemma-4-12B-it-qat-4bit \
+  --local-dir models/gemma-4-12B-it-qat-4bit
 
 # Speech synthesis, zero-shot voice cloning
 uv run hf download Qwen/Qwen3-TTS-12Hz-1.7B-Base \
@@ -67,5 +69,9 @@ human ear.
 ## Notes
 
 - `pyproject.toml` is the dependency source of truth; use `uv sync` / `uv add`.
+- `mlx-lm` is pinned to a git revision: Gemma 4's `gemma4_unified` architecture is
+  only supported after a June 2026 fix that no release carries yet. It asks for
+  transformers 5, which Qwen3-TTS cannot use, so `[tool.uv] override-dependencies`
+  holds transformers at 4.57.3 — mlx-lm only needs it for the tokenizer.
 - If Pyannote hits missing MPS ops: `export PYTORCH_ENABLE_MPS_FALLBACK=1`
   (the pipeline sets this itself).
