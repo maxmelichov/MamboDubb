@@ -44,6 +44,10 @@ VAD_MIN_SEC = 0.6      # ignore speech blips shorter than this (a short English 
 SPAN_TAIL_LOGPROB = -0.5  # while the English model reads this confidently past the LID
 SPAN_TAIL_STEP = 0.5      # boundary, in steps of this, the trailing word is still English
 SPAN_TAIL_MAX = 1.5       # ...extend the span up to this far to let the speaker finish
+PAUSE_HOP = 0.05          # resolution of the "has the voice stopped?" scan
+PAUSE_FLOOR = 0.008       # vocal energy below this is a pause, not speech
+PAUSE_FRAMES = 2          # consecutive quiet frames a real pause needs, so the closure
+                          # of a plosive inside a word does not end a span
 SPAN_END_PAD = 0.25       # keep a span's end no further than this past its last English
                           # word: _extend_english_end widens the *decode* window to
                           # catch a trailing word, but the span must not then claim the
@@ -155,6 +159,37 @@ def collapse_repeats(words: list[dict[str, Any]], *, max_ngram: int = 4,
         if not collapsed:
             out.append(words[i])
             i += 1
+    return out
+
+
+_SPLIT_MARK = re.compile(r"^['׳`’\-–]")
+
+
+def join_split_marks(words: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Rejoin a word the ASR split at a geresh or a hyphen.
+
+    Hebrew spells foreign sounds with a geresh — ג'יהאד, אג'נדה, ג'בהת — and Whisper
+    emits the geresh as the start of a *new* token: `לג` + `'יהאד`, `אל` + `-קאעידה`.
+    The halves reach the translator as separate words and it misreads the grammar
+    that hangs on them: "שקוראת לג'יהאד" ("which calls **for** jihad") came back as
+    "which she calls jihad", because the preposition ל was stranded on its own token.
+    Rejoined, the same model and prompt render it correctly.
+
+    The merged word keeps the first half's onset and the second half's end, so timing
+    is unchanged. A token after a sentence end is left alone — there the mark starts
+    something new rather than continuing a word.
+    """
+    out: list[dict[str, Any]] = []
+    for w in words:
+        prev = out[-1] if out else None
+        if (prev and _SPLIT_MARK.match(w.get("text") or "")
+                and (prev.get("text") or "") and not prev["text"].endswith((".", "!", "?"))
+                and not w.get("brk")):
+            prev["text"] += w["text"]
+            if w.get("end") is not None:
+                prev["end"] = w["end"]
+            continue
+        out.append(dict(w))
     return out
 
 
@@ -284,6 +319,29 @@ def _extend_english_end(en_model, source_wav: Path, b: float, limit: float) -> f
     return round(b, 3)
 
 
+def _voice_pause_after(source_wav: Path, start: float, limit: float) -> float | None:
+    """When the voice next stops, or None if it does not stop before `limit`.
+
+    A pause needs `PAUSE_FRAMES` consecutive quiet frames, so the closure of a plosive
+    inside a word is not mistaken for the end of the sentence.
+    """
+    from . import audio
+
+    if limit - start <= PAUSE_HOP:
+        return None
+    levels = audio.frame_rms(audio.decode_mono(source_wav, 16000, start=start, end=limit),
+                             16000, PAUSE_HOP)
+    quiet = 0
+    for k, level in enumerate(levels):
+        if level < PAUSE_FLOOR:
+            quiet += 1
+            if quiet >= PAUSE_FRAMES:
+                return round(start + (k - quiet + 1) * PAUSE_HOP, 3)
+        else:
+            quiet = 0
+    return None
+
+
 def _reclaim_leading_fragment(en_model, source_wav: Path, cand: float, a: float,
                               b: float) -> float:
     """Take back the fragment VAD broke off the front of an utterance, if it is speech.
@@ -363,7 +421,21 @@ def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: floa
             # it never claims the Hebrew tail beyond — a keep span there plays the
             # source voice (the "I can hear the Hebrew speaker" bleed) and steals
             # those seconds from the dub that should cover them.
-            b = min(b, round(a + float(got[-1].end) + SPAN_END_PAD, 3))
+            #
+            # Neither timestamp is the real end. Whisper's last word bunches early —
+            # "…and children." ended at 110.82 of speech that ran to 111.40, and
+            # clamping there cut the speaker off mid-word (1:51). The classifier's
+            # boundary is coarse the other way: its windows are `win` long, so an
+            # English run can be called through 206.90 when the Hebrew narrator has
+            # been talking since 205.04, and keeping that span airs him (3:25).
+            # The voice itself is the honest boundary: end at the first real pause
+            # after the last English word, and fall back to the early word timestamp
+            # when no pause is in reach — with the speakers back to back, stopping
+            # early is the one that does not put the source voice on air.
+            last = a + float(got[-1].end)
+            stop = _voice_pause_after(source_wav, last,
+                                      min(b + SPAN_END_PAD, last + SPAN_TAIL_MAX, total))
+            b = stop if stop is not None else min(b, round(last + SPAN_END_PAD, 3))
         span_words = ([{"t": round(a + float(w.start), 3), "text": w.word.strip()} for w in got]
                       or [{"t": round(a, 3), "text": tok} for tok in text.split()]
                       or [{"t": round(a, 3), "text": "…"}])
@@ -536,7 +608,7 @@ def run(m: dict[str, Any], workdir: Path, *, src_lang: str, tgt_lang: str = "en"
                 model, source_wav, words, src_lang,
                 float(limit or m["source"]["duration"]),
                 known=[(s["start"], s["end"]) for s in caption_spans])
-            words = collapse_repeats(words)
+            words = join_split_marks(collapse_repeats(words))
             # Real target-language speech the source model rendered as gibberish:
             # Silero VAD finds the utterances, VoxLingua107 says which are English,
             # and those are kept as original audio instead of dubbed from nonsense.

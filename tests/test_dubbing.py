@@ -158,6 +158,20 @@ def test_collapse_repeats_keeps_ordinary_doubling():
     assert [x["text"] for x in transcript.collapse_repeats(words)] == ["very", "very", "good"]
 
 
+def test_join_split_marks_rejoins_a_geresh_word():
+    w = lambda t, s: {"t": t, "end": t + 0.2, "text": s}
+    # Whisper splits ג'יהאד into "לג" + "'יהאד", stranding the preposition ל and
+    # turning "calls for jihad" into "calls jihad"; likewise "אל" + "-קאעידה".
+    out = transcript.join_split_marks([w(0.0, "שקוראת"), w(0.4, "לג"), w(0.6, "'יהאד."),
+                                       w(1.0, "אל"), w(1.2, "-קאעידה")])
+    assert [x["text"] for x in out] == ["שקוראת", "לג'יהאד.", "אל-קאעידה"]
+    assert (out[1]["t"], out[1]["end"]) == (0.4, 0.8)      # first onset, second's end
+    # After a sentence end the mark starts something new, and a speaker break is never
+    # swallowed.
+    kept = transcript.join_split_marks([w(0.0, "סוף."), w(0.4, "-אחר כך")])
+    assert [x["text"] for x in kept] == ["סוף.", "-אחר כך"]
+
+
 class _FakeWord:
     def __init__(self, word, start, end):
         self.word, self.start, self.end = word, start, end
@@ -182,11 +196,18 @@ class _FakeEnModel:
         return iter([_FakeSeg(text)]), object()
 
 
-def _detect(monkeypatch, regions, langs, texts, **kw):
+def _detect(monkeypatch, regions, langs, texts, *, pause=None, extend_to=None, **kw):
+    """Run the detector over scripted VAD regions, languages and subtitle texts.
+
+    `pause` is what the voice-stop scan reports (None = the voice never stops in
+    reach), `extend_to` what _extend_english_end returns (None = it does not move).
+    """
     from dubbing import audio
     monkeypatch.setattr(audio, "decode_mono", lambda *a, **k: [0.0])
     monkeypatch.setattr(transcript, "vad_regions", lambda *a, **k: regions)
-    monkeypatch.setattr(transcript, "_extend_english_end", lambda en, sw, b, limit: b)
+    monkeypatch.setattr(transcript, "_extend_english_end",
+                        lambda en, sw, b, limit: b if extend_to is None else extend_to)
+    monkeypatch.setattr(transcript, "_voice_pause_after", lambda sw, start, limit: pause)
     seq = iter(langs)
     monkeypatch.setattr(transcript, "detect_language", lambda lid, clip: next(seq))
     model = _FakeEnModel(texts)
@@ -200,10 +221,37 @@ def test_detect_spoken_target_spans_keeps_only_target_language(monkeypatch):
                     [("en", 0.9), ("he", 1.0)], ["Qatar is a dangerous enemy"])
     assert len(spans) == 1
     assert spans[0]["text"] == "Qatar is a dangerous enemy"
-    # Start is the VAD onset; end is clamped to the last English word (1.45s into
-    # the clip) + SPAN_END_PAD, never the raw VAD/extended boundary — so the span
-    # cannot claim the source-language tail that follows the last English word.
+    # Start is the VAD onset. With no pause in reach the end falls back to the last
+    # English word (1.45s into the clip) + SPAN_END_PAD — stopping early is the safe
+    # side, since the alternative is airing whoever speaks next.
     assert (spans[0]["start"], spans[0]["end"]) == (2.0, 3.7)
+
+
+def test_span_ends_where_the_voice_stops(monkeypatch):
+    # Whisper's last word bunches early; the speaker is still talking past it, so the
+    # span runs to the pause instead of cutting them off mid-word (1:51).
+    spans = _detect(monkeypatch, [(2.0, 4.0), (8.0, 10.0)],
+                    [("en", 0.9), ("he", 1.0)], ["Qatar is a dangerous enemy"], pause=4.1)
+    assert spans[0]["end"] == 4.1
+
+    # And when the classifier calls English well past where the voice actually stopped,
+    # the pause still wins — keeping the rest would air the source speaker (3:25).
+    spans = _detect(monkeypatch, [(2.0, 6.0), (8.0, 10.0)],
+                    [("en", 0.9), ("he", 1.0)], ["Qatar is a dangerous enemy"],
+                    pause=4.2, extend_to=7.5)
+    assert spans[0]["end"] == 4.2
+
+
+def test_voice_pause_needs_more_than_a_plosive_gap(monkeypatch):
+    from dubbing import audio
+    monkeypatch.setattr(audio, "decode_mono", lambda *a, **k: [0.0])
+    hop = transcript.PAUSE_HOP
+    # One quiet frame is a stop consonant inside a word, not the end of the sentence.
+    monkeypatch.setattr(audio, "frame_rms", lambda *a, **k: [0.09, 0.001, 0.09, 0.09])
+    assert transcript._voice_pause_after("voc.wav", 100.0, 100.0 + 4 * hop) is None
+    # Two in a row is a pause, reported at its first frame.
+    monkeypatch.setattr(audio, "frame_rms", lambda *a, **k: [0.09, 0.09, 0.001, 0.001])
+    assert transcript._voice_pause_after("voc.wav", 100.0, 100.0 + 4 * hop) == 100.0 + 2 * hop
 
 
 def test_leading_fragment_is_reclaimed_when_it_is_speech(monkeypatch):
@@ -459,6 +507,29 @@ def test_speech_between_two_spans_inside_one_segment_survives():
     for s in out:
         for sp in spans:
             assert s["end"] <= sp["start"] or s["start"] >= sp["end"] or s["text"] == sp["text"]
+
+
+def test_uncovered_keep_waits_for_the_previous_speaker_to_stop():
+    # The gap opens where the transcript stops, but the source voice is still
+    # sounding there — playing original audio from that instant airs the tail of the
+    # line just dubbed (the "ה" of "…באומנות רבה" at 1:34). It starts at the pause.
+    hop = 0.1
+    levels = [0.09] * 20 + [0.001] * 5 + [0.09] * 40   # speech, pause at 2.0s, speech
+    segs = [{"id": 0, "start": 0.0, "end": 1.5, "speaker": "A", "text": "…",
+             "keep": False, "keep_reason": None}]
+    segments.fill_uncovered_audible(segs, levels, hop, 6.5, is_target_lang=lambda a, b: True,
+                                    voice_levels=levels)
+    added = [s for s in segs if s.get("keep_reason") == "uncovered"]
+    assert added and added[0]["start"] == pytest.approx(2.1, abs=1e-6)   # one frame past the pause edge
+
+    # With no pause in reach the gap is left where it was, rather than silently
+    # swallowing a second of a region that may be someone talking.
+    segs = [{"id": 0, "start": 0.0, "end": 1.5, "speaker": "A", "text": "…",
+             "keep": False, "keep_reason": None}]
+    segments.fill_uncovered_audible(segs, [0.09] * 65, hop, 6.5, is_target_lang=lambda a, b: True,
+                                    voice_levels=[0.09] * 65)
+    added = [s for s in segs if s.get("keep_reason") == "uncovered"]
+    assert added and added[0]["start"] == pytest.approx(1.6, abs=hop)
 
 
 def test_span_segments_tile_the_whole_passage():

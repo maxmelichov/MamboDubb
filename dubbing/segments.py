@@ -34,6 +34,8 @@ KEEP_TAIL_FLOOR = 0.008  # vocal energy above this is still speech, not a pause
 KEEP_TAIL_SILENCE = 0.35 # this much quiet ends the tail
 UNCOVERED_MIN = 0.6      # shortest audible gap worth keeping as original audio
 UNCOVERED_PEAK = 0.04    # a gap needs energy this loud somewhere to count as speech
+UNCOVERED_HEAD_MAX = 1.0 # how far into an uncovered gap to look for the pause that
+                         # ends the previous speaker, before giving up and starting
 
 LATIN = re.compile(r"[A-Za-z]")
 HEBREW = re.compile(r"[֐-׿]")
@@ -342,7 +344,13 @@ def splice_foreign_spans(segs: list[dict[str, Any]], spans: list[dict[str, Any]]
             if b - a < 0.4:
                 continue
             piece = dict(seg, start=a, end=b)
-            if words is not None:
+            # Redistributing the text is only right when the segment actually broke
+            # into several pieces and each needs its own share. A segment merely
+            # trimmed at one edge keeps every word it had: the trim follows a span
+            # boundary, not a word boundary, and a word straddling it would otherwise
+            # be dropped — "היא צובעת את קטאר" lost its verb that way and was dubbed
+            # as "Qatar in colors…", which reads like a translation failure and is not.
+            if words is not None and len(pieces) > 1:
                 said = [w["text"] for w in words if a - 0.05 <= w["t"] < b]
                 if not said:
                     continue
@@ -495,7 +503,7 @@ def extend_keeps_to_speech_end(segs: list[dict[str, Any]], levels, hop: float,
 
 
 def fill_uncovered_audible(segs: list[dict[str, Any]], levels, hop: float,
-                           total: float, is_target_lang=None) -> None:
+                           total: float, is_target_lang=None, voice_levels=None) -> None:
     """Keep original audio for audible stretches no segment covers — target only.
 
     A region the language detector mislabels as neither source nor target, and the
@@ -526,7 +534,28 @@ def fill_uncovered_audible(segs: list[dict[str, Any]], levels, hop: float,
         while j < n and not covered[j]:
             j += 1
         a, b = i * hop, min(total, j * hop)
-        if (b - a >= UNCOVERED_MIN and float(np.max(levels[i:j])) >= UNCOVERED_PEAK
+        # An uncovered stretch opens the moment the transcript stops, but the source
+        # speaker does not stop there — Whisper's word ends bunch early, so the last
+        # syllable is still sounding. Playing original audio from that instant airs it:
+        # the "ה" of "…באומנות רבה" was audible at 1:34 under the dub that had just
+        # said the same sentence. Start at the first pause instead, if one comes soon.
+        # This one question — has the voice stopped? — is the one thing the vocals
+        # stem answers better than the mix, where music never falls below the floor.
+        # Audibility above still reads the mix; a stem that wrongly hears silence only
+        # costs a moment of original audio, it cannot drop speech.
+        head = i
+        while voice_levels is not None and head < j and (head - i) * hop < UNCOVERED_HEAD_MAX:
+            if head >= len(voice_levels):
+                break
+            if voice_levels[head] < KEEP_TAIL_FLOOR:
+                # One frame past the pause's leading edge: these levels are RMS over
+                # the whole frame, so the first quiet frame can still open on the
+                # decaying tail of the last syllable — which is the part that was
+                # audible. A tenth of a second of an untranscribed gap costs nothing.
+                a = min((head + 1) * hop, b)
+                break
+            head += 1
+        if (b - a >= UNCOVERED_MIN and float(np.max(levels[int(a / hop):j])) >= UNCOVERED_PEAK
                 and is_target_lang(a, b)):
             added.append((round(a, 3), round(b, 3)))
         i = j
@@ -595,7 +624,7 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
             return lang == tgt and prob >= transcript.LID_MIN_PROB
 
     fill_uncovered_audible(segs, src_levels, 0.1, total or len(src_levels) * 0.1,
-                           is_target_lang=is_target)
+                           is_target_lang=is_target, voice_levels=levels)
     m["segments"] = segs
     m["speakers"] = {
         spk: {"dur": round(sum(s["end"] - s["start"] for s in segs if s["speaker"] == spk), 2)}
