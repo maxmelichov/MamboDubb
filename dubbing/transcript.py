@@ -45,6 +45,8 @@ FOREIGN_MIN_PROB = 0.85  # ...and must be this sure, well above LID_MIN_PROB
 FOREIGN_WINDOW = 8.0   # how much of the run to judge it on
 FOREIGN_JOIN_GAP = 1.5 # pieces of one passage this close, in the same language, are
                        # one passage — the windows cut a long answer into runs
+FOREIGN_BACK_MAX = 3.0 # how far back a passage may reclaim utterances the classifier
+                       # buried inside a majority-source run
 FOREIGN_SRC_LOGPROB = -0.5  # ...and the source ASR must FAIL to read it this well. Its
                        # confidence is the honest witness: on this video it read real
                        # Arabic at -0.64 as garbled non-words, but read the stretches
@@ -339,27 +341,46 @@ def _extend_english_end(en_model, source_wav: Path, b: float, limit: float,
     return round(b, 3)
 
 
-def _voice_pause_after(source_wav: Path, start: float, limit: float) -> float | None:
-    """When the voice next stops, or None if it does not stop before `limit`.
+def _voice_pauses(source_wav: Path, start: float, limit: float) -> list[float]:
+    """Where the voice stops between `start` and `limit`, in order.
 
     A pause needs `PAUSE_FRAMES` consecutive quiet frames, so the closure of a plosive
-    inside a word is not mistaken for the end of the sentence.
+    inside a word is not mistaken for the end of a sentence.
     """
     from . import audio
 
     if limit - start <= PAUSE_HOP:
-        return None
+        return []
     levels = audio.frame_rms(audio.decode_mono(source_wav, 16000, start=start, end=limit),
                              16000, PAUSE_HOP)
+    out: list[float] = []
     quiet = 0
     for k, level in enumerate(levels):
         if level < PAUSE_FLOOR:
             quiet += 1
-            if quiet >= PAUSE_FRAMES:
-                return round(start + (k - quiet + 1) * PAUSE_HOP, 3)
+            if quiet == PAUSE_FRAMES:
+                out.append(round(start + (k - quiet + 1) * PAUSE_HOP, 3))
         else:
             quiet = 0
-    return None
+    return out
+
+
+def _voice_pause_after(source_wav: Path, start: float, limit: float) -> float | None:
+    """When the voice next stops, or None if it does not stop before `limit`."""
+    found = _voice_pauses(source_wav, start, limit)
+    return found[0] if found else None
+
+
+def _utterance_start_before(source_wav: Path, end: float, limit: float) -> float | None:
+    """The pause that opens the utterance running into `end`, or None.
+
+    Not simply the last pause: `end` itself often sits in one. This skips any pause
+    within `PAUSE_HOP * PAUSE_FRAMES * 2` of `end` and takes the one before that, which
+    is where the phrase now being spoken began.
+    """
+    edge = end - PAUSE_HOP * PAUSE_FRAMES * 2
+    earlier = [p for p in _voice_pauses(source_wav, limit, end) if p <= edge]
+    return earlier[-1] if earlier else None
 
 
 def _reclaim_leading_fragment(en_model, source_wav: Path, cand: float, a: float,
@@ -428,16 +449,59 @@ def _foreign_group(lsegs: list[tuple[float, float, str | None]], i: int
     return a, b, used
 
 
+def _reads_as_source(lid, src_model, source_wav: Path, a: float, b: float,
+                     source: str) -> bool:
+    """Whether this stretch is the source language, by both witnesses."""
+    from . import audio
+
+    clip = audio.decode_mono(source_wav, 16000, start=a, end=b)
+    lang, prob = detect_language(lid, clip)
+    if lang == source and prob >= LID_MIN_PROB:
+        return True
+    segs, _info = src_model.transcribe(clip, language=source, beam_size=5, vad_filter=False)
+    segs = list(segs)
+    return not segs or sum(s.avg_logprob for s in segs) / len(segs) >= FOREIGN_SRC_LOGPROB
+
+
+def _extend_foreign_start(lid, src_model, source_wav: Path, a: float, source: str,
+                          floor: float) -> float:
+    """Carry a passage back over utterances that are not the source language either.
+
+    A foreign clip can begin in the middle of a run the classifier calls the source
+    language by majority — a twenty-second Hebrew run whose last two seconds are the
+    start of a Chinese report. Those seconds are then transcribed as Hebrew gibberish
+    and dubbed: "-כן, תודה רבה, זה פרלטינגרס" became "Yes, thank you very much, this is
+    Pirlinger" over the top of the clip. Walking back one utterance at a time, and
+    stopping the moment either witness says source language, finds the real edge — the
+    Hebrew before it reads at -0.21 where the clip reads at -0.79.
+    """
+    limit = max(floor, a - FOREIGN_BACK_MAX)
+    while a - limit > PAUSE_HOP:
+        prev = _utterance_start_before(source_wav, a, limit)
+        if prev is None or prev >= a - PAUSE_HOP:
+            break
+        if _reads_as_source(lid, src_model, source_wav, prev, a, source):
+            break
+        a = prev
+    return round(a, 3)
+
+
 def _sounds_foreign(lid, src_model, source_wav: Path, a: float, b: float,
                     source: str) -> str | None:
-    """The language of a whole run, when it is confidently not the source language.
+    """A name for a passage that is not the source language, or None to dub it.
 
-    The per-window labels are made on `win`-second slices and are unreliable on short
-    ones — a 0.9s fragment came back `mi`, Maori, at p≥0.6. Re-asking over the entire
-    run gives the classifier its best shot, and a third language has to clear a higher
-    bar than the target does: the target's transcription can be checked against an ASR
-    that reads it, while nothing here can read Arabic, so the classifier is the only
-    witness and a wrong yes airs the source speaker's own voice.
+    The deciding witness is the source-language ASR, because it is the one that can be
+    wrong in a way we can measure: it read real Arabic at avg_logprob -0.64 as garbled
+    non-words, and read the stretches the classifier mislabelled `mi` and `nl` at
+    -0.38/-0.34 as clean Hebrew. So it must FAIL here, always.
+
+    The classifier's job is to name the language and to veto — it is asked over the
+    whole passage, since its `win`-second windows are unreliable on short ones (a 0.9s
+    fragment came back Maori at p≥0.6). When it is confident, its name is used; when it
+    has no opinion at all the passage is still kept, unnamed, on the ASR's word alone —
+    a Chinese news clip came back `vi` 0.43, `tr` 0.34, `nn` 0.09 and is plainly not
+    Hebrew. What it may not do is contradict itself: if it says the source language
+    confidently, that outranks the ASR and the passage is dubbed.
     """
     from . import audio
 
@@ -445,15 +509,14 @@ def _sounds_foreign(lid, src_model, source_wav: Path, a: float, b: float,
         return None
     clip = audio.decode_mono(source_wav, 16000, start=a, end=min(b, a + FOREIGN_WINDOW))
     lang, prob = detect_language(lid, clip)
-    if lang is None or lang == source or prob < FOREIGN_MIN_PROB:
-        return None
-    # Second opinion, and the one that decides: if the source-language ASR reads this
-    # confidently, it is the source language and the label was wrong.
+    if lang == source and prob >= LID_MIN_PROB:
+        return None                                   # the classifier vetoes
     segs, _info = src_model.transcribe(clip, language=source, beam_size=5, vad_filter=False)
     segs = list(segs)
-    if segs and sum(s.avg_logprob for s in segs) / len(segs) >= FOREIGN_SRC_LOGPROB:
-        return None
-    return lang
+    if not segs or sum(s.avg_logprob for s in segs) / len(segs) >= FOREIGN_SRC_LOGPROB:
+        return None                                   # it reads as the source language
+    named = lang if lang and lang != source and prob >= FOREIGN_MIN_PROB else "und"
+    return named
 
 
 def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: float,
@@ -479,7 +542,7 @@ def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: floa
     spans: list[dict[str, Any]] = []
     consumed: set[int] = set()
     for i, (a, b, lang) in enumerate(lsegs):
-        if lang is None or lang == source or i in consumed:
+        if lang == source or i in consumed:
             continue
         if lang != target:
             # Judge a third-language passage whole; its pieces are not decidable alone.
@@ -495,6 +558,18 @@ def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: floa
             confirmed = _sounds_foreign(lid, src_model, source_wav, a, b, source)
             if confirmed is None:
                 continue
+            # A passage that ends where nobody paused ended at a window edge, not at a
+            # change of speaker: the Arabic run stopped at 446.20, exactly five windows
+            # in, with the voice still going to 447.30, and that last second was dubbed
+            # as "And they will convert and they will be crushed." A language does not
+            # change mid-utterance, so carry the span to the next real pause. Where the
+            # boundary is already a pause — as it was at both ends of the passage — the
+            # scan returns it unchanged and nothing moves.
+            b = _voice_pause_after(source_wav, b, min(b + SPAN_TAIL_MAX, total)) or b
+            # And the same at the leading edge, where a clip can start inside a run the
+            # classifier calls the source language by majority.
+            a = _extend_foreign_start(lid, src_model, source_wav, a, source,
+                                      spans[-1]["end"] if spans else 0.0)
             spans.append({"start": round(a, 3), "end": round(min(total, b), 3),
                           "lang": confirmed, "text": "…",
                           "words": [{"t": round(a, 3), "text": "…"}]})

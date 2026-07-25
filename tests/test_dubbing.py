@@ -300,6 +300,39 @@ def test_foreign_group_joins_the_pieces_of_one_passage():
     assert transcript._foreign_group(runs, 0)[:2] == (10.0, 14.0)
 
 
+def test_a_foreign_span_ending_mid_utterance_runs_to_the_pause(monkeypatch):
+    # The classifier's windows can end a passage while the speaker is still talking;
+    # that last second then gets dubbed from gibberish. It runs to the next pause.
+    monkeypatch.setattr(transcript, "_sounds_foreign",
+                        lambda lid, mdl, sw, a, b, src: "ar")
+    spans = _detect(monkeypatch, [(2.0, 6.0), (8.0, 10.0)],
+                    [("ar", 0.9), ("he", 1.0)], [], pause=7.3)
+    assert spans[0]["end"] == 7.3
+    # Where the boundary is already a pause, nothing moves.
+    spans = _detect(monkeypatch, [(2.0, 6.0), (8.0, 10.0)],
+                    [("ar", 0.9), ("he", 1.0)], [], pause=6.0)
+    assert spans[0]["end"] == 6.0
+
+
+def test_foreign_start_walks_back_over_what_is_not_the_source(monkeypatch):
+    # A clip can begin inside a run the classifier calls the source language by
+    # majority; those seconds get dubbed from gibberish over the top of it.
+    monkeypatch.setattr(transcript, "_utterance_start_before",
+                        lambda sw, end, limit: {593.4: 591.3, 591.3: 589.7}.get(round(end, 1)))
+    reads = {(591.3, 593.4): False, (589.7, 591.3): True}   # the Hebrew before it reads fine
+    monkeypatch.setattr(transcript, "_reads_as_source",
+                        lambda lid, mdl, sw, a, b, src: reads[(round(a, 1), round(b, 1))])
+    got = transcript._extend_foreign_start(object(), object(), "voc.wav", 593.4, "he", 0.0)
+    assert got == 591.3                     # took the clip's own first line, stopped at Hebrew
+
+    # It never walks past the bound, however much is unreadable.
+    monkeypatch.setattr(transcript, "_reads_as_source", lambda *a, **k: False)
+    monkeypatch.setattr(transcript, "_utterance_start_before",
+                        lambda sw, end, limit: max(limit, end - 0.5))
+    assert transcript._extend_foreign_start(
+        object(), object(), "voc.wav", 100.0, "he", 0.0) == 100.0 - transcript.FOREIGN_BACK_MAX
+
+
 def test_sounds_foreign_demands_more_than_the_window_labels(monkeypatch):
     from dubbing import audio
     monkeypatch.setattr(audio, "decode_mono", lambda *a, **k: [0.0])
@@ -317,9 +350,13 @@ def test_sounds_foreign_demands_more_than_the_window_labels(monkeypatch):
     assert sounds(object(), readable, "voc.wav", 0.0, 4.0, "he") is None
     # Without the witness at all, nothing is kept blind.
     assert sounds(object(), None, "voc.wav", 0.0, 4.0, "he") is None
-    # Not sure enough, or it is the source language after all.
+    # Too unsure to name it, but the ASR still cannot read it: kept, unnamed. A
+    # Chinese news clip classified as `vi` 0.43 / `tr` 0.34 is plainly not Hebrew.
     monkeypatch.setattr(transcript, "detect_language", lambda lid, clip: ("ar", 0.7))
-    assert sounds(object(), unreadable, "voc.wav", 0.0, 4.0, "he") is None
+    assert sounds(object(), unreadable, "voc.wav", 0.0, 4.0, "he") == "und"
+    monkeypatch.setattr(transcript, "detect_language", lambda lid, clip: (None, 0.0))
+    assert sounds(object(), unreadable, "voc.wav", 0.0, 4.0, "he") == "und"
+    # But a confident "this IS the source language" outranks the ASR.
     monkeypatch.setattr(transcript, "detect_language", lambda lid, clip: ("he", 0.99))
     assert sounds(object(), unreadable, "voc.wav", 0.0, 4.0, "he") is None
 
