@@ -45,6 +45,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--stages", help=f"comma-separated subset of: {','.join(STAGES)}")
     p.add_argument("--force", help="stage to re-run, or 'all'")
     p.add_argument("--device", help="torch device override for TTS")
+    p.add_argument("--tts-model", choices=("1.7b", "0.6b"), default="1.7b",
+                   help="Qwen3-TTS voice-clone model size (default: 1.7b)")
     return p.parse_args(argv)
 
 
@@ -92,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
         "segments": {},
         "translate": {"src": args.src, "tgt": args.tgt,
                       "context": m["source"].get("context") or ""},
-        "tts": {},
+        "tts": {"model": args.tts_model},
         "timeline": {},
         "mix": {},
         "report": {},
@@ -148,9 +150,9 @@ def main(argv: list[str] | None = None) -> int:
         elif stage == "translate":
             translate.run(m, workdir, source=args.src, target=args.tgt, save=save)
         elif stage == "tts":
-            engine = tts_mod.run(m, workdir, save=save, device=args.device)
+            engine = tts_mod.run(m, workdir, save=save, device=args.device, model=args.tts_model)
         elif stage == "timeline":
-            engine = engine or tts_mod.Engine(m, workdir, device=args.device)
+            engine = engine or tts_mod.Engine(m, workdir, device=args.device, model=args.tts_model)
             shorten_many, resynth_many = _retimers(m, workdir, engine, args)
             timeline.run(m, workdir, shorten_many=shorten_many, resynth_many=resynth_many)
         elif stage == "mix":
@@ -185,6 +187,7 @@ def _retimers(m, workdir: Path, engine, args):
         engine.close()
         processor, model, device = translate.load()
         segs = m["segments"]
+        # preceding is SOURCE-language text by convention — see translate._PRECEDING.
         before = {s["id"]: prev["text"] for prev, s in zip(segs, segs[1:])}
         out: dict[int, str | None] = {}
         try:

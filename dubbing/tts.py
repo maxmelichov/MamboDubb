@@ -28,9 +28,15 @@ import soundfile as sf
 from . import audio
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-MODEL_PATH = REPO_ROOT / "models" / "Qwen3-TTS-12Hz-1.7B-Base"
-HUB_ID = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
-MODEL_TAG = "qwen3-tts-1.7b-base"
+# Voice-clone model, selectable per run (--tts-model). The tag is mixed into every
+# clip's cache key, so 0.6B and 1.7B clips never collide and switching re-generates.
+TTS_MODELS = {
+    "1.7b": {"dir": "Qwen3-TTS-12Hz-1.7B-Base", "hub": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+             "tag": "qwen3-tts-1.7b-base"},
+    "0.6b": {"dir": "Qwen3-TTS-12Hz-0.6B-Base", "hub": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+             "tag": "qwen3-tts-0.6b-base"},
+}
+DEFAULT_TTS_MODEL = "1.7b"
 CODEC_HZ = 12.5
 
 REF_SR = 24000
@@ -166,7 +172,8 @@ def best_ref_window(voc: np.ndarray, a: float, b: float, target: float
 class Engine:
     """Holds the loaded models and the reference bank for one run."""
 
-    def __init__(self, m: dict[str, Any], workdir: Path, *, device: str | None = None):
+    def __init__(self, m: dict[str, Any], workdir: Path, *, device: str | None = None,
+                 model: str = DEFAULT_TTS_MODEL):
         self.m = m
         self.workdir = workdir
         self.clips = workdir / "clips"
@@ -174,6 +181,8 @@ class Engine:
         self.clips.mkdir(parents=True, exist_ok=True)
         self.refs.mkdir(parents=True, exist_ok=True)
         self.device = device
+        self.tts_model = model if model in TTS_MODELS else DEFAULT_TTS_MODEL
+        self.model_tag = TTS_MODELS[self.tts_model]["tag"]
         self._synth = None
         self._asr = None
         self._voc: np.ndarray | None = None
@@ -189,7 +198,7 @@ class Engine:
     @property
     def synth(self):
         if self._synth is None:
-            self._synth = _Synth(device=self.device)
+            self._synth = _Synth(device=self.device, model=self.tts_model)
         return self._synth
 
     @property
@@ -259,7 +268,7 @@ class Engine:
 
     # -- synthesis ---------------------------------------------------------
     def _cache_key(self, speak: str, ref_key: str, seed: int, greedy: bool) -> str:
-        blob = f"{MODEL_TAG}|{speak}|{ref_key}|xvec|{seed}|{int(greedy)}"
+        blob = f"{self.model_tag}|{speak}|{ref_key}|xvec|{seed}|{int(greedy)}"
         return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
 
     def _verify(self, clip: Path, speak: str) -> tuple[bool, float, str]:
@@ -285,8 +294,8 @@ class Engine:
         ov = word_overlap(speak, heard)
         return ov >= CLONE_MIN_OVERLAP, ov, heard[:120]
 
-    def clip_for(self, seg: dict[str, Any], text_en: str) -> dict[str, Any] | None:
-        """Bounded retry loop. Returns a tts record, or None to fall back to keep."""
+    def _plan(self, seg: dict[str, Any], text_en: str):
+        """Everything an attempt needs, or None if the segment cannot be voiced."""
         speak = prepare_en(text_en)
         if not speak or len(_tokens(speak)) == 0:
             return None
@@ -295,29 +304,61 @@ class Engine:
             return None
         ref_path, ref_key = ref
         base_seed = int(hashlib.sha1(f"{seg['id']}|{speak}".encode()).hexdigest()[:8], 16)
+        return speak, ref_path, ref_key, base_seed
+
+    def _attempt(self, seg_id: int, speak: str, ref_path: Path, ref_key: str,
+                 base_seed: int, attempt: int):
+        """Generate (or load-from-cache) one attempt's clip.
+
+        Returns (clip, meta, verdict). `verdict` is None when the clip was just
+        generated and still needs verifying; a dict when it was cached; and
+        {"failed": True} when generation raised. Isolating this from verification
+        is what lets the pipeline in `run` verify one clip while the GPU makes the
+        next — the seed/cache scheme is identical to the sequential path.
+        """
+        greedy = attempt == MAX_TRIES - 1
+        seed = base_seed + 1000 * attempt
+        key = self._cache_key(speak, ref_key, seed, greedy)
+        clip = self.clips / f"{key}.wav"
+        meta = self.clips / f"{key}.json"
+        if clip.is_file() and meta.is_file():
+            return clip, meta, json.loads(meta.read_text())
+        try:
+            self.synth.generate(speak, ref_path, clip, seed=seed, greedy=greedy)
+        except Exception as exc:
+            print(f"  tts: seg {seg_id} generate failed ({exc})", file=sys.stderr)
+            return clip, meta, {"failed": True}
+        audio.trim_leading_silence(clip, clip)
+        return clip, meta, None
+
+    def _verify_and_store(self, clip: Path, meta: Path, speak: str) -> dict[str, Any]:
+        ok, ov, heard = self._verify(clip, speak)
+        verdict = {"ok": ok, "overlap": round(ov, 3), "heard": heard,
+                   "dur": round(audio.duration(clip), 3)}
+        meta.write_text(json.dumps(verdict, ensure_ascii=False))
+        return verdict
+
+    @staticmethod
+    def _record(clip: Path, verdict: dict[str, Any], attempt: int) -> dict[str, Any]:
+        return {"clip": f"clips/{clip.name}", "dur": verdict["dur"],
+                "tries": attempt + 1, "overlap": verdict["overlap"], "verify": "ok"}
+
+    def clip_for(self, seg: dict[str, Any], text_en: str) -> dict[str, Any] | None:
+        """Bounded retry loop. Returns a tts record, or None to fall back to keep."""
+        plan = self._plan(seg, text_en)
+        if plan is None:
+            return None
+        speak, ref_path, ref_key, base_seed = plan
         best: dict[str, Any] | None = None
 
         for attempt in range(MAX_TRIES):
-            greedy = attempt == MAX_TRIES - 1
-            seed = base_seed + 1000 * attempt
-            key = self._cache_key(speak, ref_key, seed, greedy)
-            clip = self.clips / f"{key}.wav"
-            meta = self.clips / f"{key}.json"
-            if clip.is_file() and meta.is_file():
-                verdict = json.loads(meta.read_text())
-            else:
-                try:
-                    self.synth.generate(speak, ref_path, clip, seed=seed, greedy=greedy)
-                except Exception as exc:
-                    print(f"  tts: seg {seg['id']} generate failed ({exc})", file=sys.stderr)
-                    continue
-                audio.trim_leading_silence(clip, clip)
-                ok, ov, heard = self._verify(clip, speak)
-                verdict = {"ok": ok, "overlap": round(ov, 3), "heard": heard,
-                           "dur": round(audio.duration(clip), 3)}
-                meta.write_text(json.dumps(verdict, ensure_ascii=False))
-            record = {"clip": f"clips/{clip.name}", "dur": verdict["dur"],
-                      "tries": attempt + 1, "overlap": verdict["overlap"], "verify": "ok"}
+            clip, meta, verdict = self._attempt(seg["id"], speak, ref_path, ref_key,
+                                                base_seed, attempt)
+            if verdict is not None and verdict.get("failed"):
+                continue
+            if verdict is None:
+                verdict = self._verify_and_store(clip, meta, speak)
+            record = self._record(clip, verdict, attempt)
             if verdict["ok"]:
                 return record
             if verdict["overlap"] > (best or {}).get("overlap", -1.0):
@@ -355,7 +396,7 @@ class Engine:
 class _Synth:
     """Minimal Qwen3-TTS wrapper: x-vector-only cloning, one call per clip."""
 
-    def __init__(self, *, device: str | None = None):
+    def __init__(self, *, device: str | None = None, model: str = DEFAULT_TTS_MODEL):
         import torch
 
         if device and device != "auto":
@@ -368,7 +409,9 @@ class _Synth:
             self.device = "cpu"
         # float16 on MPS hits NaNs in the code predictor sampler.
         self.dtype = torch.bfloat16 if self.device.startswith("cuda") else torch.float32
-        self.path = str(MODEL_PATH) if MODEL_PATH.is_dir() else HUB_ID
+        spec = TTS_MODELS[model if model in TTS_MODELS else DEFAULT_TTS_MODEL]
+        local = REPO_ROOT / "models" / spec["dir"]
+        self.path = str(local) if local.is_dir() else spec["hub"]
         self._model = None
         self._prompts: dict[str, Any] = {}
 
@@ -447,6 +490,11 @@ class _Synth:
 
 _ASR_CANDIDATES = ("models/faster-whisper-base.en", "Systran/faster-whisper-base.en",
                    "models/faster-whisper-tiny.en", "Systran/faster-whisper-tiny.en")
+VERIFY_CPU_THREADS = 2   # cap the verify ASR's CPU threads. It runs on a worker thread
+                         # while the next clip generates on the GPU (see run()); left
+                         # uncapped, CTranslate2 grabs every core and starves the MPS
+                         # dispatch thread, so the overlap would slow generation instead
+                         # of hiding the verify behind it.
 
 
 def _load_asr():
@@ -459,7 +507,8 @@ def _load_asr():
         local = REPO_ROOT / cand
         target = str(local) if local.is_dir() else cand
         try:
-            model = WhisperModel(target, device="cpu", compute_type="auto")
+            model = WhisperModel(target, device="cpu", compute_type="auto",
+                                 cpu_threads=VERIFY_CPU_THREADS)
             print(f"  tts: verifying with {target}", file=sys.stderr)
             return model
         except Exception:
@@ -468,23 +517,74 @@ def _load_asr():
     return None
 
 
-def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = None) -> Engine:
-    engine = Engine(m, workdir, device=device)
+def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = None,
+        model: str = DEFAULT_TTS_MODEL) -> Engine:
+    engine = Engine(m, workdir, device=device, model=model)
     engine.build_speaker_refs()
     dub = [s for s in m["segments"] if not s["keep"]]
-    for n, seg in enumerate(dub, 1):
-        if seg.get("tts") and (workdir / seg["tts"]["clip"]).is_file():
-            continue
+    todo = [s for s in dub if not (s.get("tts") and (workdir / s["tts"]["clip"]).is_file())]
+
+    # Generation runs on the GPU, verification (Whisper) on the CPU. Generate each
+    # first-attempt clip in order and hand its verify to a single worker thread, so
+    # it overlaps the *next* clip's generation instead of stalling the GPU. One
+    # worker only: faster-whisper is not re-entrant, and this already hides all but
+    # the last clip's verify. Segments whose first attempt fails (rare) fall through
+    # to clip_for, which resumes at attempt 1 straight from the cache.
+    import concurrent.futures as cf
+
+    pending: dict[int, tuple] = {}
+    retry: list[dict[str, Any]] = []
+    done = 0
+    with cf.ThreadPoolExecutor(max_workers=1) as vpool:
+        for seg in todo:
+            plan = engine._plan(seg, seg["text_en"])
+            if plan is None:
+                retry.append(seg)
+                continue
+            speak, ref_path, ref_key, base_seed = plan
+            clip, meta, verdict = engine._attempt(seg["id"], speak, ref_path, ref_key, base_seed, 0)
+            if verdict is not None and verdict.get("failed"):
+                retry.append(seg)
+                continue
+            if verdict is not None:                    # cache hit — no verify needed
+                if verdict["ok"]:
+                    seg["tts"] = engine._record(clip, verdict, 0)
+                else:
+                    retry.append(seg)
+                continue
+            pending[seg["id"]] = (vpool.submit(engine._verify, clip, speak), clip, meta, speak)
+
+        for seg in todo:
+            item = pending.get(seg["id"])
+            if item is None:
+                continue
+            fut, clip, meta, speak = item
+            ok, ov, heard = fut.result()
+            verdict = {"ok": ok, "overlap": round(ov, 3), "heard": heard,
+                       "dur": round(audio.duration(clip), 3)}
+            meta.write_text(json.dumps(verdict, ensure_ascii=False))
+            if ok:
+                seg["tts"] = engine._record(clip, verdict, 0)
+            else:
+                retry.append(seg)
+            done += 1
+            if done % 10 == 0:
+                print(f"  tts: {done}/{len(todo)}", file=sys.stderr)
+                if save:
+                    save()
+
+    # Slow path: attempts 1+ for the few that failed their first try (needs the GPU
+    # again, so it runs after the pipelined pass rather than stalling it).
+    for seg in retry:
         record = engine.clip_for(seg, seg["text_en"])
         if record is None:
             seg["keep"], seg["keep_reason"] = True, "tts_failed"
             print(f"  tts: seg {seg['id']} unusable → keep original", file=sys.stderr)
         else:
             seg["tts"] = record
-        if n % 10 == 0:
-            print(f"  tts: {n}/{len(dub)}", file=sys.stderr)
-            if save:
-                save()
+    if save:
+        save()
+
     for seg in m["segments"]:
         if seg["keep"] and not (seg.get("tts") and (workdir / seg["tts"]["clip"]).is_file()):
             seg["tts"] = engine.keep_clip(seg)
