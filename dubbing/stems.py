@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from . import nvlibs
+
 MODEL = "htdemucs_ft"
 
 
@@ -27,7 +29,7 @@ def run(m: dict[str, Any], workdir: Path) -> None:
     subprocess.run(
         [sys.executable, "-m", "demucs", "--two-stems=vocals", "-n", MODEL,
          "-o", str(scratch), str(source)],
-        check=True,
+        check=True, env=nvlibs.subprocess_env(),
     )
 
     produced = scratch / MODEL / source.stem

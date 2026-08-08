@@ -29,3 +29,39 @@ A staged pipeline — `fetch → stems → transcript → segments → translate
 - Pure logic (segmentation, placement, translation guards) is tested without models in `tests/test_dubbing.py` — add a test alongside the change.
 - Secrets in `.env` (`HF_TOKEN` for gated Pyannote models; without it diarization falls back to single-speaker).
 - `transformers` is pinned to 4.57.3 via a uv override (qwen-tts needs it; mlx-lm tolerates it) — don't "fix" the version conflict by upgrading.
+
+
+# Readable Summarization
+
+When summarizing a document:
+
+1. Start with a one-sentence TL;DR.
+2. State the document's main purpose or argument.
+3. Organize the summary with descriptive headings.
+4. Use short paragraphs and bullets where appropriate.
+5. Preserve important numbers, caveats, assumptions, and disagreements.
+6. Remove repetition, filler, generic introductions, and obvious statements.
+7. Prefer plain, natural language over academic or bureaucratic wording.
+8. Do not add information that is not in the source.
+9. Clearly distinguish:
+   - What the source explicitly says
+   - What can reasonably be inferred
+   - What remains uncertain
+10. End with the practical takeaway or “why this matters.”
+
+Default format:
+
+## TL;DR
+One or two clear sentences.
+
+## Main points
+- 3–7 important points, explained briefly.
+
+## Important details
+Include evidence, numbers, definitions, or caveats that affect interpretation.
+
+## Takeaway
+Explain what the reader should remember or do.
+
+Target length: 10–20% of the original unless the user specifies otherwise.
+Write for an intelligent, busy reader. Be concise, specific, and easy to scan.

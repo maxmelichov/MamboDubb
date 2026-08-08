@@ -50,6 +50,21 @@ uv run hf download ivrit-ai/whisper-large-v3-turbo-ct2 \
 
 Demucs (`htdemucs_ft`) and Pyannote download themselves on first use.
 
+## Linux (CUDA)
+
+Everything above applies, except translation: `mlx-lm` is macOS-only, and the main
+venv's `transformers==4.57.3` pin (qwen-tts) predates Gemma 4. On Linux,
+`translate.load()` instead spawns `translator/worker.py` in its own isolated uv
+venv (`translator/pyproject.toml`: torch + transformers >= 5) and talks to it over a
+JSON-lines pipe. Nothing to install by hand — the first translate run builds the
+venv via `uv run --project translator` automatically. It expects the bf16
+transformers-format weights at:
+
+```bash
+uv run hf download unsloth/gemma-4-12b-it \
+  --local-dir models/gemma-4-12b-it-cuda
+```
+
 ## Verify
 
 ```bash

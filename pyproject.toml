@@ -26,9 +26,13 @@ dependencies = [
     "hf>=0.0.1",
     # Gemma 4 (model_type gemma4_unified) is only supported after the June 2026 fix,
     # which is past the last mlx-lm release — hence the git pin in [tool.uv.sources].
-    "mlx-lm",
+    # macOS only: mlx has no Linux wheels; on Linux translation runs in the isolated
+    # translator venv (see translator/) with transformers 5.x on CUDA.
+    "mlx-lm ; sys_platform == 'darwin'",
     "silero-vad>=6.2.1",
     "speechbrain>=1.1.0",
+    # Deterministic digit→word spelling for TTS (dubbing/numwords.py)
+    "num2words>=0.5",
 ]
 
 [project.optional-dependencies]
@@ -53,7 +57,15 @@ package = true
 # satisfied. 4.57.3 is the one that has to win (Qwen3-TTS breaks on 5.x), and mlx-lm
 # runs fine on it for this workload — it only needs transformers for the tokenizer.
 # The one incompatibility Gemma 4 does hit there is handled in translate.load().
-override-dependencies = ["transformers==4.57.3"]
+override-dependencies = [
+    "transformers==4.57.3",
+    # torch cu130 pins cudnn 9.20, whose wheel is missing libcudnn_engines_tensor_ir;
+    # the loader then fills that one sub-library from any system cuDNN and every CUDA
+    # conv dies with CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH. 9.24+ ships the complete
+    # set. An override (not a dependency) so the resolver cannot "fix" it by downgrading
+    # torch instead.
+    "nvidia-cudnn-cu13>=9.24 ; sys_platform == 'linux'",
+]
 
 [tool.uv.sources]
 qwen-tts = { path = "third_party/Qwen3-TTS", editable = true }

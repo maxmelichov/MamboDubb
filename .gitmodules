@@ -1,0 +1,3 @@
+[submodule "third_party/Qwen3-TTS"]
+	path = third_party/Qwen3-TTS
+	url = https://github.com/QwenLM/Qwen3-TTS

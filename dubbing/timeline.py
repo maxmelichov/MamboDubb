@@ -9,6 +9,20 @@ compression still does not fit becomes *drift* on the following segment. Drift i
 bounded, and it disappears on its own at the next real pause, because a start is
 `max(source_start, prev_end + gap)`.
 
+Each clip is anchored to its *own* segment's end, not to the next segment's
+start: stretching never pushes a clip past the moment its original speaker
+stopped just because the timeline has room, and a clip that is genuinely too
+long is compressed toward its own end, allowed to spill at most TAIL_MAX into
+a following gap when the next segment is the same speaker — and not at all when
+the speaker changes (or there is no next segment). A speaker change makes the
+next segment's original onset a hard wall: a clip that would still be talking
+when the other character visibly starts is first pulled earlier into free
+timeline before it (at most LEAD_MAX, never overlapping the previous clip),
+then compressed up to RATE_MAX. A clip that even then cannot fit still
+overruns rather than being cut; the following segment is pushed later (drift)
+and the overrun is measured and reported instead of masquerading as ordinary
+drift.
+
 Placed clips are separated by a short gap, except where the source itself ran
 them together — a passage of original audio split into parts stays joined, since
 inserting silence at each seam would both sound wrong and push the run late.
@@ -16,7 +30,8 @@ inserting silence at each seam would both sound wrong and push the run late.
 Invariants asserted at the end of the stage:
   * placements are strictly ordered and never overlap
   * no clip is shorter than the audio it holds (nothing is cut)
-  * no clip starts before its source onset
+  * no clip starts more than LEAD_MAX before its source onset (and only ever
+    early to duck under a cross-speaker wall)
   * every segment is placed exactly once
 """
 
@@ -40,25 +55,59 @@ RATE_MIN = 0.82       # slowest we stretch a short dub to fill its slot (below t
 DRIFT_SOFT = 0.50     # lateness that justifies escalating to RATE_MAX
 DRIFT_MAX = 1.50      # lateness that justifies asking for a shorter translation
 SHORTEN_ROUNDS = 2
+TAIL_MAX = 0.60       # how far a too-long clip may run past its own segment's end
+                      # into a following gap — only when the next segment is the
+                      # same speaker; a speaker change (or the end of the video)
+                      # allows no deliberate tail at all
+LEAD_MAX = 0.60       # how far a clip squeezed against a cross-speaker wall may
+                      # start before its own source onset, into free timeline —
+                      # a moment of early speech beats talking over the next
+                      # speaker's opening
 
 
-def rate_for(dur: float, slot: float, drift_in: float, stretchable: bool) -> float:
-    """How much to speed a clip up so it fits `slot`, within policy limits."""
+def rate_for(dur: float, slot: float, drift_in: float, stretchable: bool,
+             own: float | None = None, tail: float = 0.0) -> float:
+    """How much to speed a clip up so it fits `slot`, within policy limits.
+
+    `own` is the segment's own span (source_end - source_start): stretching a
+    short clip fills at most that far, never the whole slot — the dub should
+    stop when the original speaker stopped, not when the next one starts. A
+    clip longer than its own span is compressed toward `own + tail`, where
+    `tail` is the deliberate overhang allowed past the segment's end (TAIL_MAX
+    into a same-speaker gap, 0.0 across a speaker change). `own=None` keeps
+    the pure fit-to-slot behaviour.
+    """
     if not stretchable or dur <= 0.05:
         return 1.0
     if slot <= 0.05:
         # Back-to-back source segments leave no slot at all; only compress when
         # we are already behind and need to claw time back.
         return RATE_PREF if drift_in > DRIFT_SOFT else 1.0
-    if slot >= dur:
-        # The dub is shorter than its slot: play it at 1.0 and it finishes early,
-        # leaving a silent tail. Stretch it to fill the slot, but never below
-        # RATE_MIN (a drawl is worse than a little silence).
-        return max(RATE_MIN, dur / slot)
-    need = dur / slot
+    # How far a slow-down may fill, and how far the clip may reach at all.
+    # Both are still capped by the slot: the next placement is never overlapped.
+    stretch_to = slot if own is None else min(slot, max(own, 0.05))
+    fit_to = slot if own is None else min(slot, max(own + tail, 0.05))
+    if dur <= stretch_to:
+        # The dub is shorter than the span its speaker actually used: play it at
+        # 1.0 and it finishes early, leaving a silent tail. Stretch it to fill
+        # that span, but never below RATE_MIN (a drawl is worse than a little
+        # silence) — and never past the segment's own end just because the
+        # timeline has room before the next segment.
+        return max(RATE_MIN, dur / stretch_to)
+    if dur <= fit_to:
+        # Ends within the allowed tail: neither filled out nor squeezed.
+        return 1.0
+    need = dur / fit_to
     rate = min(RATE_PREF, need)
-    if dur / rate - slot > DRIFT_SOFT:
-        rate = min(RATE_MAX, need)
+    if rate < need:
+        # RATE_PREF is not enough to hit the target. Escalate to RATE_MAX when
+        # the shortfall would push the next segment late (classic drift), or
+        # when it would overhang past the allowed tail beyond the segment's
+        # own end (talking over the next speaker's opening).
+        over_slot = dur / rate - slot
+        over_cap = dur / rate - fit_to
+        if over_slot > DRIFT_SOFT or (own is not None and over_cap > 1e-6):
+            rate = min(RATE_MAX, need)
     return rate
 
 
@@ -78,10 +127,47 @@ def place(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         next_need = min(MIN_GAP, max(MIN_SEAM, nxt - it["source_end"]))
         slot = nxt - next_need - start
         drift = start - it["source_start"]
-        rate = rate_for(it["dur"], slot, drift, it.get("stretchable", False))
+        # A too-long clip may run TAIL_MAX past its own end into a following
+        # gap when the next segment is the same speaker; a speaker change (or
+        # the end of the video) gets no deliberate tail — compress harder, and
+        # let any unavoidable remainder push the next segment later (drift)
+        # rather than talk over its speaker's opening.
+        same_speaker = (i + 1 < len(items)
+                        and items[i + 1].get("speaker") == it.get("speaker"))
+        tail = TAIL_MAX if same_speaker else 0.0
+        own = it["source_end"] - it["source_start"]
+        rate = rate_for(it["dur"], slot, drift, it.get("stretchable", False),
+                        own=own, tail=tail)
         end = start + it["dur"] / rate
+        # A speaker change makes the next segment's original onset a hard wall:
+        # the dub must not still be talking in voice A when character B visibly
+        # starts. First pull the clip earlier into free timeline before it
+        # (bounded by LEAD_MAX and the previous placement, so nothing overlaps),
+        # then compress up to RATE_MAX. Whatever still does not fit overruns —
+        # audio is never cut — but the overrun is measured and returned rather
+        # than masquerading as ordinary drift, and because each clip is fitted
+        # against its own wall, one clip's lateness never propagates past the
+        # next wall that has slack to absorb it.
+        wall = nxt - next_need
+        overrun = 0.0
+        if i + 1 < len(items) and not same_speaker and end > wall + 1e-6:
+            floor = max(0.0, prev_end + need)
+            lead = min(LEAD_MAX, start - floor, end - wall)
+            if lead > 1e-6:
+                start -= lead
+                end -= lead
+            if end > wall + 1e-6 and it.get("stretchable") and it["dur"] > 0.05:
+                allowed = wall - start
+                want = it["dur"] / allowed if allowed > 0.05 else math.inf
+                rate = max(rate, min(RATE_MAX, want))
+                end = start + it["dur"] / rate
+            # What matters on screen is talking past the next speaker's actual
+            # onset; ending inside the seam gap just before it costs nothing.
+            overrun = max(0.0, end - nxt)
         out.append({"id": it["id"], "start": round(start, 3), "end": round(end, 3),
-                    "rate": round(rate, 4), "drift": round(drift, 3)})
+                    "rate": round(rate, 4),
+                    "drift": round(start - it["source_start"], 3),
+                    "overrun": round(overrun, 3)})
         prev_end = end
         prev_source_end = it["source_end"]
     return out
@@ -95,7 +181,9 @@ def assert_invariants(places: list[dict], items: list[dict]) -> None:
             f"seg {b['id']} starts {b['start']:.3f}"
         )
     for p, it in zip(places, items):
-        assert p["start"] >= it["source_start"] - 1e-3, f"seg {p['id']} starts before source"
+        assert p["start"] >= it["source_start"] - LEAD_MAX - 1e-3, (
+            f"seg {p['id']} starts more than LEAD_MAX before source"
+        )
         held = it["dur"] / p["rate"]
         assert abs((p["end"] - p["start"]) - held) < 0.02, (
             f"seg {p['id']} would be truncated: slot {p['end'] - p['start']:.3f}s "
@@ -134,6 +222,7 @@ def build_items(m: dict[str, Any]) -> list[dict[str, Any]]:
             "source_end": float(seg["end"]),
             "dur": float(seg["tts"]["dur"]),
             "clip": seg["tts"]["clip"],
+            "speaker": seg.get("speaker"),
             "stretchable": not seg["keep"],
         })
     return items
@@ -220,3 +309,7 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
     drifts = [p["drift"] for p in final]
     print(f"  timeline: {len(final)} placed, max drift {max(drifts):.2f}s, "
           f"{sum(1 for d in drifts if d > DRIFT_SOFT)} over {DRIFT_SOFT}s", file=sys.stderr)
+    overruns = [p["overrun"] for p in final if p["overrun"] > 1e-3]
+    if overruns:
+        print(f"  timeline: {len(overruns)} cross-speaker overrun(s), "
+              f"worst {max(overruns):.2f}s", file=sys.stderr)

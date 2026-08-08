@@ -1,0 +1,101 @@
+"""Gemma 4 CUDA translation worker — JSON lines on stdin/stdout, logs on stderr.
+
+Runs in its own uv venv (see translator/pyproject.toml) because the main venv pins
+transformers==4.57.3, which predates Gemma 4's `gemma4_unified` architecture.
+`dubbing/translate.py` spawns this as a subprocess and speaks the protocol below.
+
+Protocol (one JSON object per line, stdout flushed after every line):
+  worker → parent   {"ready": true}                       once, after the model loads
+  parent → worker   {"id": n, "user_text": str, "max_new_tokens": int}
+  worker → parent   {"id": n, "text": str}                 the raw decoded completion
+  worker → parent   {"id": n|null, "error": str}           and the loop continues
+
+The worker applies the model's own chat template (one user turn) and greedy-decodes;
+all prompt construction and post-processing stays in dubbing/translate.py so the two
+backends share every rule.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_MODEL = REPO_ROOT / "models" / "gemma-4-12b-it-cuda"
+
+
+def log(msg: str) -> None:
+    print(f"  worker: {msg}", file=sys.stderr, flush=True)
+
+
+def emit(obj: dict) -> None:
+    print(json.dumps(obj, ensure_ascii=False), flush=True)
+
+
+def load(path: str):
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    log(f"loading {path} on {device} (bfloat16)")
+    tokenizer = AutoTokenizer.from_pretrained(path)
+    try:
+        model = AutoModelForCausalLM.from_pretrained(path, dtype=torch.bfloat16)
+    except TypeError:  # transformers < 5 spells it torch_dtype
+        model = AutoModelForCausalLM.from_pretrained(path, torch_dtype=torch.bfloat16)
+    model.to(device).eval()
+    log("model loaded")
+    return tokenizer, model, device
+
+
+def generate(tokenizer, model, device: str, user_text: str, max_new_tokens: int) -> str:
+    import torch
+
+    messages = [{"role": "user", "content": user_text}]
+    try:
+        ids = tokenizer.apply_chat_template(messages, add_generation_prompt=True,
+                                            enable_thinking=False, return_tensors="pt")
+    except TypeError:  # template does not accept enable_thinking
+        ids = tokenizer.apply_chat_template(messages, add_generation_prompt=True,
+                                            return_tensors="pt")
+    if not torch.is_tensor(ids):  # transformers 5 returns a BatchEncoding by default
+        ids = ids["input_ids"]
+    ids = ids.to(device)
+    with torch.no_grad():
+        out = model.generate(ids, attention_mask=torch.ones_like(ids),
+                             max_new_tokens=max_new_tokens, do_sample=False)
+    # Keep special tokens: Gemma sometimes opens a thought channel even though the
+    # template pre-closed it, and the parent's shared post-processing splits on the
+    # literal <channel|> / turn markers. skip_special_tokens=True would delete the
+    # markers and leave the bare word "thought" in the spoken line.
+    return tokenizer.decode(out[0][ids.shape[-1]:], skip_special_tokens=False).strip()
+
+
+def main() -> None:
+    path = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("TRANSLATOR_MODEL_PATH",
+                                                                str(DEFAULT_MODEL))
+    tokenizer, model, device = load(path)
+    emit({"ready": True})
+    for raw in sys.stdin:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            req = json.loads(raw)
+            rid = req["id"]
+            user_text = req["user_text"]
+            max_new_tokens = int(req.get("max_new_tokens", 400))
+        except Exception as exc:  # malformed line — report and keep serving
+            emit({"id": None, "error": f"bad request: {exc}"})
+            continue
+        try:
+            emit({"id": rid, "text": generate(tokenizer, model, device,
+                                              user_text, max_new_tokens)})
+        except Exception as exc:
+            emit({"id": rid, "error": f"{type(exc).__name__}: {exc}"})
+
+
+if __name__ == "__main__":
+    main()

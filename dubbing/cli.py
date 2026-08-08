@@ -40,6 +40,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--duration", type=float, help="only dub the first N seconds")
     p.add_argument("--context", help="one-line note on who/what the video is about and "
                    "the spellings of names the ASR mangles — steers the translator")
+    p.add_argument("--register", choices=("narration", "dialogue"), default="narration",
+                   help="translation speaking style: 'narration' (default, full words) "
+                        "or 'dialogue' (natural spoken register, e.g. English "
+                        "contractions)")
+    p.add_argument("--dub-foreign", action="store_true",
+                   help="dub confident third-language passages into the target instead "
+                        "of keeping original audio with a subtitle")
     p.add_argument("--transcript", choices=("auto", "captions", "asr"), default="auto",
                    help="where the transcript comes from (default: captions if present)")
     p.add_argument("--stages", help=f"comma-separated subset of: {','.join(STAGES)}")
@@ -91,10 +98,13 @@ def main(argv: list[str] | None = None) -> int:
                   "duration": args.duration, "src": args.src},
         "stems": {},
         "transcript": {"src": args.src, "tgt": args.tgt, "prefer": args.transcript},
-        "segments": {},
+        # segments reads tgt_lang from the manifest, so the pair must be in its
+        # fingerprint — with params={} changing --tgt never invalidated it.
+        "segments": {"src": args.src, "tgt": args.tgt, "dub_foreign": args.dub_foreign},
         "translate": {"src": args.src, "tgt": args.tgt,
-                      "context": m["source"].get("context") or ""},
-        "tts": {"model": args.tts_model},
+                      "context": m["source"].get("context") or "",
+                      "register": args.register},
+        "tts": {"model": args.tts_model, "tgt": args.tgt},
         "timeline": {},
         "mix": {},
         "report": {},
@@ -146,9 +156,11 @@ def main(argv: list[str] | None = None) -> int:
                            prefer=args.transcript)
         elif stage == "segments":
             words = words or transcript.load_words(workdir, m)
-            segments.run(m, workdir, words, transcript.load_foreign_spans(workdir, m))
+            segments.run(m, workdir, words, transcript.load_foreign_spans(workdir, m),
+                         dub_foreign=args.dub_foreign)
         elif stage == "translate":
-            translate.run(m, workdir, source=args.src, target=args.tgt, save=save)
+            translate.run(m, workdir, source=args.src, target=args.tgt, save=save,
+                          register=args.register)
         elif stage == "tts":
             engine = tts_mod.run(m, workdir, save=save, device=args.device, model=args.tts_model)
         elif stage == "timeline":
@@ -179,25 +191,41 @@ def main(argv: list[str] | None = None) -> int:
 def _retimers(m, workdir: Path, engine, args):
     """Callbacks the timeline uses when a line must be shortened to fit.
 
-    Batched per round so each model is loaded once: the synthesiser is released
-    while the translator runs, and vice versa.
+    Batched per round so each model is loaded once. Where translator and TTS
+    compete for one device (MLX unified memory, single GPU) the synthesiser is
+    released while the translator runs, and vice versa; on a multi-GPU box each
+    keeps its own device and both stay resident.
     """
 
     def shorten_many(requests):
-        engine.close()
+        if translate.exclusive_device():
+            engine.close()
         processor, model, device = translate.load()
         segs = m["segments"]
         # preceding is SOURCE-language text by convention — see translate._PRECEDING.
         before = {s["id"]: prev["text"] for prev, s in zip(segs, segs[1:])}
+        # On a pivot run the shorten re-translates from the English intermediate
+        # (the measured-good line), so its preceding context is English too.
+        before_mid = {s["id"]: prev.get("text_mid") or ""
+                      for prev, s in zip(segs, segs[1:])}
+        pivot = translate.pivot_via_english(args.src, args.tgt)
         out: dict[int, str | None] = {}
         try:
             for seg, max_words in requests:
-                out[seg["id"]] = translate.shorten(
-                    processor, model, seg["text"], seg["text_en"], max_words,
-                    source=args.src, target=args.tgt,
-                    context=m["source"].get("context") or "",
-                    preceding=before.get(seg["id"], ""), device=device,
-                )
+                if pivot and (seg.get("text_mid") or "").strip():
+                    out[seg["id"]] = translate.shorten(
+                        processor, model, seg["text_mid"], seg["text_en"], max_words,
+                        source="en", target=args.tgt,
+                        context=m["source"].get("context") or "",
+                        preceding=before_mid.get(seg["id"], ""), device=device,
+                    )
+                else:
+                    out[seg["id"]] = translate.shorten(
+                        processor, model, seg["text"], seg["text_en"], max_words,
+                        source=args.src, target=args.tgt,
+                        context=m["source"].get("context") or "",
+                        preceding=before.get(seg["id"], ""), device=device,
+                    )
                 if not out[seg["id"]]:
                     print(f"  timeline: seg {seg['id']} kept full length "
                           "(no safe shorter translation)", file=sys.stderr)

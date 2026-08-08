@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from . import script
+
 GAP_SPLIT = 0.70       # silence between words that ends a segment
 SPEAKER_GAP = 0.25     # diarization must be backed by a real pause to split
 MAX_LEN = 10.0         # target segment length; stubs never merge past it
@@ -24,8 +26,15 @@ MAX_LEN = 10.0         # target segment length; stubs never merge past it
 # sentence is kept whole and only genuinely huge ones are split.
 SENTENCE_MAX = 13.0
 MIN_LEN = 1.2          # below this a segment is a stub and wants merging
+MIN_SEG_SEC = 0.9      # below this TTS reliably fails on the line, so the segment
+                       # may cross a dramatic pause (like a lone word) to rejoin a
+                       # substantial same-speaker neighbour rather than stay alone
 MIN_WORDS = 3
 MERGE_GAP = 0.50       # only merge a stub across a gap this small
+LONE_WORD_GAP = 1.5    # ...except a single-word stub: one word is almost never a
+                       # complete utterance, and dubbed alone it plays as a random
+                       # interjection ("קשרות" → a stray "Relations" mid-pause), so
+                       # it may cross a dramatic pause to rejoin its sentence
 WORD_MAX = 0.80        # a word never occupies more than this
 SENTENCE_END = re.compile(r"[.!?…]['\"»׳״]?$")
 
@@ -39,27 +48,40 @@ UNCOVERED_HEAD_MAX = 1.0 # how far into an uncovered gap to look for the pause t
 SPLICE_MIN_REMNANT = 0.4 # a trimmed piece shorter than this holds no speakable line
 WORD_OVERLAP = 0.05      # a word must overlap a piece by more than this to belong to it
 
-LATIN = re.compile(r"[A-Za-z]")
-HEBREW = re.compile(r"[֐-׿]")
 SPEAKER_EN_RATIO = 0.60
-FOREIGN_MIN_WORDS = 3  # a shorter Latin run is an embedded token (acronym/brand)
-                       # inside source speech, not a target-language passage
+FOREIGN_MIN_WORDS = 3  # a shorter target-script run is an embedded token (acronym/
+                       # brand) inside source speech, not a target-language passage
 
 DIARIZATION_MODEL = "pyannote/speaker-diarization-3.1"
 
 
-def script_of(text: str) -> str | None:
-    """'latin', 'source', or None for characters that belong to neither."""
-    lat = len(LATIN.findall(text or ""))
-    heb = len(HEBREW.findall(text or ""))
-    if not lat and not heb:
+def text_bucket(text: str, src: str = "he", tgt: str = "en") -> str | None:
+    """'target', 'source', or None when the letters name neither.
+
+    Script is a cheap, high-precision language signal only when the pair is
+    written differently. For a same-script pair (en→es) letters carry no signal
+    at all, so the answer is always None and every script-based shortcut stays
+    off — the LID callback path decides instead.
+    """
+    if script.same_script(src, tgt):
         return None
-    return "latin" if lat > heb else "source"
+    t = script.count_letters(text or "", script.script_for(tgt))
+    s = script.count_letters(text or "", script.script_for(src))
+    if not t and not s:
+        return None
+    return "target" if t > s else "source"
+
+
+def script_of(text: str) -> str | None:
+    """Legacy he→en wrapper: 'latin', 'source', or None for neither."""
+    bucket = text_bucket(text, "he", "en")
+    return "latin" if bucket == "target" else bucket
 
 
 def latin_ratio(text: str) -> float:
-    lat = len(LATIN.findall(text or ""))
-    heb = len(HEBREW.findall(text or ""))
+    """Legacy he→en wrapper: Latin letters over Latin+Hebrew letters."""
+    lat = script.count_letters(text or "", "latin")
+    heb = script.count_letters(text or "", "hebrew")
     if lat + heb == 0:
         return 0.0
     return lat / (lat + heb)
@@ -165,7 +187,49 @@ def _split_long(seg: dict[str, Any]) -> list[dict[str, Any]]:
     return _split_long(left) + _split_long(right)
 
 
-def _merge_stubs(segs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _turn_boundaries(turns: list[dict[str, Any]]) -> list[float]:
+    """Times where diarization hands the floor to a different speaker."""
+    turns = sorted(turns, key=lambda t: t["start"])
+    return [b["start"] for a, b in zip(turns, turns[1:]) if a["speaker"] != b["speaker"]]
+
+
+def _split_speaker_turns(segs: list[dict[str, Any]],
+                         turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Split each segment at diarization speaker changes that fall inside it.
+
+    Fast dialogue hands the floor over with no pause, so the gap-confirmed
+    speaker split above misses it and two characters' turns fuse into one
+    segment — courtroom Q+A dubbed in a single cloned voice. The turn list
+    knows where the handover happened; cut between the two words nearest it,
+    with at least one word on each side, so the pieces stay non-overlapping
+    and keep their word alignment. With one speaker (or no turn data) there
+    are no boundaries and nothing changes.
+    """
+    bounds = _turn_boundaries(turns)
+    if not bounds:
+        return segs
+    out: list[dict[str, Any]] = []
+    for seg in segs:
+        words, ends = seg["_words"], seg["_ends"]
+        cuts: list[int] = []
+        for b in bounds:
+            if not seg["start"] < b < seg["end"] or len(words) < 2:
+                continue
+            # Each word sits on the side its midpoint falls on; clamp so both
+            # sides keep a word even when the boundary grazes the segment edge.
+            i = sum(1 for w, e in zip(words, ends) if 0.5 * (w["t"] + e) < b)
+            cuts.append(min(max(i, 1), len(words) - 1))
+        prev = 0
+        for i in sorted(set(cuts)):
+            if i > prev:
+                out.append(_make(words[prev:i], ends[prev:i]))
+                prev = i
+        out.append(_make(words[prev:], ends[prev:]) if prev else seg)
+    return out
+
+
+def _merge_stubs(segs: list[dict[str, Any]], src: str = "he",
+                 tgt: str = "en") -> list[dict[str, Any]]:
     """Fold sub-second fragments into a neighbour (same speaker, small gap only)."""
     out = list(segs)
     changed = True
@@ -180,14 +244,26 @@ def _merge_stubs(segs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 cands.append((seg["start"] - out[i - 1]["end"], i - 1))
             if i + 1 < len(out) and out[i + 1]["speaker"] == seg["speaker"]:
                 cands.append((out[i + 1]["start"] - seg["end"], i + 1))
-            cands = [c for c in cands if c[0] <= MERGE_GAP]
+            def _allow(j: int) -> float:
+                # A lone word — or a fragment too short for TTS to voice at
+                # all — may cross a dramatic pause, but only to rejoin a
+                # substantial neighbour: two stranded stubs re-merging would
+                # undo a real pause split.
+                tgt_seg = out[j]
+                substantial = (tgt_seg["end"] - tgt_seg["start"] >= MIN_LEN
+                               or len(tgt_seg["_words"]) >= MIN_WORDS)
+                micro = (len(seg["_words"]) == 1
+                         or seg["end"] - seg["start"] < MIN_SEG_SEC)
+                return LONE_WORD_GAP if micro and substantial else MERGE_GAP
+            cands = [c for c in cands if c[0] <= _allow(c[1])]
             if not cands:
                 continue
             _gap, j = min(cands)
             a, b = (j, i) if j < i else (i, j)
             if out[b]["_words"][0].get("brk"):
                 continue   # never merge across an explicit caption speaker change
-            sa, sb = script_of(out[a]["text"]), script_of(out[b]["text"])
+            sa = text_bucket(out[a]["text"], src, tgt)
+            sb = text_bucket(out[b]["text"], src, tgt)
             if sa and sb and sa != sb:
                 continue   # nor across a change of language
             merged = _make(out[a]["_words"] + out[b]["_words"], out[a]["_ends"] + out[b]["_ends"])
@@ -199,18 +275,20 @@ def _merge_stubs(segs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def _embedded_latin(words: list[dict[str, Any]]) -> list[bool]:
-    """Mark Latin words that are short embedded tokens, not a foreign passage.
+def _embedded_target(words: list[dict[str, Any]], src: str = "he",
+                     tgt: str = "en") -> list[bool]:
+    """Mark target-script words that are short embedded tokens, not a passage.
 
     A lone acronym or brand dropped into source speech (`...מממן את ISIS, את...`)
-    is written in Latin letters but spoken by the same person in the same breath.
-    Treating it as a script change would carve it into its own segment and play a
-    fraction of a second of original audio — an audible voice jump. Only a
-    sustained run of Latin words is a real target-language passage; anything
-    shorter stays with its neighbours and is dubbed like the rest of the sentence.
+    is written in the target script but spoken by the same person in the same
+    breath. Treating it as a script change would carve it into its own segment and
+    play a fraction of a second of original audio — an audible voice jump. Only a
+    sustained run of target-script words is a real target-language passage;
+    anything shorter stays with its neighbours and is dubbed like the rest of the
+    sentence. For a same-script pair no word reads as target, so nothing is marked.
     """
     n = len(words)
-    latin = [script_of(w["text"]) == "latin" for w in words]
+    latin = [text_bucket(w["text"], src, tgt) == "target" for w in words]
     embedded = [False] * n
     i = 0
     while i < n:
@@ -227,7 +305,9 @@ def _embedded_latin(words: list[dict[str, Any]]) -> list[bool]:
     return embedded
 
 
-def words_to_segments(words: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def words_to_segments(words: list[dict[str, Any]], src: str = "he",
+                      tgt: str = "en",
+                      turns: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     if not words:
         return []
     ends = word_ends(words)
@@ -236,20 +316,20 @@ def words_to_segments(words: list[dict[str, Any]]) -> list[dict[str, Any]]:
     # off and would cut sentences in half. Without markers (ASR fallback) a
     # diarization change still splits, but only when a real pause confirms it.
     has_markers = any(w.get("brk") for w in words)
-    embedded = _embedded_latin(words)
+    embedded = _embedded_target(words, src, tgt)
     groups: list[list[int]] = [[0]]
-    script = None if embedded[0] else script_of(words[0]["text"])
+    bucket = None if embedded[0] else text_bucket(words[0]["text"], src, tgt)
     for i in range(1, len(words)):
         w, prev = words[i], words[i - 1]
         gap = speech_gap(prev, w)
         # A change of script is a change of language, and the two halves get
         # opposite treatment — one dubbed, one kept as original audio — so they
-        # can never share a segment. An embedded token (short Latin run) is not a
-        # language change and does not set or break the script context.
-        this_script = None if embedded[i] else script_of(w["text"])
-        script_change = this_script is not None and script is not None and this_script != script
-        if this_script is not None:
-            script = this_script
+        # can never share a segment. An embedded token (a short target-script run)
+        # is not a language change and does not set or break the script context.
+        this_bucket = None if embedded[i] else text_bucket(w["text"], src, tgt)
+        script_change = this_bucket is not None and bucket is not None and this_bucket != bucket
+        if this_bucket is not None:
+            bucket = this_bucket
         speaker_change = (
             not has_markers
             and w.get("spk", "") != prev.get("spk", "")
@@ -270,7 +350,12 @@ def words_to_segments(words: list[dict[str, Any]]) -> list[dict[str, Any]]:
     segs: list[dict[str, Any]] = []
     for g in groups:
         segs.extend(_split_long(_make([words[i] for i in g], [ends[i] for i in g])))
-    segs = _merge_stubs(segs)
+    # Turn boundaries split first, stub merging after: a split may leave a short
+    # same-speaker fragment that then rejoins its own side, while a genuinely
+    # short cross-speaker interjection stays its own (still dubbed) segment.
+    if turns:
+        segs = _split_speaker_turns(segs, turns)
+    segs = _merge_stubs(segs, src, tgt)
 
     out: list[dict[str, Any]] = []
     for i, seg in enumerate(segs):
@@ -308,8 +393,8 @@ def _residues(seg: dict[str, Any],
 
 
 def splice_foreign_spans(segs: list[dict[str, Any]], spans: list[dict[str, Any]],
-                         words: list[dict[str, Any]] | None = None
-                         ) -> list[dict[str, Any]]:
+                         words: list[dict[str, Any]] | None = None,
+                         src: str = "he", tgt: str = "en") -> list[dict[str, Any]]:
     """Replace transcript segments inside target-language spans with the captions'.
 
     ASR in the source language either mangles target-language speech or skips it
@@ -364,7 +449,7 @@ def splice_foreign_spans(segs: list[dict[str, Any]], spans: list[dict[str, Any]]
     for s in spans:
         words = [{"t": w["t"], "text": w["text"], "brk": False, "spk": w.get("spk", "SPEAKER_00")}
                  for w in s.get("words") or []]
-        made = words_to_segments(words) if words else []
+        made = words_to_segments(words, src, tgt) if words else []
         if not made:
             continue
         # Tile the span: these all play original audio, so any hole between them
@@ -377,6 +462,11 @@ def splice_foreign_spans(segs: list[dict[str, Any]], spans: list[dict[str, Any]]
         for a, b in zip(made, made[1:]):
             a["end"] = round(b["start"], 3)
         made[-1]["end"] = round(s["end"], 3)
+        # A third-language span remembers its language: the translate stage needs
+        # it to render the subtitle for these keep-original segments.
+        if s.get("lang") and s["lang"] != tgt:
+            for x in made:
+                x["lang"] = s["lang"]
         kept.extend(x for x in made if x["end"] > x["start"])
     return sorted(kept, key=lambda x: x["start"])
 
@@ -405,7 +495,7 @@ def unsegmented_words(words: list[dict[str, Any]], segs: list[dict[str, Any]],
 
 
 def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None = None,
-              target: str = "en") -> None:
+              target: str = "en", src: str = "he", dub_foreign: bool = False) -> None:
     """Flag segments whose original audio should play instead of a dub.
 
     Three content-free rules: the segment came out of a detected non-source-language
@@ -416,9 +506,23 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
     The span rule has to be structural. A span in a language no ASR here reads carries
     no text at all, and judging it by script would file it as transcript noise and drop
     it — airing nothing where somebody is speaking.
+
+    When source and target share a script, the two script rules are meaningless and
+    stay off; only the span rule (fed by the LID path upstream) marks keeps then.
+
+    `dub_foreign` (opt-in) sends a *confident* third-language span segment down the
+    dub path instead: its language is known (not "und") and its transcription is real
+    (not the "…" placeholder), so the translate stage can render it in the target and
+    TTS can voice it from the segment's own audio. Anything less confident keeps its
+    original audio exactly as before — never silent.
     """
     def letters(text: str) -> int:
-        return len(LATIN.findall(text or "")) + len(HEBREW.findall(text or ""))
+        return sum(1 for ch in (text or "") if ch.isalpha())
+
+    cross = not script.same_script(src, target)
+    # Test-locked legacy value: the target bucket is called "latin" for Latin-script
+    # targets; any other script names itself honestly.
+    target_reason = "latin" if script.script_for(target) == "latin" else "target_lang"
 
     ranges = [(s["start"], s["end"], s.get("lang")) for s in (spans or []) if s.get("words")]
 
@@ -435,7 +539,7 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
         dur = seg["end"] - seg["start"]
         agg = totals.setdefault(seg["speaker"], [0.0, 0.0])
         agg[0] += dur
-        if latin_ratio(seg["text"]) > 0.5:
+        if cross and script.is_script(seg["text"], target):
             agg[1] += dur
     en_speakers = {
         spk for spk, (total, lat) in totals.items() if total > 0 and lat / total >= SPEAKER_EN_RATIO
@@ -446,15 +550,22 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
             # Not the source language, whatever it is: play it as it was recorded. The
             # span's own language names it — a target-language line that happens to
             # carry no letters ("330,000") is still the target language, not a third one.
+            in_target = (lang == target
+                         or (cross and script.is_script(seg["text"], target)))
+            if (dub_foreign and not in_target and lang and lang != "und"
+                    and (seg.get("text") or "").strip() not in ("", "…")):
+                # Opted in, and the span is confident: known language, real words.
+                # This one is dubbable — translate reads seg["lang"] as its source.
+                seg["keep"], seg["keep_reason"] = False, None
+                continue
             seg["keep"] = True
-            seg["keep_reason"] = ("latin" if lang == target or latin_ratio(seg["text"]) > 0.5
-                                  else "foreign")
+            seg["keep_reason"] = target_reason if in_target else "foreign"
         elif letters(seg["text"]) < 2:
             # Transcript noise (stray glyphs). Nothing to translate, so let the
             # original audio through rather than leaving a hole.
             seg["keep"], seg["keep_reason"] = True, "no_text"
-        elif latin_ratio(seg["text"]) > 0.5:
-            seg["keep"], seg["keep_reason"] = True, "latin"
+        elif cross and script.is_script(seg["text"], target):
+            seg["keep"], seg["keep_reason"] = True, target_reason
         elif seg["speaker"] in en_speakers:
             seg["keep"], seg["keep_reason"] = True, "speaker_en"
         else:
@@ -475,10 +586,10 @@ def diarize(vocals: Path) -> list[dict[str, Any]]:
             pipeline = Pipeline.from_pretrained(DIARIZATION_MODEL, use_auth_token=token)
         if pipeline is None:
             raise RuntimeError("pyannote returned no pipeline (HF_TOKEN / model terms?)")
-        if torch.backends.mps.is_available():
+        if torch.cuda.is_available():
+            pipeline.to(torch.device("cuda:0"))
+        elif torch.backends.mps.is_available():
             pipeline.to(torch.device("mps"))
-        elif torch.cuda.is_available():
-            pipeline.to(torch.device("cuda"))
         output = pipeline(str(vocals))
         annotation = getattr(output, "speaker_diarization", output)
         return [
@@ -592,17 +703,19 @@ def fill_uncovered_audible(segs: list[dict[str, Any]], levels, hop: float,
 
 
 def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
-        spans: list[dict[str, Any]] | None = None) -> None:
+        spans: list[dict[str, Any]] | None = None, dub_foreign: bool = False) -> None:
+    src_lang = m["source"].get("src_lang") or "he"
+    tgt_lang = m["source"].get("tgt_lang") or "en"
     turns = diarize(workdir / m["files"]["vocals"])
     assign_word_speakers(words, turns)
-    segs = words_to_segments(words)
+    segs = words_to_segments(words, src_lang, tgt_lang, turns=turns)
     if spans:
         span_words = [w for s in spans for w in (s.get("words") or [])]
         assign_word_speakers(span_words, turns)
-        segs = splice_foreign_spans(segs, spans, words)
+        segs = splice_foreign_spans(segs, spans, words, src_lang, tgt_lang)
         for i, seg in enumerate(segs):
             seg["id"] = i
-    mark_keep(segs, spans, m["source"].get("tgt_lang") or "en")
+    mark_keep(segs, spans, tgt_lang, src_lang, dub_foreign)
 
     # Drop sub-word noise fragments (a lone "ב", stray glyphs). Kept as original
     # audio they play a jarring one-letter blip of the source voice between dubbed
@@ -613,7 +726,7 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
         seg["id"] = i
 
     lost = [w for w in unsegmented_words(words, segs, spans or [])
-            if len(re.sub(r"[^A-Za-z֐-׿]", "", w["text"])) >= 2]
+            if sum(1 for ch in w["text"] if ch.isalpha()) >= 2]
     assert not lost, (
         f"{len(lost)} transcript words fell outside every segment, starting at "
         f"{lost[0]['t']:.2f}s ({lost[0]['text']!r}) — they would never be heard"
@@ -638,7 +751,7 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
     lid = transcript.load_lid()
     is_target = None
     if lid is not None:
-        tgt = m["source"].get("tgt_lang") or "en"
+        tgt = tgt_lang
 
         def is_target(a: float, b: float) -> bool:
             clip = audio.decode_mono(src, 16000, start=a,

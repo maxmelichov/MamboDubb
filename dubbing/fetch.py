@@ -17,8 +17,9 @@ def is_url(source: str) -> bool:
 
 
 def _lang_prefs(lang: str) -> tuple[str, ...]:
-    # YouTube still uses the legacy "iw" code for Hebrew.
-    alias = {"he": ["iw", "he"]}.get(lang, [lang])
+    # YouTube still uses legacy ISO-639 codes for a few languages (mirrors
+    # transcript._LID_ALIAS): "iw" Hebrew, "ji" Yiddish, "in" Indonesian.
+    alias = {"he": ["iw", "he"], "yi": ["ji", "yi"], "id": ["in", "id"]}.get(lang, [lang])
     return tuple([f"{a}-orig" for a in alias] + alias)
 
 

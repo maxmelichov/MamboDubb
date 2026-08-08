@@ -26,6 +26,8 @@ import numpy as np
 import soundfile as sf
 
 from . import audio
+from . import script as script_mod
+from .script import count_letters, same_script, script_for
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 # Voice-clone model, selectable per run (--tts-model). The tag is mixed into every
@@ -53,12 +55,34 @@ MAX_TRIES = 3
 
 _LATIN_RUN = re.compile(r"[A-Za-z0-9][A-Za-z0-9''\-.]*")
 _CHROME = re.compile(r"[\[\(][^\]\)]{0,40}[\]\)]")
+# CJK punctuation → the ASCII marks prepare_text understands.
+_CJK_PUNCT = str.maketrans("。，！？；：、", ".,!?;:,")
+
+_RUN_RES: dict[str, re.Pattern] = {"latin": _LATIN_RUN}
 
 
-def prepare_en(text: str) -> str:
-    """Strip anything the English voice cannot speak; keep every word it can."""
+def _run_re(bucket: str) -> re.Pattern:
+    """A `_LATIN_RUN`-shaped regex for any script bucket (letters + digits)."""
+    got = _RUN_RES.get(bucket)
+    if got is None:
+        cls = "".join(f"{chr(lo)}-{chr(hi)}" for lo, hi in script_mod._RANGES[bucket])
+        got = _RUN_RES[bucket] = re.compile(f"[{cls}0-9][{cls}0-9''\\-.]*")
+    return got
+
+
+def prepare_text(text: str, lang: str) -> str:
+    """Strip anything the target-language voice cannot speak; keep the rest.
+
+    Keeps runs of the TARGET script's letters plus digits and basic punctuation,
+    so a Hebrew (source) word inside a Russian line is dropped without deleting
+    the line — the old Latin-only version erased entire non-Latin translations.
+    """
+    bucket = script_for(lang)
+    run = _run_re(bucket)
     t = _CHROME.sub(" ", text or "")
     t = t.replace("[[", " ").replace("]]", " ")
+    if bucket in ("cjk", "hangul"):
+        t = t.translate(_CJK_PUNCT)
     parts = re.split(r"([.!?,;:])", t)
     out: list[str] = []
     for part in parts:
@@ -66,7 +90,7 @@ def prepare_en(text: str) -> str:
             if out and out[-1] not in ".!?,;:":
                 out.append(part)
             continue
-        words = _LATIN_RUN.findall(part)
+        words = run.findall(part)
         if words:
             out.append(" ".join(words))
     speak = re.sub(r"\s+([.!?,;:])", r"\1", " ".join(out)).strip()
@@ -76,34 +100,103 @@ def prepare_en(text: str) -> str:
     return speak
 
 
-def _tokens(text: str) -> list[str]:
-    return re.findall(r"[a-z0-9']+", (text or "").lower())
+def prepare_en(text: str) -> str:
+    """Strip anything the English voice cannot speak; keep every word it can."""
+    return prepare_text(text, "en")
 
 
-def word_overlap(target: str, heard: str) -> float:
-    a, b = _tokens(target), _tokens(heard)
+def _tokens(text: str, lang: str = "en") -> list[str]:
+    bucket = script_for(lang)
+    if bucket in ("cjk", "hangul"):
+        # No reliable word boundaries — compare single characters instead.
+        return [ch for ch in (text or "").lower() if ch.isalnum()]
+    if (lang or "en").lower() == "en":
+        return re.findall(r"[a-z0-9']+", (text or "").lower())
+    return re.findall(r"[\w']+", (text or "").lower(), re.UNICODE)
+
+
+def word_overlap(target: str, heard: str, lang: str = "en") -> float:
+    a, b = _tokens(target, lang), _tokens(heard, lang)
     if not a:
         return 0.0
     common = sum((Counter(a) & Counter(b)).values())
     return common / len(a)
 
 
-def clone_length_ok(sec: float, text: str) -> bool:
-    words = max(1, len((text or "").split()))
+def _speech_units(text: str, lang: str) -> int:
+    """How many speakable units the text has: words, or characters for CJK/hangul."""
+    if script_for(lang) in ("cjk", "hangul"):
+        return max(1, sum(1 for ch in text or "" if ch.isalnum()))
+    return max(1, len((text or "").split()))
+
+
+# CJK/hangul speech runs ~5 characters/s; the word constants assume ~3 words/s.
+CLONE_MIN_SEC_PER_CHAR = 0.08   # faster than this is chipmunk garble
+CLONE_MAX_SEC_PER_CHAR = 0.60   # slower than this is a stall/drawl
+
+
+def clip_exceeds_slot(clip_sec: float, slot_sec: float) -> bool:
+    """A clip so much longer than its segment that placement cannot recover.
+
+    Translations legitimately run longer than the source and the timeline absorbs
+    up to ~DRIFT_MAX of overhang via shortening and speed-up; the bound here is
+    far beyond that (3x the slot plus 8s) so it only fires on runaway synthesis,
+    never on ordinary expansion.
+    """
+    return clip_sec > slot_sec * 3.0 + 8.0
+
+
+def clone_length_ok(sec: float, text: str, lang: str = "en") -> bool:
+    char_based = script_for(lang) in ("cjk", "hangul")
+    units = _speech_units(text, lang)
     if sec <= 0.05:
         return False
-    spw = sec / words
-    if spw < CLONE_MIN_SEC_PER_WORD:
+    spu = sec / units
+    lo, hi = ((CLONE_MIN_SEC_PER_CHAR, CLONE_MAX_SEC_PER_CHAR) if char_based
+              else (CLONE_MIN_SEC_PER_WORD, CLONE_MAX_SEC_PER_WORD))
+    if spu < lo:
         return False
-    if spw > CLONE_MAX_SEC_PER_WORD and words >= 3:
+    if spu > hi and units >= 3:
         return False
-    expected = words / 3.0 + 0.25
+    expected = (units / 5.0 if char_based else units / 3.0) + 0.25
     return sec >= expected * 0.40
 
 
-def max_new_tokens(text: str) -> int:
-    words = max(1, len(text.split()))
-    return max(96, min(2048, int((words * 0.65 + 2.5) * CODEC_HZ)))
+def max_new_tokens(text: str, lang: str = "en") -> int:
+    units = _speech_units(text, lang)
+    sec = units * 0.25 + 2.5 if script_for(lang) in ("cjk", "hangul") else units * 0.65 + 2.5
+    return max(96, min(2048, int(sec * CODEC_HZ)))
+
+
+def source_script_leak(heard: str, src: str, tgt: str) -> bool:
+    """True when an ASR transcript is dominated by the SOURCE language's script.
+
+    Only meaningful when the pair's scripts differ (`same_script` → always False):
+    for en→es both are Latin and this check cannot discriminate.
+    """
+    if same_script(src, tgt):
+        return False
+    src_letters = count_letters(heard, script_for(src))
+    tgt_letters = count_letters(heard, script_for(tgt))
+    return bool(src_letters and (src_letters >= tgt_letters or tgt_letters < 3))
+
+
+# Qwen3-TTS names languages in English ("Russian"), the pipeline uses ISO codes.
+_QWEN_LANG_NAMES = {
+    "en": "English", "zh": "Chinese", "de": "German", "it": "Italian",
+    "pt": "Portuguese", "es": "Spanish", "ja": "Japanese", "ko": "Korean",
+    "fr": "French", "ru": "Russian",
+}
+
+
+def qwen_language_name(code: str, supported) -> str:
+    """The checkpoint's name for a language code, or "Auto" when unsupported."""
+    want = _QWEN_LANG_NAMES.get((code or "").lower())
+    if want:
+        for name in supported or ():
+            if str(name).lower() == want.lower():
+                return str(name)
+    return "Auto"
 
 
 # --------------------------------------------------------------------------- refs
@@ -175,6 +268,9 @@ class Engine:
     def __init__(self, m: dict[str, Any], workdir: Path, *, device: str | None = None,
                  model: str = DEFAULT_TTS_MODEL):
         self.m = m
+        src = m.get("source") or {}
+        self.src_lang = (src.get("src_lang") or "he").lower()
+        self.tgt_lang = (src.get("tgt_lang") or "en").lower()
         self.workdir = workdir
         self.clips = workdir / "clips"
         self.refs = workdir / "refs"
@@ -198,13 +294,14 @@ class Engine:
     @property
     def synth(self):
         if self._synth is None:
-            self._synth = _Synth(device=self.device, model=self.tts_model)
+            self._synth = _Synth(device=self.device, model=self.tts_model,
+                                 lang=self.tgt_lang)
         return self._synth
 
     @property
     def asr(self):
         if self._asr is None:
-            self._asr = _load_asr()
+            self._asr = _load_asr(self.tgt_lang)
         return self._asr
 
     # -- reference audio ---------------------------------------------------
@@ -268,7 +365,11 @@ class Engine:
 
     # -- synthesis ---------------------------------------------------------
     def _cache_key(self, speak: str, ref_key: str, seed: int, greedy: bool) -> str:
-        blob = f"{self.model_tag}|{speak}|{ref_key}|xvec|{seed}|{int(greedy)}"
+        # The target language is part of the key so a ru clip never collides with
+        # an en clip of the same text. "en" is left out of the blob to keep every
+        # existing English cache entry valid.
+        lang = "" if self.tgt_lang == "en" else f"|{self.tgt_lang}"
+        blob = f"{self.model_tag}{lang}|{speak}|{ref_key}|xvec|{seed}|{int(greedy)}"
         return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
 
     def _verify(self, clip: Path, speak: str) -> tuple[bool, float, str]:
@@ -276,28 +377,27 @@ class Engine:
             sec = audio.duration(clip)
         except Exception:
             return False, 0.0, "unreadable"
-        if not clone_length_ok(sec, speak):
+        if not clone_length_ok(sec, speak, self.tgt_lang):
             return False, 0.0, f"len={sec:.2f}s"
         model = self.asr
         if model is None:
             return True, 1.0, "no-asr"
         try:
-            segs, _ = model.transcribe(str(clip), language="en", word_timestamps=False,
+            segs, _ = model.transcribe(str(clip), language=self.tgt_lang,
+                                       word_timestamps=False,
                                        condition_on_previous_text=False, vad_filter=True)
             heard = " ".join((s.text or "").strip() for s in segs).strip()
         except Exception as exc:
             return False, 0.0, f"asr-error {exc}"
-        heb = len(re.findall(r"[֐-׿]", heard))
-        lat = len(re.findall(r"[A-Za-z]", heard))
-        if heb and (heb >= lat or lat < 3):
+        if source_script_leak(heard, self.src_lang, self.tgt_lang):
             return False, 0.0, "source-script output"
-        ov = word_overlap(speak, heard)
+        ov = word_overlap(speak, heard, self.tgt_lang)
         return ov >= CLONE_MIN_OVERLAP, ov, heard[:120]
 
     def _plan(self, seg: dict[str, Any], text_en: str):
         """Everything an attempt needs, or None if the segment cannot be voiced."""
-        speak = prepare_en(text_en)
-        if not speak or len(_tokens(speak)) == 0:
+        speak = prepare_text(text_en, self.tgt_lang)
+        if not speak or len(_tokens(speak, self.tgt_lang)) == 0:
             return None
         ref = self.ref_for(seg)
         if ref is None:
@@ -349,6 +449,7 @@ class Engine:
         if plan is None:
             return None
         speak, ref_path, ref_key, base_seed = plan
+        slot = float(seg["end"]) - float(seg["start"])
         best: dict[str, Any] | None = None
 
         for attempt in range(MAX_TRIES):
@@ -358,6 +459,13 @@ class Engine:
                 continue
             if verdict is None:
                 verdict = self._verify_and_store(clip, meta, speak)
+            # A clip the timeline could never absorb (shorten + 1.3x speed-up
+            # recover maybe 3x; a 71s clip for a 5.7s slot once shoved everything
+            # after it 49s late) is a failure however well it verifies.
+            if clip_exceeds_slot(verdict["dur"], slot):
+                print(f"  tts: seg {seg['id']} clip {verdict['dur']:.1f}s vs "
+                      f"{slot:.1f}s slot — rejected", file=sys.stderr)
+                continue
             record = self._record(clip, verdict, attempt)
             if verdict["ok"]:
                 return record
@@ -396,8 +504,12 @@ class Engine:
 class _Synth:
     """Minimal Qwen3-TTS wrapper: x-vector-only cloning, one call per clip."""
 
-    def __init__(self, *, device: str | None = None, model: str = DEFAULT_TTS_MODEL):
+    def __init__(self, *, device: str | None = None, model: str = DEFAULT_TTS_MODEL,
+                 lang: str = "en"):
         import torch
+
+        self.lang = (lang or "en").lower()
+        self._qwen_lang: str | None = None
 
         if device and device != "auto":
             self.device = device
@@ -438,6 +550,19 @@ class _Synth:
         self._model = model
         return model
 
+    def _language(self, model) -> str:
+        """The checkpoint's name for the target language, resolved once per run."""
+        if self._qwen_lang is None:
+            try:
+                supported = model.get_supported_languages()
+            except Exception:
+                supported = _QWEN_LANG_NAMES.values()
+            self._qwen_lang = qwen_language_name(self.lang, supported)
+            if self._qwen_lang == "Auto":
+                print(f"  tts: target {self.lang!r} not in the checkpoint's supported "
+                      "languages — synthesising with language=Auto", file=sys.stderr)
+        return self._qwen_lang
+
     def generate(self, speak: str, ref: Path, out: Path, *, seed: int, greedy: bool) -> Path:
         import torch
 
@@ -460,8 +585,10 @@ class _Synth:
              "subtalker_top_p": 0.85, "subtalker_top_k": 30}
         )
         wavs, sr = model.generate_voice_clone(
-            text=speak, language="English", voice_clone_prompt=self._prompts[key],
-            max_new_tokens=max_new_tokens(speak), repetition_penalty=1.08, **sampling,
+            text=speak, language=self._language(model),
+            voice_clone_prompt=self._prompts[key],
+            max_new_tokens=max_new_tokens(speak, self.lang),
+            repetition_penalty=1.08, **sampling,
         )
         out.parent.mkdir(parents=True, exist_ok=True)
         raw = out.with_suffix(".raw.wav")
@@ -484,31 +611,46 @@ class _Synth:
                 pass
             self._model = None
         gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         if torch.backends.mps.is_available():
             torch.mps.empty_cache()
 
 
 _ASR_CANDIDATES = ("models/faster-whisper-base.en", "Systran/faster-whisper-base.en",
                    "models/faster-whisper-tiny.en", "Systran/faster-whisper-tiny.en")
-VERIFY_CPU_THREADS = 2   # cap the verify ASR's CPU threads. It runs on a worker thread
-                         # while the next clip generates on the GPU (see run()); left
-                         # uncapped, CTranslate2 grabs every core and starves the MPS
-                         # dispatch thread, so the overlap would slow generation instead
-                         # of hiding the verify behind it.
+# Non-English targets verify with the multilingual base model instead of the .en ones.
+_ASR_CANDIDATES_MULTI = ("models/faster-whisper-base", "Systran/faster-whisper-base")
 
 
-def _load_asr():
-    try:
-        from faster_whisper import WhisperModel
-    except Exception as exc:
-        print(f"  tts: verification ASR unavailable ({exc})", file=sys.stderr)
-        return None
-    for cand in _ASR_CANDIDATES:
+def _asr_candidates(tgt: str) -> tuple[str, ...]:
+    return _ASR_CANDIDATES if (tgt or "en").lower() == "en" else _ASR_CANDIDATES_MULTI
+VERIFY_CPU_THREADS = 2   # Mac-only cap on the verify ASR's CPU threads. It runs on a
+                         # worker thread while the next clip generates on the GPU (see
+                         # run()); left uncapped on Apple Silicon, CTranslate2 grabs
+                         # every core and starves the MPS dispatch thread, so the
+                         # overlap would slow generation instead of hiding the verify
+                         # behind it. Elsewhere the CPU fallback uses half the cores.
+
+
+def _verify_cpu_threads() -> int:
+    """Thread budget for the verify ASR's CPU fallback (see VERIFY_CPU_THREADS)."""
+    if sys.platform == "darwin":
+        return VERIFY_CPU_THREADS
+    import os
+
+    return max(1, (os.cpu_count() or 4) // 2)
+
+
+def _load_asr(tgt: str = "en"):
+    from .transcript import load_whisper
+
+    for cand in _asr_candidates(tgt):
         local = REPO_ROOT / cand
         target = str(local) if local.is_dir() else cand
         try:
-            model = WhisperModel(target, device="cpu", compute_type="auto",
-                                 cpu_threads=VERIFY_CPU_THREADS)
+            model = load_whisper(target, label="tts: verify ASR",
+                                 cpu_threads=_verify_cpu_threads())
             print(f"  tts: verifying with {target}", file=sys.stderr)
             return model
         except Exception:

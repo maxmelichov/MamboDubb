@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import random
+import sys
 
 import pytest
 
@@ -141,7 +142,8 @@ def test_chrome_and_arrows_are_stripped():
 
 
 def test_collapse_repeats_drops_looped_hallucinations():
-    w = lambda t, s: {"t": t, "end": t + 0.2, "text": s}
+    def w(t, s):
+        return {"t": t, "end": t + 0.2, "text": s}
     # "big" repeated three times as a 2-gram collapses to one; the surrounding
     # words and the first copy's timing survive.
     words = [w(0.0, "qatar"), w(0.4, "is"),
@@ -155,7 +157,8 @@ def test_collapse_repeats_drops_looped_hallucinations():
 
 
 def test_collapse_repeats_keeps_ordinary_doubling():
-    w = lambda t, s: {"t": t, "text": s}
+    def w(t, s):
+        return {"t": t, "text": s}
     words = [w(0.0, "very"), w(0.3, "very"), w(0.6, "good")]
     assert [x["text"] for x in transcript.collapse_repeats(words)] == ["very", "very", "good"]
 
@@ -178,6 +181,71 @@ def test_join_split_marks_rejoins_a_geresh_word():
     # word before it.
     apart = transcript.join_split_marks([w(0.0, "מילה"), w(3.0, "-ועוד")])
     assert [x["text"] for x in apart] == ["מילה", "-ועוד"]
+
+
+class _FakeWhisper:
+    """Stands in for faster_whisper.WhisperModel; scripted to fail per device."""
+
+    calls: list[dict] = []
+    fail_construct = frozenset()
+    fail_transcribe = frozenset()
+
+    def __init__(self, path, device="cpu", compute_type="auto", **kw):
+        if device in self.fail_construct:
+            raise RuntimeError(f"no {device}")
+        self.device = device
+        type(self).calls.append({"device": device, "compute_type": compute_type, **kw})
+
+    def transcribe(self, *_a, **_k):
+        if self.device in self.fail_transcribe:
+            raise RuntimeError("cuDNN missing")
+        return iter(()), None
+
+
+def _picked(monkeypatch, fake):
+    import faster_whisper
+
+    fake.calls = []
+    monkeypatch.setattr(faster_whisper, "WhisperModel", fake)
+    monkeypatch.setattr(transcript, "_cuda_usable", lambda: True)
+    monkeypatch.setattr(transcript, "_cudnn_on_path", lambda: None)
+    return fake
+
+
+def test_load_whisper_prefers_cuda(monkeypatch):
+    fake = _picked(monkeypatch, _FakeWhisper)
+    model = transcript.load_whisper("m", cpu_threads=7)
+    assert model.device == "cuda"
+    assert fake.calls == [{"device": "cuda", "compute_type": "float16"}]
+
+
+def test_load_whisper_falls_back_when_construction_fails(monkeypatch):
+    class Fake(_FakeWhisper):
+        fail_construct = frozenset({"cuda"})
+
+    fake = _picked(monkeypatch, Fake)
+    model = transcript.load_whisper("m", cpu_threads=7)
+    assert model.device == "cpu"
+    # cpu_threads reaches only the CPU fallback, with the pre-CUDA compute_type.
+    assert fake.calls == [{"device": "cpu", "compute_type": "auto", "cpu_threads": 7}]
+
+
+def test_load_whisper_falls_back_when_warmup_fails(monkeypatch):
+    class Fake(_FakeWhisper):
+        fail_transcribe = frozenset({"cuda"})
+
+    fake = _picked(monkeypatch, Fake)
+    model = transcript.load_whisper("m")
+    assert model.device == "cpu"
+    assert fake.calls[-1] == {"device": "cpu", "compute_type": "auto"}
+
+
+def test_load_whisper_skips_cuda_when_unavailable(monkeypatch):
+    fake = _picked(monkeypatch, _FakeWhisper)
+    monkeypatch.setattr(transcript, "_cuda_usable", lambda: False)
+    model = transcript.load_whisper("m")
+    assert model.device == "cpu"
+    assert fake.calls == [{"device": "cpu", "compute_type": "auto"}]
 
 
 class _FakeWord:
@@ -790,6 +858,25 @@ def test_strip_editorial_removes_brackets_and_notes():
         "Through Qatari gas, Qatar is bribing Europe."
 
 
+def test_strip_editorial_removes_channel_leaks_and_leading_junk():
+    strip = translate._strip_editorial
+    # A re-opened thinking channel whose markers were stripped leaves a bare label
+    # line; TTS spoke the word "thought" on two segments of the al-Sharaa episode.
+    assert strip("thought\nThe name rises to the headlines.") == \
+        "The name rises to the headlines."
+    assert strip("Thinking\nIt is a state.") == "It is a state."
+    # Stray leading punctuation is never how a spoken line starts.
+    assert strip("/In the year 2013, I am the commander.") == \
+        "In the year 2013, I am the commander."
+    assert strip(".Be careful of these areas.") == "Be careful of these areas."
+    # Legitimate openers survive: quotes, parentheses, digits.
+    assert strip('"We are here," he said.') == '"We are here," he said.'
+    assert strip("(quietly) We are here.") == "(quietly) We are here."
+    assert strip("600 men crossed from Iraq.") == "600 men crossed from Iraq."
+    # A sentence that merely contains the word is untouched.
+    assert strip("The thought never left him.") == "The thought never left him."
+
+
 def test_prompt_prefers_the_models_own_chat_template():
     class Tok:
         chat_template = "…"
@@ -861,6 +948,109 @@ def test_shorten_rejects_unsafe_rewrites(monkeypatch):
     assert attempt("The group received 400 million and did not deny it") is None  # lost the name
     assert attempt(original) is None                                          # not actually shorter
     assert attempt("קטר מימנה") is None                                        # not the target language
+
+
+def test_load_picks_the_subprocess_backend_off_mac(monkeypatch):
+    # Without MLX (any Linux box) load() must return the (None, handle, None)
+    # triple, spawning the worker through its own uv project venv.
+    created = {}
+
+    class FakeHandle:
+        def __init__(self, cmd, **kw):
+            created["cmd"] = cmd
+            self.own_gpu = kw.get("own_gpu", False)
+
+    monkeypatch.setattr(translate, "_mlx_available", lambda: False)
+    monkeypatch.setattr(translate, "_spare_gpu", lambda: None)
+    monkeypatch.setattr(translate, "WorkerHandle", FakeHandle)
+    processor, model, device = translate.load()
+    assert processor is None and device is None
+    assert isinstance(model, FakeHandle)
+    joined = " ".join(created["cmd"])
+    assert "--project" in created["cmd"] and "worker.py" in joined
+
+
+def test_own_gpu_worker_is_persistent_and_reused(monkeypatch):
+    # With a spare GPU the worker survives free() and load() hands it back,
+    # instead of paying the 24 GB reload every timeline round.
+    spawned = []
+
+    class FakeProc:
+        def poll(self):
+            return None
+
+    class FakeHandle:
+        def __init__(self, cmd, **kw):
+            spawned.append(cmd)
+            self.own_gpu = kw.get("own_gpu", False)
+            self._proc = FakeProc()
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(translate, "_mlx_available", lambda: False)
+    monkeypatch.setattr(translate, "_spare_gpu", lambda: "1")
+    monkeypatch.setattr(translate, "WorkerHandle", FakeHandle)
+    monkeypatch.setattr(translate, "_WORKER", None)
+    assert not translate.exclusive_device()
+    _, first, _ = translate.load()
+    assert first.own_gpu
+    translate.free(first)
+    assert not first.closed
+    _, again, _ = translate.load()
+    assert again is first and len(spawned) == 1
+    monkeypatch.setattr(translate, "_WORKER", None)  # do not leak into other tests
+
+
+def test_worker_handle_protocol_round_trip(tmp_path):
+    # A stand-in worker that speaks the real protocol — ready line, then one JSON
+    # response per request — exercises spawn, framing, flushing and id matching
+    # without any model.
+    echo = tmp_path / "echo_worker.py"
+    echo.write_text(
+        "import json, sys\n"
+        "print(json.dumps({'ready': True}), flush=True)\n"
+        "for line in sys.stdin:\n"
+        "    req = json.loads(line)\n"
+        "    print(json.dumps({'id': req['id'], 'text': req['user_text'].upper()},\n"
+        "          ensure_ascii=False), flush=True)\n",
+        encoding="utf-8")
+    handle = translate.WorkerHandle([sys.executable, str(echo)], ready_timeout=30)
+    try:
+        assert handle.request("hello world", 10) == "HELLO WORLD"
+        assert handle.request('quote " and שלום', 10) == 'QUOTE " AND שלום'   # JSON + UTF-8 survive
+    finally:
+        handle.close()
+
+
+def test_worker_handle_reports_a_dead_worker(tmp_path):
+    # A worker that dies mid-request must surface as a clear error, not a hang.
+    dying = tmp_path / "dying_worker.py"
+    dying.write_text(
+        "import json, sys\n"
+        "print(json.dumps({'ready': True}), flush=True)\n"
+        "sys.stdin.readline()\n"
+        "sys.exit(1)\n",
+        encoding="utf-8")
+    handle = translate.WorkerHandle([sys.executable, str(dying)], ready_timeout=30)
+    try:
+        with pytest.raises(RuntimeError, match="translator worker"):
+            handle.request("hello", 10)
+    finally:
+        handle.close()
+
+
+def test_run_routes_worker_output_through_shared_postprocessing():
+    # The subprocess backend must get the same editorial/marker stripping as MLX.
+    class FakeHandle(translate.WorkerHandle):
+        def __init__(self):
+            pass
+
+        def request(self, user_text, max_new_tokens, timeout=600.0):
+            return "It is a state.\n(Note: the source appears garbled.)<end_of_turn>"
+
+    assert translate._run(None, FakeHandle(), "text", 50) == "It is a state."
 
 
 # --------------------------------------------------------------------------- tts

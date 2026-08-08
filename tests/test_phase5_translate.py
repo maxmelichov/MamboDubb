@@ -1,0 +1,322 @@
+"""Phase 5 — translate-stage prompt improvements. Pure logic, no models.
+
+A dialogue register mode, the rolling run-level established-names list, and the
+military-Hebrew terms note. Since translate/v24 digit→word conversion is
+deterministic code (dubbing/numwords.py, tested in test_phase5_numwords.py);
+the model is only ever asked to keep already-spelled number-words as words.
+"""
+
+from __future__ import annotations
+
+from dubbing import manifest, translate
+
+_NARRATION_EN = ("Write full words, no contractions (\"we are\" not "
+                 "\"we're\", \"do not\" not \"don't\") so the text-to-speech "
+                 "reads them clearly.")
+
+
+# ------------------------------------------------------------- numbers as words
+
+def test_instruction_never_asks_the_model_to_convert_digits():
+    # v24: the v22 sentence ("…out in full words … never digits…") made the
+    # model convert digits itself, unreliably ("504" → "five zero four"); the
+    # default prompt now says nothing about writing numbers as words.
+    for source, target in (("he", "ru"), ("he", "en"), ("en", "ru")):
+        p = translate._translate_instruction("בשנת 1973", source, target)
+        assert "out in full words" not in p
+        assert "never digits" not in p
+        assert "written out as words" not in p
+
+
+def test_spelled_input_hop_asks_only_for_inflected_number_words():
+    # The hop whose input already carries code-spelled English number-words
+    # (pivot hop 2, or a direct en→tgt hop) gets exactly one light sentence.
+    p = translate._translate_instruction("five hundred and four soldiers",
+                                         "en", "ru", numbers_spelled=True)
+    assert ("Numbers in the source are written out as words; render them as "
+            "naturally inflected words in Russian, never as digits.") in p
+
+
+def test_shorten_instruction_no_longer_asks_for_number_words(monkeypatch):
+    prompts = []
+
+    def fake_run(tok, mdl, user_text, max_new_tokens):
+        prompts.append(user_text)
+        return ""                                   # fails is_target_text → None
+
+    monkeypatch.setattr(translate, "_run", fake_run)
+    assert translate.shorten(None, None, "מאה חיילים", "one hundred soldiers went",
+                             3, source="he", target="en") is None
+    assert len(prompts) == 1
+    assert "out in full words" not in prompts[0] and "never digits" not in prompts[0]
+    assert "keeping every name, number and negation" in prompts[0]
+
+
+# ------------------------------------------------------------------- register
+
+def test_narration_english_keeps_the_exact_no_contractions_sentence():
+    p = translate._translate_instruction("שלום", "he", "en")
+    assert _NARRATION_EN in p
+    p = translate._translate_instruction("שלום", "he", "en", register="narration")
+    assert _NARRATION_EN in p
+
+
+def test_dialogue_english_welcomes_contractions_and_drops_the_ban():
+    p = translate._translate_instruction("שלום", "he", "en", register="dialogue")
+    assert "contractions are welcome" in p
+    assert "don't" in p and "we're" in p
+    assert _NARRATION_EN not in p
+    assert "no contractions" not in p
+
+
+def test_dialogue_other_target_gets_conversational_register():
+    p = translate._translate_instruction("שלום", "he", "ru", register="dialogue")
+    assert "natural conversational Russian" in p
+    assert "register of spoken dialogue" in p
+    # No English-specific aside leaks into a Russian prompt (pinned by an
+    # existing test for narration; hold it for dialogue too).
+    assert "contractions" not in p and "we're" not in p
+
+
+def test_narration_other_target_unchanged():
+    p = translate._translate_instruction("שלום", "he", "ru")
+    assert "Write full words suitable for text-to-speech." in p
+
+
+# ------------------------------------------------------- established names list
+
+def test_established_names_roll_most_recent_first_and_cap_at_12():
+    names: list[str] = []
+    for i in range(15):
+        names = translate.update_established_names(
+            names, f"Then Person{i:02d} spoke to the crowd.", "en")
+    assert len(names) == translate.MAX_ESTABLISHED_NAMES == 12
+    assert names[0] == "Person14"                    # most recent first
+    assert "Person02" not in names                   # oldest three rolled off
+    # A recurring name moves to the front instead of duplicating.
+    names = translate.update_established_names(
+        names, "And Person05 answered.", "en")
+    assert names[0] == "Person05" and names.count("Person05") == 1
+    assert len(names) == 12
+
+
+def test_established_names_skip_sentence_initial_words_and_caseless_scripts():
+    assert translate.update_established_names([], "The war began.", "en") == []
+    assert translate.update_established_names([], "מלחמה גדולה", "he") == []
+
+
+def test_names_note_appears_only_when_list_is_nonempty():
+    bare = translate._translate_instruction("שלום", "he", "en")
+    assert "already established" not in bare
+    p = translate._translate_instruction("שלום", "he", "en",
+                                         names=("Dayan", "Golda", "Sinai"))
+    assert ("Names already established in this video's translation — use these "
+            "exact spellings when the same person or place recurs: "
+            "Dayan, Golda, Sinai." in p)
+
+
+def test_run_threads_names_and_register_into_generate(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_generate(tok, mdl, text, *, source, target, context="", preceding="",
+                      device=None, register="narration", names=(), **kw):
+        calls.append({"target": target, "register": register, "names": names})
+        return {"אחת": "General Elazar spoke.",
+                "שתיים": "Then Elazar and Dayan left."}[text]
+
+    monkeypatch.setattr(translate, "load", lambda *a, **k: (None, None, None))
+    monkeypatch.setattr(translate, "free", lambda mdl: None)
+    monkeypatch.setattr(translate, "generate", fake_generate)
+    m = manifest.new({"input": "x"})
+    m["segments"] = [
+        {"id": i, "start": float(i), "end": float(i) + 1.0, "speaker": "S0",
+         "text": t, "keep": False, "keep_reason": None}
+        for i, t in enumerate(["אחת", "שתיים"])
+    ]
+    translate.run(m, tmp_path, source="he", target="en", register="dialogue")
+
+    assert [c["register"] for c in calls] == ["dialogue", "dialogue"]
+    assert calls[0]["names"] == ()                   # nothing established yet
+    assert calls[1]["names"] == ("Elazar",)          # from the first translation
+    # After the run both names are established (most recent first).
+    # (Dayan appears later in segment 2's translation than Elazar.)
+
+
+# ---------------------------------------------------------- military-Hebrew note
+
+def test_hebrew_source_gets_the_military_terms_note():
+    p = translate._translate_instruction("המ\"פ נפצע", "he", "en")
+    assert "מ\"פ company commander" in p
+    assert "קמ\"ן intelligence officer" in p
+    assert "חגורת נפץ explosive belt" in p
+    assert "מודיעין means intelligence" in p
+    assert "not the city Modi'in and never a person's name" in p
+
+
+def test_non_hebrew_source_gets_no_military_note():
+    for source in ("ru", "en", "ar"):
+        p = translate._translate_instruction("text", source, "en")
+        assert "company commander" not in p
+        assert "מודיעין" not in p
+
+
+# --------------------------------------------------------------------- tag bump
+
+def test_translate_stage_tag_bumped():
+    assert manifest.STAGE_TAGS["translate"] == "translate/v27"
+
+
+# ------------------------------------------------------- per-segment gloss gating
+
+# The measured regression's shape: one --context string mixing background (always
+# wanted) with word glosses (wanted only where the word is actually spoken).
+_CTX = ("Israeli documentary about Ahmed al-Sharaa and modern Syria; "
+        "the word זיקית means chameleon (the color-changing lizard); "
+        "the narrator's phrase בלאגן (sometimes mis-transcribed as מלאגן or מרגן) "
+        "means a big mess or chaos.")
+
+
+def test_gloss_clause_included_when_its_word_is_in_the_segment():
+    out = translate.relevant_context(_CTX, "ראינו שם זיקית על העץ", "he")
+    assert "chameleon" in out
+    assert "Israeli documentary" in out              # background rides along
+    assert "chaos" not in out                        # the other gloss is gated out
+
+
+def test_gloss_clause_included_for_a_mis_transcription_within_one_edit():
+    # ASR wrote בלגן (a dropped א — edit distance 1 from בלאגן, not listed in
+    # the clause itself); the gloss must still reach this segment's prompt.
+    out = translate.relevant_context(_CTX, "היה שם בלגן שלם", "he")
+    assert "big mess or chaos" in out
+    assert "chameleon" not in out
+
+
+def test_gloss_clause_excluded_when_its_word_is_absent():
+    # The regression: clean Hebrew about a bourgeois neighborhood picked up the
+    # בלאגן gloss and came back as "a neighborhood of chaos".
+    out = translate.relevant_context(_CTX, "שכונה של בורגנים", "he")
+    assert "chaos" not in out and "chameleon" not in out and "זיקית" not in out
+    assert "Israeli documentary" in out
+
+
+def test_background_only_context_passes_through_unchanged():
+    bg = "Israeli documentary about Ahmed al-Sharaa; he became president of Syria."
+    assert translate.relevant_context(bg, "שכונה של בורגנים", "he") == bg
+
+
+def test_empty_context_stays_empty():
+    assert translate.relevant_context("", "שלום", "he") == ""
+    assert translate.relevant_context("   ", "שלום", "he") == ""
+
+
+def test_run_gates_both_pivot_hops_against_the_source_text(monkeypatch, tmp_path):
+    # Hop 2 translates the clean English intermediate, but its gloss gate must
+    # read the ORIGINAL Hebrew segment — that is how «зикит» reached Russian.
+    calls = []
+
+    def fake_generate(tok, mdl, text, *, source, target, context="", **kw):
+        calls.append({"source": source, "target": target, "context": context})
+        return "The elite lives there." if target == "en" else "Элита живёт там."
+
+    monkeypatch.setattr(translate, "load", lambda *a, **k: (None, None, None))
+    monkeypatch.setattr(translate, "free", lambda mdl: None)
+    monkeypatch.setattr(translate, "generate", fake_generate)
+    m = manifest.new({"input": "x"})
+    m["source"]["context"] = _CTX
+    m["segments"] = [
+        {"id": 0, "start": 0.0, "end": 1.0, "speaker": "S0",
+         "text": "האליטה הסורית חיה שמה", "keep": False, "keep_reason": None},
+        {"id": 1, "start": 1.0, "end": 2.0, "speaker": "S0",
+         "text": "ראינו זיקית על העץ", "keep": False, "keep_reason": None},
+    ]
+    translate.run(m, tmp_path, source="he", target="ru")
+
+    assert [c["target"] for c in calls] == ["en", "ru", "en", "ru"]
+    # Segment 0 has neither gloss word: both its hops see background only.
+    for c in calls[:2]:
+        assert "chameleon" not in c["context"] and "chaos" not in c["context"]
+        assert "Israeli documentary" in c["context"]
+    # Segment 1 speaks זיקית: both hops — including the en→ru one — get the gloss.
+    for c in calls[2:]:
+        assert "chameleon" in c["context"]
+        assert "chaos" not in c["context"]
+
+
+def test_shorten_prompt_is_gloss_gated_too(monkeypatch):
+    prompts = []
+
+    def fake_run(tok, mdl, user_text, max_new_tokens):
+        prompts.append(user_text)
+        return ""                                   # fails is_target_text → None
+
+    monkeypatch.setattr(translate, "_run", fake_run)
+    translate.shorten(None, None, "שכונה של בורגנים", "a bourgeois neighborhood", 2,
+                      source="he", target="en", context=_CTX)
+    assert len(prompts) == 1
+    assert "chameleon" not in prompts[0] and "chaos" not in prompts[0]
+    assert "Israeli documentary" in prompts[0]
+
+
+def test_latin_script_source_passes_context_through_whole():
+    # Same-script gating has no signal; the note is injected as before (this is
+    # also the pivot-shorten path, whose "source" is the English intermediate).
+    assert translate.relevant_context(_CTX, "The elite lives there.", "en") == _CTX
+
+
+def test_fluency_license_only_on_the_hop_into_a_non_english_target():
+    into_ru = translate._translate_instruction("Hello there.", "en", "ru")
+    assert "idiomatic Russian phrasing" in into_ru
+    assert "never coin" in into_ru.lower()
+    # Never when reading the noisy source, and never into English.
+    assert "idiomatic" not in translate._translate_instruction("שלום", "he", "en")
+    assert "idiomatic" not in translate._translate_instruction("שלום", "he", "ru")
+    assert "idiomatic" not in translate._translate_instruction("Привет.", "ru", "en")
+
+
+def test_garble_note_only_with_context_on_an_asr_hop():
+    ctx = "Documentary about Ahmed al-Sharaa, known as al-Julani."
+    with_ctx = translate._translate_instruction("שלום", "he", "en", context=ctx)
+    assert "may mishear" in with_ctx
+    # Bare instruction was probed and fixed nothing — never emitted without context.
+    assert "may mishear" not in translate._translate_instruction("שלום", "he", "en")
+    # The pivot's second hop reads clean model English, not ASR.
+    hop2 = translate._translate_instruction("hello", "en", "ru", context=ctx,
+                                            numbers_spelled=True, asr_source=False)
+    assert "may mishear" not in hop2
+
+
+def test_run_disables_garble_note_on_the_second_pivot_hop(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_generate(tok, mdl, text, *, source, target, **kw):
+        calls.append((source, kw.get("asr_source", True)))
+        return "ответ" if target == "ru" else "answer"
+
+    monkeypatch.setattr(translate, "load", lambda *a, **k: (None, None, None))
+    monkeypatch.setattr(translate, "free", lambda mdl: None)
+    monkeypatch.setattr(translate, "generate", fake_generate)
+    m = manifest.new({"input": "x"})
+    m["source"]["context"] = "Docu about al-Sharaa."
+    m["segments"] = [{"id": 0, "start": 0.0, "end": 1.0, "speaker": "S0",
+                      "text": "שלום לך", "keep": False, "keep_reason": None}]
+    translate.run(m, tmp_path, source="he", target="ru")
+    hop1 = [c for c in calls if c[0] == "he"]
+    hop2 = [c for c in calls if c[0] == "en"]
+    assert hop1 and all(asr for _, asr in hop1)
+    assert hop2 and all(not asr for _, asr in hop2)
+
+
+def test_trailing_clause_repeat_stripped():
+    out = translate._strip_trailing_clause_repeat(
+        "May God bless you and keep you, may the Lord turn His face toward you "
+        "and be gracious to you, may the Lord turn His face toward you.")
+    assert out == ("May God bless you and keep you, may the Lord turn His face "
+                   "toward you and be gracious to you.")
+
+
+def test_trailing_clause_repeat_leaves_legit_text_alone():
+    for s in ("He came, he saw, he conquered.",
+              "Never, never, never give up.",
+              "The plan was simple. The plan was simple in name only.",
+              "", "One clause only here."):
+        assert translate._strip_trailing_clause_repeat(s) == s

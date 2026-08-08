@@ -20,12 +20,12 @@ from . import STAGES
 STAGE_TAGS = {
     "fetch": "fetch/v1",
     "stems": "stems/v1",
-    "transcript": "transcript/v27",
-    "segments": "segments/v22",
-    "translate": "translate/v13",
-    "tts": "tts/v7",
-    "timeline": "timeline/v7",
-    "mix": "mix/v4",
+    "transcript": "transcript/v38",
+    "segments": "segments/v27",
+    "translate": "translate/v27",
+    "tts": "tts/v9",
+    "timeline": "timeline/v9",
+    "mix": "mix/v7",
     "report": "report/v1",
 }
 
@@ -39,7 +39,9 @@ SEGMENT_KEYS = {
     "text",
     "keep",
     "keep_reason",
+    "lang",       # third-language keeps only: what the span's speech is, for subtitles
     "text_en",
+    "text_mid",   # pivot runs only: the English intermediate text_en was made from
     "tts",
     "place",
 }
@@ -69,19 +71,26 @@ def reset_stage(m: dict[str, Any], stage: str) -> None:
         m["segments"] = []
         m["speakers"] = {}
         return
-    fields = {"translate": ("text_en",), "tts": ("tts",),
+    fields = {"translate": ("text_en", "text_mid"), "tts": ("tts",),
               "timeline": ("place",)}.get(stage)
     if not fields:
         return
-    # Undo keep-flips this stage made, so a rerun re-decides them.
-    undo = {"translate": "mt_failed", "tts": "tts_failed"}.get(stage)
+    # Undo keep-flips this stage OR anything downstream of it made, so a rerun
+    # re-decides them. Downstream flips must go too: a segment kept by tts_failed
+    # still holds the translation that failed, and a translate reset that skips it
+    # (because it looks "kept") re-feeds the same bad text to the new TTS run —
+    # the downstream stage is guaranteed to rerun anyway once this one does.
+    undo = {"translate": ("mt_failed", "tts_failed"), "tts": ("tts_failed",)}.get(stage, ())
     for seg in m.get("segments") or []:
-        for field in fields:
-            if stage == "translate" and field == "text_en" and seg.get("keep"):
-                continue   # kept segments are subtitled by the segments stage
-            seg.pop(field, None)
-        if undo and seg.get("keep_reason") == undo:
+        if seg.get("keep_reason") in undo:
             seg["keep"], seg["keep_reason"] = False, None
+        for field in fields:
+            if (stage == "translate" and field == "text_en" and seg.get("keep")
+                    and seg.get("keep_reason") != "foreign"):
+                # Structurally kept segments are subtitled by the segments stage;
+                # foreign keeps get their subtitle *from* translate, so theirs resets.
+                continue
+            seg.pop(field, None)
 
 
 def load(workdir: Path) -> dict[str, Any] | None:
