@@ -196,6 +196,53 @@ def test_turn_boundary_on_a_segment_edge_does_not_split():
     assert [s["text"] for s in segs] == ["aaa bbb ccc", "ddd eee fff"]
 
 
+# -------------------------------------------------------------- inter-turn gap splitting
+
+# Whisper smears word timings across a real pause (word gaps here are all far
+# below GAP_SPLIT), while diarization's segmentation reports the silence between
+# turns even when clustering hands both turns the same speaker label.
+SMEARED = [(0.0, 0.4, "aaa", "S0"), (0.5, 0.9, "bbb", "S0"), (1.0, 1.4, "ccc", "S0"),
+           (1.6, 2.4, "ddd", "S0"), (2.6, 3.0, "eee", "S0"), (3.1, 3.4, "fff", "S0")]
+
+
+def test_same_speaker_gap_splits_at_midpoint_and_survives_merge():
+    # Turns share a label but a 0.9s silence separates them: split at the gap's
+    # midpoint (2.5). The right piece (0.8s, two words) is a stub 0.2s from a
+    # substantial same-speaker neighbour — _merge_stubs would fold it straight
+    # back in, so the split point carries a brk marker that merging never crosses.
+    words = spkwords(SMEARED)
+    turns = [{"speaker": "S0", "start": 0.0, "end": 2.05},
+             {"speaker": "S0", "start": 2.95, "end": 4.0}]
+    segs = segments.words_to_segments(words, turns=turns)
+    assert [s["text"] for s in segs] == ["aaa bbb ccc ddd", "eee fff"]
+    assert segs[0]["end"] <= 2.5 <= segs[1]["start"]
+    assert [s["speaker"] for s in segs] == ["S0", "S0"]
+    # The caller's word dicts are not mutated by the brk marking.
+    assert not any(w["brk"] for w in words)
+
+
+def test_sub_threshold_gap_does_not_split():
+    # 0.7s of inter-turn silence is below TURN_GAP_SPLIT; same speaker, so no
+    # handover boundary either — the segment stays whole.
+    turns = [{"speaker": "S0", "start": 0.0, "end": 2.2},
+             {"speaker": "S0", "start": 2.9, "end": 4.0}]
+    assert len(segments.words_to_segments(spkwords(SMEARED), turns=turns)) == 1
+
+
+def test_gap_aligned_with_an_existing_boundary_is_a_noop():
+    # The words themselves pause (1.6s >= GAP_SPLIT), so the segments are already
+    # split there; the diarization gap's midpoint (2.2) falls between them, not
+    # strictly inside either, and changes nothing.
+    words = spkwords([(0.0, 0.4, "aaa", "S0"), (0.5, 0.9, "bbb", "S0"),
+                      (1.0, 1.4, "ccc", "S0"),
+                      (3.0, 3.4, "ddd", "S0"), (3.5, 3.9, "eee", "S0"),
+                      (4.0, 4.4, "fff", "S0")])
+    turns = [{"speaker": "S0", "start": 0.0, "end": 1.5},
+             {"speaker": "S0", "start": 2.9, "end": 4.5}]
+    segs = segments.words_to_segments(words, turns=turns)
+    assert [s["text"] for s in segs] == ["aaa bbb ccc", "ddd eee fff"]
+
+
 # --------------------------------------------------------------- micro-segment merging
 
 def test_micro_segment_rejoins_a_same_speaker_neighbour_across_a_pause():
@@ -242,6 +289,122 @@ def test_turn_split_fragment_remerges_into_its_own_speaker():
     assert segs[0]["end"] <= segs[1]["start"]
 
 
+# ----------------------------------------------------------- embedding-based turn split
+
+def simmat(n, pairs, default=0.10):
+    """Symmetric similarity matrix with 1.0 diagonal and given off-diagonal pairs."""
+    m = [[default] * n for _ in range(n)]
+    for i in range(n):
+        m[i][i] = 1.0
+    for (i, j), v in pairs.items():
+        m[i][j] = m[j][i] = v
+    return m
+
+
+# Measured on the courtroom exchange (yt_keRQsy-rWxI, 48.5-66.2s): two alternating
+# voices pyannote clustered as one. Turns in time order at ~49, 55, 58, 60, 62, 64s;
+# ECAPA cosine similarity within each true voice 0.31-0.53, across voices 0.01-0.18.
+COURTROOM = simmat(6, {
+    (0, 2): 0.31, (0, 4): 0.33, (2, 4): 0.32,     # voice A: turns 0, 2, 4
+    (1, 3): 0.32, (1, 5): 0.53, (3, 5): 0.32,     # voice B: turns 1, 3, 5
+    (0, 1): 0.05, (0, 3): 0.12, (0, 5): 0.01, (2, 1): 0.18,
+    (2, 3): 0.08, (2, 5): 0.11, (4, 1): 0.14, (4, 3): 0.06, (4, 5): 0.09,
+})
+
+
+def test_courtroom_matrix_splits_into_two_alternating_clusters():
+    assert segments._split_embedding_clusters(COURTROOM) == [0, 1, 0, 1, 0, 1]
+
+
+def test_uniform_high_similarity_never_splits():
+    # One voice throughout: every pair well inside the cut threshold.
+    assert segments._split_embedding_clusters(simmat(6, {}, default=0.85)) is None
+
+
+def test_block_pattern_does_not_split():
+    # AAABBB: two clean clusters but a single transition — more likely one voice
+    # across a scene change than two people, so the run stays whole.
+    block = simmat(6, {(i, j): 0.80 for g in ((0, 1, 2), (3, 4, 5))
+                       for i in g for j in g if i < j}, default=0.05)
+    assert segments._split_embedding_clusters(block) is None
+
+
+def test_three_clusters_at_the_cut_do_not_split():
+    # Three mutually distant voices: not the unambiguous two-voice shape.
+    three = simmat(6, {(0, 3): 0.80, (1, 4): 0.80, (2, 5): 0.80}, default=0.05)
+    assert segments._split_embedding_clusters(three) is None
+
+
+def test_lone_outlier_turn_does_not_split():
+    # Five turns of one voice plus a single distant turn: a second cluster needs
+    # at least two members to count as a second speaker.
+    outlier = simmat(6, {(i, j): 0.80 for i in range(5) for j in range(i + 1, 5)},
+                     default=0.05)
+    assert segments._split_embedding_clusters(outlier) is None
+
+
+def test_too_few_turns_or_empty_input_do_not_split():
+    assert segments._split_embedding_clusters(simmat(2, {(0, 1): 0.05})) is None
+    assert segments._split_embedding_clusters([]) is None
+
+
+def mkturns(spec, spk="S0"):
+    return [{"speaker": s, "start": a, "end": b} for a, b, s in spec] if spec and \
+        len(spec[0]) == 3 else [{"speaker": spk, "start": a, "end": b} for a, b in spec]
+
+
+def test_refine_turns_degenerate_inputs_pass_through(tmp_path):
+    from pathlib import Path
+    assert segments.refine_turns([], Path("missing.wav")) == []
+    # A qualifying run but no vocals file: unchanged, never touches the model.
+    turns = mkturns([(0.0, 1.0), (2.0, 3.0), (4.0, 5.0)])
+    assert segments.refine_turns(turns, tmp_path / "missing.wav") == turns
+    # No qualifying run (too few turns / a sub-0.6s turn): unchanged, no model.
+    short = mkturns([(0.0, 1.0), (2.0, 2.3), (4.0, 5.0)])
+    assert segments.refine_turns(short, tmp_path / "missing.wav") == short
+
+
+def test_refine_turns_survives_model_failure(tmp_path, monkeypatch):
+    vocals = tmp_path / "vocals.wav"
+    vocals.write_bytes(b"not audio")
+    def boom(vocals, run):
+        raise RuntimeError("no speechbrain")
+    monkeypatch.setattr(segments, "_embed_turns", boom)
+    turns = mkturns([(0.0, 1.0), (2.0, 3.0), (4.0, 5.0)])
+    assert segments.refine_turns(turns, vocals) == turns
+
+
+def test_refine_turns_relabels_the_second_cluster(tmp_path, monkeypatch):
+    import numpy as np
+    vocals = tmp_path / "vocals.wav"
+    vocals.write_bytes(b"not audio")
+    # Orthogonal-ish synthetic embeddings reproducing the courtroom similarities.
+    def fake_embed(vocals, run):
+        e = np.linalg.cholesky(np.array(COURTROOM) + 1e-6 * np.eye(6))
+        return e / np.linalg.norm(e, axis=1, keepdims=True)
+    monkeypatch.setattr(segments, "_embed_turns", fake_embed)
+    turns = mkturns([(48.5, 50.2), (55.2, 56.3), (57.5, 58.5),
+                     (59.5, 60.5), (61.5, 62.1), (63.7, 66.2)])
+    out = segments.refine_turns(turns, vocals)
+    assert [t["speaker"] for t in out] == ["S0", "S0b", "S0", "S0b", "S0", "S0b"]
+    # Timings untouched; the caller's turn dicts are not mutated.
+    assert [(t["start"], t["end"]) for t in out] == [(t["start"], t["end"]) for t in turns]
+    assert all(t["speaker"] == "S0" for t in turns)
+
+
+def test_refine_turns_other_speaker_breaks_the_run(tmp_path, monkeypatch):
+    # An interposed turn from another speaker splits the run; neither half has
+    # three turns, so nothing qualifies and the model is never consulted.
+    vocals = tmp_path / "vocals.wav"
+    vocals.write_bytes(b"not audio")
+    def boom(vocals, run):
+        raise AssertionError("must not embed")
+    monkeypatch.setattr(segments, "_embed_turns", boom)
+    turns = mkturns([(0.0, 1.0, "S0"), (2.0, 3.0, "S0"),
+                     (4.0, 5.0, "S1"), (6.0, 7.0, "S0"), (8.0, 9.0, "S0")])
+    assert segments.refine_turns(turns, vocals) == turns
+
+
 # --------------------------------------------------------------------------- transcript
 
 def test_recovered_text_routes_by_target_script_cross_script_only():
@@ -273,3 +436,48 @@ def test_foreign_spans_same_script_pair_returns_no_spans():
     assert transcript.foreign_spans(words, src="en", tgt="es") == []
     # ...while the he→en case still finds the same run.
     assert len(transcript.foreign_spans(words, src="he", tgt="en")) == 1
+
+
+def test_short_turn_does_not_veto_refinement_and_inherits_side(monkeypatch):
+    # Measured courtroom run: a 0.55s interjection sat inside 5 alternating
+    # turns; the old all-turns->=0.6s rule vetoed the whole run.
+    from pathlib import Path
+    import numpy as np
+    turns = [
+        {"speaker": "S6", "start": 55.23, "end": 56.26},
+        {"speaker": "S6", "start": 57.52, "end": 58.45},
+        {"speaker": "S6", "start": 59.50, "end": 60.53},
+        {"speaker": "S6", "start": 61.51, "end": 61.81},   # 0.30s — too short
+        {"speaker": "S6", "start": 63.72, "end": 66.20},
+    ]
+    alt = np.array([[1.0, 0.05, 0.9, 0.05], [0.05, 1.0, 0.05, 0.9],
+                    [0.9, 0.05, 1.0, 0.05], [0.05, 0.9, 0.05, 1.0]])
+
+    def fake_embed(vocals, run):
+        assert len(run) == 4          # short turn excluded from embedding
+        e = np.linalg.cholesky(alt + 1e-9 * np.eye(4))
+        return e / np.linalg.norm(e, axis=1, keepdims=True)
+
+    monkeypatch.setattr(segments, "_embed_turns", fake_embed)
+    monkeypatch.setattr(segments.Path, "is_file", lambda self: True)
+    out = segments.refine_turns(turns, Path("vocals.wav"))
+    labs = [t["speaker"] for t in out]
+    # embedded turns are indices 0,1,2,4; the fake matrix alternates them
+    assert labs[0] != labs[1] and labs[0] == labs[2] and labs[1] == labs[4]
+    # the 0.55s turn (index 3, midpoint 61.8s) inherits from its nearest
+    # embedded neighbour — the 59.5-60.5s turn (midpoint 60.0s)
+    assert labs[3] == labs[2]
+
+
+def test_measured_six_turn_courtroom_matrix_splits():
+    # The production run: same-voice linkage peaks at 0.77 distance (turn at
+    # 61.5s), cross-voice at 0.88 — the cut must sit between them.
+    sims = [
+        [1.00, 0.01, 0.33, 0.04, 0.32, 0.19],
+        [0.01, 1.00, 0.00, 0.26, 0.14, 0.33],
+        [0.33, 0.00, 1.00, 0.15, 0.53, 0.20],
+        [0.04, 0.26, 0.15, 1.00, 0.16, 0.20],
+        [0.32, 0.14, 0.53, 0.16, 1.00, 0.20],
+        [0.19, 0.33, 0.20, 0.20, 0.20, 1.00],
+    ]
+    assert segments._split_embedding_clusters(sims) == [0, 1, 0, 1, 0, 1]

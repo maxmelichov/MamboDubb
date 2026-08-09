@@ -44,6 +44,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="translation speaking style: 'narration' (default, full words) "
                         "or 'dialogue' (natural spoken register, e.g. English "
                         "contractions)")
+    p.add_argument("--genre", choices=("documentary", "movie"), default="documentary",
+                   help="content genre: 'documentary' (default, current behavior) or "
+                        "'movie' (dialogue register, gentler time-compression with "
+                        "rate continuity, and short greeting/interjection beats keep "
+                        "the actor's original voice)")
     p.add_argument("--dub-foreign", action="store_true",
                    help="dub confident third-language passages into the target instead "
                         "of keeping original audio with a subtitle")
@@ -100,12 +105,13 @@ def main(argv: list[str] | None = None) -> int:
         "transcript": {"src": args.src, "tgt": args.tgt, "prefer": args.transcript},
         # segments reads tgt_lang from the manifest, so the pair must be in its
         # fingerprint — with params={} changing --tgt never invalidated it.
-        "segments": {"src": args.src, "tgt": args.tgt, "dub_foreign": args.dub_foreign},
+        "segments": {"src": args.src, "tgt": args.tgt, "dub_foreign": args.dub_foreign,
+                     "genre": args.genre},
         "translate": {"src": args.src, "tgt": args.tgt,
                       "context": m["source"].get("context") or "",
-                      "register": args.register},
+                      "register": args.register, "genre": args.genre},
         "tts": {"model": args.tts_model, "tgt": args.tgt},
-        "timeline": {},
+        "timeline": {"genre": args.genre},
         "mix": {},
         "report": {},
     }
@@ -157,16 +163,17 @@ def main(argv: list[str] | None = None) -> int:
         elif stage == "segments":
             words = words or transcript.load_words(workdir, m)
             segments.run(m, workdir, words, transcript.load_foreign_spans(workdir, m),
-                         dub_foreign=args.dub_foreign)
+                         dub_foreign=args.dub_foreign, genre=args.genre)
         elif stage == "translate":
             translate.run(m, workdir, source=args.src, target=args.tgt, save=save,
-                          register=args.register)
+                          register=args.register, genre=args.genre)
         elif stage == "tts":
             engine = tts_mod.run(m, workdir, save=save, device=args.device, model=args.tts_model)
         elif stage == "timeline":
             engine = engine or tts_mod.Engine(m, workdir, device=args.device, model=args.tts_model)
             shorten_many, resynth_many = _retimers(m, workdir, engine, args)
-            timeline.run(m, workdir, shorten_many=shorten_many, resynth_many=resynth_many)
+            timeline.run(m, workdir, shorten_many=shorten_many, resynth_many=resynth_many,
+                         genre=args.genre)
         elif stage == "mix":
             if engine is not None:
                 engine.close()

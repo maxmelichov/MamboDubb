@@ -53,7 +53,7 @@ from pathlib import Path
 from typing import Any
 
 from . import numwords
-from .script import count_letters, is_script, script_for
+from .script import count_letters, is_script, same_script, script_for
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODEL_PATH = REPO_ROOT / "models" / "gemma-4-12B-it-6bit"
@@ -304,6 +304,49 @@ _HE_MILITARY_NOTE = (
 )
 
 
+# Capitalised tokens that are never names: the pronouns, address forms and
+# interjections dialogue capitalises constantly ("His", "God", "Okay"; «Его»,
+# «Это») — measured self-poisoning the established-names list on a drama run
+# (English) and a he→ru run (Cyrillic), where they crowded real names out of
+# the rolling window. Pronouns only, small on purpose: caseless scripts yield
+# no candidates at all, and a miss only costs one useless entry — not a wrong
+# translation. Capitalised ordinary adjectives («Свободной») cannot be listed
+# without a vocabulary project; frequency canonicalisation absorbs those.
+_NAME_STOP = frozenset({
+    "you", "your", "yours", "him", "his", "her", "hers", "its", "they",
+    "them", "their", "theirs", "our", "ours", "mine", "she", "god", "lord",
+    "hey", "well", "yes", "okay", "sir", "madam", "mister", "miss",
+    # Cyrillic pronouns/determiners (>= 3 letters; shorter ones never match
+    # the name-token pattern anyway).
+    "его", "её", "ее", "ему", "ней", "нём", "нем", "них", "ими", "оно",
+    "она", "они", "это", "эта", "этот", "эти", "тот", "наш", "ваш", "мой",
+    "твой", "свой", "себя", "кто", "что",
+})
+
+
+def _name_occurrences(text: str, target: str = "en") -> list[str]:
+    """Every proper-noun occurrence in `text`, in order, original casing.
+
+    The duplicate-preserving sibling of `update_established_names`'s extraction:
+    occurrence counts are what `canonical_names` needs to pick a best-attested
+    form, so unlike the rolling list this one keeps repeats. Contraction capitals
+    ("I'm" — any apostrophe-bearing token) and `_NAME_STOP` words are not names
+    and never enter the table.
+    """
+    nouns = _proper_nouns(text, target)
+    if not nouns:
+        return []
+    out = []
+    for match in re.finditer(r"\w[\w'-]{2,}", text or ""):
+        tok = match.group(0)
+        if "'" in tok or "’" in tok:
+            continue
+        low = tok.lower()
+        if low in nouns and low not in _NAME_STOP:
+            out.append(tok)
+    return out
+
+
 def update_established_names(established: list[str], translation: str,
                              target: str = "en") -> list[str]:
     """The rolling established-names list after seeing one produced translation.
@@ -312,19 +355,93 @@ def update_established_names(established: list[str], translation: str,
     their original casing; the list stays distinct (case-insensitive) and is
     capped at MAX_ESTABLISHED_NAMES, most recent first. Pure — returns a new list.
     """
-    nouns = _proper_nouns(translation, target)
-    if not nouns:
-        return list(established)
     fresh: list[str] = []
-    for match in re.finditer(r"\w[\w'-]{2,}", translation or ""):
-        tok = match.group(0)
-        if tok.lower() in nouns and tok.lower() not in (f.lower() for f in fresh):
+    for tok in _name_occurrences(translation, target):
+        if tok.lower() not in (f.lower() for f in fresh):
             fresh.append(tok)
+    if not fresh:
+        return list(established)
     out = list(established)
     for name in reversed(fresh):
         out = [n for n in out if n.lower() != name.lower()]
         out.insert(0, name)
     return out[:MAX_ESTABLISHED_NAMES]
+
+
+def _edit_distance_leq(a: str, b: str, k: int) -> bool:
+    """True when Levenshtein(a, b) <= k. Tokens are short and k <= 2: plain DP."""
+    if abs(len(a) - len(b)) > k:
+        return False
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        if min(cur) > k:
+            return False
+        prev = cur
+    return prev[-1] <= k
+
+
+def _variant_names(a: str, b: str) -> bool:
+    """True when `a` and `b` are plausibly two spellings of one name.
+
+    Token-wise: the same word count, every differing token pair within a small
+    edit distance — 1, or 2 for tokens of 7+ letters ("Jolani"/"Julani",
+    "Jabhat"/"Jablat" merge; "Golan" stays apart from both). Tokens under 5
+    letters never merge: at that length one edit is a different word, not a
+    misspelling ("Iran"/"Iraq"). Casefolded, so it works for any bicameral
+    script — Latin and Cyrillic alike.
+    """
+    ta, tb = a.casefold().split(), b.casefold().split()
+    if len(ta) != len(tb):
+        return False
+    for x, y in zip(ta, tb):
+        if x == y:
+            continue
+        short = min(len(x), len(y))
+        if short < 5:
+            return False
+        if not _edit_distance_leq(x, y, 1 if short < 7 else 2):
+            return False
+    return True
+
+
+def canonical_names(established: list[str] | tuple[str, ...]) -> list[str]:
+    """Dedup and canonicalise a run's proper-noun list. Pure — returns a new list.
+
+    ASR noise makes one name accumulate as near-spellings across a run
+    ("Jolani" / "Julani"; "Jabhat al-Nusra" / "Jablat al-Nusra"), and injecting
+    the variants side by side offers the model a menu instead of an answer.
+    Variants (see `_variant_names`) are grouped and each group is represented
+    by its best-attested form — most occurrences in the input (the list may
+    carry repeats, e.g. `_name_occurrences` output), earliest first appearance
+    on a tie. Output preserves order of first appearance, one entry per group.
+    Derived entirely from the run's own translations — never per-video config.
+    """
+    groups: list[dict[str, Any]] = []
+    for idx, raw in enumerate(established or []):
+        name = (raw or "").strip()
+        if not name:
+            continue
+        low = name.casefold()
+        home = None
+        for g in groups:
+            if low in g["forms"] or any(_variant_names(low, f) for f in g["forms"]):
+                home = g
+                break
+        if home is None:
+            home = {"forms": {}}
+            groups.append(home)
+        rec = home["forms"].setdefault(low, [0, idx, {}])
+        rec[0] += 1
+        rec[2][name] = rec[2].get(name, 0) + 1         # casing attestation counts
+    out = []
+    for g in groups:
+        best = min(g["forms"].values(), key=lambda r: (-r[0], r[1]))
+        # Insertion order breaks casing ties in favour of the earliest-seen form.
+        out.append(max(best[2].items(), key=lambda kv: kv[1])[0])
+    return out
 
 
 # Letter runs, any script — the tokens gloss gating compares. Digits and
@@ -368,9 +485,14 @@ def relevant_context(context: str, source_text: str, src_lang: str) -> str:
     - A clause with no token in the source language's script is background ("Israeli
       documentary about …") and is always included — entity context helps everywhere.
     - A clause carrying source-script tokens is a gloss, and is included only when one
-      of those tokens appears in the segment's own source text — exact substring, or
-      edit distance <= 1 on tokens of 4+ characters, which covers the ASR variants a
-      gloss typically lists (בלאגן / מלאגן) without a per-video matching rule.
+      of those tokens appears in the segment's own source text. Matching is gated by
+      token length — both limits are measured leak traps from the drama harness:
+      tokens under 4 letters never participate at all (a clause glossing מ"פ matched
+      by substring nearly everywhere and leaked run-wide), 4-letter tokens match only
+      as an exact word (אותו reached unrelated segments through the fuzzy rule and
+      perturbed them), and only 5+-letter tokens match as a substring or at edit
+      distance <= 1 — which still covers the ASR variants a gloss typically lists
+      (בלאגן / מלאגן) without a per-video matching rule.
 
     When the source language is Latin-script the gloss/background split has no signal
     (every token is "source script") and the note passes through whole, as before.
@@ -394,12 +516,19 @@ def relevant_context(context: str, source_text: str, src_lang: str) -> str:
         if not gloss_tokens:
             kept.append(clause)                        # background: always included
             continue
-        hit = any(
-            tok.lower() in seg_text_low
-            or (len(tok) >= 4 and any(_within_one_edit(tok.lower(), st)
-                                      for st in seg_tokens))
-            for tok in gloss_tokens
-        )
+        hit = False
+        for tok in gloss_tokens:
+            low = tok.lower()
+            if len(low) < 4:
+                continue                   # too short to identify any word
+            if len(low) == 4:
+                if low in seg_tokens:      # exact word only — no fuzz, no substring
+                    hit = True
+                    break
+            elif (low in seg_text_low
+                    or any(_within_one_edit(low, st) for st in seg_tokens)):
+                hit = True
+                break
         if hit:
             kept.append(clause)
         else:
@@ -414,7 +543,8 @@ def _translate_instruction(text: str, source: str, target: str, context: str = "
                            register: str = "narration",
                            names: tuple[str, ...] | list[str] = (),
                            numbers_spelled: bool = False,
-                           asr_source: bool = True) -> str:
+                           asr_source: bool = True,
+                           genre: str = "documentary") -> str:
     """Comprehension prompt: faithful and complete, not literal or summarised.
 
     `context` is an optional per-video note — who and what the video is about, and
@@ -459,6 +589,10 @@ def _translate_instruction(text: str, source: str, target: str, context: str = "
     hint = f"{context.strip()}\n\n" if context and context.strip() else ""
     tail = f" {extra.strip()}" if extra and extra.strip() else ""
     before = _PRECEDING.format(prev=preceding.strip()) if preceding and preceding.strip() else ""
+    # genre="movie" implies the dialogue register: movie dubbing is people
+    # talking, whatever register the caller left at its default.
+    if genre == "movie":
+        register = "dialogue"
     if register == "dialogue":
         # Dialogue: a dub of people talking should sound like people talking.
         style = (
@@ -476,6 +610,14 @@ def _translate_instruction(text: str, source: str, target: str, context: str = "
             if target == "en" else
             "Write full words suitable for text-to-speech."
         )
+    # Movie mode only: dialogue brevity plus borrowed-form greetings. Kept as a
+    # separate genre block so the documentary prompt stays byte-identical.
+    movie = (
+        " This is dubbed movie dialogue: keep it as short and colloquial as the "
+        "original — an interjection stays an interjection; a greeting borrowed "
+        "from another language (like 'welcome' or 'ahlan') stays in that borrowed "
+        "form, not translated into formal words; never expand a short line."
+    ) if genre == "movie" else ""
     # Numbers: digits are converted to words by code (numwords), never by the
     # model. Only a hop whose input is already spelled gets a sentence, and it
     # asks for inflection of existing words — not conversion.
@@ -514,7 +656,18 @@ def _translate_instruction(text: str, source: str, target: str, context: str = "
         f"transliterate a proper name that is not literally in the source; only "
         f"when the source wording is garbled or incoherent, prefer a literal "
         f"rendering over a fluent guess. Deliberate repetition and wordplay are "
-        f"kept, not smoothed away."
+        f"kept, not smoothed away. Prefer the plain verb and the standard "
+        f"collocation a native {tgt} speaker would use over bureaucratic or "
+        f"copula-heavy phrasing; a word-for-word calque of an English "
+        f"construction is wrong when {tgt} has an established way to say it."
+    ) if source == "en" and target != "en" else ""
+    # Same guard as the fluency license: false-friend military terms are a
+    # measured en→ru failure (дивизион, an artillery battalion, for "division")
+    # and the echelon rule fixed it with zero breaks on the controls.
+    echelon = (
+        f" Military unit types translate by echelon: a division, a brigade, a "
+        f"battalion each map to the {tgt} term for the same echelon and size of "
+        f"formation, never to a similar-sounding term for a different one."
     ) if source == "en" and target != "en" else ""
     return (
         f"{hint}{before}"
@@ -526,7 +679,7 @@ def _translate_instruction(text: str, source: str, target: str, context: str = "
         f"borrowed from a third language and spelled phonetically in its own alphabet "
         f"is written in the standard spelling it has in {tgt}, never transliterated "
         f"back letter by letter. Do not summarize, shorten, omit, or "
-        f"translate word-for-word. {style}{numbers}{fluency}{garble}{names_note}{military}{tail} "
+        f"translate word-for-word. {style}{movie}{numbers}{fluency}{echelon}{garble}{names_note}{military}{tail} "
         f"Output only the {tgt} translation, nothing else — no notes, no comments, no "
         f"square brackets and no alternative renderings.\n\n"
         f"{src}: {text}"
@@ -581,6 +734,12 @@ def _strip_adjacent_repeat(text: str, target: str = "en") -> str:
     """Last-resort: drop the duplicate half of an "X, X" / "X and X" collapse."""
     coord = "|".join(sorted(_COORDINATORS.get(target, _COORDINATORS["en"])))
     text = re.sub(r"\b(\w{4,})\b\s*,\s*\1\b", r"\1", text, flags=re.IGNORECASE)
+    # "X. X." — an ASR echo the source carried through ("65%. אחוז") lands as a
+    # one-word sentence duplicating the word before it; keep the first copy and
+    # its sentence punctuation. The detector is punctuation-blind, so the
+    # stripper must accept every separator the detector does.
+    text = re.sub(r"\b(\w{4,})([.!?…]+)\s*\1\b[.!?…]*(?=\s|$)", r"\1\2",
+                  text, flags=re.IGNORECASE)
     text = re.sub(rf"\b(\w{{4,}})\b\s+(?:{coord})\s+\1\b", r"\1", text,
                   flags=re.IGNORECASE)
     return re.sub(r"\s{2,}", " ", text).strip()
@@ -805,11 +964,44 @@ def _not_a_translation(out: str, src: str) -> bool:
     return src_n >= 4 and out_n > 4 * src_n + 8
 
 
+def _leaks_source_script(out: str, source: str, target: str) -> bool:
+    """True when a hop's output carries letters of the source language's script.
+
+    `is_target_text` only requires a target-script *majority*, so a line that is
+    mostly translated but drags a source-script word along sails through it —
+    and TTS then reads the foreign word aloud in the middle of the dub. Only
+    meaningful when the two scripts differ; same-script pairs have no signal
+    and are never flagged.
+    """
+    if same_script(source, target):
+        return False
+    return count_letters(out or "", script_for(source)) > 0
+
+
+def _retry_extra(out: str, src: str, source: str, target: str) -> str:
+    """The retry instruction an unusable first pass earns, or "" when clean.
+
+    Two rejection classes share the one-retry mechanism: output that is not a
+    plain translation at all (echo, markdown notes, length blow-up — see
+    `_not_a_translation`) and output that leaks source-script letters into a
+    different-script target (see `_leaks_source_script`).
+    """
+    tgt = _lang(target)
+    if _not_a_translation(out, src):
+        return (f"Never repeat or quote the source text, never explain or use any "
+                f"formatting; answer with the plain {tgt} translation alone.")
+    if _leaks_source_script(out, source, target):
+        return (f"Write the answer entirely in {tgt}; not a single {_lang(source)} "
+                f"letter may appear in it.")
+    return ""
+
+
 def generate(tokenizer, model, text: str, *, source: str, target: str,
              context: str = "", preceding: str = "", device=None,
              max_new_tokens: int = 400, register: str = "narration",
              names: tuple[str, ...] | list[str] = (),
-             numbers_spelled: bool = False, asr_source: bool = True) -> str:
+             numbers_spelled: bool = False, asr_source: bool = True,
+             genre: str = "documentary") -> str:
     src = (text or "").strip()
     if not src:
         return ""
@@ -817,29 +1009,25 @@ def generate(tokenizer, model, text: str, *, source: str, target: str,
                _translate_instruction(src, source, target, context, preceding=preceding,
                                       register=register, names=names,
                                       numbers_spelled=numbers_spelled,
-                                      asr_source=asr_source),
+                                      asr_source=asr_source, genre=genre),
                max_new_tokens)
-    if _not_a_translation(out, src):
-        tgt = _lang(target)
+    extra = _retry_extra(out, src, source, target)
+    if extra:
         retry = _run(tokenizer, model,
-                     _translate_instruction(src, source, target, context,
-                                            extra=f"Never repeat or quote the source "
-                                                  f"text, never explain or use any "
-                                                  f"formatting; answer with the plain "
-                                                  f"{tgt} translation alone.",
+                     _translate_instruction(src, source, target, context, extra=extra,
                                             preceding=preceding, register=register,
                                             names=names,
                                             numbers_spelled=numbers_spelled,
-                                            asr_source=asr_source),
+                                            asr_source=asr_source, genre=genre),
                      max_new_tokens)
-        if _not_a_translation(retry, src):
-            print("  translate: output is not a plain translation twice → giving up",
+        if _retry_extra(retry, src, source, target):
+            print("  translate: output unusable twice (echo/leak) → giving up",
                   file=sys.stderr)
             return ""                      # fails is_target_text → segment keeps original
         out = retry
     out = _repair_repeat(tokenizer, model, src, out, source, target, context,
                          max_new_tokens, preceding, register, names, numbers_spelled,
-                         asr_source)
+                         asr_source, genre)
     return _strip_trailing_clause_repeat(out)
 
 
@@ -847,7 +1035,8 @@ def _repair_repeat(tokenizer, model, src: str, out: str, source: str, target: st
                    context: str, max_new_tokens: int, preceding: str = "",
                    register: str = "narration",
                    names: tuple[str, ...] | list[str] = (),
-                   numbers_spelled: bool = False, asr_source: bool = True) -> str:
+                   numbers_spelled: bool = False, asr_source: bool = True,
+                   genre: str = "documentary") -> str:
     """Fix an "education, education" collapse if the first pass produced one.
 
     Greedy decoding is faithful but occasionally flattens two distinct source words
@@ -866,7 +1055,7 @@ def _repair_repeat(tokenizer, model, src: str, out: str, source: str, target: st
                  _translate_instruction(src, source, target, context, extra=extra,
                                         preceding=preceding, register=register,
                                         names=names, numbers_spelled=numbers_spelled,
-                                        asr_source=asr_source),
+                                        asr_source=asr_source, genre=genre),
                  max_new_tokens)
     if is_target_text(retry, target) and not _adjacent_repeat(retry, target):
         return retry
@@ -1021,18 +1210,133 @@ def shorten(processor, model, source_text: str, current_en: str, max_words: int,
     return _finalize_numbers(out, target)
 
 
+# Revision batching: ~25 lines per model call keeps the whole batch well inside
+# one context and one parseable answer; 2 lines of already-revised overlap give
+# each batch the continuity a lone opening line lacks.
+REVISE_BATCH = 25
+REVISE_OVERLAP = 2
+
+
+def _parse_numbered(out: str, k: int) -> list[str] | None:
+    """The k numbered lines of a revision reply, or None when it isn't one.
+
+    Strict on the only thing that matters — the markers 1..k must all be found,
+    in order, each claiming the text up to the next — but tolerant of the shapes
+    `_strip_editorial` leaves behind (blank lines collapsed to single spaces, a
+    stray preamble before marker 1). In-text digit markers cannot collide: the
+    lines being revised are digit-free (`_finalize_numbers` spelled them).
+    """
+    marks = []
+    want = 1
+    for match in re.finditer(r"(?:^|[\n\s])(\d{1,3})[.)]\s", out or ""):
+        if int(match.group(1)) == want:
+            marks.append(match)
+            want += 1
+    if want != k + 1:
+        return None
+    lines = []
+    for i, match in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(out)
+        lines.append(out[match.end():end].strip())
+    return lines
+
+
+def revise_run(tokenizer, model, lines: list[str], *, target: str,
+               names: list[str] | tuple[str, ...] = (),
+               batch_size: int = REVISE_BATCH, overlap: int = REVISE_OVERLAP) -> list[str]:
+    """One revision pass over the run's final target-language lines.
+
+    Per-segment translation is deliberate (deterministic, no neighbour bleed),
+    but it means no call ever sees the run whole — so a name spelled three ways,
+    or a line that is broken *as target-language text*, survives to TTS. This
+    pass reads the finished script in batches and may fix exactly that: broken
+    or unnatural target text, and proper-noun spelling drift against the run's
+    own canonical names (see `canonical_names`). It is forbidden to touch
+    claims, numbers, roles or content — and it structurally cannot reintroduce
+    much: every revised line must still pass `is_target_text`, digits are
+    re-spelled, and any batch that comes back unparseable (or a dead model call)
+    keeps its originals, logged. Returns a new list, same length and order.
+    """
+    revised = list(lines)
+    if not revised:
+        return revised
+    tgt = _lang(target)
+    ents = (" Use these canonical spellings, established by this video's own "
+            "script: " + ", ".join(names) + "." if names else "")
+    for start in range(0, len(revised), batch_size):
+        ctx = revised[max(0, start - overlap):start]
+        chunk = revised[start:start + batch_size]
+        listed = ctx + chunk
+        ctx_note = (f" The first {len(ctx)} lines are final context from the "
+                    f"previous batch — return them unchanged." if ctx else "")
+        numbered = "\n".join(f"{i}. {line}" for i, line in enumerate(listed, 1))
+        prompt = (
+            f"You are revising the numbered lines of a dubbing script written in "
+            f"{tgt}. Fix ONLY: (a) a line that is broken or unnatural as {tgt} "
+            f"text; (b) inconsistent spellings of a proper noun;{ents} (c) an "
+            f"obviously incoherent word that its context shows must be one of "
+            f"those names. Never change claims, numbers, or who does what to "
+            f"whom, and never add or remove content. Return every line under its "
+            f"same number, each on its own line, changed or unchanged — no notes, "
+            f"no comments.{ctx_note}\n\n{numbered}"
+        )
+        try:
+            out = _run(tokenizer, model, prompt,
+                       max(512, sum(len(line) for line in listed)))
+        except Exception as exc:
+            # The translations already stand; a revision batch dying must not
+            # take the run down with it.
+            print(f"  translate: revise batch at line {start + 1} failed ({exc}) "
+                  f"→ keeping originals", file=sys.stderr)
+            continue
+        parsed = _parse_numbered(out, len(listed))
+        if parsed is None:
+            print(f"  translate: revise batch at line {start + 1} unparseable "
+                  f"→ keeping originals", file=sys.stderr)
+            continue
+        changed = 0
+        for i, new in enumerate(parsed[len(ctx):]):
+            new = _finalize_numbers(new.strip(), target)
+            if not new or new == revised[start + i]:
+                continue
+            if not is_target_text(new, target):
+                continue                   # untranslated / source-script relapse
+            revised[start + i] = new
+            changed += 1
+        if changed:
+            print(f"  translate: revise changed {changed} line(s) in batch at "
+                  f"line {start + 1}", file=sys.stderr)
+    return revised
+
+
+def needs_subtitle_translation(seg: dict[str, Any]) -> bool:
+    """True when a keep segment's subtitle must be a translation, not its own text.
+
+    Two kinds: a confident third-language keep (known language, real words), and
+    a movie-mode interjection keep — the original audio plays either way, but the
+    subtitle should read in the target language.
+    """
+    if not seg.get("keep"):
+        return False
+    if (seg.get("text") or "").strip() in ("", "…"):
+        return False
+    if (seg.get("text_en") or "").strip():
+        return False
+    if seg.get("keep_reason") == "interjection":
+        return True
+    return (seg.get("keep_reason") == "foreign"
+            and bool(seg.get("lang")) and seg["lang"] != "und")
+
+
 def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None,
-        register: str = "narration") -> None:
+        register: str = "narration", genre: str = "documentary") -> None:
     from . import manifest
 
     segments = m["segments"]
-    # A third-language keep gets its subtitle translated below; every other keep
-    # is subtitled with its own text as before.
-    subs = [s for s in segments
-            if s["keep"] and s.get("keep_reason") == "foreign"
-            and s.get("lang") and s["lang"] != "und"
-            and (s.get("text") or "").strip() not in ("", "…")
-            and not (s.get("text_en") or "").strip()]
+    # A third-language keep — and a movie-mode interjection keep — gets its
+    # subtitle translated below; every other keep is subtitled with its own text
+    # as before.
+    subs = [s for s in segments if needs_subtitle_translation(s)]
     for seg in segments:
         if seg["keep"] and seg not in subs and not (seg.get("text_en") or "").strip():
             # A third-language keep whose text never got a target rendering (an
@@ -1052,6 +1356,7 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
     # has already heard. Only ever shown to the model as background (see
     # `_translate_instruction`); the segment translated is still the segment alone.
     before = {s["id"]: prev["text"] for prev, s in zip(segments, segments[1:])}
+    prev_of = {s["id"]: prev for prev, s in zip(segments, segments[1:])}
     mids: dict[int, str] = {}      # English intermediates produced this run
     # Rolling proper-noun lists per hop target, grown from this run's own output
     # (run-derived, never per-video config): each hop is told the spellings its
@@ -1074,7 +1379,27 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
             # none rather than mislead the model.
             seg_src = seg.get("lang") or source
             seg_pivot = pivot_via_english(seg_src, target)
-            preceding = "" if seg.get("lang") else before.get(seg["id"], "")
+            # The preceding line is shown in the language the hop WRITES — the
+            # previous English intermediate for a pivot's first hop, the
+            # previous target output for a direct hop. Measured: garbled-name
+            # reconciliation fires with an English preceding line and not with
+            # a source-language one. Falls back to the previous SOURCE text for
+            # the first segment and wherever the previous translation failed.
+            preceding = ""
+            prev_mid = ""
+            if not seg.get("lang"):
+                prev = prev_of.get(seg["id"])
+                prior = ""
+                if prev is not None:
+                    if seg_pivot:
+                        prev_mid = (mids.get(prev["id"])
+                                    or prev.get("text_mid") or "").strip()
+                        prior = prev_mid
+                    else:
+                        prior = prev.get("text_en") or ""
+                        if not is_target_text(prior, target):
+                            prior = ""     # kept/failed neighbour: subtitle, not output
+                preceding = prior.strip() or before.get(seg["id"], "")
             # Gloss clauses in the user context apply only where their word is
             # spoken; gate against the ORIGINAL source text on both hops — the
             # second hop reads clean English, but the gloss's reason to exist
@@ -1086,8 +1411,8 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
                 mid = generate(processor, model, seg["text"], source=seg_src,
                                target="en", context=seg_ctx,
                                preceding=preceding, device=device,
-                               register=register,
-                               names=tuple(established["en"]))
+                               register=register, genre=genre,
+                               names=tuple(canonical_names(established["en"])))
                 if not is_target_text(mid, "en"):
                     text = ""
                 else:
@@ -1098,16 +1423,19 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
                     mids[seg["id"]] = mid
                     established["en"] = update_established_names(
                         established["en"], mid, "en")
-                    # No `preceding` on the second hop: disambiguation happened on
-                    # the hop that read the noisy source, and clean English needs
-                    # none — with it, context pressure once swapped an entity
-                    # ("Jabhat al-Nusra" became "al-Qaeda's Front"; reproduced
-                    # deterministically, correct the moment preceding was dropped).
+                    # The second hop sees the PREVIOUS segment's English
+                    # intermediate as preceding ("" for the first / after a
+                    # failed hop). The documented entity swap ("Jabhat al-Nusra"
+                    # → "al-Qaeda's Front") happened with a HEBREW preceding
+                    # line; A/B'd on both harness sets, a coherent English one
+                    # measured safe — 0 semantic breaks on 17 controls including
+                    # every entity-swap guard line — and fixed «запись»→«въезд»,
+                    # a dangling «её», and a chameleon incoherence.
                     text = generate(processor, model, mid, source="en",
                                     target=target, context=seg_ctx,
-                                    preceding="",
-                                    device=device, register=register,
-                                    names=tuple(established[target]),
+                                    preceding=prev_mid,
+                                    device=device, register=register, genre=genre,
+                                    names=tuple(canonical_names(established[target])),
                                     numbers_spelled=True, asr_source=False)
             else:
                 # A direct en→tgt hop gets the same treatment as the pivot's
@@ -1120,8 +1448,8 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
                 text = generate(processor, model, src_text, source=seg_src,
                                 target=target, context=seg_ctx,
                                 preceding=preceding, device=device,
-                                register=register,
-                                names=tuple(established[target]),
+                                register=register, genre=genre,
+                                names=tuple(canonical_names(established[target])),
                                 numbers_spelled=en_direct)
             # target=="en": spell the final English; otherwise: safety net over
             # any digits the model passed through.
@@ -1144,20 +1472,41 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
         for seg in subs:
             # Subtitle-only: the audio stays original, so a failure here just
             # leaves the span's own transcription as the subtitle. Gloss gating
-            # applies here too, against the span's own text and language.
-            seg_ctx = relevant_context(context, seg["text"], seg["lang"])
-            if pivot_via_english(seg["lang"], target):
-                mid = generate(processor, model, seg["text"], source=seg["lang"],
-                               target="en", context=seg_ctx, device=device)
+            # applies here too, against the span's own text and language. An
+            # interjection keep (movie mode) has no span language: it is source
+            # speech kept for its actor's own voice, so it translates from the
+            # run's source language.
+            seg_lang = seg.get("lang") or source
+            seg_ctx = relevant_context(context, seg["text"], seg_lang)
+            if pivot_via_english(seg_lang, target):
+                mid = generate(processor, model, seg["text"], source=seg_lang,
+                               target="en", context=seg_ctx, device=device,
+                               genre=genre)
                 text = "" if not is_target_text(mid, "en") else generate(
                     processor, model, numwords.spell_numbers(mid.strip(), "en"),
                     source="en", target=target, context=seg_ctx, device=device,
-                    numbers_spelled=True, asr_source=False)
+                    numbers_spelled=True, asr_source=False, genre=genre)
             else:
-                text = generate(processor, model, seg["text"], source=seg["lang"],
-                                target=target, context=seg_ctx, device=device)
+                text = generate(processor, model, seg["text"], source=seg_lang,
+                                target=target, context=seg_ctx, device=device,
+                                genre=genre)
             text = _finalize_numbers(text, target)
             seg["text_en"] = text.strip() if is_target_text(text, target) else "…"
+        # Revision pass over the finished dubbing script (dubbed lines only —
+        # kept segments' text_en is a subtitle of audio that will play as-is).
+        # The entity table is canonicalised from the script's own proper-noun
+        # occurrences, so a name the run spelled three ways converges on its
+        # best-attested form. Runs only when this call translated something:
+        # a resumed no-op run must not re-revise an already-revised script.
+        rev = [s for s in segments
+               if not s.get("keep") and (s.get("text_en") or "").strip()]
+        if todo and rev:
+            table = canonical_names(
+                [n for s in rev for n in _name_occurrences(s["text_en"], target)])
+            for s, text in zip(rev, revise_run(processor, model,
+                                               [s["text_en"] for s in rev],
+                                               target=target, names=table)):
+                s["text_en"] = text.strip()
     finally:
         free(model)
     manifest.save(workdir, m)

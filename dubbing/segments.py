@@ -49,10 +49,70 @@ SPLICE_MIN_REMNANT = 0.4 # a trimmed piece shorter than this holds no speakable 
 WORD_OVERLAP = 0.05      # a word must overlap a piece by more than this to belong to it
 
 SPEAKER_EN_RATIO = 0.60
+
+# Movie mode only: a standalone beat of at most this many words / seconds whose
+# words are all international interjections (or source-script borrowings of a
+# target interjection) keeps ORIGINAL audio — the actor's own "welcome!" beats
+# any clone for a one-word line. Subtitles still show the translation.
+INTERJECTION_MAX_WORDS = 2
+INTERJECTION_MAX_SEC = 1.5
+
+# Cross-lingual greeting particles and interjections, by surface form. These are
+# INTERNATIONAL words — borrowed or shared across languages, recognisable in the
+# original voice — not any one video's vocabulary. Hebrew-script entries cover the
+# common loan spellings; Latin and Cyrillic entries the same words in those scripts.
+_INTERJECTIONS = frozenset({
+    # Hebrew-script loans / particles
+    "אהלן", "יאללה", "הלו", "ביי", "אוקיי", "אוקי", "וואו", "או-קיי",
+    "סורי", "האי", "היי", "וולקאם", "ולקאם", "צ'או", "באי",
+    # Latin
+    "hello", "hi", "hey", "bye", "goodbye", "okay", "ok", "wow", "welcome",
+    "ahlan", "yalla", "ciao", "salut", "hallo", "sorry", "oops",
+    # Cyrillic
+    "привет", "пока", "чао", "окей", "ок", "алло", "хай", "вау",
+})
+
+# Latin skeletons of target-language interjection words for the borrowed-word
+# test: a source-script token whose transliteration lands on one of these is a
+# loanword the actor said in (near-)target pronunciation. Skeletons are the
+# word lower-cased, c→k, vowels aeiou dropped, doubles collapsed.
+_BORROWED_TARGET_WORDS = ("welcome", "okay", "hello", "goodbye", "bye",
+                          "wow", "sorry", "hey")
+
+# Hebrew consonant → Latin skeleton options. Matres lectionis (א ה ע י) drop;
+# ו may read as the consonant w/v or as a vowel (drops). Small and general:
+# it only ever has to recognise an international loanword, not Hebrew.
+_HE_SKELETON: dict[str, tuple[str, ...]] = {
+    "א": ("",), "ה": ("", "h"), "ע": ("",), "י": ("", "y"), "ו": ("", "w", "v"),
+    "ב": ("b", "v"), "ג": ("g",), "ד": ("d",), "ז": ("z",), "ח": ("h", "kh"),
+    "ט": ("t",), "כ": ("k", "kh"), "ך": ("k", "kh"), "ל": ("l",),
+    "מ": ("m",), "ם": ("m",), "נ": ("n",), "ן": ("n",), "ס": ("s",),
+    "פ": ("p", "f"), "ף": ("p", "f"), "צ": ("ts",), "ץ": ("ts",),
+    "ק": ("k",), "ר": ("r",), "ש": ("sh", "s"), "ת": ("t",),
+}
 FOREIGN_MIN_WORDS = 3  # a shorter target-script run is an embedded token (acronym/
                        # brand) inside source speech, not a target-language passage
 
-DIARIZATION_MODEL = "pyannote/speaker-diarization-3.1"
+TURN_GAP_SPLIT = 0.8   # silence between two diarization turns that forces a split:
+                       # pyannote's segmentation hears the pause even when clustering
+                       # gives both turns the same label, while Whisper's word timings
+                       # smear across it and would bridge two characters' lines
+
+DIARIZATION_MODEL = "pyannote/speaker-diarization-community-1"
+
+# Post-diarization refinement: pyannote's clustering sometimes files two
+# alternating voices under one label (courtroom Q+A dubbed in a single clone),
+# while an ECAPA speaker embedding separates them decisively. A same-speaker run
+# of turns is re-clustered on those embeddings and split only when the evidence
+# is unambiguous (see _split_embedding_clusters).
+ECAPA_MODEL = "speechbrain/spkrec-ecapa-voxceleb"
+ECAPA_DIR = Path(__file__).resolve().parents[1] / "models" / "spkrec-ecapa-voxceleb"
+REFINE_MIN_TURNS = 3     # fewer turns cannot show alternation, so never split
+REFINE_MIN_TURN_SEC = 0.4  # measured: a 0.55s turn still embeds cleanly (0.33 to its cluster)
+REFINE_SPLIT_DIST = 0.80   # dendrogram cut on cosine distance. Measured on the
+                           # courtroom run: same-voice average linkage reaches 0.77
+                           # (a short turn), cross-voice linkage sits at 0.88 —
+                           # 0.80 clears the first with margin and refuses the second
 
 
 def text_bucket(text: str, src: str = "he", tgt: str = "en") -> str | None:
@@ -187,10 +247,26 @@ def _split_long(seg: dict[str, Any]) -> list[dict[str, Any]]:
     return _split_long(left) + _split_long(right)
 
 
-def _turn_boundaries(turns: list[dict[str, Any]]) -> list[float]:
-    """Times where diarization hands the floor to a different speaker."""
+def _turn_boundaries(turns: list[dict[str, Any]]) -> list[tuple[float, bool]]:
+    """(time, protect) pairs where diarization demands a segment cut.
+
+    A speaker handover cuts at the incoming turn's start. A silence gap of at
+    least TURN_GAP_SPLIT between consecutive turns — same speaker or not — cuts
+    at the gap's midpoint, and that cut is *protected*: clustering often labels
+    two different characters' turns with one speaker, so `_merge_stubs`'s
+    same-speaker rule would quietly glue the halves back together. A protected
+    cut plants a `brk` marker (the caption speaker-change mechanism) on the
+    split point, which `_merge_stubs` never crosses.
+    """
     turns = sorted(turns, key=lambda t: t["start"])
-    return [b["start"] for a, b in zip(turns, turns[1:]) if a["speaker"] != b["speaker"]]
+    bounds: list[tuple[float, bool]] = []
+    for a, b in zip(turns, turns[1:]):
+        if a["speaker"] != b["speaker"]:
+            bounds.append((b["start"], False))
+        gap = b["start"] - a["end"]
+        if gap >= TURN_GAP_SPLIT:
+            bounds.append((round(a["end"] + gap / 2, 3), True))
+    return bounds
 
 
 def _split_speaker_turns(segs: list[dict[str, Any]],
@@ -202,8 +278,11 @@ def _split_speaker_turns(segs: list[dict[str, Any]],
     segment — courtroom Q+A dubbed in a single cloned voice. The turn list
     knows where the handover happened; cut between the two words nearest it,
     with at least one word on each side, so the pieces stay non-overlapping
-    and keep their word alignment. With one speaker (or no turn data) there
-    are no boundaries and nothing changes.
+    and keep their word alignment. Inter-turn silence gaps cut the same way
+    (see _turn_boundaries); a protected gap cut marks the first word after the
+    cut with `brk` so `_merge_stubs` cannot re-fuse the pieces. With one
+    speaker in back-to-back turns (or no turn data) there are no boundaries
+    and nothing changes.
     """
     bounds = _turn_boundaries(turns)
     if not bounds:
@@ -211,20 +290,25 @@ def _split_speaker_turns(segs: list[dict[str, Any]],
     out: list[dict[str, Any]] = []
     for seg in segs:
         words, ends = seg["_words"], seg["_ends"]
-        cuts: list[int] = []
-        for b in bounds:
+        cuts: dict[int, bool] = {}
+        for b, protect in bounds:
             if not seg["start"] < b < seg["end"] or len(words) < 2:
                 continue
             # Each word sits on the side its midpoint falls on; clamp so both
             # sides keep a word even when the boundary grazes the segment edge.
             i = sum(1 for w, e in zip(words, ends) if 0.5 * (w["t"] + e) < b)
-            cuts.append(min(max(i, 1), len(words) - 1))
+            i = min(max(i, 1), len(words) - 1)
+            cuts[i] = cuts.get(i, False) or protect
+        if not cuts:
+            out.append(seg)
+            continue
+        # Copy, not mutate: the word dicts are shared with the caller's list.
+        ws = [dict(w, brk=True) if cuts.get(i) else w for i, w in enumerate(words)]
         prev = 0
-        for i in sorted(set(cuts)):
-            if i > prev:
-                out.append(_make(words[prev:i], ends[prev:i]))
-                prev = i
-        out.append(_make(words[prev:], ends[prev:]) if prev else seg)
+        for i in sorted(cuts):
+            out.append(_make(ws[prev:i], ends[prev:i]))
+            prev = i
+        out.append(_make(ws[prev:], ends[prev:]))
     return out
 
 
@@ -494,8 +578,82 @@ def unsegmented_words(words: list[dict[str, Any]], segs: list[dict[str, Any]],
     return lost
 
 
+def _collapse(s: str) -> str:
+    """Adjacent duplicate letters collapsed ("wwlkm" → "wlkm")."""
+    out = []
+    for ch in s:
+        if not out or out[-1] != ch:
+            out.append(ch)
+    return "".join(out)
+
+
+def _latin_skeleton(word: str) -> str:
+    """Consonant skeleton of a Latin word: lowercase, c→k, vowels out, doubles collapsed."""
+    s = (word or "").lower().replace("c", "k")
+    return _collapse("".join(ch for ch in s if ch not in "aeiou"))
+
+
+def _source_skeletons(token: str) -> set[str]:
+    """Every plausible Latin consonant skeleton of a source-script token.
+
+    Currently Hebrew only (the one caseless loan-heavy source measured); an
+    unmapped script yields no skeletons, so the borrowed-word test simply never
+    fires there and only the literal interjection list applies.
+    """
+    variants = {""}
+    for ch in token:
+        opts = _HE_SKELETON.get(ch)
+        if opts is None:
+            if not script.count_letters(ch, "hebrew") and not ch.isalpha():
+                continue                   # punctuation/geresh inside the token
+            return set()                   # a letter the map cannot read
+        variants = {v + o for v in variants for o in opts}
+        if len(variants) > 200:            # loanwords are short; never blow up
+            return set()
+    return {_collapse(v) for v in variants if v}
+
+
+def _is_interjection_token(token: str, src: str, tgt: str) -> bool:
+    """One word of a candidate interjection beat: listed, or a borrowed target word."""
+    tok = token.strip().strip("\"'׳״.,!?…-–—()").lower()
+    if not tok:
+        return False
+    if tok in _INTERJECTIONS:
+        return True
+    # Borrowed-word test: a source-script token (3+ letters — shorter ones are
+    # ambiguous) whose transliteration skeleton is a target interjection word.
+    if script.script_for(tgt) != "latin" or script.same_script(src, tgt):
+        return False
+    if script.count_letters(tok, script.script_for(src)) < 3:
+        return False
+    skels = _source_skeletons(tok)
+    # Only skeletons of 3+ consonants discriminate ("wlkm"); shorter ones would
+    # false-positive on native words (הלא → "hl" = hello) — those loans' common
+    # spellings are in the literal list instead.
+    return bool(skels) and any(sk in skels for w in _BORROWED_TARGET_WORDS
+                               if len(sk := _latin_skeleton(w)) >= 3)
+
+
+def is_interjection_keep(seg: dict[str, Any], src: str, tgt: str) -> bool:
+    """True when a standalone segment is a greeting/interjection beat (movie mode).
+
+    The segment must be short in both words and seconds — a one- or two-word
+    beat, its own segment rather than part of a longer sentence — and EVERY
+    word must be an international interjection or a source-script borrowing of
+    a target one. Language-general by construction: a fixed cross-lingual list
+    plus a script/transliteration test, never per-video vocabulary.
+    """
+    if seg["end"] - seg["start"] > INTERJECTION_MAX_SEC:
+        return False
+    words = (seg.get("text") or "").split()
+    if not 1 <= len(words) <= INTERJECTION_MAX_WORDS:
+        return False
+    return all(_is_interjection_token(w, src, tgt) for w in words)
+
+
 def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None = None,
-              target: str = "en", src: str = "he", dub_foreign: bool = False) -> None:
+              target: str = "en", src: str = "he", dub_foreign: bool = False,
+              genre: str = "documentary") -> None:
     """Flag segments whose original audio should play instead of a dub.
 
     Three content-free rules: the segment came out of a detected non-source-language
@@ -568,6 +726,11 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
             seg["keep"], seg["keep_reason"] = True, target_reason
         elif seg["speaker"] in en_speakers:
             seg["keep"], seg["keep_reason"] = True, "speaker_en"
+        elif genre == "movie" and is_interjection_keep(seg, src, target):
+            # Movie mode: a standalone greeting/interjection beat plays in the
+            # actor's real voice — better than any clone for a one-word line.
+            # The subtitle still shows the translation (see translate.run).
+            seg["keep"], seg["keep_reason"] = True, "interjection"
         else:
             seg["keep"], seg["keep_reason"] = False, None
 
@@ -599,6 +762,165 @@ def diarize(vocals: Path) -> list[dict[str, Any]]:
     except Exception as exc:
         print(f"  segments: diarization unavailable ({exc}) — single speaker", file=sys.stderr)
         return []
+
+
+def _split_embedding_clusters(sims: Any) -> list[int] | None:
+    """0/1 cluster labels per turn when a run holds exactly two alternating voices.
+
+    `sims` is a square cosine-similarity matrix over one run's turn embeddings,
+    in time order. Average-linkage agglomerative clustering on cosine distance,
+    cut at REFINE_SPLIT_DIST: the run splits only when the dendrogram yields
+    exactly two clusters there, each with at least two members, and the labels
+    alternate at least once. A block pattern (AAABBB) has a single transition —
+    that shape is more likely a scene change with one voice recorded differently
+    than two people, so it never splits. Anything ambiguous returns None.
+    """
+    import numpy as np
+
+    dist = 1.0 - np.asarray(sims, dtype=float)
+    n = len(dist)
+    if n < REFINE_MIN_TURNS:
+        return None
+    clusters: list[list[int]] = [[i] for i in range(n)]
+
+    def linkage(a: list[int], b: list[int]) -> float:
+        return float(np.mean([dist[i, j] for i in a for j in b]))
+
+    while len(clusters) > 2:
+        best = min(
+            ((linkage(clusters[x], clusters[y]), x, y)
+             for x in range(len(clusters)) for y in range(x + 1, len(clusters))),
+        )
+        d, x, y = best
+        if d > REFINE_SPLIT_DIST:
+            return None            # the cut leaves more than two clusters
+        clusters[x] += clusters[y]
+        del clusters[y]
+    if linkage(clusters[0], clusters[1]) <= REFINE_SPLIT_DIST:
+        return None                # the cut leaves a single cluster
+    if min(len(c) for c in clusters) < 2:
+        return None                # a lone outlier turn is not a second voice
+    second = clusters[1] if 0 in clusters[0] else clusters[0]
+    labels = [1 if i in second else 0 for i in range(n)]
+    if sum(1 for a, b in zip(labels, labels[1:]) if a != b) < 2:
+        return None                # block split, not an alternating dialogue
+    return labels
+
+
+_ECAPA = None
+_ECAPA_FAILED = False
+
+
+def _load_ecapa():
+    """The ECAPA speaker-embedding model, loaded once; None if unavailable."""
+    global _ECAPA, _ECAPA_FAILED
+    if _ECAPA is not None or _ECAPA_FAILED:
+        return _ECAPA
+    try:
+        import torch
+        from speechbrain.inference.speaker import EncoderClassifier
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        _ECAPA = EncoderClassifier.from_hparams(
+            source=ECAPA_MODEL, savedir=str(ECAPA_DIR), run_opts={"device": device})
+    except Exception as exc:
+        _ECAPA_FAILED = True
+        print(f"  segments: speaker embeddings unavailable ({exc}) — "
+              "turns left as diarized", file=sys.stderr)
+    return _ECAPA
+
+
+def _embed_turns(vocals: Path, run: list[dict[str, Any]]):
+    """Unit-normalized ECAPA embedding per turn, or None if the model is absent."""
+    model = _load_ecapa()
+    if model is None:
+        return None
+    import numpy as np
+    import torch
+
+    from . import audio
+
+    vecs = []
+    for t in run:
+        clip = audio.decode_mono(vocals, 16000, start=t["start"], end=t["end"])
+        wav = torch.from_numpy(clip.astype("float32")).unsqueeze(0)
+        with torch.no_grad():
+            emb = model.encode_batch(wav.to(next(model.parameters()).device))
+        v = emb.squeeze().cpu().numpy().astype(float)
+        vecs.append(v / (np.linalg.norm(v) or 1.0))
+    return np.stack(vecs)
+
+
+def refine_turns(turns: list[dict[str, Any]], vocals: Path) -> list[dict[str, Any]]:
+    """Split diarization turns that ECAPA embeddings say hold two voices.
+
+    Pyannote's clustering can label two alternating speakers as one (both sides
+    of a courtroom exchange dubbed in a single clone). For every maximal run of
+    one speaker's consecutive turns — no other speaker between, only silence —
+    with at least REFINE_MIN_TURNS turns each at least REFINE_MIN_TURN_SEC long,
+    the turns are embedded and re-clustered; when exactly two alternating
+    clusters emerge (see _split_embedding_clusters) the second cluster's turns
+    get a fresh label (original + "b"), so splitting, speaker voting and clone
+    reference selection all see two speakers. On any failure — no turns, no
+    vocals, model unavailable — the turns come back unchanged; this never fails
+    the stage.
+    """
+    if not turns:
+        return turns
+    ordered = sorted(turns, key=lambda t: (t["start"], t["end"]))
+    runs: list[tuple[int, int]] = []
+    i = 0
+    while i < len(ordered):
+        j = i
+        while j + 1 < len(ordered) and ordered[j + 1]["speaker"] == ordered[i]["speaker"]:
+            j += 1
+        run = ordered[i : j + 1]
+        # Short turns embed as noise, but one of them must not veto the run
+        # (a 0.55s interjection sat inside the measured courtroom exchange):
+        # they are skipped for embedding and inherit a neighbour's verdict.
+        long_enough = [t for t in run
+                       if t["end"] - t["start"] >= REFINE_MIN_TURN_SEC]
+        if len(long_enough) >= REFINE_MIN_TURNS:
+            runs.append((i, j + 1))
+        i = j + 1
+    if not runs:
+        return ordered
+    if not vocals or not Path(vocals).is_file():
+        print(f"  segments: no vocals at {vocals} — turns left as diarized",
+              file=sys.stderr)
+        return ordered
+    out = [dict(t) for t in ordered]
+    for a, b in runs:
+        run = out[a:b]
+        embeddable = [t for t in run
+                      if t["end"] - t["start"] >= REFINE_MIN_TURN_SEC]
+        try:
+            embs = _embed_turns(vocals, embeddable)
+            if embs is None:
+                return ordered
+            labels = _split_embedding_clusters(embs @ embs.T)
+        except Exception as exc:
+            print(f"  segments: turn refinement failed ({exc}) — "
+                  "turns left as diarized", file=sys.stderr)
+            return ordered
+        if labels is None:
+            continue
+        spk = run[0]["speaker"]
+        verdicts = dict(zip((id(t) for t in embeddable), labels))
+        for t in run:
+            lab = verdicts.get(id(t))
+            if lab is None:
+                # too short to embed: inherit the nearest embedded turn's side
+                mid = (t["start"] + t["end"]) / 2
+                near = min(embeddable, key=lambda e:
+                           abs((e["start"] + e["end"]) / 2 - mid))
+                lab = verdicts[id(near)]
+            if lab:
+                t["speaker"] = spk + "b"
+        print(f"  segments: embeddings split {spk} into two alternating voices "
+              f"({run[0]['start']:.1f}-{run[-1]['end']:.1f}s, {len(run)} turns)",
+              file=sys.stderr)
+    return out
 
 
 def extend_keeps_to_speech_end(segs: list[dict[str, Any]], levels, hop: float,
@@ -703,10 +1025,12 @@ def fill_uncovered_audible(segs: list[dict[str, Any]], levels, hop: float,
 
 
 def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
-        spans: list[dict[str, Any]] | None = None, dub_foreign: bool = False) -> None:
+        spans: list[dict[str, Any]] | None = None, dub_foreign: bool = False,
+        genre: str = "documentary") -> None:
     src_lang = m["source"].get("src_lang") or "he"
     tgt_lang = m["source"].get("tgt_lang") or "en"
     turns = diarize(workdir / m["files"]["vocals"])
+    turns = refine_turns(turns, workdir / m["files"]["vocals"])
     assign_word_speakers(words, turns)
     segs = words_to_segments(words, src_lang, tgt_lang, turns=turns)
     if spans:
@@ -715,7 +1039,7 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
         segs = splice_foreign_spans(segs, spans, words, src_lang, tgt_lang)
         for i, seg in enumerate(segs):
             seg["id"] = i
-    mark_keep(segs, spans, tgt_lang, src_lang, dub_foreign)
+    mark_keep(segs, spans, tgt_lang, src_lang, dub_foreign, genre=genre)
 
     # Drop sub-word noise fragments (a lone "ב", stray glyphs). Kept as original
     # audio they play a jarring one-letter blip of the source voice between dubbed

@@ -163,7 +163,7 @@ def test_non_hebrew_source_gets_no_military_note():
 # --------------------------------------------------------------------- tag bump
 
 def test_translate_stage_tag_bumped():
-    assert manifest.STAGE_TAGS["translate"] == "translate/v27"
+    assert manifest.STAGE_TAGS["translate"] == "translate/v30"
 
 
 # ------------------------------------------------------- per-segment gloss gating
@@ -320,3 +320,101 @@ def test_trailing_clause_repeat_leaves_legit_text_alone():
               "The plan was simple. The plan was simple in name only.",
               "", "One clause only here."):
         assert translate._strip_trailing_clause_repeat(s) == s
+
+
+# ----------------------------------------------------------------- revision pass
+
+def _echo_numbered(prompt):
+    import re as _re
+    return "\n".join(f"{n}. {t}"
+                     for n, t in _re.findall(r"(?m)^(\d+)\. (.*)$", prompt))
+
+
+def test_revise_run_batches_with_overlap_context(monkeypatch):
+    prompts = []
+
+    def fake_run(tok, mdl, prompt, n):
+        prompts.append(prompt)
+        return _echo_numbered(prompt)
+
+    monkeypatch.setattr(translate, "_run", fake_run)
+    lines = [f"Spoken script line number here, take {chr(65 + i)}." for i in range(30)]
+    out = translate.revise_run(None, None, lines, target="en")
+    assert out == lines                              # echo → nothing changes
+    assert len(prompts) == 2                         # 25 + 5, one call each
+    assert "final context" not in prompts[0]
+    assert "The first 2 lines are final context" in prompts[1]
+    # Batch 2 lists the last two lines of batch 1 as context, then its own five.
+    assert f"1. {lines[23]}" in prompts[1]
+    assert f"2. {lines[24]}" in prompts[1]
+    assert f"3. {lines[25]}" in prompts[1]
+    assert f"7. {lines[29]}" in prompts[1]
+
+
+def test_revise_run_ignores_revisions_to_the_overlap_context(monkeypatch):
+    batch = [0]
+
+    def fake_run(tok, mdl, prompt, n):
+        batch[0] += 1
+        import re as _re
+        listed = _re.findall(r"(?m)^(\d+)\. ", prompt)
+        return "\n".join(f"{k}. Rewritten in batch {'one two three'.split()[batch[0] - 1]} "
+                         f"as line {'one two three four'.split()[int(k) - 1]}."
+                         for k in listed)
+
+    monkeypatch.setattr(translate, "_run", fake_run)
+    lines = ["First spoken line here.", "Second spoken line here.",
+             "Third spoken line here."]
+    out = translate.revise_run(None, None, lines, target="en",
+                               batch_size=2, overlap=1)
+    # Batch 2 re-revised its context line (line 2), but only its own chunk
+    # (line 3) is applied — line 2 keeps batch 1's revision.
+    assert out[1] == "Rewritten in batch one as line two."
+    assert out[2] == "Rewritten in batch two as line two."
+
+
+def test_revise_run_spells_digits_a_revision_introduced(monkeypatch):
+    monkeypatch.setattr(translate, "_run",
+                        lambda *a, **k: "1. It cost 500 dollars back then.")
+    out = translate.revise_run(None, None, ["It cost much money back then."],
+                               target="en")
+    assert out == ["It cost five hundred dollars back then."]
+
+
+def test_revise_run_survives_a_dead_model_call(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("worker died")
+
+    monkeypatch.setattr(translate, "_run", boom)
+    assert translate.revise_run(None, None, ["A line that stays."],
+                                target="en") == ["A line that stays."]
+
+
+def test_run_revises_the_finished_script_with_canonical_names(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_generate(tok, mdl, text, *, source, target, **kw):
+        return {"אחת": "Then Jolani spoke first.",
+                "שתיים": "Later Julani replied at length."}[text]
+
+    def fake_revise(tok, mdl, lines, *, target, names=(), **kw):
+        seen["lines"], seen["names"] = list(lines), tuple(names)
+        return ["Then Jolani spoke first.", "Later Jolani replied at length."]
+
+    monkeypatch.setattr(translate, "load", lambda *a, **k: (None, None, None))
+    monkeypatch.setattr(translate, "free", lambda mdl: None)
+    monkeypatch.setattr(translate, "generate", fake_generate)
+    monkeypatch.setattr(translate, "revise_run", fake_revise)
+    m = manifest.new({"input": "x"})
+    m["segments"] = [
+        {"id": i, "start": float(i), "end": float(i) + 1.0, "speaker": "S0",
+         "text": t, "keep": False, "keep_reason": None}
+        for i, t in enumerate(["אחת", "שתיים"])
+    ]
+    translate.run(m, tmp_path, source="he", target="en")
+    # The entity table is canonicalised from the finished lines themselves:
+    # Jolani (1) vs Julani (1) — tie broken by earliest → Jolani.
+    assert seen["names"] == ("Jolani",)
+    assert seen["lines"] == ["Then Jolani spoke first.",
+                             "Later Julani replied at length."]
+    assert m["segments"][1]["text_en"] == "Later Jolani replied at length."

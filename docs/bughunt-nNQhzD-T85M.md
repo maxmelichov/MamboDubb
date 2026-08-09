@@ -300,3 +300,20 @@ fast/whispered exchanges, splitter has nothing to cut (upstream diarization dens
 splitter logic). Cross-speaker overruns 16→5 (worst 1.19→0.56s), max drift 1.23→0.60s,
 placed-vs-placed overlaps zero. tts_failed 4→5: the 6:41 split's 0.44s "Nachum." answer
 failed synthesis (structural: sub-second TTS coin flip, no same-speaker neighbor to merge).
+
+## Round 14 — the unified fix (designed from all three audits, 2026-08-08)
+
+All three runs (he→en doc, he→ru doc, he→en drama) share the same 5 severe classes:
+garbled names translated literally (biggest), name-spelling drift, literal idioms,
+dropped datives (meaning-inverting, fluent-sounding), dangling fragments. Decision:
+ONE change — two-pass translate-then-revise in translate.py:
+  P1: as today + preceding = previous ENGLISH (not Hebrew) + auto-extracted entity
+      table on every call + source-side dative/idiom instruction.
+  P2: document-level revision of the numbered target draft (batched), conservative
+      contract (fix broken-as-target-language + entity consistency only, never claims),
+      same entity table.
+  Riders: no-source-script-in-output guard; phonetic-Arabic segments must not be
+      translated as Hebrew (lang-ID guard).
+Entity table is COMPUTED from the run's own transcript/translations (general code,
+not a per-video glossary). Validation = the two prompt-agents' problem/control sets
+(staged, waiting on GPUs occupied by user training jobs).

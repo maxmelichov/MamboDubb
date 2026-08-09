@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import math
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -65,8 +66,49 @@ LEAD_MAX = 0.60       # how far a clip squeezed against a cross-speaker wall may
                       # speaker's opening
 
 
+@dataclass(frozen=True)
+class Rates:
+    """Genre-dependent tempo policy. The defaults ARE the documentary constants
+    above — `rates_for_genre("documentary")` must behave byte-identically to the
+    module constants, which every existing test still reads directly."""
+    rate_pref: float = RATE_PREF
+    rate_max: float = RATE_MAX
+    rate_min: float = RATE_MIN
+    tail_max: float = TAIL_MAX
+
+
+# Movie mode: completeness over sync. Speech-rate swings are what a viewer hears
+# as the dub "jumping around" (measured: 30/118 clips pinned at 1.3x next to
+# 0.82x neighbours on a 1973-war drama run), so compression is capped much lower
+# and a clip that cannot fit is allowed to drift/overrun more instead — the tail
+# a too-long clip may spill into a same-speaker gap grows accordingly. The
+# cross-speaker wall keeps its earlier-start behaviour; what it loses is the
+# harder force-fit squeeze, so the remainder records as overrun.
+MOVIE_RATE_MAX = 1.15
+MOVIE_RATE_MIN = 0.85
+MOVIE_TAIL_MAX = 1.20
+
+# Movie-mode rate continuity: consecutive same-speaker clips within a scene
+# (source gap below SCENE_GAP) may not differ in rate by more than RATE_STEP_MAX;
+# the faster one is nudged toward the slower using available timeline slack.
+RATE_STEP_MAX = 0.12
+SCENE_GAP = 2.0
+
+
+def rates_for_genre(genre: str = "documentary") -> Rates:
+    """The tempo policy for a genre. "documentary" is exactly today's constants."""
+    if genre == "movie":
+        return Rates(rate_pref=MOVIE_RATE_MAX, rate_max=MOVIE_RATE_MAX,
+                     rate_min=MOVIE_RATE_MIN, tail_max=MOVIE_TAIL_MAX)
+    return Rates()
+
+
+_DEFAULT_RATES = Rates()
+
+
 def rate_for(dur: float, slot: float, drift_in: float, stretchable: bool,
-             own: float | None = None, tail: float = 0.0) -> float:
+             own: float | None = None, tail: float = 0.0,
+             rates: Rates | None = None) -> float:
     """How much to speed a clip up so it fits `slot`, within policy limits.
 
     `own` is the segment's own span (source_end - source_start): stretching a
@@ -75,14 +117,16 @@ def rate_for(dur: float, slot: float, drift_in: float, stretchable: bool,
     clip longer than its own span is compressed toward `own + tail`, where
     `tail` is the deliberate overhang allowed past the segment's end (TAIL_MAX
     into a same-speaker gap, 0.0 across a speaker change). `own=None` keeps
-    the pure fit-to-slot behaviour.
+    the pure fit-to-slot behaviour. `rates` is the genre's tempo policy
+    (None = the documentary module constants).
     """
+    r = rates or _DEFAULT_RATES
     if not stretchable or dur <= 0.05:
         return 1.0
     if slot <= 0.05:
         # Back-to-back source segments leave no slot at all; only compress when
         # we are already behind and need to claw time back.
-        return RATE_PREF if drift_in > DRIFT_SOFT else 1.0
+        return r.rate_pref if drift_in > DRIFT_SOFT else 1.0
     # How far a slow-down may fill, and how far the clip may reach at all.
     # Both are still capped by the slot: the next placement is never overlapped.
     stretch_to = slot if own is None else min(slot, max(own, 0.05))
@@ -90,29 +134,32 @@ def rate_for(dur: float, slot: float, drift_in: float, stretchable: bool,
     if dur <= stretch_to:
         # The dub is shorter than the span its speaker actually used: play it at
         # 1.0 and it finishes early, leaving a silent tail. Stretch it to fill
-        # that span, but never below RATE_MIN (a drawl is worse than a little
-        # silence) — and never past the segment's own end just because the
-        # timeline has room before the next segment.
-        return max(RATE_MIN, dur / stretch_to)
+        # that span, but never below the rate floor (a drawl is worse than a
+        # little silence) — and never past the segment's own end just because
+        # the timeline has room before the next segment.
+        return max(r.rate_min, dur / stretch_to)
     if dur <= fit_to:
         # Ends within the allowed tail: neither filled out nor squeezed.
         return 1.0
     need = dur / fit_to
-    rate = min(RATE_PREF, need)
+    rate = min(r.rate_pref, need)
     if rate < need:
-        # RATE_PREF is not enough to hit the target. Escalate to RATE_MAX when
-        # the shortfall would push the next segment late (classic drift), or
-        # when it would overhang past the allowed tail beyond the segment's
-        # own end (talking over the next speaker's opening).
+        # The preferred rate is not enough to hit the target. Escalate to the
+        # hard ceiling when the shortfall would push the next segment late
+        # (classic drift), or when it would overhang past the allowed tail
+        # beyond the segment's own end (talking over the next speaker's
+        # opening).
         over_slot = dur / rate - slot
         over_cap = dur / rate - fit_to
         if over_slot > DRIFT_SOFT or (own is not None and over_cap > 1e-6):
-            rate = min(RATE_MAX, need)
+            rate = min(r.rate_max, need)
     return rate
 
 
-def place(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def place(items: list[dict[str, Any]],
+          rates: Rates | None = None) -> list[dict[str, Any]]:
     """Pure forward placement. `items` must be sorted by source_start."""
+    r = rates or _DEFAULT_RATES
     out: list[dict[str, Any]] = []
     prev_end = -math.inf
     prev_source_end = -math.inf
@@ -134,10 +181,10 @@ def place(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         # rather than talk over its speaker's opening.
         same_speaker = (i + 1 < len(items)
                         and items[i + 1].get("speaker") == it.get("speaker"))
-        tail = TAIL_MAX if same_speaker else 0.0
+        tail = r.tail_max if same_speaker else 0.0
         own = it["source_end"] - it["source_start"]
         rate = rate_for(it["dur"], slot, drift, it.get("stretchable", False),
-                        own=own, tail=tail)
+                        own=own, tail=tail, rates=r)
         end = start + it["dur"] / rate
         # A speaker change makes the next segment's original onset a hard wall:
         # the dub must not still be talking in voice A when character B visibly
@@ -159,7 +206,7 @@ def place(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if end > wall + 1e-6 and it.get("stretchable") and it["dur"] > 0.05:
                 allowed = wall - start
                 want = it["dur"] / allowed if allowed > 0.05 else math.inf
-                rate = max(rate, min(RATE_MAX, want))
+                rate = max(rate, min(r.rate_max, want))
                 end = start + it["dur"] / rate
             # What matters on screen is talking past the next speaker's actual
             # onset; ending inside the seam gap just before it costs nothing.
@@ -170,6 +217,78 @@ def place(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "overrun": round(overrun, 3)})
         prev_end = end
         prev_source_end = it["source_end"]
+    return out
+
+
+def smooth_rates(items: list[dict[str, Any]], places: list[dict[str, Any]], *,
+                 max_step: float = RATE_STEP_MAX,
+                 scene_gap: float = SCENE_GAP) -> list[dict[str, Any]]:
+    """Even out rate swings between same-speaker neighbours in a scene. Pure.
+
+    Movie mode's audible "jumping" is one voice alternating between hard
+    compression and a drawl on consecutive lines (1.3x hard against 0.82x). For
+    each adjacent pair of the SAME speaker whose source gap is under
+    `scene_gap`, a rate difference above `max_step` is closed from both ends,
+    without ever moving a placement:
+
+      * the compressed clip (rate > 1) is slowed toward the drawl using only
+        the slack already on the timeline — its end may never pass the next
+        placement's start, nor (when the segment after it changes speaker)
+        that segment's source onset: the wall holds. Never below 1.0 — a clip
+        that needed compression is not made to drawl.
+      * the drawl (rate < 1, a deliberate stretch) is lifted back toward 1.0
+        as far as continuity needs — always safe, the clip only gets shorter
+        and finishes a little early inside its own span.
+
+    Cross-speaker pairs are untouched. Returns a new list; `items` read only.
+    """
+    out = [dict(p) for p in places]
+
+    def lengthen(j: int, target: float) -> None:
+        """Slow clip j toward `target` (>= 1.0), spending only free slack."""
+        it = items[j]
+        if not it.get("stretchable") or it["dur"] <= 0.05:
+            return
+        limit = math.inf
+        if j + 1 < len(out):
+            limit = out[j + 1]["start"]
+            if items[j + 1].get("speaker") != it.get("speaker"):
+                limit = min(limit, items[j + 1]["source_start"])   # the wall
+        avail = limit - out[j]["start"]
+        floor_rate = it["dur"] / avail if avail > 0.05 else math.inf
+        new_rate = max(target, floor_rate, 1.0)
+        if new_rate >= out[j]["rate"] - 1e-4:
+            return
+        out[j]["rate"] = round(new_rate, 4)
+        out[j]["end"] = round(out[j]["start"] + it["dur"] / new_rate, 3)
+
+    def quicken(j: int, target: float) -> None:
+        """Lift a drawl (rate < 1) toward `target`, never past 1.0. Always safe."""
+        it = items[j]
+        if not it.get("stretchable") or it["dur"] <= 0.05:
+            return
+        new_rate = min(target, 1.0)
+        if new_rate <= out[j]["rate"] + 1e-4:
+            return
+        out[j]["rate"] = round(new_rate, 4)
+        out[j]["end"] = round(out[j]["start"] + it["dur"] / new_rate, 3)
+
+    for _ in range(4):                      # a chain may need a few passes to settle
+        before = [p["rate"] for p in out]
+        for i in range(len(items) - 1):
+            a, b = items[i], items[i + 1]
+            if a.get("speaker") != b.get("speaker"):
+                continue
+            if b["source_start"] - a["source_end"] >= scene_gap:
+                continue
+            if abs(out[i]["rate"] - out[i + 1]["rate"]) <= max_step + 1e-9:
+                continue
+            fast, slow = (i, i + 1) if out[i]["rate"] > out[i + 1]["rate"] else (i + 1, i)
+            lengthen(fast, out[slow]["rate"] + max_step)
+            if out[fast]["rate"] - out[slow]["rate"] > max_step + 1e-9:
+                quicken(slow, out[fast]["rate"] - max_step)
+        if [p["rate"] for p in out] == before:
+            break
     return out
 
 
@@ -228,12 +347,14 @@ def build_items(m: dict[str, Any]) -> list[dict[str, Any]]:
     return items
 
 
-def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=None) -> None:
+def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=None,
+        genre: str = "documentary") -> None:
+    rates = rates_for_genre(genre)
     by_id = {s["id"]: s for s in m["segments"]}
     items = build_items(m)
     by_index = {it["id"]: i for i, it in enumerate(items)}
     spoken: dict[int, str] = {}   # segment id -> shortened line actually voiced
-    places = place(items)
+    places = place(items, rates)
 
     for _round in range(SHORTEN_ROUNDS):
         late = [i for i, p in enumerate(places) if p["drift"] > DRIFT_MAX]
@@ -247,7 +368,7 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
             if j is None or items[j]["id"] in requests:
                 continue
             slot = items[j + 1]["source_start"] - places[j]["start"]
-            budget = max(0.5, slot) * RATE_PREF
+            budget = max(0.5, slot) * rates.rate_pref
             ratio = max(0.5, min(0.95, budget / max(items[j]["dur"], 0.1)))
             words = len((by_id[items[j]["id"]].get("text_en") or "").split())
             requests[items[j]["id"]] = max(3, int(words * ratio))
@@ -274,7 +395,13 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
                   f"{len(texts[seg_id].split())} words", file=sys.stderr)
         if not changed:
             break
-        places = place(items)
+        places = place(items, rates)
+
+    if genre == "movie":
+        # Rate continuity: one voice must not alternate between compression and
+        # a drawl across a scene — nudge the faster neighbour toward the slower
+        # using available slack (see smooth_rates).
+        places = smooth_rates(items, places)
 
     # Apply the planned tempo change, then re-place using the *measured* result.
     # Re-measuring is what keeps planned and real durations from diverging —
@@ -295,7 +422,7 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
             it["applied_rate"] = p["rate"]
         it["stretchable"] = False
 
-    final = place(items)
+    final = place(items, rates)
     assert_invariants(final, items)
 
     for it, p in zip(items, final):

@@ -177,3 +177,70 @@ def test_subtitle_lang3():
     assert mix.subtitle_lang3("he") == "heb"
     assert mix.subtitle_lang3("xx") == "und"
     assert mix.subtitle_lang3("") == "und"
+
+
+# ------------------------------------------------------- tts_failed is per-run
+
+
+def test_clear_failed_keeps_makes_tts_failed_dubbable_again():
+    segs = [
+        {"id": 0, "keep": True, "keep_reason": "tts_failed", "text_en": "hi",
+         "tts": {"clip": "clips/keep_x.wav", "tries": 0, "verify": "keep"}},
+        {"id": 1, "keep": True, "keep_reason": "foreign", "text_en": "ok"},
+        {"id": 2, "keep": True, "keep_reason": "latin"},
+        {"id": 3, "keep": True, "keep_reason": "speaker_en"},
+        {"id": 4, "keep": False, "keep_reason": None, "text_en": "x"},
+    ]
+    assert tts.clear_failed_keeps(segs) == [0]
+    assert segs[0]["keep"] is False and segs[0]["keep_reason"] is None
+    assert "tts" not in segs[0]                       # keep-clip record dropped too
+    # run()'s own selection rule now includes it
+    assert [s["id"] for s in segs if not s["keep"]] == [0, 4]
+    # every other keep reason is untouched
+    for i, reason in ((1, "foreign"), (2, "latin"), (3, "speaker_en")):
+        assert segs[i]["keep"] is True and segs[i]["keep_reason"] == reason
+
+
+def test_reset_stage_tts_clears_tts_failed():
+    from dubbing import manifest
+
+    m = manifest.new({"input": "x"})
+    m["segments"] = [
+        {"id": 0, "keep": True, "keep_reason": "tts_failed", "text_en": "hi",
+         "tts": {"clip": "a"}},
+        {"id": 1, "keep": True, "keep_reason": "foreign", "tts": {"clip": "b"}},
+    ]
+    manifest.reset_stage(m, "tts")
+    assert m["segments"][0]["keep"] is False
+    assert m["segments"][0]["keep_reason"] is None
+    assert "tts" not in m["segments"][0] and "tts" not in m["segments"][1]
+    assert m["segments"][1]["keep_reason"] == "foreign"   # not tts's flip to undo
+
+
+# ------------------------------------------------------- escalation reference
+
+
+def test_canonical_ref_lookup(tmp_path):
+    m = {"source": {"src_lang": "he", "tgt_lang": "en"},
+         "speakers": {"S1": {"ref": "refs/S1.wav"}}, "segments": []}
+    eng = tts.Engine(m, tmp_path)
+    (tmp_path / "refs" / "S1.wav").write_bytes(b"x")
+    got = eng._canonical_ref({"speaker": "S1"})
+    assert got is not None and got[0] == tmp_path / "refs/S1.wav"
+    # The ref key carries a hash of the file's content, so a rebuilt canonical
+    # reference can never replay clips cloned from the old file's voice.
+    assert got[1].startswith("S1:canonical:") and len(got[1]) > len("S1:canonical:")
+    assert eng._canonical_ref({"speaker": "S2"}) is None          # never built
+    m["speakers"]["S3"] = {"ref": "refs/S3.wav"}                  # stale record
+    assert eng._canonical_ref({"speaker": "S3"}) is None
+
+
+def test_canonical_ref_key_tracks_content(tmp_path):
+    m = {"source": {"src_lang": "he", "tgt_lang": "en"},
+         "speakers": {"S1": {"ref": "refs/S1.wav"}}, "segments": []}
+    (tmp_path / "refs").mkdir(parents=True)
+    (tmp_path / "refs" / "S1.wav").write_bytes(b"old-voice")
+    key_old = tts.Engine(m, tmp_path)._canonical_ref({"speaker": "S1"})[1]
+    (tmp_path / "refs" / "S1.wav").write_bytes(b"new-longer-voice")
+    key_new = tts.Engine(m, tmp_path)._canonical_ref({"speaker": "S1"})[1]
+    assert key_old != key_new

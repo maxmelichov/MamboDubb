@@ -839,6 +839,22 @@ def test_strip_adjacent_repeat_removes_the_duplicate():
     assert translate._strip_adjacent_repeat("scholarship and scholarship") == "scholarship"
 
 
+def test_strip_adjacent_repeat_handles_sentence_final_echo():
+    # ASR echo carried through the source ("65%. אחוז") lands as a one-word
+    # sentence duplicating the word before it; the detector is punctuation-blind,
+    # so the stripper must accept sentence punctuation between the copies too.
+    strip = translate._strip_adjacent_repeat
+    assert (strip("Асад правил шестьюдесятью пятью процентами. Процентами.", "ru")
+            == "Асад правил шестьюдесятью пятью процентами.")
+    assert (strip("Assad controlled sixty-five percent. Percent.", "en")
+            == "Assad controlled sixty-five percent.")
+    # mid-sentence echo across a period, later text preserved
+    assert (strip("about sixty percent. Percent. Then he entered Idlib.", "en")
+            == "about sixty percent. Then he entered Idlib.")
+    # no punctuation between copies → untouched here (detector-level concern)
+    assert strip("I know that that is true.", "en") == "I know that that is true."
+
+
 def test_strip_editorial_removes_brackets_and_notes():
     strip = translate._strip_editorial
     # Gemma 4 brackets words it supplied and offers alternatives; both would be read aloud.

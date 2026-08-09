@@ -59,14 +59,15 @@ def test_run_pivots_he_ru_in_two_hops_and_stores_the_intermediate(monkeypatch, t
     # Hop 1 translates the source text; hop 2 translates the English intermediate.
     assert calls[0]["text"] == "שורה אחת"
     assert calls[1]["text"] == "english line one"
-    # Preceding context: hop 1 sees the previous segment's SOURCE text, hop 2 the
-    # previous segment's just-produced English intermediate (empty for the first).
+    # Preceding context: BOTH hops see the previous segment's just-produced
+    # ENGLISH intermediate (empty for the first segment). Measured: garbled-name
+    # reconciliation fires with an English preceding line, not a Hebrew one, and
+    # on hop 2 a coherent English preceding line fixed «запись»→«въезд» with
+    # zero breaks on the entity-swap guard lines (the documented Jabhat al-Nusra
+    # swap happened with a HEBREW preceding line).
     assert calls[0]["preceding"] == "" and calls[1]["preceding"] == ""
-    assert calls[2]["preceding"] == "שורה אחת"
-    # Hop 2 never gets a preceding line: clean English needs no disambiguation,
-    # and with one the model once swapped an entity (Jabhat al-Nusra → "al-Qaeda's
-    # Front", reproduced deterministically).
-    assert calls[3]["preceding"] == ""
+    assert calls[2]["preceding"] == "english line one"
+    assert calls[3]["preceding"] == "english line one"
 
     seg0, seg1 = m["segments"]
     assert seg0["text_en"] == "русская строка один"
@@ -109,7 +110,7 @@ def test_run_he_en_stays_direct_and_stores_no_intermediate(monkeypatch, tmp_path
     translate.run(m, tmp_path, source="he", target="en")
 
     assert [(c["source"], c["target"]) for c in calls] == [("he", "en")] * 2
-    assert calls[1]["preceding"] == "שורה אחת"            # source-text context, as before
+    assert calls[1]["preceding"] == "english line one"    # previous TARGET output
     for seg in m["segments"]:
         assert "text_mid" not in seg
     assert m["segments"][0]["text_en"] == "english line one"

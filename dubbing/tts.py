@@ -43,9 +43,22 @@ CODEC_HZ = 12.5
 
 REF_SR = 24000
 REF_TARGET_SEC = 4.5
-REF_MIN_SEC = 2.5
+MIN_REF_SEC = 2.5    # a clone reference shorter than this yields truncated/garbled clones
 REF_MIN_RMS = 0.018
 REF_MAX_NOISE = 8.0
+REF_JOIN_FADE_SEC = 0.02   # fade at the joins of a concatenated reference
+
+# Voice-outlier rejection for candidate reference windows, thresholds measured on a
+# 12-speaker drama run (109 candidate windows): per-candidate mean cosine similarity
+# to the speaker's other windows had median 0.35, p25 0.24, p10 0.15. Coherent
+# speakers' windows mutually average 0.36-0.70; windows later confirmed to be another
+# voice sat at 0.08-0.23. Speakers with globally incoherent windows (whisper +
+# music leakage) average 0.17-0.20 with no true outliers, hence the coherence gate:
+# a low candidate is only rejected when the REST of the speaker's windows agree
+# with each other.
+REF_SIM_OUTLIER = 0.25     # candidate mean-cos below this is suspect ...
+REF_SIM_COHERENT = 0.35    # ... but only when the other windows mutually average this
+REF_MATCH_MIN = 0.25       # segment window vs canonical ref: same-voice acceptance
 
 CLONE_MIN_SEC_PER_WORD = 0.18   # faster than this is chipmunk garble
 CLONE_MAX_SEC_PER_WORD = 0.95   # slower than this is a stall/drawl
@@ -262,6 +275,140 @@ def best_ref_window(voc: np.ndarray, a: float, b: float, target: float
     return start, start + want / REF_SR, score, r
 
 
+# ECAPA speaker embeddings validate reference windows (same lazy-loader pattern as
+# dubbing/segments.py). The model is tiny (~80MB) and optional: every caller treats
+# None as "no validation", so a missing model leaves behaviour unchanged.
+ECAPA_MODEL = "speechbrain/spkrec-ecapa-voxceleb"
+ECAPA_DIR = REPO_ROOT / "models" / "spkrec-ecapa-voxceleb"
+_ECAPA = None
+_ECAPA_FAILED = False
+
+
+def _load_ecapa():
+    """The ECAPA speaker-embedding model, loaded once; None if unavailable."""
+    global _ECAPA, _ECAPA_FAILED
+    if _ECAPA is not None or _ECAPA_FAILED:
+        return _ECAPA
+    try:
+        import torch
+        from speechbrain.inference.speaker import EncoderClassifier
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        _ECAPA = EncoderClassifier.from_hparams(
+            source=ECAPA_MODEL, savedir=str(ECAPA_DIR), run_opts={"device": device})
+    except Exception as exc:
+        _ECAPA_FAILED = True
+        print(f"  tts: speaker embeddings unavailable ({exc}) — "
+              "references unvalidated", file=sys.stderr)
+    return _ECAPA
+
+
+def _embed_clip(model, clip: np.ndarray) -> np.ndarray:
+    """Unit-normalized ECAPA embedding of one 16kHz mono clip."""
+    import torch
+
+    wav = torch.from_numpy(clip.astype("float32")).unsqueeze(0)
+    with torch.no_grad():
+        emb = model.encode_batch(wav.to(next(model.parameters()).device))
+    v = emb.squeeze().cpu().numpy().astype(float)
+    return v / (np.linalg.norm(v) or 1.0)
+
+
+def _embed_windows(vocals: Path, spans: list[tuple[float, float]]) -> np.ndarray | None:
+    """One embedding per (start, end) span of the vocals file, or None (no model)."""
+    model = _load_ecapa()
+    if model is None:
+        return None
+    return np.stack([_embed_clip(model, audio.decode_mono(vocals, 16000, start=a, end=b))
+                     for a, b in spans])
+
+
+def _embed_wavfile(path: Path) -> np.ndarray | None:
+    """Embedding of a whole wav file, or None (no model)."""
+    model = _load_ecapa()
+    if model is None:
+        return None
+    return _embed_clip(model, audio.decode_mono(path, 16000))
+
+
+def reject_voice_outliers(vecs, *, low: float = REF_SIM_OUTLIER,
+                          coherent: float = REF_SIM_COHERENT) -> list[bool]:
+    """Keep-mask over one speaker's candidate windows; False = different voice.
+
+    A candidate is rejected only when BOTH hold: its mean cosine similarity to the
+    speaker's other windows is below `low`, and those other windows mutually average
+    at least `coherent` — i.e. the rest agree on one voice and this window doesn't
+    match it (a diarization mislabel). A speaker whose windows are all mutually
+    dissimilar (noisy/whispered material) keeps everything: there is no consensus
+    voice to reject against. Thresholds are measured — see REF_SIM_OUTLIER above.
+    """
+    vecs = np.asarray(vecs, dtype=float)
+    n = len(vecs)
+    if n < 3:
+        return [True] * n       # pairwise similarity cannot say which one is wrong
+    sims = vecs @ vecs.T
+    keep: list[bool] = []
+    for i in range(n):
+        mean_i = (sims[i].sum() - sims[i, i]) / (n - 1)
+        if mean_i >= low:
+            keep.append(True)
+            continue
+        idx = [j for j in range(n) if j != i]
+        sub = sims[np.ix_(idx, idx)]
+        m = len(idx)
+        others = (sub.sum() - np.trace(sub)) / (m * (m - 1))
+        keep.append(others < coherent)
+    if not any(keep):
+        return [True] * n       # never reject everything
+    return keep
+
+
+def choose_ref_windows(cands: list[tuple[float, float, float, float]],
+                       *, min_sec: float = MIN_REF_SEC,
+                       target: float = REF_TARGET_SEC) -> list[tuple[float, float]]:
+    """Which of a speaker's candidate windows make their reference.
+
+    Prefers the cleanest single window at least `min_sec` long. When every window
+    is shorter, takes the cleanest windows until their total reaches `target`
+    (they are concatenated by the caller), so a speaker of short lines still gets
+    a reference long enough to clone from. With too little material the result is
+    simply everything there is — possibly one short window, the old behaviour.
+    Returns (start, end) spans in time order.
+    """
+    if not cands:
+        return []
+    long_enough = [c for c in cands if c[1] - c[0] >= min_sec]
+    if long_enough:
+        best = min(long_enough, key=lambda c: (c[2], c[0]))
+        return [(best[0], best[1])]
+    chosen: list[tuple[float, float, float, float]] = []
+    total = 0.0
+    for c in sorted(cands, key=lambda c: (c[2], c[0])):
+        chosen.append(c)
+        total += c[1] - c[0]
+        if total >= target:
+            break
+    return sorted((c[0], c[1]) for c in chosen)
+
+
+def concat_ref(voc: np.ndarray, spans: list[tuple[float, float]], sr: int = REF_SR,
+               *, fade: float = REF_JOIN_FADE_SEC) -> np.ndarray:
+    """The spans of `voc`, in time order, joined with short fades at the edges."""
+    nf = max(1, int(fade * sr))
+    pieces: list[np.ndarray] = []
+    for a, b in sorted(spans):
+        x = np.array(voc[int(a * sr): int(b * sr)], dtype=np.float32)
+        if not len(x):
+            continue
+        k = min(nf, len(x) // 2)
+        if k:
+            ramp = np.linspace(0.0, 1.0, k, dtype=np.float32)
+            x[:k] *= ramp
+            x[-k:] *= ramp[::-1]
+        pieces.append(x)
+    return np.concatenate(pieces) if pieces else np.zeros(0, dtype=np.float32)
+
+
 class Engine:
     """Holds the loaded models and the reference bank for one run."""
 
@@ -282,13 +429,18 @@ class Engine:
         self._synth = None
         self._asr = None
         self._voc: np.ndarray | None = None
+        self._ref_hash: dict[str, str] = {}          # canonical ref path → content hash
+        self._match_cache: dict[tuple, bool] = {}    # (span, canonical path) → same voice?
 
     # -- lazy resources ----------------------------------------------------
     @property
+    def vocals_path(self) -> Path:
+        return self.workdir / self.m["files"]["vocals"]
+
+    @property
     def vocals(self) -> np.ndarray:
         if self._voc is None:
-            path = self.workdir / self.m["files"]["vocals"]
-            self._voc = audio.decode_mono(path, REF_SR)
+            self._voc = audio.decode_mono(self.vocals_path, REF_SR)
         return self._voc
 
     @property
@@ -305,32 +457,71 @@ class Engine:
         return self._asr
 
     # -- reference audio ---------------------------------------------------
+    # Bumped when the canonical-ref recipe changes: reset_stage clears segments'
+    # tts records but not m["speakers"], so without this marker a manifest from
+    # an older run would keep its old (possibly sub-second) reference forever.
+    REF_BUILD = 2
+
     def build_speaker_refs(self) -> None:
-        """One canonical reference per speaker: their cleanest few seconds."""
+        """One canonical reference per speaker: their cleanest few seconds.
+
+        A reference shorter than MIN_REF_SEC reliably clones truncated or
+        wrong-sounding, so when a speaker's best single window is that short their
+        cleanest windows are concatenated (time order, short fades at the joins)
+        up to ~REF_TARGET_SEC. Candidate windows are first ECAPA-validated: a
+        window whose voice is an outlier against the speaker's other windows is a
+        diarization mislabel and is dropped (see reject_voice_outliers). With no
+        embedding model, validation is skipped and every candidate stands.
+        """
         by_speaker: dict[str, list[dict]] = {}
         for seg in self.m["segments"]:
             if not seg["keep"]:
                 by_speaker.setdefault(seg["speaker"], []).append(seg)
         for spk, segs in by_speaker.items():
             info = self.m["speakers"].setdefault(spk, {})
-            if info.get("ref") and (self.workdir / info["ref"]).is_file():
+            if (info.get("ref") and (self.workdir / info["ref"]).is_file()
+                    and info.get("ref_v") == self.REF_BUILD):
                 continue
             longest = sorted(segs, key=lambda s: s["start"] - s["end"])[:30]
-            best = None
+            cands = []
             for seg in longest:
                 got = best_ref_window(self.vocals, seg["start"], seg["end"], REF_TARGET_SEC)
-                if got and (best is None or got[2] < best[2]):
-                    best = got
-            if best is None:
+                if got:
+                    cands.append(got)
+            cands = self._validated_candidates(spk, cands)
+            spans = choose_ref_windows(cands)
+            wav = concat_ref(self.vocals, spans)
+            if not len(wav):
                 info["ref"] = None
+                info["ref_v"] = self.REF_BUILD
                 print(f"  tts: no clean reference for {spk}", file=sys.stderr)
                 continue
-            start, end, score, _rms = best
             path = self.refs / f"{spk}.wav"
-            sf.write(str(path), self.vocals[int(start * REF_SR) : int(end * REF_SR)], REF_SR)
+            sf.write(str(path), wav, REF_SR)
+            by_start = {(c[0], c[1]): c for c in cands}
             info["ref"] = f"refs/{path.name}"
-            info["ref_span"] = [round(start, 2), round(end, 2)]
-            info["ref_noise"] = round(score, 2)
+            info["ref_span"] = [round(spans[0][0], 2), round(spans[-1][1], 2)]
+            info["ref_windows"] = [[round(a, 2), round(b, 2)] for a, b in spans]
+            info["ref_sec"] = round(len(wav) / REF_SR, 2)
+            info["ref_noise"] = round(min(by_start[s][2] for s in spans), 2)
+            info["ref_v"] = self.REF_BUILD
+            if len(spans) > 1:
+                print(f"  tts: {spk} reference concatenated from {len(spans)} windows "
+                      f"({info['ref_sec']:.1f}s)", file=sys.stderr)
+
+    def _validated_candidates(self, spk: str, cands: list) -> list:
+        """Drop candidate windows whose voice mismatches the speaker's consensus."""
+        if len(cands) < 3:
+            return cands
+        vecs = _embed_windows(self.vocals_path, [(c[0], c[1]) for c in cands])
+        if vecs is None:
+            return cands
+        keep = reject_voice_outliers(vecs)
+        for c, k in zip(cands, keep):
+            if not k:
+                print(f"  tts: {spk} ref window {c[0]:.2f}-{c[1]:.2f} rejected "
+                      "(voice outlier — likely another speaker)", file=sys.stderr)
+        return [c for c, k in zip(cands, keep) if k]
 
     def ref_for(self, seg: dict[str, Any]) -> tuple[Path, str] | None:
         """The segment's own aligned voice — whoever actually speaks in this window.
@@ -340,13 +531,23 @@ class Engine:
         NOT widen into neighbouring segments: diarization here is unreliable —
         ECAPA shows two segments labelled the same speaker can be different voices —
         so widening by label blends another person into the clone (the audible
-        wrong-speaker/voice-switch around 1:11). A short line simply gets a shorter
-        reference of the correct voice.
+        wrong-speaker/voice-switch around 1:11).
+
+        A short line is the one exception: a sub-MIN_REF_SEC reference reliably
+        clones truncated, so when the aligned window is that short AND an ECAPA
+        embedding confirms it is the same voice as the speaker's canonical
+        reference, the canonical (longer, validated) reference is used instead.
+        Without embeddings there is no confirmation, and the short aligned window
+        stands — the old behaviour, never a blind widen-by-label.
         """
         span = seg["end"] - seg["start"]
         got = best_ref_window(self.vocals, seg["start"], seg["end"], min(REF_TARGET_SEC, span))
         if got and got[3] >= REF_MIN_RMS:
             start, end, _score, _rms = got
+            if end - start < MIN_REF_SEC:
+                canon = self._canonical_ref(seg)
+                if canon is not None and self._matches_canonical((start, end), canon[0]):
+                    return canon
             # Name the clip by its audio window, never the segment id: ids shift
             # between runs as segmentation changes, so an id-named file goes stale
             # and clones a different moment's voice (the "1:19 voice at 1:33" bug).
@@ -358,9 +559,40 @@ class Engine:
             return path, f"ref:{start:.2f}-{end:.2f}"
         # Only if the aligned window is too short or essentially silent: the
         # speaker's canonical clip, if one was built, else the synth default voice.
+        return self._canonical_ref(seg)
+
+    def _matches_canonical(self, span: tuple[float, float], canon: Path) -> bool:
+        """ECAPA says the aligned window and the canonical ref are the same voice.
+
+        False whenever embeddings are unavailable — the caller then keeps the
+        segment's own audio, exactly the pre-embedding behaviour.
+        """
+        key = (round(span[0], 2), round(span[1], 2), str(canon))
+        got = self._match_cache.get(key)
+        if got is None:
+            vecs = _embed_windows(self.vocals_path, [span])
+            cvec = _embed_wavfile(canon)
+            got = (vecs is not None and cvec is not None
+                   and float(vecs[0] @ cvec) >= REF_MATCH_MIN)
+            self._match_cache[key] = got
+        return got
+
+    def _canonical_ref(self, seg: dict[str, Any]) -> tuple[Path, str] | None:
+        """The speaker's canonical clean reference (see build_speaker_refs).
+
+        The ref key carries a hash of the file's bytes: the canonical wav for a
+        speaker is rebuilt over time (longer windows, concatenation, outlier
+        rejection), and a bare "SPK:canonical" key would keep handing back clips
+        cloned from the old reference.
+        """
         info = self.m["speakers"].get(seg["speaker"]) or {}
-        if info.get("ref"):
-            return self.workdir / info["ref"], f"{seg['speaker']}:canonical"
+        if info.get("ref") and (self.workdir / info["ref"]).is_file():
+            path = self.workdir / info["ref"]
+            h = self._ref_hash.get(str(path))
+            if h is None:
+                h = hashlib.sha1(path.read_bytes()).hexdigest()[:10]
+                self._ref_hash[str(path)] = h
+            return path, f"{seg['speaker']}:canonical:{h}"
         return None
 
     # -- synthesis ---------------------------------------------------------
@@ -452,8 +684,18 @@ class Engine:
         slot = float(seg["end"]) - float(seg["start"])
         best: dict[str, Any] | None = None
 
-        for attempt in range(MAX_TRIES):
-            clip, meta, verdict = self._attempt(seg["id"], speak, ref_path, ref_key,
+        # Escalation: the segment's own aligned window can be too short to clone
+        # from (a ~1s reference reliably yields a ~1s truncated clip whatever the
+        # text says). After the bounded tries fail, one extra attempt swaps in the
+        # speaker's canonical reference — different audio, different cache key, so
+        # it is a genuinely new synthesis, never a replay of a cached failure.
+        attempts = [(a, ref_path, ref_key) for a in range(MAX_TRIES)]
+        alt = self._canonical_ref(seg)
+        if alt is not None and alt[1] != ref_key:
+            attempts.append((MAX_TRIES, alt[0], alt[1]))
+
+        for attempt, a_path, a_key in attempts:
+            clip, meta, verdict = self._attempt(seg["id"], speak, a_path, a_key,
                                                 base_seed, attempt)
             if verdict is not None and verdict.get("failed"):
                 continue
@@ -659,9 +901,29 @@ def _load_asr(tgt: str = "en"):
     return None
 
 
+def clear_failed_keeps(segments: list[dict[str, Any]]) -> list[int]:
+    """Make every previously tts_failed segment dubbable again.
+
+    A tts_failed keep is this stage's own per-run verdict, never cached state:
+    whatever run set it, entering the stage again means re-attempting synthesis.
+    `manifest.reset_stage` already undoes these on the invalidation path, but the
+    resume path (same fingerprint after an interruption) skips reset_stage, and
+    without this a resumed run would treat the failure as settled forever.
+    Returns the ids that were cleared.
+    """
+    cleared: list[int] = []
+    for seg in segments:
+        if seg.get("keep_reason") == "tts_failed":
+            seg["keep"], seg["keep_reason"] = False, None
+            seg.pop("tts", None)  # the keep-clip record; this run re-decides
+            cleared.append(seg["id"])
+    return cleared
+
+
 def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = None,
         model: str = DEFAULT_TTS_MODEL) -> Engine:
     engine = Engine(m, workdir, device=device, model=model)
+    clear_failed_keeps(m["segments"])
     engine.build_speaker_refs()
     dub = [s for s in m["segments"] if not s["keep"]]
     todo = [s for s in dub if not (s.get("tts") and (workdir / s["tts"]["clip"]).is_file())]
