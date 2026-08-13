@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import script
+from . import PASSTHROUGH_REASON, script
 
 GAP_SPLIT = 0.70       # silence between words that ends a segment
 SPEAKER_GAP = 0.25     # diarization must be backed by a real pause to split
@@ -49,6 +49,22 @@ SPLICE_MIN_REMNANT = 0.4 # a trimmed piece shorter than this holds no speakable 
 WORD_OVERLAP = 0.05      # a word must overlap a piece by more than this to belong to it
 
 SPEAKER_EN_RATIO = 0.60
+
+# Passthrough — the editor app's per-segment override (manifest field `passthrough`).
+# True plays the original audio for that span, False dubs it, absent decides
+# automatically. It rides the existing keep machinery: a passthrough segment is a
+# keep, so tts slices the original audio for it, the timeline reserves its exact
+# span, and mix ducks the bed away under it instead of laying a dub over it.
+# Its `keep_reason` is `PASSTHROUGH_REASON`, imported above because the translate
+# stage subtitles that reason differently and must call it the same thing.
+# Carrying an override to a rebuilt segment: the new segment must be this much
+# covered by the old one, and vice versa, or they are not the same moment.
+CARRY_MIN_OVERLAP = 0.5
+# Advisory language stamp: the classifier run under a segment must cover this much
+# of it before its label is worth showing the user. A clear majority, not half —
+# a segment split evenly across a language change has no one answer, and offering
+# the user either label there is offering the wrong one half the time.
+DETECT_MIN_COVER = 0.6
 
 # Movie mode only: a standalone beat of at most this many words / seconds whose
 # words are all international interjections (or source-script borrowings of a
@@ -551,6 +567,12 @@ def splice_foreign_spans(segs: list[dict[str, Any]], spans: list[dict[str, Any]]
         if s.get("lang") and s["lang"] != tgt:
             for x in made:
                 x["lang"] = s["lang"]
+        # Every span segment also carries the classifier's label as an advisory
+        # stamp — including a target-language one, which `lang` deliberately does
+        # not record (it means "third language" to the translate stage). The
+        # editor app reads this to explain why a span plays original audio.
+        for x in made:
+            x["detected_lang"] = s.get("lang") or tgt
         kept.extend(x for x in made if x["end"] > x["start"])
     return sorted(kept, key=lambda x: x["start"])
 
@@ -733,6 +755,114 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
             seg["keep"], seg["keep_reason"] = True, "interjection"
         else:
             seg["keep"], seg["keep_reason"] = False, None
+
+
+def apply_passthrough(segments: list[dict[str, Any]]) -> list[int]:
+    """Honour the per-segment `passthrough` override; returns the ids it flipped.
+
+    The override is the user's word, so it is applied on every run — after the
+    automatic rules in `mark_keep`, and again before any downstream stage, since
+    the app writes it into a finished manifest and expects the next run to obey it.
+
+    `True` makes the segment a keep, so its original audio plays. `False` sends it
+    down the dub path. Absent (the default) leaves the automatic verdict alone.
+    An override that merely agrees with the automatic verdict changes nothing —
+    in particular a span already kept for a *named* reason stays named, because
+    "foreign" and "interjection" tell the translate stage to render a subtitle
+    and overwriting them with "user" would silently drop it.
+
+    Whatever the flip invalidates goes with it: the translation, the clip and the
+    placement of a flipped segment were made for the other path, and leaving them
+    behind would dub a passthrough span or play original audio over a dub's slot.
+    This is what makes the function safe to call every run — it is idempotent, and
+    only a real change of verdict throws work away.
+    """
+    flipped: list[int] = []
+    for seg in segments:
+        want = seg.get("passthrough")
+        if want is None or bool(want) == bool(seg.get("keep")):
+            continue
+        if not want and not (seg.get("text") or "").strip():
+            # Nothing to translate and nothing to speak: a "dub this" override on a
+            # span with no words would strip the original audio and put nothing in
+            # its place. The keep stands — never silent outranks the override.
+            continue
+        if want:
+            seg["keep"], seg["keep_reason"] = True, PASSTHROUGH_REASON
+        else:
+            seg["keep"], seg["keep_reason"] = False, None
+        for field in ("text_en", "text_mid", "tts", "place"):
+            seg.pop(field, None)
+        flipped.append(seg["id"])
+    return flipped
+
+
+def carry_passthrough(segments: list[dict[str, Any]],
+                      overrides: list[tuple[float, float, bool]]) -> int:
+    """Re-attach saved overrides to freshly rebuilt segments; returns how many stuck.
+
+    Re-running the segments stage throws every segment away and renumbers what
+    replaces it, so an override cannot be carried by id. It is carried by *time*:
+    the new segment covering the same moment inherits it. Both directions must
+    agree — the new segment mostly inside the old span and the old span mostly
+    inside the new one — so a re-segmentation that merges four lines into one
+    does not silently spread one line's override across all four.
+    """
+    stuck = 0
+    for seg in segments:
+        span = seg["end"] - seg["start"]
+        if span <= 0:
+            continue
+        for a, b, want in overrides:
+            if b - a <= 0:
+                continue
+            overlap = min(seg["end"], b) - max(seg["start"], a)
+            if overlap / span >= CARRY_MIN_OVERLAP and overlap / (b - a) >= CARRY_MIN_OVERLAP:
+                seg["passthrough"] = bool(want)
+                stuck += 1
+                break
+    return stuck
+
+
+def saved_overrides(segments: list[dict[str, Any]]) -> list[tuple[float, float, bool]]:
+    """The overrides on these segments, as (start, end, passthrough) triples."""
+    return [(float(s["start"]), float(s["end"]), bool(s["passthrough"]))
+            for s in segments if s.get("passthrough") is not None]
+
+
+def stamp_detected_lang(segments: list[dict[str, Any]],
+                        lang_runs: list[dict[str, Any]] | None) -> None:
+    """Record what the language classifier heard under each segment, advisory only.
+
+    Nothing in the pipeline reads this. It exists so the editor app can tell the
+    user "this line sounds like it is already English" and offer passthrough,
+    instead of the user having to listen to a forty-minute video to find the two
+    places where an interviewee switched language. Kept advisory on purpose: the
+    classifier is confident enough to suggest and not confident enough to decide.
+
+    A label is only stamped when the run it comes from covers most of the segment
+    (`DETECT_MIN_COVER`); a segment straddling a language change has no one
+    answer, and a half-covered label would suggest the wrong thing. A stamp that
+    is already there — from the span the segment was built out of, which knows
+    better — is never overwritten.
+    """
+    runs = [(float(r["start"]), float(r["end"]), r.get("lang") or "")
+            for r in (lang_runs or []) if (r.get("lang") or "")]
+    if not runs:
+        return
+    for seg in segments:
+        if seg.get("detected_lang"):
+            continue
+        span = seg["end"] - seg["start"]
+        if span <= 0:
+            continue
+        best, best_cover = "", 0.0
+        for a, b, lang in runs:
+            cover = max(0.0, min(seg["end"], b) - max(seg["start"], a)) / span
+            if cover > best_cover:
+                best, best_cover = lang, cover
+        if best_cover >= DETECT_MIN_COVER:
+            seg["detected_lang"] = best
 
 
 def diarize(vocals: Path) -> list[dict[str, Any]]:
@@ -1026,7 +1156,9 @@ def fill_uncovered_audible(segs: list[dict[str, Any]], levels, hop: float,
 
 def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
         spans: list[dict[str, Any]] | None = None, dub_foreign: bool = False,
-        genre: str = "documentary") -> None:
+        genre: str = "documentary",
+        overrides: list[tuple[float, float, bool]] | None = None,
+        lang_runs: list[dict[str, Any]] | None = None) -> None:
     src_lang = m["source"].get("src_lang") or "he"
     tgt_lang = m["source"].get("tgt_lang") or "en"
     turns = diarize(workdir / m["files"]["vocals"])
@@ -1039,7 +1171,15 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
         segs = splice_foreign_spans(segs, spans, words, src_lang, tgt_lang)
         for i, seg in enumerate(segs):
             seg["id"] = i
+    # The user's overrides survive a re-segmentation by time, not by id — this
+    # stage renumbers everything it rebuilds. Carried before the automatic rules
+    # run so `apply_passthrough` below has the last word over them.
+    if overrides:
+        carried = carry_passthrough(segs, overrides)
+        print(f"  segments: carried {carried}/{len(overrides)} passthrough override(s)",
+              file=sys.stderr)
     mark_keep(segs, spans, tgt_lang, src_lang, dub_foreign, genre=genre)
+    apply_passthrough(segs)
 
     # Drop sub-word noise fragments (a lone "ב", stray glyphs). Kept as original
     # audio they play a jarring one-letter blip of the source voice between dubbed
@@ -1085,14 +1225,19 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
 
     fill_uncovered_audible(segs, src_levels, 0.1, total or len(src_levels) * 0.1,
                            is_target_lang=is_target, voice_levels=levels)
+    # Advisory only, and last: every segment that exists now — including the ones
+    # the fill just added — gets the classifier's label for the app to read.
+    stamp_detected_lang(segs, lang_runs)
     m["segments"] = segs
     m["speakers"] = {
         spk: {"dur": round(sum(s["end"] - s["start"] for s in segs if s["speaker"] == spk), 2)}
         for spk in sorted({s["speaker"] for s in segs})
     }
     kept = sum(1 for s in segs if s["keep"])
+    forced = sum(1 for s in segs if s.get("passthrough") is not None)
     print(
         f"  segments: {len(segs)} segments, {len(m['speakers'])} speakers, "
-        f"{kept} keep-original",
+        f"{kept} keep-original"
+        f"{f', {forced} user-set' if forced else ''}",
         file=sys.stderr,
     )

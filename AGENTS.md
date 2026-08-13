@@ -67,6 +67,33 @@ true, not working around them.
 8. **The manifest stays small.** `manifest.SEGMENT_KEYS` is a whitelist enforced on save.
    If a stage needs a new field, add it there deliberately.
 
+## Passthrough — the editor app's per-segment override
+
+Some spans should play exactly as recorded: an interviewee already speaking the
+target language, a piece of archive audio, a line the clone gets wrong. The
+manifest carries two fields for this, both in `SEGMENT_KEYS`:
+
+- **`passthrough`** — the user's word, written by the editor app. `true` plays the
+  original audio for that segment, `false` dubs it, absent decides automatically.
+- **`detected_lang`** — advisory. What the language classifier heard over that
+  span (the VAD+LID runs the transcript stage now saves as `words.json:lang_runs`).
+  **Nothing in the pipeline reads it**; it exists so the app can *suggest*
+  passthrough. Automatic keeps are still decided by `segments.mark_keep` alone.
+
+It rides the existing keep machinery rather than adding a parallel path: a
+passthrough segment is a keep, so tts slices its original audio, the timeline
+reserves its exact span (not stretchable), and mix ducks the bed to zero under it
+instead of laying a dub over it. `segments.apply_passthrough` is the only thing
+that reads the flag, and it runs both at the end of the segments stage and once at
+startup on a finished manifest — so the app can set the flag and re-run.
+
+A flip drops that segment's `text_en`, `text_mid`, `tts` and `place` (they were
+made for the other path) and re-runs translate onward; every *other* segment keeps
+its translation and its clip. Two rules the override does not get to break: it
+cannot un-keep a segment with no text (nothing to speak — "never silent" wins),
+and re-running the segments stage re-attaches overrides by **time**, not by id,
+since ids are renumbered (`segments.carry_passthrough`).
+
 ## Working on this
 
 - Fix causes in `dubbing/`, then re-run. Do not hand-edit anything under `outputs/`.

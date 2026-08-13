@@ -20,9 +20,9 @@ from . import STAGES
 STAGE_TAGS = {
     "fetch": "fetch/v1",
     "stems": "stems/v1",
-    "transcript": "transcript/v38",
-    "segments": "segments/v33",
-    "translate": "translate/v30",
+    "transcript": "transcript/v39",
+    "segments": "segments/v34",
+    "translate": "translate/v31",
     "tts": "tts/v12",
     "timeline": "timeline/v10",
     "mix": "mix/v7",
@@ -40,6 +40,11 @@ SEGMENT_KEYS = {
     "keep",
     "keep_reason",
     "lang",       # third-language keeps only: what the span's speech is, for subtitles
+    "detected_lang",  # advisory: what the language classifier heard over this span.
+                      # Never decides anything — it is what the editor app reads to
+                      # SUGGEST passthrough ("this one is already English").
+    "passthrough",    # user override, the editor app's field: True = play the original
+                      # audio for this span, False = dub it, absent = decide automatically.
     "text_en",
     "text_mid",   # pivot runs only: the English intermediate text_en was made from
     "tts",

@@ -1142,3 +1142,182 @@ def test_save_drops_unknown_segment_keys(tmp_path):
     manifest.save(tmp_path, m)
     loaded = manifest.load(tmp_path)
     assert set(loaded["segments"][0]) == {"id", "start", "end", "text"}
+
+
+# ----------------------------------------------------------------------- passthrough
+# The editor app's per-segment override: `passthrough=True` plays the original
+# audio for that span, `False` dubs it, absent leaves the automatic verdict alone.
+# It rides the existing keep machinery, so these tests pin the flag's effect on
+# `keep` and on the derived work a flip invalidates.
+
+def seg_for_passthrough(i, start, end, **kw):
+    s = {"id": i, "start": start, "end": end, "speaker": "A", "text": "some words",
+         "keep": False, "keep_reason": None}
+    s.update(kw)
+    return s
+
+
+def test_passthrough_true_makes_the_segment_play_original_audio():
+    segs = [seg_for_passthrough(0, 0.0, 3.0, passthrough=True)]
+    assert segments.apply_passthrough(segs) == [0]
+    assert segs[0]["keep"] and segs[0]["keep_reason"] == "user"
+
+
+def test_passthrough_false_sends_a_kept_segment_down_the_dub_path():
+    segs = [seg_for_passthrough(0, 0.0, 3.0, keep=True, keep_reason="latin",
+                                passthrough=False)]
+    assert segments.apply_passthrough(segs) == [0]
+    assert not segs[0]["keep"] and segs[0]["keep_reason"] is None
+
+
+def test_passthrough_absent_leaves_the_automatic_verdict_alone():
+    segs = [seg_for_passthrough(0, 0.0, 3.0, keep=True, keep_reason="foreign"),
+            seg_for_passthrough(1, 3.0, 6.0)]
+    assert segments.apply_passthrough(segs) == []
+    assert segs[0]["keep"] and segs[0]["keep_reason"] == "foreign"
+    assert not segs[1]["keep"]
+
+
+def test_passthrough_agreeing_with_the_automatic_verdict_keeps_its_named_reason():
+    # "foreign" and "interjection" tell translate to render a subtitle; an
+    # override that changes nothing must not overwrite them with "user".
+    segs = [seg_for_passthrough(0, 0.0, 3.0, keep=True, keep_reason="foreign",
+                                lang="ar", passthrough=True)]
+    assert segments.apply_passthrough(segs) == []
+    assert segs[0]["keep_reason"] == "foreign"
+
+
+def test_a_flip_throws_away_the_work_made_for_the_other_path():
+    # The translation, the clip and the placement of a flipped segment were all
+    # made for the path it is no longer on — left behind, mix would lay a dub
+    # over a span meant to play as recorded.
+    segs = [seg_for_passthrough(0, 0.0, 3.0, text_en="hello", text_mid="hello",
+                                tts={"clip": "clips/0.wav", "dur": 2.2},
+                                place={"start": 0.0, "end": 2.2}, passthrough=True)]
+    segments.apply_passthrough(segs)
+    for field in ("text_en", "text_mid", "tts", "place"):
+        assert field not in segs[0]
+
+
+def test_applying_passthrough_twice_changes_nothing_the_second_time():
+    # It runs on every invocation, so a re-run must not keep re-invalidating work.
+    segs = [seg_for_passthrough(0, 0.0, 3.0, passthrough=True),
+            seg_for_passthrough(1, 3.0, 6.0, keep=True, keep_reason="latin",
+                                passthrough=False)]
+    assert len(segments.apply_passthrough(segs)) == 2
+    segs[0]["tts"] = {"clip": "clips/keep_0.wav", "dur": 3.0}
+    assert segments.apply_passthrough(segs) == []
+    assert segs[0]["tts"] == {"clip": "clips/keep_0.wav", "dur": 3.0}
+
+
+def test_a_dub_override_on_a_wordless_span_is_refused():
+    # Never silent outranks the override: with no text there is nothing to
+    # translate and nothing to speak, so stripping the original audio would
+    # leave the bed alone under a speaking face.
+    segs = [seg_for_passthrough(0, 0.0, 3.0, text="", keep=True,
+                                keep_reason="uncovered", passthrough=False)]
+    assert segments.apply_passthrough(segs) == []
+    assert segs[0]["keep"]
+
+
+def test_passthrough_keeps_reserve_their_exact_span_on_the_timeline():
+    # A keep is not stretchable and its clip is the span itself, so the timeline
+    # reserves exactly those seconds and everything else places around them.
+    m = {"segments": [
+        seg_for_passthrough(0, 0.0, 2.0, text_en="a",
+                            tts={"clip": "clips/0.wav", "dur": 1.6}),
+        seg_for_passthrough(1, 2.0, 5.0, keep=True, keep_reason="user",
+                            tts={"clip": "clips/keep_1.wav", "dur": 3.0}),
+        seg_for_passthrough(2, 5.0, 7.0, text_en="c",
+                            tts={"clip": "clips/2.wav", "dur": 1.5}),
+    ]}
+    items = timeline.build_items(m)
+    assert [it["stretchable"] for it in items] == [True, False, True]
+    places = timeline.place(items)
+    timeline.assert_invariants(places, items)
+    assert places[1]["start"] == pytest.approx(2.0)
+    assert places[1]["end"] == pytest.approx(5.0)
+
+
+def test_mix_ducks_the_bed_away_under_a_passthrough_span():
+    # The kept audio carries its own background, so the bed goes to zero under it
+    # rather than being ducked as it is under a dub.
+    segs = [seg_for_passthrough(0, 0.0, 2.0, place={"start": 0.0, "end": 2.0}),
+            seg_for_passthrough(1, 2.0, 5.0, keep=True, keep_reason="user",
+                                place={"start": 2.0, "end": 5.0})]
+    env = mix.build_envelope(segs, 6.0)
+    assert env[int(3.5 * mix.CTRL_HZ)] == pytest.approx(0.0, abs=1e-3)
+    assert env[int(1.0 * mix.CTRL_HZ)] == pytest.approx(mix.DUCK_DUB, abs=0.05)
+
+
+def test_overrides_survive_a_re_segmentation_by_time_not_by_id():
+    # The segments stage rebuilds and renumbers everything, so the override has
+    # to find the segment covering the same moment.
+    old = [seg_for_passthrough(7, 10.0, 14.0, passthrough=True),
+           seg_for_passthrough(8, 14.0, 18.0, passthrough=False)]
+    saved = segments.saved_overrides(old)
+    assert saved == [(10.0, 14.0, True), (14.0, 18.0, False)]
+    rebuilt = [seg_for_passthrough(0, 0.0, 9.8),
+               seg_for_passthrough(1, 9.8, 14.1),
+               seg_for_passthrough(2, 14.1, 17.9)]
+    assert segments.carry_passthrough(rebuilt, saved) == 2
+    assert "passthrough" not in rebuilt[0]
+    assert rebuilt[1]["passthrough"] is True
+    assert rebuilt[2]["passthrough"] is False
+
+
+def test_an_override_never_spreads_across_a_merge_or_a_split():
+    # Both directions must agree, or one marked line would hand its verdict to
+    # every line the re-segmentation merged it with.
+    saved = [(10.0, 12.0, True)]
+    merged = [seg_for_passthrough(0, 0.0, 40.0)]        # old span is 5% of the new one
+    assert segments.carry_passthrough(merged, saved) == 0
+    assert "passthrough" not in merged[0]
+    split = [seg_for_passthrough(0, 10.0, 10.4), seg_for_passthrough(1, 10.4, 12.0)]
+    assert segments.carry_passthrough(split, saved) == 1   # only the substantial half
+    assert "passthrough" not in split[0]
+    assert split[1]["passthrough"] is True
+
+
+def test_detected_lang_is_advisory_and_decides_nothing():
+    # The app reads it to SUGGEST passthrough; the pipeline must not act on it.
+    segs = [seg_for_passthrough(0, 0.0, 4.0), seg_for_passthrough(1, 4.0, 8.0)]
+    runs = [{"start": 0.0, "end": 4.0, "lang": "en"},
+            {"start": 4.0, "end": 8.0, "lang": "he"}]
+    segments.stamp_detected_lang(segs, runs)
+    assert [s["detected_lang"] for s in segs] == ["en", "he"]
+    assert not any(s["keep"] for s in segs)               # nothing auto-passed through
+
+
+def test_detected_lang_needs_most_of_the_segment_and_never_overwrites_a_span_s():
+    straddling = [seg_for_passthrough(0, 3.0, 7.0)]      # half en, half he
+    segments.stamp_detected_lang(straddling, [{"start": 0.0, "end": 5.0, "lang": "en"},
+                                              {"start": 5.0, "end": 9.0, "lang": "he"}])
+    assert "detected_lang" not in straddling[0]
+    from_span = [seg_for_passthrough(0, 0.0, 4.0, detected_lang="ar")]
+    segments.stamp_detected_lang(from_span, [{"start": 0.0, "end": 4.0, "lang": "he"}])
+    assert from_span[0]["detected_lang"] == "ar"
+    unlabelled = [seg_for_passthrough(0, 0.0, 4.0)]
+    segments.stamp_detected_lang(unlabelled, [{"start": 0.0, "end": 4.0, "lang": ""}])
+    assert "detected_lang" not in unlabelled[0]
+
+
+def test_passthrough_and_detected_lang_survive_a_manifest_save(tmp_path):
+    m = manifest.new({"input": "x"})
+    m["segments"] = [{"id": 0, "start": 0.0, "end": 1.0, "text": "hi",
+                      "passthrough": True, "detected_lang": "en"}]
+    manifest.save(tmp_path, m)
+    assert manifest.load(tmp_path)["segments"][0]["passthrough"] is True
+    assert manifest.load(tmp_path)["segments"][0]["detected_lang"] == "en"
+
+
+def test_a_stage_reset_never_undoes_the_user_s_override():
+    # Only the pipeline's own keep-flips (mt_failed, tts_failed) are re-decided.
+    m = manifest.new({"input": "x"})
+    m["segments"] = [{"id": 0, "start": 0.0, "end": 1.0, "keep": True,
+                      "keep_reason": "user", "passthrough": True,
+                      "text_en": "hi", "tts": {"clip": "a"}}]
+    manifest.reset_stage(m, "translate")
+    manifest.reset_stage(m, "tts")
+    assert m["segments"][0]["keep"] and m["segments"][0]["keep_reason"] == "user"
+    assert m["segments"][0]["passthrough"] is True

@@ -837,7 +837,8 @@ def _judge_span(lid, src_model, source_wav: Path, a: float, b: float,
 
 def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: float,
                                target: str, *, source: str = "", src_model=None,
-                               known: list[tuple[float, float]] | None = None
+                               known: list[tuple[float, float]] | None = None,
+                               lsegs: list[tuple[float, float, str | None]] | None = None
                                ) -> list[dict[str, Any]]:
     """Speech regions not spoken in the source language, as original-audio spans.
 
@@ -854,7 +855,9 @@ def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: floa
     from . import audio
 
     known = known or []
-    lsegs = language_segments(vad, lid, source_wav)
+    # The caller may hand in the runs it already computed (they are also persisted
+    # for the editor app), so the classifier is not paid for twice.
+    lsegs = language_segments(vad, lid, source_wav) if lsegs is None else lsegs
     spans: list[dict[str, Any]] = []
     consumed: set[int] = set()
     for i, (a, b, lang) in enumerate(lsegs):
@@ -1110,6 +1113,7 @@ def run(m: dict[str, Any], workdir: Path, *, src_lang: str, tgt_lang: str = "en"
     has_captions = bool(raw) and Path(raw).is_file()
     recovered: list[dict[str, Any]] = []
     en_spans: list[dict[str, Any]] = []
+    lang_runs: list[dict[str, Any]] = []
     caption_words = words_from_json3(Path(raw), limit=limit) if has_captions else []
 
     if prefer == "captions" and not caption_words:
@@ -1140,10 +1144,18 @@ def run(m: dict[str, Any], workdir: Path, *, src_lang: str, tgt_lang: str = "en"
             vad = load_vad()
             lid = load_lid()
             if en_model is not None and vad is not None and lid is not None:
+                lid_wav = vocals if vocals.is_file() else source_wav
+                # Computed once and kept: the spans below are only the runs that
+                # are NOT the source language, but the editor app wants the whole
+                # picture — including "this run is Hebrew, confidently" — so it can
+                # suggest passthrough on a segment the automatic rules left dubbed.
+                runs = language_segments(vad, lid, lid_wav)
+                lang_runs = [{"start": a, "end": b, "lang": lang or ""}
+                             for a, b, lang in runs]
                 en_spans = detect_spoken_target_spans(
-                    en_model, vad, lid, vocals if vocals.is_file() else source_wav,
+                    en_model, vad, lid, lid_wav,
                     float(limit or m["source"]["duration"]), tgt_lang,
-                    source=src_lang, src_model=model)
+                    source=src_lang, src_model=model, lsegs=runs)
             origin = "asr"
         except Exception as exc:
             if prefer == "asr" or not caption_words:
@@ -1168,7 +1180,8 @@ def run(m: dict[str, Any], workdir: Path, *, src_lang: str, tgt_lang: str = "en"
     spans = merge_spans(en_spans + others)
     path = workdir / "words.json"
     path.write_text(
-        json.dumps({"origin": origin, "words": words, "foreign_spans": spans},
+        json.dumps({"origin": origin, "words": words, "foreign_spans": spans,
+                    "lang_runs": lang_runs},
                    ensure_ascii=False),
         encoding="utf-8",
     )
@@ -1187,3 +1200,9 @@ def load_words(workdir: Path, m: dict[str, Any]) -> list[dict[str, Any]]:
 def load_foreign_spans(workdir: Path, m: dict[str, Any]) -> list[dict[str, Any]]:
     data = json.loads((workdir / m["files"]["words"]).read_text(encoding="utf-8"))
     return data.get("foreign_spans") or []
+
+
+def load_lang_runs(workdir: Path, m: dict[str, Any]) -> list[dict[str, Any]]:
+    """Classifier language runs over the whole video — advisory, may be absent."""
+    data = json.loads((workdir / m["files"]["words"]).read_text(encoding="utf-8"))
+    return data.get("lang_runs") or []
