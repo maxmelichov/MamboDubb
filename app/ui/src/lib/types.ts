@@ -193,6 +193,21 @@ export type ProjectDetail = {
   report: Report | null;
 };
 
+/**
+ * A waveform overview for one timeline lane.
+ *
+ * `peaks` is normalized to [0, 1] and `duration` is the audio's own length in
+ * seconds — which is what makes the picture time-alignable, and why the lane
+ * must scale it by `duration` rather than assuming it covers the run.
+ */
+export type PeaksFile = "source" | "dub";
+
+export type Peaks = {
+  file: PeaksFile;
+  duration: number;
+  peaks: number[];
+};
+
 export type CreateProjectRequest = {
   /** a local file path or a URL */
   source: string;
