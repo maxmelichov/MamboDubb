@@ -1,0 +1,112 @@
+@import "tailwindcss";
+
+/* Dark mode is opt-in via the OS or the header toggle, which stamps
+   data-theme on <html>. Both scopes carry the dark values so the toggle
+   wins in either direction. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+@theme {
+  /* Chrome & ink — the light column of the dataviz reference palette. */
+  --color-plane: #f9f9f7;
+  --color-surface: #fcfcfb;
+  --color-raised: #ffffff;
+  --color-primary: #0b0b0b;
+  --color-secondary: #52514e;
+  --color-muted: #898781;
+  --color-border: #e1e0d9;
+  --color-grid: #e1e0d9;
+  --color-axis: #c3c2b7;
+  --color-brand: #2a78d6;
+
+  /* Segment-state encoding. Validated all-pairs in both modes with
+     scripts/validate_palette.js (dataviz skill):
+       light  #2a78d6,#eda100,#d03b3b  — CVD dE 19.8, normal dE 24.1
+       dark   #3987e5,#c98500,#d03b3b  — CVD dE 10.2, normal dE 16.9
+     Light-mode yellow sits at 2.11:1 on the surface, below the 3:1 gate, so
+     the relief rule applies: every state also carries an icon and a label,
+     and the segment table repeats the state as text. Never colour alone. */
+  --color-dubbed: #2a78d6;
+  --color-kept: #eda100;
+  --color-failed: #d03b3b;
+  --color-unclaimed: #898781;
+
+  --color-good: #0ca30c;
+  --color-warning: #fab219;
+  --color-serious: #ec835a;
+  --color-critical: #d03b3b;
+}
+
+:root {
+  color-scheme: light;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* The dark steps are selected for the dark surface, not an automatic flip. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --color-plane: #0d0d0d;
+  --color-surface: #1a1a19;
+  --color-raised: #232322;
+  --color-primary: #ffffff;
+  --color-secondary: #c3c2b7;
+  --color-muted: #898781;
+  --color-border: #2c2c2a;
+  --color-grid: #2c2c2a;
+  --color-axis: #383835;
+  --color-brand: #3987e5;
+
+  --color-dubbed: #3987e5;
+  --color-kept: #c98500;
+  --color-failed: #d03b3b;
+  --color-unclaimed: #898781;
+}
+
+body {
+  margin: 0;
+  background: var(--color-plane);
+  color: var(--color-primary);
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+/* Unclaimed time is an absence, not a category: no fill, a hatch. The 135°
+   mirror is the accessibility channel, available without colour. */
+.hatch-unclaimed {
+  background-image: repeating-linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--color-unclaimed) 55%, transparent) 0 2px,
+    transparent 2px 6px
+  );
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--color-muted) 35%, transparent);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--color-muted) 60%, transparent);
+}
+
+/* Right-to-left source text (Hebrew, Arabic) needs the paragraph direction to
+   follow the content, not the UI. */
+.auto-dir {
+  unicode-bidi: plaintext;
+  text-align: start;
+}
