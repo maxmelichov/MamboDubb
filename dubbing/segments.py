@@ -1037,7 +1037,13 @@ def apply_passthrough(segments: list[dict[str, Any]]) -> list[int]:
             seg["keep"], seg["keep_reason"] = True, PASSTHROUGH_REASON
         else:
             seg["keep"], seg["keep_reason"] = False, None
-        for field in ("text_en", "text_mid", "tts", "place"):
+        # A hand-corrected line survives the flip: as a dub it is what gets
+        # spoken, as a keep it is the subtitle — either way it is the user's
+        # word, and this function exists to honour exactly that.
+        from . import manifest as manifest_mod
+
+        drop = ("text_mid", "tts", "place") if manifest_mod.is_locked(seg, "text_en")             else ("text_en", "text_mid", "tts", "place")
+        for field in drop:
             seg.pop(field, None)
         flipped.append(seg["id"])
     return flipped

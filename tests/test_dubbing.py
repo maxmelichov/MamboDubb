@@ -1647,3 +1647,16 @@ def test_a_stage_reset_never_undoes_the_user_s_override():
     manifest.reset_stage(m, "tts")
     assert m["segments"][0]["keep"] and m["segments"][0]["keep_reason"] == "user"
     assert m["segments"][0]["passthrough"] is True
+
+
+def test_passthrough_flip_keeps_a_hand_corrected_line():
+    """A locked text_en is the user's word twice over: spoken when the flip goes
+    to dub, shown as the subtitle when it goes to keep. The flip drops the clip
+    and placement either way, but never the correction itself."""
+    segs = [{"id": 0, "start": 0.0, "end": 2.0, "speaker": "A", "text": "מילים",
+             "keep": True, "keep_reason": "latin", "passthrough": False,
+             "text_en": "The user's own wording.", "locked": {"text_en": True},
+             "tts": {"clip": "clips/x.wav", "dur": 1.0}, "place": {"start": 0.0}}]
+    assert segments.apply_passthrough(segs) == [0]
+    assert segs[0]["text_en"] == "The user's own wording."
+    assert "tts" not in segs[0] and "place" not in segs[0]
