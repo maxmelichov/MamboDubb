@@ -343,6 +343,34 @@ def test_set_keep_locks_so_mark_keep_cannot_re_decide_it():
     assert not s["keep"] and s["keep_reason"] is None
 
 
+def test_set_keep_drops_the_line_that_was_written_for_the_other_path():
+    # A keep's `text_en` is a SUBTITLE — for a foreign or passed-through span it is
+    # the honest placeholder, not something anyone should say out loud. Un-keeping
+    # while leaving it behind hands that placeholder to the tts stage as the line to
+    # speak, and `needs_translation` (text_en non-empty) never refills it. The
+    # pipeline's own door for the same flip drops it: segments.apply_passthrough.
+    m = mk(seg(keep=True, keep_reason="foreign", lang="und", text_en="…",
+               text_mid="…", tts={"clip": "clips/k.wav", "dur": 2.0},
+               place={"start": 0.0}))
+    uid = m["segments"][0]["uid"]
+    edit.set_keep(m, uid, False)
+    s = m["segments"][0]
+    assert "text_en" not in s and "text_mid" not in s
+    assert "tts" not in s and "place" not in s
+    assert translate.needs_translation(s)          # the real line is asked for again
+
+
+def test_set_keep_leaves_a_hand_corrected_line_alone():
+    # The user's own text outranks the pipeline in both directions: it is what the
+    # segment says when it is dubbed and what it reads when it is kept.
+    m = mk(seg(text_en="my own line", locked={"text_en": True}))
+    uid = m["segments"][0]["uid"]
+    edit.set_keep(m, uid, True)
+    assert m["segments"][0]["text_en"] == "my own line"
+    edit.set_keep(m, uid, False)
+    assert m["segments"][0]["text_en"] == "my own line"
+
+
 def test_set_speaker_drops_the_clip_because_the_voice_changed():
     m = two_segs()
     uid = m["segments"][0]["uid"]

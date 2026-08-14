@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
-from . import STAGES, manifest
+from . import MANUAL_REASON, STAGES, manifest
 
 Progress = Callable[[float, str], None]
 
@@ -190,11 +190,18 @@ def set_keep(m: dict[str, Any], uid: str, keep: bool,
     A manual keep is never re-decided by `mark_keep` or undone by a stage rerun, so
     it locks. Either direction changes what is heard, so the clip and its placement
     go: `tts.run` gives a keep its original-audio slice and a dub its synthesis.
+
+    So does the line. A keep's `text_en` is a *subtitle* — for a foreign or
+    passed-through span it is the honest "…" placeholder — and a dub's is what the
+    voice says; leaving one behind across a flip is how a segment ends up speaking
+    a placeholder, since `translate.needs_translation` sees a non-empty `text_en`
+    and never refills it. `segments.apply_passthrough` drops it on exactly this
+    flip and so does this, minus what the user wrote by hand.
     """
     seg = _require(m, uid)
     seg["keep"] = bool(keep)
     seg["keep_reason"] = reason if keep else None
-    if reason == "manual" or not keep:
+    if reason == MANUAL_REASON or not keep:
         # One concept, one key: the user's own verdict is also the pipeline's
         # `passthrough` override, so a headless re-run honours it identically
         # (segments.apply_passthrough) and it survives re-segmentation
@@ -206,7 +213,7 @@ def set_keep(m: dict[str, Any], uid: str, keep: bool,
     # The clip is the wrong kind now (a synthesis for a keep, or a slice of the
     # original for a dub), whatever the tts lock said about the old one.
     _unlock(seg, "tts")
-    invalidate(m, uid, stages={"tts"})
+    invalidate(m, uid, stages={"translate"})
     return seg
 
 
