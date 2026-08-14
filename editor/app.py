@@ -88,7 +88,7 @@ def api_rerun(run: str, body: RerunBody) -> dict[str, Any]:
     cmd = jobs.dub_command(
         src["input"], runs.workdir(run), src=src.get("src_lang") or "he",
         tgt=src.get("tgt_lang") or "en", duration=src.get("duration_limit"),
-        force=body.force, extra=body.extra_args,
+        force=body.force, opts=runs.recorded_opts(m), extra=body.extra_args,
     )
     if src.get("context"):
         cmd += ["--context", src["context"]]

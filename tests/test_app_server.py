@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from dubbing import manifest  # noqa: E402
 from dubbing_app import events, media, ops, runner as runner_mod, server  # noqa: E402
+from dubbing_app import app as app_mod  # noqa: E402
 from dubbing_app.app import create_app  # noqa: E402
 from dubbing_app.jobs import JobQueue  # noqa: E402
 from tests.conftest_app import make_project  # noqa: E402
@@ -131,6 +132,63 @@ def test_list_projects(client):
     project = body["projects"][0]
     assert project["src_lang"] == "he" and project["tgt_lang"] == "en"
     assert project["segments"] == 5 and project["complete"] is True
+
+
+def test_create_project_reaches_the_cli_with_every_option(client, outputs, fake):
+    """The whole creation path on the wire: body → `source` record → job payload →
+    the argv `dubbing.cli` actually parses. A flag that drifted here is an option
+    the user picked in the UI and silently did not get."""
+    from dubbing import cli
+
+    body = {"source": "https://youtu.be/abc", "tgt_lang": "ru", "duration": 60,
+            "name": "movieproj", "context": "a note", "genre": "movie",
+            "register": "dialogue", "transcript": "asr", "tts_model": "0.6b",
+            "dub_foreign": True, "captions": "caps.json3"}
+    r = client.post("/api/projects", json=body)
+    assert r.status_code == 201 and r.json()["project"]["name"] == "movieproj"
+    assert wait_until(lambda: fake.calls, 5.0)
+
+    kind, project, payload = fake.calls[0]
+    assert (kind, project) == ("run", "movieproj")
+    args = cli.parse_args(ops.full_run_argv(Path(payload["workdir"]), payload["source"]))
+    assert (args.source, args.tgt, args.duration) == ("https://youtu.be/abc", "ru", 60)
+    assert (args.genre, args.register, args.transcript) == ("movie", "dialogue", "asr")
+    assert args.tts_model == "0.6b" and args.dub_foreign is True
+    assert args.context == "a note" and str(args.captions) == "caps.json3"
+    # …and the options are on the manifest too, for every later edit job.
+    stored = manifest.load(outputs / "movieproj")["source"]["app_opts"]
+    assert stored["genre"] == "movie" and stored["tts_model"] == "0.6b"
+
+
+def test_create_project_refuses_an_option_the_cli_cannot_take(client, outputs):
+    """argparse would reject it, but only in the job child, minutes later, as a
+    usage dump — after the project directory and its manifest already exist. There
+    is no way back from that project: its one job can never succeed."""
+    r = client.post("/api/projects", json={"source": "x.mp4", "genre": "banana"})
+    assert r.status_code == 400 and envelope_of(r)["code"] == "invalid_request"
+    assert sorted(p.name for p in outputs.iterdir()) == [NAME]
+
+
+@pytest.mark.parametrize("flag,dest,literal", [
+    ("--genre", "genre", app_mod.Genre),
+    ("--register", "register", app_mod.Register),
+    ("--transcript", "transcript", app_mod.Transcript),
+    ("--tts-model", "tts_model", app_mod.TtsModel),
+])
+def test_create_project_options_are_exactly_the_cli_choices(flag, dest, literal, capsys):
+    """`dubbing.cli` cannot be imported here — it drags in torch — so the choice
+    lists are restated in `dubbing_app.app`. This is what keeps the copy honest."""
+    import re
+    from typing import get_args
+
+    from dubbing import cli
+
+    for value in get_args(literal):
+        assert getattr(cli.parse_args(["src", flag, value]), dest) == value
+    with pytest.raises(SystemExit):
+        cli.parse_args(["src", flag, "__not_a_choice__"])
+    tail = capsys.readouterr().err.split("choose from")[-1]
+    assert set(re.findall(r"[\w.\-]+", tail)) == set(get_args(literal))
 
 
 def test_get_project(client):
@@ -249,6 +307,38 @@ def test_patch_speaker_and_langs(client, outputs):
                  json={"speaker": "SPEAKER_01", "tgt_lang": "ru"})
     seg = ops.find(manifest.load(outputs / NAME), uid)
     assert seg["speaker"] == "SPEAKER_01" and seg["tgt_lang"] == "ru"
+
+
+def test_patch_tts_opts_stores_a_valid_override(client, outputs):
+    uid = uids(client)[1]
+    r = client.patch(f"/api/projects/{NAME}/segments/{uid}",
+                     json={"tts_opts": {"seed": 7, "speed": 1.25}})
+    assert r.status_code == 200
+    seg = ops.find(manifest.load(outputs / NAME), uid)
+    assert seg["tts_opts"] == {"seed": 7, "speed": 1.25}
+    # `None` clears one option and leaves the rest.
+    client.patch(f"/api/projects/{NAME}/segments/{uid}", json={"tts_opts": {"speed": None}})
+    assert ops.find(manifest.load(outputs / NAME), uid)["tts_opts"] == {"seed": 7}
+
+
+@pytest.mark.parametrize("opts,expected", [
+    ({"seed": "banana"}, "seed"),
+    ({"nonsense": 1}, "unknown option"),
+    ({"speed": 99}, "speed"),
+    ({"ref": "../../.ssh/id_rsa"}, "escape"),
+    ({"ref_text": "hello"}, "ref"),
+    ({"greedy": True, "temperature": 0.7}, "greedy"),
+])
+def test_patch_tts_opts_refuses_what_the_synthesiser_cannot_use(client, outputs, opts,
+                                                                expected):
+    """`dubbing.ttsopts` is loud, but `tts.run` is the only thing that reads it —
+    minutes into a job. Storing an unusable override made every future run of the
+    tts stage raise on a manifest nobody is allowed to hand-edit back."""
+    uid = uids(client)[1]
+    r = client.patch(f"/api/projects/{NAME}/segments/{uid}", json={"tts_opts": opts})
+    assert r.status_code == 400, r.text
+    assert expected in envelope_of(r)["message"]
+    assert "tts_opts" not in ops.find(manifest.load(outputs / NAME), uid)
 
 
 def test_patch_bounds_rejects_overlap(client):
@@ -461,6 +551,19 @@ def test_no_model_edits_stay_responsive_while_a_job_runs(outputs):
         hold.set()
 
 
+def test_a_queued_job_does_not_block_a_structural_edit(outputs, fake):
+    """Only a *running* job is renumbered under. A queued one has not read the
+    manifest yet — the child loads it when it starts, not when it is enqueued — so
+    refusing here would block edits behind a queue that may be minutes deep."""
+    client = TestClient(create_app(outputs, runner=fake, ui_dir=""))   # no lifespan:
+    uid = uids(client)[2]                                             # the worker
+    assert client.post(f"/api/projects/{NAME}/render", json={}).status_code == 202
+    assert client.get("/api/jobs").json()["jobs"][0]["status"] == "queued"
+    r = client.post(f"/api/projects/{NAME}/segments/{uid}/split", json={"at": 6.0})
+    assert r.status_code == 200
+    assert fake.calls == []
+
+
 # ---------------------------------------------------------------------------
 # media: range serving and path traversal
 # ---------------------------------------------------------------------------
@@ -502,10 +605,44 @@ def test_media_unsatisfiable_range(client, outputs):
     assert envelope_of(r)["code"] == "invalid_request"
 
 
+def test_media_range_starting_at_the_end_is_416(client, outputs):
+    """The boundary an `<audio>` element hits when it seeks to the very end: the
+    first byte offset equals the size, so there is nothing to send. 200 with an
+    empty body would look like a truncated file to the player."""
+    size = (outputs / NAME / "preview.mp4").stat().st_size
+    r = client.get(f"/media/{NAME}/preview.mp4", headers={"Range": f"bytes={size}-"})
+    assert r.status_code == 416
+    assert r.headers["content-range"] == f"bytes */{size}"
+
+
+def test_media_multi_range_is_answered_whole_not_500(client, outputs):
+    """More than one range is allowed to be refused, but never with a stack trace.
+    RFC 9110 lets a server answer the whole thing, which keeps the client playing."""
+    whole = (outputs / NAME / "preview.mp4").read_bytes()
+    r = client.get(f"/media/{NAME}/preview.mp4", headers={"Range": "bytes=0-9, 20-29"})
+    assert r.status_code == 200 and r.content == whole
+
+
 def test_media_head(client, outputs):
     size = (outputs / NAME / "preview.mp4").stat().st_size
     r = client.head(f"/media/{NAME}/preview.mp4")
     assert r.status_code == 200 and r.headers["content-length"] == str(size)
+
+
+def test_media_head_honours_a_range(client, outputs):
+    size = (outputs / NAME / "preview.mp4").stat().st_size
+    r = client.head(f"/media/{NAME}/preview.mp4", headers={"Range": "bytes=10-19"})
+    assert r.status_code == 206 and not r.content
+    assert r.headers["content-range"] == f"bytes 10-19/{size}"
+    assert r.headers["content-length"] == "10"
+
+
+def test_media_source_url_keeps_its_time_fragment_unescaped(client):
+    """`source.wav#t=a,b` is the A/B preview: the fragment is the browser's, so
+    percent-encoding the `#` would make the player fetch a file that is not there."""
+    seg = client.get(f"/api/projects/{NAME}/segments").json()["segments"][1]
+    assert seg["media"]["source"] == f"/media/{NAME}/source.wav#t=0.340,2.200"
+    assert "%23" not in seg["media"]["source"]
 
 
 def test_media_garbage_range_serves_whole_file(client, outputs):
@@ -652,6 +789,19 @@ def test_events_heartbeat_over_the_wire(outputs, fake, monkeypatch):
                 frames.take(PRELUDE)
                 beat = frames.until(lambda f: f["type"] == "heartbeat")
     assert beat is not None
+
+
+def test_events_subscription_is_released_on_every_disconnect(outputs, fake):
+    """The UI reconnects the stream on every navigation and after every sleep. A
+    subscription left behind per reconnect is an unbounded fan-out on a bus the job
+    worker publishes to from another thread."""
+    app = create_app(outputs, runner=fake, ui_dir="")
+    with live_server(app) as base:
+        for _ in range(3):
+            with httpx.Client(base_url=base, timeout=20.0) as c:
+                with c.stream("GET", f"/api/projects/{NAME}/events") as r:
+                    assert next(r.iter_lines())
+            assert wait_until(lambda: app.state.bus.subscriber_count(NAME) == 0, 5.0)
 
 
 def test_events_unknown_project(client):
@@ -807,6 +957,99 @@ def test_worker_rejects_an_unknown_kind(outputs):
         real.run(job, lambda e: None)
 
 
+# ------------------------------------------- edits made while a job is running
+
+def edit_on_disk(workdir, uid, **fields):
+    """Exactly what `PATCH /segments/{uid}` does: load, one ops setter, save."""
+    disk = manifest.load(workdir)
+    if "locked" in fields:
+        ops.set_locked(disk, uid, fields.pop("locked"))
+    if fields:
+        ops.set_text(disk, uid, **fields)
+    manifest.save(workdir, disk)
+
+
+def test_a_job_does_not_overwrite_edits_made_while_it_ran(outputs, monkeypatch):
+    """The job child holds its own copy of the manifest for minutes while the
+    server keeps answering PATCHes against the same file — the contract says
+    no-model edits never wait for a job. Saving that copy at the end used to throw
+    every one of those edits away."""
+    from dubbing_app import worker
+
+    workdir = outputs / NAME
+    segs = manifest.load(workdir)["segments"]
+    target, edited = segs[1]["uid"], segs[3]["uid"]
+
+    def fake_retranslate(m, wd, uids, *, progress=None):
+        edit_on_disk(wd, edited, text_en="hand corrected")     # the user, mid-job
+        for uid in uids:
+            ops.find(m, uid)["text_en"] = "machine"
+        return {uid: "machine" for uid in uids}
+
+    monkeypatch.setattr(ops, "retranslate", fake_retranslate)
+    worker.execute({"kind": "retranslate", "workdir": str(workdir),
+                    "payload": {"uids": [target]}})
+
+    saved = manifest.load(workdir)
+    assert ops.find(saved, edited)["text_en"] == "hand corrected"
+    assert ops.find(saved, edited)["locked"] == {"text_en": True}
+    assert ops.find(saved, target)["text_en"] == "machine"     # the job still lands
+
+
+def test_a_job_replays_a_lock_release_made_while_it_ran(outputs, monkeypatch):
+    """`PATCH {"locked": {}}` deletes a key rather than changing one, so a merge
+    that only looked at what is *present* on disk would silently re-lock it."""
+    from dubbing_app import worker
+
+    workdir = outputs / NAME
+    edited = manifest.load(workdir)["segments"][3]["uid"]
+    edit_on_disk(workdir, edited, text_en="hand corrected")
+    assert ops.find(manifest.load(workdir), edited)["locked"] == {"text_en": True}
+
+    def fake_resynthesize(m, wd, uids, *, progress=None):
+        edit_on_disk(wd, edited, locked={})                    # hand it back
+        return {}
+
+    monkeypatch.setattr(ops, "resynthesize", fake_resynthesize)
+    worker.execute({"kind": "resynthesize", "workdir": str(workdir), "payload": {"uids": []}})
+
+    assert not ops.find(manifest.load(workdir), edited).get("locked")
+
+
+def test_a_render_merges_at_every_stage_save(outputs, monkeypatch):
+    """`dubbing.edit.rebuild` writes after each stage, so the end-of-job merge is
+    not enough — every one of those writes is a chance to clobber a live edit."""
+    from dubbing_app import worker
+
+    workdir = outputs / NAME
+    edited = manifest.load(workdir)["segments"][3]["uid"]
+
+    def fake_rebuild(m, wd, *, from_stage, progress=None, save=None):
+        assert save is not None, "the child must own the write path"
+        edit_on_disk(wd, edited, text_en="hand corrected")
+        save()                                    # what rebuild does per stage
+        assert ops.find(m, edited)["text_en"] == "hand corrected"
+        return [from_stage]
+
+    monkeypatch.setattr(ops, "rebuild", fake_rebuild)
+    worker.execute({"kind": "render", "workdir": str(workdir), "payload": {}})
+    assert ops.find(manifest.load(workdir), edited)["text_en"] == "hand corrected"
+
+
+def test_a_job_keeps_its_own_work_when_nothing_else_changed(outputs):
+    """The merge must only replay what actually moved on disk — re-applying an
+    untouched disk copy wholesale would revert the job itself."""
+    from dubbing_app.worker import Journal
+
+    workdir = outputs / NAME
+    m = manifest.load(workdir)
+    journal = Journal(workdir, m)
+    uid = m["segments"][1]["uid"]
+    ops.find(m, uid)["text_en"] = "machine"
+    assert journal.merge(manifest.load(workdir)) == []
+    assert ops.find(m, uid)["text_en"] == "machine"
+
+
 # ---------------------------------------------------------------------------
 # process contract
 # ---------------------------------------------------------------------------
@@ -952,7 +1195,80 @@ def test_patch_locked_rejects_unknown_fields(client):
 
 # ------------------------------------------------- the ops -> dubbing.edit seam
 
-@pytest.mark.skipif(not ops.HAVE_EDIT, reason="dubbing.edit not present")
+MOVIE = {"genre": "movie", "register": "dialogue", "tts_model": "0.6b", "device": "cpu"}
+
+
+def movie_project(outputs):
+    """The manifest of a project the UI created with non-default options."""
+    workdir = outputs / NAME
+    m = manifest.load(workdir)
+    m["source"]["app_opts"] = dict(MOVIE)
+    manifest.save(workdir, m)
+    return m
+
+
+def test_edit_jobs_carry_the_projects_recorded_options(monkeypatch, outputs):
+    """The UI's genre/register/tts-model are stored under `source.app_opts`, which
+    `dubbing.edit._args` does not read — so every job that re-runs a stage has to
+    hand them over. Without this a `--genre movie` project is re-rendered as a
+    documentary, in the default voice, and nobody is told."""
+    from dubbing import edit as real_edit
+
+    m = movie_project(outputs)
+    seen: dict[str, dict] = {}
+
+    def fake_rebuild(mm, wd, *, from_stage, progress=None, save=None, **overrides):
+        seen["rebuild"] = overrides
+        return [from_stage]
+
+    def fake_retranslate(mm, wd, uids, *, progress=None, **kw):
+        seen["retranslate"] = kw
+        return {}
+
+    def fake_resynthesize(mm, wd, uids, *, progress=None, **kw):
+        seen["resynthesize"] = kw
+        return {}
+
+    monkeypatch.setattr(real_edit, "rebuild", fake_rebuild)
+    monkeypatch.setattr(real_edit, "retranslate", fake_retranslate)
+    monkeypatch.setattr(real_edit, "resynthesize", fake_resynthesize)
+
+    ops.rebuild(m, outputs / NAME, from_stage="timeline")
+    ops.retranslate(m, outputs / NAME, [])
+    ops.resynthesize(m, outputs / NAME, [])
+
+    assert seen["retranslate"] == {"register": "dialogue", "genre": "movie"}
+    assert seen["resynthesize"] == {"device": "cpu", "model": "0.6b"}
+    # …and the rebuild overrides really land on the argparse namespace the pipeline
+    # computes its fingerprints from.
+    args = real_edit._args(m, **seen["rebuild"])
+    assert (args.genre, args.register, args.tts_model, args.device) == \
+        ("movie", "dialogue", "0.6b", "cpu")
+
+
+def test_a_render_stamps_the_fingerprints_the_full_run_would(outputs):
+    """`dubbing.edit.rebuild` re-marks every stage it runs with a fingerprint, so a
+    render made with the wrong options makes the next headless run redo the whole
+    tail of the pipeline. The two paths must agree stage by stage."""
+    from dubbing import cli
+    from dubbing import edit as real_edit
+
+    m = movie_project(outputs)
+    render = cli.stage_params(real_edit._args(m, **ops.pipeline_overrides(m)), m)
+    full = cli.stage_params(cli.parse_args(ops.full_run_argv(outputs / NAME, m["source"])), m)
+    assert {s: render[s] for s in real_edit.REBUILDABLE} == \
+        {s: full[s] for s in real_edit.REBUILDABLE}
+
+
+def test_pipeline_overrides_never_invent_an_option(outputs):
+    """A project that recorded nothing keeps `dubbing.edit._args`'s own fallbacks —
+    overriding with a guess would be the same drift in the other direction."""
+    m = manifest.load(outputs / NAME)
+    assert ops.pipeline_overrides(m) == {}
+    m["source"]["app_opts"] = {"genre": "movie", "register": None, "captions": "x.json3"}
+    assert ops.pipeline_overrides(m) == {"genre": "movie"}
+
+
 @pytest.mark.parametrize("call,stage", [
     (lambda p: ops.retranslate({"segments": []}, Path("."), [], progress=p), "translate"),
     (lambda p: ops.resynthesize({"segments": []}, Path("."), [], progress=p), "tts"),
@@ -981,7 +1297,6 @@ def test_edit_progress_is_adapted_to_the_pipeline_signature(monkeypatch, call, s
                      "progress": 0.5, "message": "halfway"}]
 
 
-@pytest.mark.skipif(not ops.HAVE_EDIT, reason="dubbing.edit not present")
 def test_resynthesize_leaves_every_segment_placed(monkeypatch, outputs):
     """A re-voiced segment must come back placed. Its new clip has a new length,
     so `invalidate` drops the old placement — and a segment with no placement is

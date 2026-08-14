@@ -87,10 +87,18 @@ function speakerOptions(current) {
     .map((id) => `<option ${id === current ? "selected" : ""}>${esc(id)}</option>`).join("");
 }
 
+/* Will this span play its original audio? `passthrough` is the user's own
+ * tri-state override (true/false/absent) and outranks everything; with no
+ * override, `keep` is whatever the pipeline decided. Reading `keep_reason ===
+ * "manual"` here — as this did before the two front ends were reconciled onto one
+ * schema — showed a saved passthrough as unchecked forever: the studio writes the
+ * verdict as `passthrough`, and `apply_passthrough` records it as "user". */
+const isPassthrough = (s) => (s.passthrough ?? Boolean(s.keep));
+
 function renderSegments() {
   const run = encodeURIComponent(view.run);
   $("#segments").innerHTML = view.segments.map((s) => `
-    <div class="seg${s.keep && s.keep_reason === "manual" ? " passthrough" : ""}" data-id="${s.id}">
+    <div class="seg${isPassthrough(s) ? " passthrough" : ""}" data-id="${s.id}">
       <div class="meta">
         <span class="time">#${s.id} ${fmt(s.start)} → ${fmt(s.end)}</span>
         ${s.keep ? `<span class="badge keep">keep: ${esc(s.keep_reason ?? "—")}</span>` : ""}
@@ -107,7 +115,7 @@ function renderSegments() {
         <div class="inline">
           <label>spoken lang <input size="4" data-field="lang" value="${esc(s.lang)}" placeholder="${view.source.src_lang}"></label>
           <label>speaker <select data-field="speaker">${speakerOptions(s.speaker)}</select></label>
-          <label><input type="checkbox" data-field="passthrough" ${s.keep && s.keep_reason === "manual" ? "checked" : ""}> passthrough (keep original)</label>
+          <label><input type="checkbox" data-field="passthrough" ${isPassthrough(s) ? "checked" : ""}> passthrough (keep original)</label>
         </div>
       </div>
       <div class="fields">

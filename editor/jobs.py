@@ -61,12 +61,31 @@ class Job:
 _JOBS: dict[str, Job] = {}
 
 
+# The `python -m dubbing` flag each recorded option is spelled with.
+OPT_FLAGS = {"genre": "--genre", "register": "--register", "transcript": "--transcript",
+             "tts_model": "--tts-model", "device": "--device", "captions": "--captions"}
+
+
 def dub_command(source: str, out: Path, *, src: str = "he", tgt: str = "en",
                 duration: float | None = None, force: str | None = None,
+                opts: dict[str, Any] | None = None,
                 extra: list[str] | None = None) -> list[str]:
+    """The command line that re-runs `out`.
+
+    `opts` is what the run recorded (`runs.recorded_opts`) and every one of them
+    has to be passed back: an option the command omits changes that stage's
+    fingerprint, and an upstream fingerprint change resets the stage rather than
+    resuming it — a `--genre movie` run re-run without `--genre` loses its
+    segments, and with them every edit made in this editor.
+    """
     cmd = [sys.executable, "-m", "dubbing", source, "-o", str(out), "--src", src, "--tgt", tgt]
     if duration:
         cmd += ["--duration", str(duration)]
+    for key, flag in OPT_FLAGS.items():
+        if (opts or {}).get(key) is not None:
+            cmd += [flag, str(opts[key])]
+    if (opts or {}).get("dub_foreign"):
+        cmd += ["--dub-foreign"]
     if force:
         cmd += ["--force", force]
     return cmd + list(extra or [])

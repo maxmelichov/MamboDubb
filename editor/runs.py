@@ -23,8 +23,32 @@ OUTPUTS = Path(os.environ.get("DUBBING_OUTPUTS") or REPO_ROOT / "outputs").resol
 UPLOADS = OUTPUTS / "_uploads"
 
 
+# Pipeline options a run can have recorded, and which a re-run has to pass back.
+# Leaving one out is not "use the default": it changes the stage fingerprint
+# (`cli.stage_params`), and a changed fingerprint on an upstream stage is not a
+# re-run of that stage — `manifest.reset_stage("segments")` empties
+# `m["segments"]`, taking every translation, clip and hand-edit with it.
+OPT_KEYS = ("genre", "register", "transcript", "tts_model", "device", "captions",
+            "dub_foreign")
+
+
 def is_url(source: str) -> bool:
     return bool(re.match(r"https?://", source.strip()))
+
+
+def recorded_opts(m: dict[str, Any]) -> dict[str, Any]:
+    """The pipeline options this run was made with, if it recorded any.
+
+    Two places, because two front ends wrote them: the studio stores them under
+    `source.app_opts`, and `dubbing.edit._args` reads them flat off `source`. Flat
+    wins where both exist. A run made by the headless CLI records neither — it has
+    nowhere to record them today — so a re-run of one still uses the defaults.
+    """
+    src = m.get("source") or {}
+    stored = dict(src.get("app_opts") or {})
+    stored.update({key: src[key] for key in OPT_KEYS if src.get(key) is not None})
+    return {key: value for key, value in stored.items()
+            if key in OPT_KEYS and value is not None}
 
 
 def default_workdir(source: str) -> Path:
