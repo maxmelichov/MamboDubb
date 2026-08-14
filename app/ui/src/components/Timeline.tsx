@@ -37,12 +37,18 @@
  *    starts. They sit in a fixed gutter to the left of the scrolling area now,
  *    the way a track header does in every editor that has ever had one.
  * 3. **A mark is a shape, not a slab.** Filled at full strength, a run where
- *    every line is kept is a solid amber wall a hundred marks long, and the
- *    playhead — the one thing that moves — is lost in it. The fill is a wash
- *    and the state hue is spent on the *edge*, which is what makes a boundary
- *    legible; hover and selection bring the fill up. Then the two brightest
- *    things on the strip are the playhead and whatever you picked, which is
- *    the correct answer to "what am I looking at".
+ *    every line is kept is a solid wall a hundred marks long, and the playhead
+ *    — the one thing that moves — is lost in it. The fill is a wash and the
+ *    state hue is spent on the *edge*, which is what makes a boundary legible;
+ *    hover and selection bring the fill up. Then the two brightest things on
+ *    the strip are the playhead and whatever you picked, which is the correct
+ *    answer to "what am I looking at".
+ *
+ *    The hue itself does the rest of the work, and only since it stopped being
+ *    amber for the commonest state: a lane now reads as a quiet green run with
+ *    the blue dubs, the amber waiting lines and the red failures standing out
+ *    of it, rather than as one warning-coloured barcode with the exceptions
+ *    hidden inside it.
  *
  * What it gained is its own controls (zoom, split at the playhead) at the right
  * edge, where they belong, and drag-to-scrub across the whole strip. What it
@@ -429,7 +435,14 @@ function Mark({
         // The hue lives on the edge; the fill is a wash of it. A hundred
         // adjacent marks then read as a hundred marks rather than as one
         // coloured band, and the playhead stays the brightest thing here.
-        backgroundColor: `color-mix(in srgb, ${meta.token} ${selected ? 55 : 22}%, transparent)`,
+        //
+        // How strong the wash is belongs to the theme, not to this file: the
+        // light hues are dark on a white lane, the dark ones are light on
+        // near-black *and* sit over the lane's waveform. Both numbers are in
+        // App.css next to the hues they are tuned against.
+        backgroundColor: `color-mix(in srgb, ${meta.token} var(${
+          selected ? "--mark-wash-selected" : "--mark-wash"
+        }), transparent)`,
       }}
     >
       {showIcon ? (

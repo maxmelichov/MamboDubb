@@ -79,6 +79,72 @@ check("the dark theme is a class, not a media query", /\.theme-dark/.test(css));
 check("the pre-paint canvas covers both themes", /theme-dark[^}]*#0e0e0d/.test(html) && /#f7f6f2/.test(html));
 check("native number spinners are suppressed", /-webkit-inner-spin-button/.test(css));
 
+/*
+ * The state palette, checked structurally rather than by hex.
+ *
+ * Pinning "kept is #306357" in a test is pinning a *decision* that is allowed
+ * to change; what is not allowed to change is the shape of the decision. Three
+ * things hold:
+ *
+ * 1. Every state hue is restated in the dark theme. A hue declared only in
+ *    `@theme` inherits into dark unnoticed, which is how a light-mode green
+ *    ends up at 2:1 on a near-black plane.
+ * 2. The resolved state and the waiting state are different hues. They were
+ *    the same one — everything a run kept wore the warning colour, so an
+ *    already-English video rendered as a wall of amber with nothing wrong in
+ *    it — and "kept is not the warn colour" is the whole fix, in one line.
+ * 3. The semantic tones alias the state hues instead of adding more. A second
+ *    green for `good` or a second amber for `warn` is how five hues quietly
+ *    become nine, none of them measured against the other four.
+ */
+const hue = (name, block = css) =>
+  block.match(new RegExp(`--color-${name}:\\s*([^;}]+)`))?.[1]?.trim() ?? null;
+const darkBlock = css.match(/:root\.theme-dark\{[^}]*\}/)?.[0] ?? "";
+const STATES = ["dubbed", "kept", "failed", "pending", "unclaimed"];
+check("every state hue ships in both themes", STATES.every((s) => hue(s) && hue(s, darkBlock)));
+check(
+  "the two themes pick different values for every state hue",
+  STATES.every((s) => hue(s) !== hue(s, darkBlock)),
+);
+check("resolved and waiting are not the same hue", hue("kept") !== hue("pending"));
+check("…in the dark theme too", hue("kept", darkBlock) !== hue("pending", darkBlock));
+check(
+  "the semantic tones alias the state hues rather than adding more",
+  hue("good") === "var(--color-kept)" &&
+    hue("warning") === "var(--color-pending)" &&
+    hue("critical") === "var(--color-failed)",
+);
+check("the kept hue is not the warn hue", hue("kept") !== hue("warning"));
+/* The timeline's mark wash is a theme token, because how much hue a fill can
+   take is a property of the ground it sits on — 18% of a dark hue on a white
+   lane and 26% of a light one over a waveform on near-black. */
+check("the mark wash is a theme token, per theme", /--mark-wash:/.test(css) && /--mark-wash:/.test(darkBlock));
+
+/*
+ * And the palette stays in one file. A literal `#3b7f5c` in a component is a
+ * colour that no theme can restate and no measurement covers — it is how the
+ * dark theme grows a light-mode hue nobody notices until a screenshot. The one
+ * pair allowed outside App.css is the canvas colour in lib/theme.ts, which has
+ * to be a literal because it is written into a `<meta name="theme-color">`.
+ */
+const srcDir = new URL("../src/", import.meta.url);
+const sources = [];
+const walk = (dir) => {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const at = new URL(entry.name + (entry.isDirectory() ? "/" : ""), dir);
+    if (entry.isDirectory()) walk(at);
+    else if (/\.tsx?$/.test(entry.name)) sources.push([entry.name, readFileSync(at, "utf8")]);
+  }
+};
+walk(srcDir);
+const literalColour = sources.filter(
+  ([name, text]) => name !== "theme.ts" && /#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?\b/.test(text),
+);
+check(
+  `no component picks its own colour (${sources.length} files scanned)`,
+  literalColour.length === 0,
+);
+
 const root = document.getElementById("root");
 check("import screen renders", /New dub/.test(root.textContent));
 
