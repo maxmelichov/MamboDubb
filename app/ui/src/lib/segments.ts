@@ -28,6 +28,12 @@ export function segmentState(seg: Segment): SegmentState {
  * a timeline mark. It is not decoration: white on the amber keep-fill is
  * 2.1:1, which is the glyph — the accessible channel — being illegible on the
  * one state where it matters most.
+ *
+ * These are literals rather than tokens because they are chosen against the
+ * *fill*, not against the page, and both themes' fills are close enough in
+ * lightness that one choice serves both: on the dark triple white sits at
+ * 3.6:1 over the blue and 4.8:1 over the red, and near-black at 6.1:1 over the
+ * amber. If a state hue ever moves, re-check these three, not the tokens.
  */
 export const STATE_META: Record<
   SegmentState,

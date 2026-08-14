@@ -3,33 +3,40 @@
 /*
  * The design system, lifted from MamboRambo and refitted for this product.
  *
- * **This app is black-on-white and nothing else.** There is no dark counterpart
- * and no theme toggle: `color-scheme: light` is declared on the root and never
- * varies, `prefers-color-scheme` is not consulted anywhere, and the one
- * remaining `dark:` hook is a Tailwind variant scoped to `.theme-dark`, a class
- * nothing in the app sets. Everything the OS would otherwise darken on our
- * behalf — scrollbars, form controls, the canvas behind the page — is pinned
- * light below. If a surface ever comes up dark, it is a bug, not a preference.
+ * **Two themes, both deliberate, chosen by the user and nobody else.** Dark is
+ * the default; light is what you get by asking for it. The choice lives in
+ * `localStorage` and is expressed as one class, `.theme-dark`, on `<html>` —
+ * stamped pre-paint by the boot script in index.html and re-asserted by
+ * `lib/theme.ts` on mount. `prefers-color-scheme` appears nowhere in this file
+ * or anywhere else in the app: the OS does not get a vote, because a video
+ * editor that changes colour at sunset is a bug, not a courtesy.
+ *
+ * Dark is not inverted light. The neutrals are re-picked for a near-black
+ * plane, elevation swaps from a cast shadow to a hairline top highlight
+ * (shadow is invisible against near-black), and the state hues are a second,
+ * separately validated triple rather than the light ones dimmed.
  *
  * Four things carry the house style, and they are all here rather than
  * scattered through components:
  *
  * 1. A *warm* neutral ramp. Not grey — the plane, the borders and the ink all
- *    sit slightly yellow of neutral, which is what makes the white cards read
- *    as paper instead of as chrome.
+ *    sit slightly yellow of neutral, which is what makes the light cards read
+ *    as paper instead of as chrome, and what keeps the dark plane from reading
+ *    as a blue-black terminal.
  * 2. Ink, not colour, is the interaction accent. Primary buttons, the active
- *    nav pill and the selection ring are all `primary` — near-black. That is
- *    MamboRambo's look, and here it also buys something: it frees the blue to
- *    mean one thing only, "dubbed".
- * 3. Elevation is a big soft shadow at very low alpha, never a hard edge.
+ *    nav pill and the selection ring are all `primary` — near-black on light,
+ *    near-white on dark. That is MamboRambo's look, and here it also buys
+ *    something: it frees the blue to mean one thing only, "dubbed".
+ * 3. Elevation is a big soft shadow at very low alpha, never a hard edge —
+ *    except in dark, where the same three tokens resolve to an inset highlight
+ *    plus a deeper spread.
  * 4. Radii come from the stock Tailwind scale, which is the one MamboRambo
  *    uses: md/6 for chips, lg/8 for buttons and inputs, xl/12 for inner tiles,
  *    2xl/16 for cards.
  */
 
-/* Kept only so a stray `dark:` utility compiles to something unreachable
-   rather than to the OS preference, which is Tailwind's default meaning for
-   it. Nothing sets `.theme-dark`. */
+/* The `dark:` variant is this class and only this class — never the media
+   query Tailwind reaches for by default. */
 @custom-variant dark (&:where(.theme-dark, .theme-dark *));
 @theme {
   /* Chrome & ink. */
@@ -47,13 +54,15 @@
   /* What sits *on* an ink-filled surface — a primary button's own label. */
   --color-on-primary: #f7f6f2;
 
-  /* Segment-state encoding. One set of fills, validated all-pairs against the
-     white card with scripts/validate_palette.js (dataviz skill):
+  /* Segment-state encoding, light. Validated all-pairs against the white card
+     with scripts/validate_palette.js (dataviz skill):
        #2a78d6, #eda100, #d03b3b — CVD dE 19.8, normal dE 24.1.
      The pairs separate; the *yellow against the card* does not — it sits at
-     2.17:1, under the 3:1 gate. So the relief rule stands: every state also
-     carries a glyph and a word, and the segment table repeats the state as
-     text. Never colour alone. */
+     2.17:1, under the 3:1 gate (blue 4.42:1, red 4.80:1). So the relief rule
+     stands: every state also carries a glyph and a word, and the segment
+     navigator repeats the state as text. Never colour alone. The dark triple
+     under `.theme-dark` clears 3:1 on all three, and the rule still stands
+     there — one encoding, one set of affordances, both themes. */
   --color-dubbed: #2a78d6;
   --color-kept: #eda100;
   --color-failed: #d03b3b;
@@ -74,22 +83,31 @@
 }
 
 /*
- * `color-scheme: light` is the load-bearing line in this file. It is what stops
- * the OS from darkening the things CSS does not own: the canvas behind the
+ * `color-scheme` is the load-bearing line in this file. It is what tells the
+ * browser which way to paint the things CSS does not own: the canvas behind the
  * document, the native form widgets, the default scrollbars, and the video
- * element's own chrome. It is declared on both `html` and `:root` and is never
- * re-declared, so there is no path by which it becomes `dark`.
+ * element's own chrome. It follows the theme class and nothing else — the two
+ * declarations below are the only two in the app, and there is no third that
+ * consults the OS.
+ *
+ * The `html` rule is duplicated inline in index.html so the very first frame is
+ * already the right colour. Keep the two in step.
  */
 html {
   color-scheme: light;
   background: #f7f6f2;
 }
 
+html.theme-dark {
+  color-scheme: dark;
+  background: #0e0e0d;
+}
+
 :root {
-  color-scheme: light;
   /* Native controls (checkbox, number spinners, selection) pick ink, not the
-     platform blue, so nothing on the page is coloured by the OS. */
-  accent-color: #14130f;
+     platform blue, so nothing on the page is coloured by the OS. It is the
+     token, not a literal, so it inverts with the theme. */
+  accent-color: var(--color-primary);
   font-family: var(--font-sans);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -99,6 +117,59 @@ html {
   --elevation-card: 0 1px 2px rgb(20 19 15 / 0.04), 0 8px 30px rgb(20 19 15 / 0.045);
   --elevation-lift: 0 1px 2px rgb(20 19 15 / 0.04), 0 18px 50px rgb(28 28 23 / 0.07);
   --elevation-pop: 0 8px 24px rgb(20 19 15 / 0.12), 0 2px 6px rgb(20 19 15 / 0.08);
+}
+
+/*
+ * The dark theme.
+ *
+ * Every step is picked for a near-black plane rather than derived from the
+ * light one, and the specificity (0,1,1 against `@theme`'s 0,0,1 on `:root`)
+ * is what lets these win without `!important`.
+ *
+ * Contrast against the dark card `#171614`, measured, WCAG 2.1:
+ *   ink       #f5f4f0  16.4:1     secondary #b5b1a6   8.4:1
+ *   muted     #98948b   6.0:1     dubbed    #3987e5   5.0:1
+ *   kept      #c98500   5.9:1     failed    #d03b3b   3.8:1
+ * All three state hues clear the 3:1 non-text gate here — which light does not
+ * manage for amber (2.17:1) — but the glyph-and-word rule is unconditional, so
+ * nothing about the encoding changes between themes.
+ *
+ * The glyph drawn *inside* a mark keeps its light-mode ink: white on the dark
+ * blue is 3.6:1 and on the red 4.8:1, and near-black on the amber is 6.1:1.
+ */
+:root.theme-dark {
+  --color-plane: #0e0e0d;
+  --color-surface: #171614;
+  --color-raised: #1e1d1b;
+  --color-sunken: #131211;
+  --color-primary: #f5f4f0;
+  --color-secondary: #b5b1a6;
+  --color-muted: #98948b;
+  /* Borders on dark are light-on-dark hairlines, not dark-on-light ones: they
+     read as a lit edge (1.26:1 against the card) rather than as a drawn line,
+     which is the whole difference between an intentional dark UI and a
+     photo-negative of a light one. */
+  --color-border: #2b2a27;
+  --color-grid: #2b2a27;
+  --color-axis: #3b3935;
+  --color-brand: #3987e5;
+  --color-on-primary: #0e0e0d;
+
+  /* Segment-state encoding, dark. Validated all-pairs against the dark card:
+     #3987e5, #c98500, #d03b3b — CVD dE 10.2, normal dE 16.9. The blue is
+     lifted and the amber dropped relative to light, because the eye's job here
+     is separating them from each other *and* from a near-black ground. */
+  --color-dubbed: #3987e5;
+  --color-kept: #c98500;
+  --color-failed: #d03b3b;
+  --color-unclaimed: #98948b;
+
+  /* A cast shadow is invisible against near-black, so elevation in dark is
+     carried by a hairline highlight along the top edge — light falling on the
+     lifted surface — with the spread behind it doing the separation. */
+  --elevation-card: inset 0 1px 0 rgb(255 255 255 / 0.045), 0 2px 8px rgb(0 0 0 / 0.5);
+  --elevation-lift: inset 0 1px 0 rgb(255 255 255 / 0.06), 0 16px 44px rgb(0 0 0 / 0.55);
+  --elevation-pop: 0 10px 30px rgb(0 0 0 / 0.7), 0 2px 6px rgb(0 0 0 / 0.5);
 }
 
 body {
@@ -176,8 +247,9 @@ body {
   );
 }
 
-/* Scrollbars are ours, not the platform's — `color-scheme: light` already
-   keeps the fallback ones light, and these keep them quiet on top of that. */
+/* Scrollbars are ours, not the platform's — `color-scheme` already points the
+   fallback ones the right way, and these keep them quiet on top of that. Both
+   rules resolve from `--color-muted`, so they follow the theme. */
 ::-webkit-scrollbar {
   width: 9px;
   height: 9px;

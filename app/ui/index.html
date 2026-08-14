@@ -6,22 +6,48 @@
     <title>Dubbing Studio</title>
 
     <!--
-      The app is black-on-white and never anything else. These three lines are
-      the part of that promise that has to hold *before* the stylesheet lands:
-      `color-scheme` stops the browser painting a dark canvas under a page whose
-      colours it has not read yet, `theme-color` is what the shell's title bar
-      and the mobile browser chrome sample, and the inline background removes
-      the one frame of default white-then-flash on a slow first paint.
+      The theme has to be decided before the first frame, not after the bundle
+      parses, or every launch flashes the other theme for a beat. These two
+      blocks are that: the style paints the canvas for whichever class the
+      script stamps, and the script stamps it synchronously in <head>, before
+      <body> exists.
+
+      The rules here are a copy of the `html` rules in App.css, and the key and
+      class name are a copy of `lib/theme.ts` — an inline boot script cannot
+      import. If you change one, change the other.
+
+      `theme-color` is what the desktop shell's title bar and the browser's own
+      chrome sample. It carries the dark plane as its static value because dark
+      is the default; the script and `applyTheme` move it when the user picks
+      light. There is deliberately no media-query variant of it — the OS does
+      not get a vote here either.
     -->
-    <meta name="color-scheme" content="light" />
-    <meta name="theme-color" content="#f7f6f2" />
+    <meta name="theme-color" content="#0e0e0d" />
     <style>
-      html,
-      body {
+      html {
         background: #f7f6f2;
         color-scheme: light;
       }
+      html.theme-dark {
+        background: #0e0e0d;
+        color-scheme: dark;
+      }
     </style>
+    <script>
+      (function () {
+        // Dark unless the user has explicitly stored "light". The OS
+        // preference is never consulted — see lib/theme.ts for why.
+        var dark = true;
+        try {
+          dark = localStorage.getItem("dubbing-studio.theme") !== "light";
+        } catch (err) {
+          // Storage can throw outright in a locked-down profile; default wins.
+        }
+        document.documentElement.classList.toggle("theme-dark", dark);
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute("content", dark ? "#0e0e0d" : "#f7f6f2");
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

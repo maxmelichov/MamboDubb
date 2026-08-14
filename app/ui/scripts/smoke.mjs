@@ -64,28 +64,72 @@ const check = (label, ok) => {
 };
 
 /*
- * The theme lock. This app is black-on-white and has no other state, which is
- * a promise about the *built* artifact, not about the source — so these read
- * the bundle. A `prefers-color-scheme` block or a `color-scheme: dark` in the
- * shipped CSS is exactly the regression that puts a dark app back on a user's
- * screen without anyone editing a component.
+ * The theme system. Two themes, both shipped, the user picks — and the promise
+ * is about the *built* artifact, not the source, so the first group reads the
+ * bundle. The one thing that must never come back is the OS preference: a
+ * `prefers-color-scheme` block is how a user's choice silently stops being
+ * theirs.
  */
 const cssFile = readdirSync(assetDir).find((f) => f.endsWith(".css"));
 const css = readFileSync(new URL(cssFile, assetDir), "utf8");
 const html = readFileSync(new URL("../dist/index.html", import.meta.url), "utf8");
-check("no dark colour-scheme ships", !/color-scheme:\s*dark/.test(css));
-check("the OS preference is never consulted", !/prefers-color-scheme/.test(css));
-check("the light colour-scheme is declared", /color-scheme:\s*light/.test(css));
-check("the page declares a light theme-color", /theme-color[^>]*#f7f6f2/.test(html));
-check("the pre-paint canvas is light", /background:\s*#f7f6f2/.test(html));
+check("the OS preference is never consulted", !/prefers-color-scheme/.test(css + html));
+check("both colour-schemes ship", /color-scheme:\s*light/.test(css) && /color-scheme:\s*dark/.test(css));
+check("the dark theme is a class, not a media query", /\.theme-dark/.test(css));
+check("the pre-paint canvas covers both themes", /theme-dark[^}]*#0e0e0d/.test(html) && /#f7f6f2/.test(html));
 check("native number spinners are suppressed", /-webkit-inner-spin-button/.test(css));
 
 const root = document.getElementById("root");
 check("import screen renders", /New dub/.test(root.textContent));
-check("no theme toggle", ![...document.querySelectorAll("button")].some((b) =>
-  /Switch to (light|dark)/.test(b.getAttribute("aria-label") ?? ""),
-));
-check("nothing stamps a theme on <html>", !document.documentElement.hasAttribute("data-theme"));
+
+/*
+ * The toggle itself, driven through the DOM. jsdom does not run index.html's
+ * inline boot script, so what this proves is the second half of the contract:
+ * the bundle applies the stored choice on mount, defaulting to dark.
+ */
+const themeButton = (which) =>
+  [...document.querySelectorAll("button")].find(
+    (b) => b.getAttribute("aria-label") === `Switch to ${which} theme`,
+  );
+check("the header carries a theme toggle", themeButton("light") != null && themeButton("dark") != null);
+check("dark is the default with nothing stored", document.documentElement.classList.contains("theme-dark"));
+check("the toggle says which theme is on", themeButton("dark").getAttribute("aria-pressed") === "true");
+
+/*
+ * "Each theme paints its own ground" is the one claim worth checking against a
+ * real cascade rather than a regex, because the failure it guards — a theme
+ * that flips the tokens but leaves the canvas on the other theme's colour — is
+ * invisible to a source grep. jsdom does not fetch the linked stylesheet, so
+ * the two `html` rules are lifted out of the shipped CSS and injected.
+ */
+const canvasRules = css.match(/html\{[^}]*\}html\.theme-dark\{[^}]*\}/)?.[0];
+if (!canvasRules) throw new Error("smoke: no html/html.theme-dark rules in the shipped CSS");
+const injected = document.createElement("style");
+injected.textContent = canvasRules;
+document.head.append(injected);
+
+const canvas = () => dom.window.getComputedStyle(document.documentElement).backgroundColor;
+check("dark paints its own canvas", canvas() === "rgb(14, 14, 13)");
+
+themeButton("light").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+await new Promise((resolve) => setTimeout(resolve, 120));
+check("toggling drops the dark class", !document.documentElement.classList.contains("theme-dark"));
+check("the choice is persisted", dom.window.localStorage.getItem("dubbing-studio.theme") === "light");
+check("light paints its own canvas", canvas() === "rgb(247, 246, 242)");
+check(
+  "the toggle follows the choice",
+  themeButton("light").getAttribute("aria-pressed") === "true" &&
+    themeButton("dark").getAttribute("aria-pressed") === "false",
+);
+check(
+  "theme-color follows the theme",
+  document.querySelector('meta[name="theme-color"]').getAttribute("content") === "#f7f6f2",
+);
+
+themeButton("dark").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+await new Promise((resolve) => setTimeout(resolve, 120));
+check("toggling back restores dark", document.documentElement.classList.contains("theme-dark"));
+check("dark is persisted too", dom.window.localStorage.getItem("dubbing-studio.theme") === "dark");
 
 // An existing run's row has to answer "where did this get to" without being
 // opened — the whole point of listing it.

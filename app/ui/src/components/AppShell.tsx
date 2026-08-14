@@ -8,15 +8,16 @@
  * `AppHeader` is the workspace bar: 56px, bordered, dense, and it never grows,
  * because the editor's job is to give every remaining pixel to the timeline.
  *
- * Both carry the same right-hand tools (fixtures badge, Setup), so the app
- * never loses its chrome when the layout changes underneath it.
+ * Both carry the same right-hand tools (theme toggle, fixtures badge, Setup),
+ * so the app never loses its chrome when the layout changes underneath it.
  */
 
-import { type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { SlidersHorizontal } from "lucide-react";
+import { Moon, SlidersHorizontal, Sun } from "lucide-react";
 import { USE_FIXTURES } from "../lib/api";
 import { cn } from "../lib/classNames";
+import { currentTheme, onThemeChange, setTheme, type Theme } from "../lib/theme";
 import { Badge, Brand } from "./ui";
 
 export function PageShell({
@@ -90,12 +91,58 @@ export function AppHeader({
 }
 
 /**
- * The fixtures badge and the Setup link — the permanent tools.
+ * The theme control.
  *
- * There is no theme control here and there is not meant to be one: the app is
- * black-on-white, the OS preference is not consulted, and a toggle for a
- * setting with one value is a lie about what the product does.
+ * A segmented pair rather than one mystery icon: a single button that swaps
+ * between a sun and a moon never says whether the glyph is the state or the
+ * destination, and the answer differs by app. Two cells with `aria-pressed`
+ * say both at once — which one you are in, and what the other one is.
+ *
+ * There is no "System" third cell on purpose. The OS preference is not
+ * consulted anywhere in this app (see lib/theme.ts), so offering it would be
+ * a control that does nothing.
  */
+function ThemeToggle() {
+  const [theme, setLocal] = useState<Theme>(currentTheme);
+
+  // Both shells mount their own copy; whichever one is clicked, all of them
+  // move. Also picks up the value written before React mounted.
+  useEffect(() => {
+    setLocal(currentTheme());
+    return onThemeChange(setLocal);
+  }, []);
+
+  const cell = (value: Theme, Icon: typeof Sun, label: string) => (
+    <button
+      type="button"
+      onClick={() => setTheme(value)}
+      aria-pressed={theme === value}
+      aria-label={`Switch to ${label} theme`}
+      title={`${label[0].toUpperCase()}${label.slice(1)} theme`}
+      className={cn(
+        "grid h-6 w-7 place-items-center rounded-md transition-colors",
+        theme === value
+          ? "bg-primary text-on-primary"
+          : "text-muted hover:text-primary",
+      )}
+    >
+      <Icon className="h-3.5 w-3.5" aria-hidden />
+    </button>
+  );
+
+  return (
+    <div
+      role="group"
+      aria-label="Theme"
+      className="flex shrink-0 items-center gap-0.5 rounded-lg border border-border bg-raised p-0.5"
+    >
+      {cell("light", Sun, "light")}
+      {cell("dark", Moon, "dark")}
+    </div>
+  );
+}
+
+/** The theme toggle, the fixtures badge and the Setup link — permanent tools. */
 function HeaderTools() {
   const onSetup = useLocation().pathname === "/setup";
   return (
@@ -103,6 +150,7 @@ function HeaderTools() {
       {USE_FIXTURES ? (
         <Badge title="VITE_USE_FIXTURES=1 — sample data, no server, no models">fixtures</Badge>
       ) : null}
+      <ThemeToggle />
       <Link
         to="/setup"
         title="What this machine has installed"

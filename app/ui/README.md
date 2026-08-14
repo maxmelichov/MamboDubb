@@ -93,10 +93,19 @@ Eyebrow/SectionLabel and Brand/LogoMark. There are no ad-hoc styled containers a
 file — a new screen composes these or the system stops being one.
 
 `src/App.css` is the whole token layer: surfaces, ink, elevation and the segment-state hues,
-declared once in `@theme` and restated for dark under `:root[data-theme="dark"]`. Element
-resets live inside `@layer base`; an unlayered `button { color: inherit }` beats every
-Tailwind `text-*` utility no matter the specificity, which is a bug that has already been
-written here once.
+declared once in `@theme` and restated for dark under `:root.theme-dark`. Element resets live
+inside `@layer base`; an unlayered `button { color: inherit }` beats every Tailwind `text-*`
+utility no matter the specificity, which is a bug that has already been written here once.
+
+**Two themes, and the OS does not get a vote.** Dark is the default; light is what you get by
+asking. The choice is one class, `.theme-dark`, on `<html>`, backed by `localStorage` under
+`dubbing-studio.theme` — and `prefers-color-scheme` appears nowhere in the app, which the
+smoke test asserts against the *built* bundle. Three places apply it and must agree: the
+inline boot script in `index.html` (pre-paint, so there is no flash), `applyTheme()` in
+`lib/theme.ts` called from `main.tsx` (the belt to that braces), and the header toggle. Dark
+is not inverted light: the neutrals are re-picked for a near-black plane, elevation swaps
+from a cast shadow to an inset top highlight, and the state hues are a separately validated
+triple. The desktop shell's window `backgroundColor` should match the dark plane, `#0e0e0d`.
 
 ## Layout
 
@@ -130,8 +139,9 @@ src/
 Four segment states, each with a hue **and** a glyph **and** a word — colour never carries
 meaning alone. The hues are validated all-pairs for colour-vision deficiency in both light
 and dark (`dataviz` skill, `scripts/validate_palette.js`); light-mode "kept" sits below the
-3:1 contrast gate (2.17:1 on the card surface), which is why the segment table repeats every
-state as text. Unclaimed time gets no hue: it is an absence, so it is a neutral hatch.
+3:1 contrast gate (2.17:1 on the card surface), which is why the segment navigator repeats
+every state as a word. The dark triple clears 3:1 on all three, and the word stays anyway —
+one encoding, both themes. Unclaimed time gets no hue: it is an absence, so it is a hatch.
 
 The restyle moved the surfaces *under* these fills and left the fills themselves untouched,
 so the validated pair separations still hold. If you ever change one of the three hues,

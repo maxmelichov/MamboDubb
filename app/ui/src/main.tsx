@@ -3,6 +3,13 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
 import { initApiBase } from "./lib/api";
+import { applyTheme, currentTheme } from "./lib/theme";
+
+// Before anything renders. index.html's boot script has normally already done
+// this — but it is an inline script, and an inline script is exactly the thing
+// a CSP, an extension or a headless renderer can decline to run. Applying it
+// again here costs one class toggle and removes the whole failure mode.
+applyTheme(currentTheme());
 
 const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
 
