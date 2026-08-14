@@ -33,6 +33,9 @@ export type ScriptFilter = "all" | "failed" | "kept" | "edited";
 /** Past this many rows the list opts into browser-side render skipping. */
 const VIRTUALIZE_ABOVE = 300;
 
+/** Keep this in step with `scroll-pt-3` / `scroll-pb-3` on the list. */
+const SCROLL_INSET = 12;
+
 /** A uid is `s_<hex>` today, but a selector built from data must still be safe. */
 const escapeId = (value: string): string =>
   typeof CSS !== "undefined" && CSS.escape ? CSS.escape(value) : value.replace(/["\\]/g, "\\$&");
@@ -141,7 +144,10 @@ export function ScriptPane({
     if (!row) return;
     const top = row.offsetTop;
     const bottom = top + row.offsetHeight;
-    if (top < box.scrollTop + 8 || bottom > box.scrollTop + box.clientHeight - 8) {
+    if (
+      top < box.scrollTop + SCROLL_INSET ||
+      bottom > box.scrollTop + box.clientHeight - SCROLL_INSET
+    ) {
       box.scrollTo({ top: Math.max(0, top - box.clientHeight / 2), behavior: "smooth" });
     }
   }, [nowUid]);
@@ -193,7 +199,16 @@ export function ScriptPane({
         "border-b border-border xl:border-b-0 xl:border-e",
       )}
     >
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-sunken px-3 py-1.5">
+      {/*
+        The filter bar is not inside the scroll container and never scrolls, so
+        it needs an opaque ground and a hairline under it — with a wash or a
+        translucent tone the row passing beneath shows through and the two sets
+        of letters overprint. `bg-sunken` is a solid token in both themes.
+      */}
+      <div
+        data-script-header
+        className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-sunken px-3 py-1.5"
+      >
         <label className="relative flex h-7 min-w-[11rem] flex-1 items-center">
           <Search className="pointer-events-none absolute left-2 h-3.5 w-3.5 text-muted" aria-hidden />
           <input
@@ -233,8 +248,15 @@ export function ScriptPane({
         ref={scrollRef}
         role="listbox"
         aria-label="Script"
+        data-script-scroll
         className={cn(
           "min-h-0 flex-1 overflow-y-auto",
+          // Every scroll this list performs is a scroll *to a row* — the
+          // playhead's, the selection's, ↑/↓'s — and a row landed flush under
+          // the filter bar reads as text sliced off by it. `scroll-padding`
+          // is the platform's answer: it is the inset every one of those
+          // scrolls, including `scrollIntoView`, aligns to.
+          "scroll-pt-3 scroll-pb-3",
           // Past a few hundred rows the browser skips the layout and paint of
           // everything off screen. No windowing library, no measured
           // virtualiser, no new dependency — the platform has done this since
