@@ -54,7 +54,10 @@ def _flag(v: Any) -> bool:
 # editor originally proposed were therefore renamed to the canonical keys at
 # merge, and one was dropped outright:
 #   lang_override    -> tgt_lang  (the studio's per-segment target language)
-#   passthrough      -> keep + keep_reason="manual" (+ locked.keep, see below)
+#   passthrough      -> the pipeline's own `passthrough` key (True = play original,
+#                       False = force a dub, absent = automatic) — honoured by
+#                       segments.apply_passthrough and carried across
+#                       re-segmentation by carry_passthrough
 #   tts_instructions -> REJECTED: Qwen3-TTS's clone path has no instruction
 #                       channel at all (generate_voice_clone takes no `instruct`;
 #                       the checkpoints that do cannot clone a reference voice).
@@ -86,12 +89,9 @@ REJECTED: dict[str, str] = {
                         "(seed, greedy, ref, ref_text) instead",
 }
 
-# Fields the editor stores must survive manifest.save()'s whitelist. `passthrough`
-# is not stored under its own name — it lands on keep/keep_reason/locked.
-_MISSING = sorted(f for f in EDITABLE if f != "passthrough" and f not in SEGMENT_KEYS)
+# Fields the editor stores must survive manifest.save()'s whitelist.
+_MISSING = sorted(f for f in EDITABLE if f not in SEGMENT_KEYS)
 assert not _MISSING, f"add to manifest.SEGMENT_KEYS: {_MISSING}"
-for _written in ("keep", "keep_reason", "locked"):
-    assert _written in SEGMENT_KEYS, _written
 
 
 def earliest(stages: list[str] | set[str]) -> str | None:
@@ -135,17 +135,15 @@ def apply_edits(m: dict[str, Any], edits: list[dict[str, Any]]) -> dict[str, Any
                 raise ValueError(f"segment {seg_id}, field {name!r}: {exc}") from None
             # Absent and empty are the same state, so clearing an unset field is
             # a no-op rather than a manifest change that invalidates a stage.
-            # `passthrough` is stored as keep/keep_reason, so it compares there.
-            current = bool(seg.get("keep")) if name == "passthrough" else seg.get(name)
-            if value == current or (not value and not current):
+            if value == seg.get(name) or (not value and not seg.get(name)):
                 continue
             if not value and name in ("text", "text_en"):
                 # Blanking these would leave the synthesiser nothing to say.
                 raise ValueError(f"segment {seg_id}, field {name!r}: cannot be empty")
             if name == "passthrough":
-                # Canonical form: the studio's manual keep, locked against re-runs.
-                seg["keep"], seg["keep_reason"] = bool(value), ("manual" if value else None)
-                seg.setdefault("locked", {})["keep"] = True
+                # The pipeline's own tri-state key: apply_passthrough flips keep
+                # on the next run and carry_passthrough survives re-segmentation.
+                seg["passthrough"] = bool(value)
             elif not value:
                 seg.pop(name, None)   # cleared: drop it instead of storing a blank
             else:

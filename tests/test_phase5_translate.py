@@ -163,7 +163,9 @@ def test_non_hebrew_source_gets_no_military_note():
 # --------------------------------------------------------------------- tag bump
 
 def test_translate_stage_tag_bumped():
-    assert manifest.STAGE_TAGS["translate"] == "translate/v31"
+    # v32: two parallel lines each claimed v31 (lock-aware reruns; the news
+    # register work) — the merged tag moves past both claims.
+    assert manifest.STAGE_TAGS["translate"] == "translate/v32"
 
 
 # ------------------------------------------------------- per-segment gloss gating

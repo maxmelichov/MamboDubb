@@ -71,15 +71,21 @@ def test_target_language_override_forces_translate():
     assert m["segments"][1]["tgt_lang"] == "fr"
 
 
-def test_passthrough_lands_on_a_locked_manual_keep():
+def test_passthrough_lands_on_the_pipelines_own_key():
+    """The pipeline owns `passthrough` (segments.apply_passthrough honours it,
+    carry_passthrough survives re-segmentation) — the editor just writes it."""
+    from dubbing import segments as seg_mod
+
     m = a_manifest()
     apply_edits(m, edit(1, passthrough=True))
     seg = m["segments"][1]
-    # Canonical form: the studio's manual keep, locked so no re-run re-decides it.
-    assert seg["keep"] is True and seg["keep_reason"] == "manual"
-    assert seg["locked"]["keep"] is True
-    assert "passthrough" not in seg
+    assert seg["passthrough"] is True
+    # The next pipeline entry turns the override into a keep.
+    assert seg_mod.apply_passthrough(m["segments"]) == [1]
+    assert seg["keep"] is True and seg["keep_reason"] == "user"
     res = apply_edits(m, edit(1, passthrough=False))
+    assert seg["passthrough"] is False
+    assert seg_mod.apply_passthrough(m["segments"]) == [1]
     assert seg["keep"] is False and seg["keep_reason"] is None
     assert res["force"] == "tts"
 
@@ -122,10 +128,8 @@ def test_editable_fields_survive_manifest_save(tmp_path):
     manifest.save(tmp_path, m)
     saved = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))["segments"][0]
     for field in EDITABLE:
-        if field != "passthrough":     # stored as keep/keep_reason/locked
-            assert field in manifest.SEGMENT_KEYS
-    assert saved["keep"] is True and saved["keep_reason"] == "manual"
-    assert saved["locked"] == {"keep": True}
+        assert field in manifest.SEGMENT_KEYS
+    assert saved["passthrough"] is True
     assert saved["tgt_lang"] == "es"
 
 

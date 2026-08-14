@@ -20,12 +20,14 @@ from . import STAGES
 STAGE_TAGS = {
     "fetch": "fetch/v1",
     "stems": "stems/v1",
-    "transcript": "transcript/v39",
-    "segments": "segments/v34",
-    "translate": "translate/v31",
-    # tts and timeline each received two independent changes in parallel (per-segment
-    # tts_opts and lock-aware queueing; the media-end wall and lock-aware shortening),
-    # so the tag moves past both claims of v13/v11 rather than picking one.
+    # Two lines of development each claimed the same numbers for different logic
+    # (the target-ASR witness vs handoff snapping at transcript/v39; lock-aware
+    # reruns vs the news register at translate/v31; segments carried both
+    # alignment+passthrough and the spoken_target/veto work), so the merged tag
+    # moves past every claim rather than picking a side.
+    "transcript": "transcript/v40",
+    "segments": "segments/v36",
+    "translate": "translate/v32",
     "tts": "tts/v14",
     "timeline": "timeline/v12",
     "mix": "mix/v8",
@@ -46,6 +48,13 @@ SEGMENT_KEYS = {
     "lang",       # third-language keeps only: what the span's speech is, for subtitles
     "src_lang",   # editor override: this segment's source language (falls back to `lang`)
     "tgt_lang",   # editor override: translate this segment into something else
+    "detected_lang",  # advisory: what the language classifier heard over this span.
+                      # Never decides anything — it is what the editor app reads to
+                      # SUGGEST passthrough ("this one is already English").
+    "passthrough",    # user override: True = play the original audio for this span,
+                      # False = dub it, absent = decide automatically. The pipeline
+                      # honours it in segments.apply_passthrough; both front ends
+                      # write THIS key (one concept, one manifest key).
     "text_en",
     "text_mid",   # pivot runs only: the English intermediate text_en was made from
     "tts_opts",   # per-segment synthesis overrides (dubbing/ttsopts.py); user-set only

@@ -194,6 +194,14 @@ def set_keep(m: dict[str, Any], uid: str, keep: bool,
     seg = _require(m, uid)
     seg["keep"] = bool(keep)
     seg["keep_reason"] = reason if keep else None
+    if reason == "manual" or not keep:
+        # One concept, one key: the user's own verdict is also the pipeline's
+        # `passthrough` override, so a headless re-run honours it identically
+        # (segments.apply_passthrough) and it survives re-segmentation
+        # (carry_passthrough). Reason-specific keeps (a bug triage flipping
+        # tts_failed, say) stay out of it — those are not the user's verdict
+        # about the SPAN, only about this attempt.
+        seg["passthrough"] = bool(keep)
     _lock(seg, "keep")
     # The clip is the wrong kind now (a synthesis for a keep, or a slice of the
     # original for a dub), whatever the tts lock said about the old one.

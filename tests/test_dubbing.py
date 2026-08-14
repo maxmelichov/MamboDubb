@@ -717,6 +717,168 @@ def test_speaker_assignment_by_overlap_and_fallback():
     assert {w["spk"] for w in words} == {"SPEAKER_00"}
 
 
+# ------------------------------------------- diarization smoothing and handoff timing
+#
+# The "news" shape: one speaker holds the floor, with occasional short clips from
+# somebody else. Pyannote sprinkles sub-half-second turns of a second label through
+# the dominant voice, and each one used to cut a sentence into three segments whose
+# middle carried the wrong speaker and was voiced by a different clone.
+
+def mkturns(spec):
+    return [{"speaker": s, "start": a, "end": b} for a, b, s in spec]
+
+
+def test_sub_minimum_speaker_blip_is_absorbed_by_its_host():
+    turns = mkturns([(0.0, 10.0, "A"), (10.0, 10.25, "B"), (10.25, 20.0, "A")])
+    assert [t["speaker"] for t in segments.smooth_turns(turns)] == ["A", "A", "A"]
+    # Timings are never touched, and the caller's dicts are not mutated.
+    assert [(t["start"], t["end"]) for t in segments.smooth_turns(turns)] == \
+        [(t["start"], t["end"]) for t in turns]
+    assert turns[1]["speaker"] == "B"
+
+
+def test_a_flutter_of_labels_collapses_into_one_turn():
+    # Measured (news_videos clip 3, 29.0-30.0s): pyannote flickers between two
+    # labels six times inside one second of one person's sentence. Absorbing the
+    # shortest island first collapses the flicker from the inside out; what is
+    # left is a single sub-second turn, not six alternating ones.
+    turns = mkturns([(20.500, 29.039, "S1"), (29.039, 29.579, "S0"),
+                     (29.579, 29.596, "S1"), (29.596, 29.613, "S0"),
+                     (29.613, 29.630, "S1"), (29.630, 29.967, "S0"),
+                     (29.967, 37.510, "S1")])
+    out = segments.smooth_turns(turns)
+    assert [t["speaker"] for t in out] == ["S1", "S0", "S0", "S0", "S0", "S0", "S1"]
+
+
+def test_a_real_short_interruption_survives_smoothing():
+    # A field reporter's clip runs seconds, not milliseconds: it is a speaker turn
+    # and must keep its own label (and therefore its own voice).
+    turns = mkturns([(0.0, 10.0, "A"), (10.2, 12.7, "B"), (12.9, 20.0, "A")])
+    assert [t["speaker"] for t in segments.smooth_turns(turns)] == ["A", "B", "A"]
+    # Neither does a blip that is not surrounded by one voice, nor one sitting
+    # across a real pause rather than inside somebody's speech.
+    edges = mkturns([(0.0, 10.0, "A"), (10.0, 10.2, "B"), (10.2, 20.0, "C")])
+    assert [t["speaker"] for t in segments.smooth_turns(edges)] == ["A", "B", "C"]
+    apart = mkturns([(0.0, 10.0, "A"), (11.0, 11.2, "B"), (12.2, 20.0, "A")])
+    assert [t["speaker"] for t in segments.smooth_turns(apart)] == ["A", "B", "A"]
+
+
+def test_a_blip_no_longer_shatters_a_sentence():
+    spec = [(0.0, "aa"), (0.4, "bb"), (0.8, "cc"), (1.2, "dd"),
+            (1.6, "ee"), (2.0, "ff"), (2.4, "gg")]
+    blip = mkturns([(0.0, 1.3, "A"), (1.3, 1.55, "B"), (1.55, 3.0, "A")])
+    # Word labels and boundary cuts read the same view: a turn too short to be a
+    # speaker turn neither renames a word nor cuts the segment.
+    words = mkwords(spec)
+    segments.assign_word_speakers(words, blip)
+    assert {w["spk"] for w in words} == {"A"}
+    segs = segments.words_to_segments(words, turns=blip)
+    assert len(segs) == 1 and segs[0]["speaker"] == "A"
+    # ...while a real turn of the same shape still takes its words and cuts the
+    # sentence into the three lines the two voices actually spoke.
+    real = mkturns([(0.0, 1.3, "A"), (1.3, 2.2, "B"), (2.2, 3.0, "A")])
+    other = mkwords(spec)
+    segments.assign_word_speakers(other, real)
+    assert [s["speaker"] for s in segments.words_to_segments(other, turns=real)] == \
+        ["A", "B", "A"]
+
+
+def test_a_blip_never_hides_the_pause_around_it():
+    # Silence cuts still read every turn as diarized: dropping a blip from the
+    # handover view must not make its speech look like a gap in the audio.
+    turns = mkturns([(0.0, 0.9, "A"), (0.9, 1.1, "B"), (1.1, 2.0, "A")])
+    assert segments._turn_boundaries(turns) == []
+    # The same blip with a second of silence on either side: both pauses still cut
+    # (protected, at their midpoints), and neither cut is a speaker handover.
+    quiet = mkturns([(0.0, 0.5, "A"), (1.5, 1.7, "B"), (2.7, 3.5, "A")])
+    assert segments._turn_boundaries(quiet) == [(1.0, True), (2.2, True)]
+
+
+def test_handoff_start_snaps_back_to_the_diarization_onset():
+    # Whisper times the incoming voice's first word late; pyannote heard it start
+    # 0.25s earlier, and the dub (or the kept original audio) belongs there.
+    segs = [{"start": 5.0, "end": 8.0, "speaker": "A", "text": "aa"},
+            {"start": 8.5, "end": 10.0, "speaker": "B", "text": "bb"}]
+    turns = mkturns([(4.9, 8.1, "A"), (8.25, 10.1, "B")])
+    segments.snap_speaker_handoffs(segs, turns)
+    assert segs[1]["start"] == pytest.approx(8.25)
+    assert segs[0]["start"] == pytest.approx(4.9)   # the first line is a handoff too
+    # A same-speaker continuation is left alone: its onset is not a handoff, and
+    # the pause before it is the source's own.
+    same = [{"start": 5.0, "end": 8.0, "speaker": "A", "text": "aa"},
+            {"start": 9.0, "end": 10.0, "speaker": "A", "text": "bb"}]
+    segments.snap_speaker_handoffs(same, mkturns([(4.9, 8.1, "A"), (8.8, 10.1, "A")]))
+    assert same[1]["start"] == 9.0
+
+
+def test_handoff_snap_never_overlaps_or_moves_a_start_later():
+    # An onset behind the previous segment's end is unreachable (placements must
+    # stay ordered), one further than HANDOFF_SNAP is not evidence about this
+    # segment, and an onset *after* the first word would strand the speech.
+    def snapped(seg_start, turn_start, prev_end=8.0):
+        segs = [{"start": 5.0, "end": prev_end, "speaker": "A", "text": "aa"},
+                {"start": seg_start, "end": 12.0, "speaker": "B", "text": "bb"}]
+        segments.snap_speaker_handoffs(segs, mkturns([(4.9, prev_end + 0.1, "A"),
+                                                      (turn_start, 12.1, "B")]))
+        return segs[1]["start"]
+
+    assert snapped(8.1, 7.9) == 8.1                 # onset inside the previous segment
+    assert snapped(8.5, 7.5) == 8.5                 # 1.0s away — beyond HANDOFF_SNAP
+    assert snapped(8.5, 8.7) == 8.5                 # never later than the first word
+    assert snapped(8.5, 8.49) == 8.5                # a rounding-level move is refused
+
+
+def test_a_long_monologue_run_is_never_split_into_two_voices():
+    # One person holding the floor with pauses is not two people pyannote fused:
+    # splitting such a run renames half the dominant speaker's turns for good.
+    n = 2 * segments.REFINE_MAX_TURNS
+    alternating = [[1.0 if i == j else (0.9 if i % 2 == j % 2 else 0.05)
+                    for j in range(n)] for i in range(n)]
+    assert segments._split_embedding_clusters(alternating) is None
+    assert segments._split_embedding_clusters([r[:6] for r in alternating[:6]]) is not None
+
+
+def test_two_clusters_no_wider_apart_than_one_of_them_is_wide(monkeypatch):
+    # One voice recorded two ways clears the absolute cut as easily as two voices
+    # do; the split needs the gap between the clusters to beat the widest merge
+    # inside them as well.
+    sims = [[1.0 if i == j else (0.21 if i % 2 == j % 2 else 0.15) for j in range(6)]
+            for i in range(6)]
+    assert segments._split_embedding_clusters(sims) is None
+    monkeypatch.setattr(segments, "REFINE_MARGIN", 1.0)
+    assert segments._split_embedding_clusters(sims) == [0, 1, 0, 1, 0, 1]
+
+
+def test_trim_remnant_rejoins_the_span_it_was_cut_from():
+    # Measured (news_wa4, 11.8-14.6s): the span ends where the voice stopped, but
+    # Whisper's last word smears a second past it, leaving "the" as a one-word
+    # segment of its own — separately translated, separately voiced, and pushed
+    # off the seam on the timeline.
+    said = [(11.8, 12.01, "The"), (12.01, 12.35, "national"), (12.35, 12.93, "rabbinical"),
+            (12.93, 13.19, "court"), (13.19, 13.49, "against"), (13.49, 14.85, "the")]
+    words = [{"t": t, "end": e, "text": w, "spk": "S0"} for t, e, w in said]
+    asr = [{"id": 0, "start": 11.8, "end": 14.85, "speaker": "S0",
+            "text": " ".join(w["text"] for w in words)}]
+    spans = [{"start": 11.8, "end": 13.57, "lang": "en",
+              "text": "The national rabbinical court against",
+              "words": [{"t": t, "text": w, "spk": "S0"} for t, _e, w in said[:5]]}]
+    out = segments.splice_foreign_spans(asr, spans, words)
+    assert [s["text"] for s in out] == ["The national rabbinical court against the"]
+    assert (out[0]["start"], out[0]["end"]) == (11.8, 14.85)
+
+
+def test_a_remnant_that_is_not_the_span_s_language_stays_its_own_segment():
+    # The remnant is source-language speech: it has to be dubbed, so it can never
+    # be absorbed into a span that plays its original audio.
+    words = [{"t": 11.8, "end": 13.4, "text": "English", "spk": "S0"},
+             {"t": 13.5, "end": 14.6, "text": "עברית", "spk": "S0"}]
+    asr = [{"id": 0, "start": 11.8, "end": 14.6, "speaker": "S0", "text": "English עברית"}]
+    spans = [{"start": 11.8, "end": 13.45, "lang": "en", "text": "English",
+              "words": [{"t": 11.8, "text": "English", "spk": "S0"}]}]
+    out = segments.splice_foreign_spans(asr, spans, words)
+    assert [s["text"] for s in out] == ["English", "עברית"]
+
+
 def test_foreign_spans_become_their_own_segments():
     # ASR either mangles or skips target-language speech, so those seconds must
     # come from the captions or they would have no audio at all.
@@ -1287,3 +1449,182 @@ def test_save_drops_unknown_segment_keys(tmp_path):
     loaded = manifest.load(tmp_path)
     # `uid` is minted on save for anything that lacks one, so it is always there.
     assert set(loaded["segments"][0]) == {"id", "uid", "start", "end", "text"}
+
+
+# ----------------------------------------------------------------------- passthrough
+# The editor app's per-segment override: `passthrough=True` plays the original
+# audio for that span, `False` dubs it, absent leaves the automatic verdict alone.
+# It rides the existing keep machinery, so these tests pin the flag's effect on
+# `keep` and on the derived work a flip invalidates.
+
+def seg_for_passthrough(i, start, end, **kw):
+    s = {"id": i, "start": start, "end": end, "speaker": "A", "text": "some words",
+         "keep": False, "keep_reason": None}
+    s.update(kw)
+    return s
+
+
+def test_passthrough_true_makes_the_segment_play_original_audio():
+    segs = [seg_for_passthrough(0, 0.0, 3.0, passthrough=True)]
+    assert segments.apply_passthrough(segs) == [0]
+    assert segs[0]["keep"] and segs[0]["keep_reason"] == "user"
+
+
+def test_passthrough_false_sends_a_kept_segment_down_the_dub_path():
+    segs = [seg_for_passthrough(0, 0.0, 3.0, keep=True, keep_reason="latin",
+                                passthrough=False)]
+    assert segments.apply_passthrough(segs) == [0]
+    assert not segs[0]["keep"] and segs[0]["keep_reason"] is None
+
+
+def test_passthrough_absent_leaves_the_automatic_verdict_alone():
+    segs = [seg_for_passthrough(0, 0.0, 3.0, keep=True, keep_reason="foreign"),
+            seg_for_passthrough(1, 3.0, 6.0)]
+    assert segments.apply_passthrough(segs) == []
+    assert segs[0]["keep"] and segs[0]["keep_reason"] == "foreign"
+    assert not segs[1]["keep"]
+
+
+def test_passthrough_agreeing_with_the_automatic_verdict_keeps_its_named_reason():
+    # "foreign" and "interjection" tell translate to render a subtitle; an
+    # override that changes nothing must not overwrite them with "user".
+    segs = [seg_for_passthrough(0, 0.0, 3.0, keep=True, keep_reason="foreign",
+                                lang="ar", passthrough=True)]
+    assert segments.apply_passthrough(segs) == []
+    assert segs[0]["keep_reason"] == "foreign"
+
+
+def test_a_flip_throws_away_the_work_made_for_the_other_path():
+    # The translation, the clip and the placement of a flipped segment were all
+    # made for the path it is no longer on — left behind, mix would lay a dub
+    # over a span meant to play as recorded.
+    segs = [seg_for_passthrough(0, 0.0, 3.0, text_en="hello", text_mid="hello",
+                                tts={"clip": "clips/0.wav", "dur": 2.2},
+                                place={"start": 0.0, "end": 2.2}, passthrough=True)]
+    segments.apply_passthrough(segs)
+    for field in ("text_en", "text_mid", "tts", "place"):
+        assert field not in segs[0]
+
+
+def test_applying_passthrough_twice_changes_nothing_the_second_time():
+    # It runs on every invocation, so a re-run must not keep re-invalidating work.
+    segs = [seg_for_passthrough(0, 0.0, 3.0, passthrough=True),
+            seg_for_passthrough(1, 3.0, 6.0, keep=True, keep_reason="latin",
+                                passthrough=False)]
+    assert len(segments.apply_passthrough(segs)) == 2
+    segs[0]["tts"] = {"clip": "clips/keep_0.wav", "dur": 3.0}
+    assert segments.apply_passthrough(segs) == []
+    assert segs[0]["tts"] == {"clip": "clips/keep_0.wav", "dur": 3.0}
+
+
+def test_a_dub_override_on_a_wordless_span_is_refused():
+    # Never silent outranks the override: with no text there is nothing to
+    # translate and nothing to speak, so stripping the original audio would
+    # leave the bed alone under a speaking face.
+    segs = [seg_for_passthrough(0, 0.0, 3.0, text="", keep=True,
+                                keep_reason="uncovered", passthrough=False)]
+    assert segments.apply_passthrough(segs) == []
+    assert segs[0]["keep"]
+
+
+def test_passthrough_keeps_reserve_their_exact_span_on_the_timeline():
+    # A keep is not stretchable and its clip is the span itself, so the timeline
+    # reserves exactly those seconds and everything else places around them.
+    m = {"segments": [
+        seg_for_passthrough(0, 0.0, 2.0, text_en="a",
+                            tts={"clip": "clips/0.wav", "dur": 1.6}),
+        seg_for_passthrough(1, 2.0, 5.0, keep=True, keep_reason="user",
+                            tts={"clip": "clips/keep_1.wav", "dur": 3.0}),
+        seg_for_passthrough(2, 5.0, 7.0, text_en="c",
+                            tts={"clip": "clips/2.wav", "dur": 1.5}),
+    ]}
+    items = timeline.build_items(m)
+    assert [it["stretchable"] for it in items] == [True, False, True]
+    places = timeline.place(items)
+    timeline.assert_invariants(places, items)
+    assert places[1]["start"] == pytest.approx(2.0)
+    assert places[1]["end"] == pytest.approx(5.0)
+
+
+def test_mix_ducks_the_bed_away_under_a_passthrough_span():
+    # The kept audio carries its own background, so the bed goes to zero under it
+    # rather than being ducked as it is under a dub.
+    segs = [seg_for_passthrough(0, 0.0, 2.0, place={"start": 0.0, "end": 2.0}),
+            seg_for_passthrough(1, 2.0, 5.0, keep=True, keep_reason="user",
+                                place={"start": 2.0, "end": 5.0})]
+    env = mix.build_envelope(segs, 6.0)
+    assert env[int(3.5 * mix.CTRL_HZ)] == pytest.approx(0.0, abs=1e-3)
+    assert env[int(1.0 * mix.CTRL_HZ)] == pytest.approx(mix.DUCK_DUB, abs=0.05)
+
+
+def test_overrides_survive_a_re_segmentation_by_time_not_by_id():
+    # The segments stage rebuilds and renumbers everything, so the override has
+    # to find the segment covering the same moment.
+    old = [seg_for_passthrough(7, 10.0, 14.0, passthrough=True),
+           seg_for_passthrough(8, 14.0, 18.0, passthrough=False)]
+    saved = segments.saved_overrides(old)
+    assert saved == [(10.0, 14.0, True), (14.0, 18.0, False)]
+    rebuilt = [seg_for_passthrough(0, 0.0, 9.8),
+               seg_for_passthrough(1, 9.8, 14.1),
+               seg_for_passthrough(2, 14.1, 17.9)]
+    assert segments.carry_passthrough(rebuilt, saved) == 2
+    assert "passthrough" not in rebuilt[0]
+    assert rebuilt[1]["passthrough"] is True
+    assert rebuilt[2]["passthrough"] is False
+
+
+def test_an_override_never_spreads_across_a_merge_or_a_split():
+    # Both directions must agree, or one marked line would hand its verdict to
+    # every line the re-segmentation merged it with.
+    saved = [(10.0, 12.0, True)]
+    merged = [seg_for_passthrough(0, 0.0, 40.0)]        # old span is 5% of the new one
+    assert segments.carry_passthrough(merged, saved) == 0
+    assert "passthrough" not in merged[0]
+    split = [seg_for_passthrough(0, 10.0, 10.4), seg_for_passthrough(1, 10.4, 12.0)]
+    assert segments.carry_passthrough(split, saved) == 1   # only the substantial half
+    assert "passthrough" not in split[0]
+    assert split[1]["passthrough"] is True
+
+
+def test_detected_lang_is_advisory_and_decides_nothing():
+    # The app reads it to SUGGEST passthrough; the pipeline must not act on it.
+    segs = [seg_for_passthrough(0, 0.0, 4.0), seg_for_passthrough(1, 4.0, 8.0)]
+    runs = [{"start": 0.0, "end": 4.0, "lang": "en"},
+            {"start": 4.0, "end": 8.0, "lang": "he"}]
+    segments.stamp_detected_lang(segs, runs)
+    assert [s["detected_lang"] for s in segs] == ["en", "he"]
+    assert not any(s["keep"] for s in segs)               # nothing auto-passed through
+
+
+def test_detected_lang_needs_most_of_the_segment_and_never_overwrites_a_span_s():
+    straddling = [seg_for_passthrough(0, 3.0, 7.0)]      # half en, half he
+    segments.stamp_detected_lang(straddling, [{"start": 0.0, "end": 5.0, "lang": "en"},
+                                              {"start": 5.0, "end": 9.0, "lang": "he"}])
+    assert "detected_lang" not in straddling[0]
+    from_span = [seg_for_passthrough(0, 0.0, 4.0, detected_lang="ar")]
+    segments.stamp_detected_lang(from_span, [{"start": 0.0, "end": 4.0, "lang": "he"}])
+    assert from_span[0]["detected_lang"] == "ar"
+    unlabelled = [seg_for_passthrough(0, 0.0, 4.0)]
+    segments.stamp_detected_lang(unlabelled, [{"start": 0.0, "end": 4.0, "lang": ""}])
+    assert "detected_lang" not in unlabelled[0]
+
+
+def test_passthrough_and_detected_lang_survive_a_manifest_save(tmp_path):
+    m = manifest.new({"input": "x"})
+    m["segments"] = [{"id": 0, "start": 0.0, "end": 1.0, "text": "hi",
+                      "passthrough": True, "detected_lang": "en"}]
+    manifest.save(tmp_path, m)
+    assert manifest.load(tmp_path)["segments"][0]["passthrough"] is True
+    assert manifest.load(tmp_path)["segments"][0]["detected_lang"] == "en"
+
+
+def test_a_stage_reset_never_undoes_the_user_s_override():
+    # Only the pipeline's own keep-flips (mt_failed, tts_failed) are re-decided.
+    m = manifest.new({"input": "x"})
+    m["segments"] = [{"id": 0, "start": 0.0, "end": 1.0, "keep": True,
+                      "keep_reason": "user", "passthrough": True,
+                      "text_en": "hi", "tts": {"clip": "a"}}]
+    manifest.reset_stage(m, "translate")
+    manifest.reset_stage(m, "tts")
+    assert m["segments"][0]["keep"] and m["segments"][0]["keep_reason"] == "user"
+    assert m["segments"][0]["passthrough"] is True
