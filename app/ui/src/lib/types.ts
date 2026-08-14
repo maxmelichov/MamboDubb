@@ -299,7 +299,32 @@ export type SetupCheck = {
   label: string;
   ok: boolean;
   detail: string;
+  /**
+   * The server has an argv for this one, so the row may offer a button. It is a
+   * server flag rather than a list in the UI on purpose: a hardcoded list here
+   * drifts from `install.INSTALLERS` there, and the first symptom is an Install
+   * button whose POST is a 400.
+   */
+  installable?: boolean;
 };
 
 /** `ok` is the whole checklist's verdict — false means the app is not usable. */
 export type SetupStatus = { ok: boolean; checks: SetupCheck[] };
+
+/**
+ * `GET|POST /api/setup/install` — the one install slot.
+ *
+ * Polled, not streamed: setup has no project and therefore no event stream, and
+ * a `brew install` is minutes long, so the last lines of output plus a 2 s poll
+ * is the entire progress design. `check` is a freshly probed `SetupCheck`, filled
+ * in when the process exits — the exit code is a claim about the package
+ * manager, not about this machine's PATH.
+ */
+export type SetupInstall = {
+  running: boolean;
+  id: string | null;
+  ok: boolean | null;
+  error: string | null;
+  tail: string[];
+  check: SetupCheck | null;
+};

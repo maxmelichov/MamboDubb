@@ -26,6 +26,8 @@ import type {
   ProjectSummary,
   Segment,
   SegmentPatch,
+  SetupCheck,
+  SetupInstall,
   SetupStatus,
   Stage,
   StudioEvent,
@@ -108,6 +110,10 @@ export const calls = {
   peaks: 0,
   retranslate: 0,
   resynthesize: 0,
+  // Setup's one-at-a-time slot is only observable as a count: a second click
+  // while an install runs must produce no second install, and a disabled button
+  // that still fires would look identical from the DOM.
+  install: 0,
   log: [] as string[],
 };
 (globalThis as { __DUBBING_FIXTURE_CALLS__?: typeof calls }).__DUBBING_FIXTURE_CALLS__ = calls;
@@ -179,15 +185,53 @@ export function health(): Promise<Health> {
 }
 
 /**
- * `GET /api/setup`, deliberately mixed: a machine with the tools and the big
- * models in place but no HF token and no Demucs weights. A checklist where
- * everything passes demos nothing, and the failure rows are where the copy has
- * to earn its keep — each one says what to do, not just that it is missing.
+ * `GET /api/setup`, deliberately mixed: a fresh machine with the big models
+ * already fetched but neither command-line tool, no HF token and no Demucs
+ * weights. A checklist where everything passes demos nothing, and the failure
+ * rows are where the copy has to earn its keep — each one says what to do, not
+ * just that it is missing.
+ *
+ * The two tool rows are the *installable* ones, which is the state the Install
+ * button only exists for: `ffmpeg` and `sox` are one `brew install` away, so the
+ * app offers to run it. Everything else below is missing in a way no button can
+ * fix — a gated token, a download the pipeline does for itself — and must
+ * therefore show no button at all.
  */
 export function setup(): Promise<SetupStatus> {
-  const checks = [
-    { id: "ffmpeg", label: "ffmpeg", ok: true, detail: "7.1.1 — /opt/homebrew/bin/ffmpeg" },
-    { id: "sox", label: "sox", ok: true, detail: "14.4.2 — /opt/homebrew/bin/sox" },
+  const checks = setupChecks();
+  return delay({ ok: checks.every((c) => c.ok), checks });
+}
+
+/** Which tools this fake machine has had installed during the session. */
+const installed = new Set<string>();
+
+const TOOL_ROWS: Record<string, { label: string; here: string; missing: string }> = {
+  ffmpeg: {
+    label: "ffmpeg",
+    here: "7.1.1 — /opt/homebrew/bin/ffmpeg",
+    missing:
+      "ffmpeg not on PATH — every stage shells out to it for audio and video. " +
+      "Install it with `brew install ffmpeg`.",
+  },
+  sox: {
+    label: "SoX",
+    here: "14.4.2 — /opt/homebrew/bin/sox",
+    missing:
+      "sox not on PATH — Qwen3-TTS text normalization needs it. " +
+      "Install it with `brew install sox`.",
+  },
+};
+
+function toolRow(id: string): SetupCheck {
+  const row = TOOL_ROWS[id];
+  const ok = installed.has(id);
+  return { id, label: row.label, ok, installable: true, detail: ok ? row.here : row.missing };
+}
+
+function setupChecks(): SetupCheck[] {
+  return [
+    toolRow("ffmpeg"),
+    toolRow("sox"),
     {
       id: "hf_token",
       label: "Hugging Face token",
@@ -228,8 +272,83 @@ export function setup(): Promise<SetupStatus> {
       ok: true,
       detail: "184 GB free — a 20-minute run writes about 4 GB under outputs/",
     },
-  ];
-  return delay({ ok: checks.every((c) => c.ok), checks });
+  ].map((row) => ({ installable: false, ...row }));
+}
+
+/**
+ * `POST|GET /api/setup/install`, compressed.
+ *
+ * The real thing is a `brew install` and minutes of output; this is the same
+ * contract at a speed a smoke test can watch — a handful of lines, a few poll
+ * cycles, then the check flips to Ready. It has to refuse the same two things
+ * the server refuses, or the button's disabled state and the page's error path
+ * are untested in the only mode that ever runs.
+ */
+const INSTALL_TICK_MS = 120;
+
+let installState: SetupInstall = {
+  running: false,
+  id: null,
+  ok: null,
+  error: null,
+  tail: [],
+  check: null,
+};
+
+export function startInstall(id: string): Promise<SetupInstall> {
+  calls.install += 1;
+  calls.log.push(`install:${id}`);
+  if (installState.running) {
+    return Promise.reject(
+      new Error(`an install is already running (${installState.id}); one at a time`),
+    );
+  }
+  if (!(id in TOOL_ROWS)) {
+    return Promise.reject(
+      new Error(
+        `'${id}' cannot be installed from the app. The only installs it runs are ` +
+          "`brew install ffmpeg`, `brew install sox`. Everything else is by hand — " +
+          "the command is in that check's detail line.",
+      ),
+    );
+  }
+  installState = {
+    running: true,
+    id,
+    ok: null,
+    error: null,
+    tail: [`$ brew install ${id}`],
+    check: null,
+  };
+  void runInstall(id);
+  return delay(structuredClone(installState));
+}
+
+export function installStatus(): Promise<SetupInstall> {
+  return delay(structuredClone(installState));
+}
+
+async function runInstall(id: string): Promise<void> {
+  for (const line of [
+    `==> Fetching ${id}`,
+    `==> Downloading https://ghcr.io/v2/homebrew/core/${id}/blobs/sha256:…`,
+    `==> Pouring ${id}.arm64_sequoia.bottle.tar.gz`,
+  ]) {
+    await sleep(INSTALL_TICK_MS);
+    installState.tail = [...installState.tail, line];
+  }
+  await sleep(INSTALL_TICK_MS);
+  installed.add(id);
+  // The server re-probes rather than trusting the exit code, and hands the
+  // fresh row back with the status; the fixture has to do the same or the
+  // page's "redraw this row" path never runs here.
+  installState = {
+    ...installState,
+    running: false,
+    ok: true,
+    tail: [...installState.tail, `🍺  /opt/homebrew/Cellar/${id}: 1 file`],
+    check: toolRow(id),
+  };
 }
 
 /**

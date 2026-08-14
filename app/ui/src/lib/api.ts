@@ -22,6 +22,7 @@ import type {
   Segment,
   SegmentMedia,
   SegmentPatch,
+  SetupInstall,
   SetupStatus,
   StudioEvent,
 } from "./types";
@@ -189,6 +190,22 @@ export const api = {
   setup(): Promise<SetupStatus> {
     if (USE_FIXTURES) return fixtures.setup();
     return request<SetupStatus>("/api/setup");
+  },
+
+  /**
+   * Install one missing tool. The body is an *id* from the checklist, never a
+   * command — the server maps it to a hardcoded argv and 400s anything else, so
+   * the worst a bad call can do is fail.
+   */
+  startInstall(id: string): Promise<SetupInstall> {
+    if (USE_FIXTURES) return fixtures.startInstall(id);
+    return request<SetupInstall>("/api/setup/install", json({ id }));
+  },
+
+  /** Where that install got to. Polled; see `SetupInstall`. */
+  installStatus(): Promise<SetupInstall> {
+    if (USE_FIXTURES) return fixtures.installStatus();
+    return request<SetupInstall>("/api/setup/install");
   },
 
   // The server speaks in envelopes ({"projects": [...]}, {"segment": {...}});

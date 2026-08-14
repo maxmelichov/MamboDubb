@@ -26,7 +26,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fastapi.testclient import TestClient  # noqa: E402
 
 from dubbing import manifest  # noqa: E402
-from dubbing_app import events, media, ops, runner as runner_mod, server  # noqa: E402
+from dubbing_app import events, install as install_mod, media, ops  # noqa: E402
+from dubbing_app import runner as runner_mod, server  # noqa: E402
 from dubbing_app import app as app_mod  # noqa: E402
 from dubbing_app.app import create_app  # noqa: E402
 from dubbing_app.jobs import JobQueue  # noqa: E402
@@ -1566,6 +1567,148 @@ def test_setup_model_check_reports_size(tmp_path):
     missing = setup_mod.model("model.y", "Y", tmp_path / "gone", note="downloads on use")
     assert missing["ok"] is False and missing["bytes"] == 0
     assert "downloads on use" in missing["detail"]
+
+
+# ---------------------------------------------------------------------------
+# installing a missing tool from the app
+# ---------------------------------------------------------------------------
+#
+# Not one of these runs a package manager. The id → argv table is the only
+# executable thing in the feature, so every test here swaps it for a shell stub
+# and asserts on the plumbing around it: what is refused, what is serialised,
+# and what the server believes once the process has exited.
+
+STUB = ("/bin/sh", "-c", "echo installing; exit 0")
+
+
+@pytest.fixture()
+def stub_installers(monkeypatch):
+    """The app's own installer, pointed at a shell stub instead of `brew`."""
+    def use(argv=STUB):
+        monkeypatch.setattr(install_mod, "INSTALLERS", {"ffmpeg": tuple(argv)})
+    return use
+
+
+def test_setup_marks_the_rows_the_app_can_install(client):
+    """The UI must not carry its own copy of the whitelist: a button on a row
+    whose POST is a 400 is worse than no button."""
+    checks = client.get("/api/setup").json()["checks"]
+    installable = {c["id"] for c in checks if c["installable"]}
+    assert installable == set(install_mod.INSTALLERS)
+    assert installable == {"ffmpeg", "sox"}
+    assert all(isinstance(c["installable"], bool) for c in checks)
+
+
+def test_install_refuses_an_id_it_has_no_recipe_for(client):
+    """A model is gigabytes and a Hugging Face login; the refusal has to hand
+    the user the command instead of pretending there is a button for it."""
+    for bad in ("model.translate", "hf_token", "disk", "rm -rf /"):
+        r = client.post("/api/setup/install", json={"id": bad})
+        assert r.status_code == 400, bad
+        message = r.json()["error"]["message"]
+        assert r.json()["error"]["code"] == "invalid_request"
+        assert "brew install ffmpeg" in message and "brew install sox" in message
+        assert "detail" in message                      # …where the real command is
+
+
+def test_install_body_is_strict(client):
+    """Nothing but `id` is read, so nothing but `id` is accepted — a hopeful
+    `argv` must not be quietly ignored, it must be a 400."""
+    r = client.post("/api/setup/install", json={"id": "ffmpeg", "argv": ["/bin/sh"]})
+    assert r.status_code == 400 and r.json()["error"]["code"] == "invalid_request"
+
+
+def test_install_says_where_to_get_homebrew(client, monkeypatch):
+    real_which = install_mod.shutil.which
+    monkeypatch.setattr(install_mod.shutil, "which",
+                        lambda exe, *a, **k: None if exe == "brew" else real_which(exe, *a, **k))
+    r = client.post("/api/setup/install", json={"id": "ffmpeg"})
+    assert r.status_code == 400
+    message = r.json()["error"]["message"]
+    assert "https://brew.sh" in message and "ffmpeg" in message
+
+
+def test_install_is_one_at_a_time(client, stub_installers):
+    stub_installers(("/bin/sh", "-c", "sleep 2"))
+    first = client.post("/api/setup/install", json={"id": "ffmpeg"})
+    assert first.status_code == 202 and first.json()["running"] is True
+    second = client.post("/api/setup/install", json={"id": "ffmpeg"})
+    assert second.status_code == 409
+    assert second.json()["error"]["code"] == "busy"
+    assert "already running" in second.json()["error"]["message"]
+    assert client.get("/api/setup/install").json()["running"] is True
+    assert client.app.state.installer.wait(10.0)
+
+
+def test_install_status_carries_the_output_tail(client, stub_installers):
+    stub_installers(("/bin/sh", "-c", "echo fetching bottle; echo done"))
+    client.post("/api/setup/install", json={"id": "ffmpeg"})
+    assert client.app.state.installer.wait(10.0)
+    body = client.get("/api/setup/install").json()
+    assert body["running"] is False and body["id"] == "ffmpeg"
+    assert body["tail"][0].startswith("$ /bin/sh")       # the command, echoed once
+    assert "fetching bottle" in body["tail"] and "done" in body["tail"]
+
+
+def test_install_reprobes_the_check_when_the_process_exits():
+    """`brew` exiting 0 is a claim about `brew`, not about this machine's PATH,
+    so the row the UI redraws is a fresh probe and never the exit code."""
+    probed: list[str] = []
+
+    def probe(id_):
+        probed.append(id_)
+        return {"id": id_, "label": "ffmpeg", "ok": True, "detail": "/opt/homebrew/bin/ffmpeg",
+                "required": True}
+
+    inst = install_mod.Installer(probe, recipes={"ffmpeg": ("/bin/sh", "-c", "echo hi")})
+    inst.start("ffmpeg")
+    assert inst.wait(10.0)
+    status = inst.status()
+    assert probed == ["ffmpeg"]
+    assert status["running"] is False and status["ok"] is True and status["error"] is None
+    assert status["check"]["ok"] is True and status["check"]["detail"].endswith("ffmpeg")
+    assert "hi" in status["tail"]
+
+
+def test_probe_returns_the_same_row_shape_the_report_does(client):
+    """The status response's `check` is dropped straight into the UI's list, so
+    a row one key short is a row that renders differently from its neighbours."""
+    from dubbing_app import setup as setup_mod
+
+    row = next(c for c in client.get("/api/setup").json()["checks"] if c["id"] == "sox")
+    probed = setup_mod.probe("sox")
+    assert set(probed) == set(row) and probed["installable"] is True
+    assert setup_mod.probe("model.translate") is None and setup_mod.probe("nope") is None
+
+
+def test_install_that_exits_nonzero_is_a_failure_with_its_output():
+    inst = install_mod.Installer(lambda id_: None,
+                                 recipes={"ffmpeg": ("/bin/sh", "-c", "echo boom >&2; exit 3")})
+    inst.start("ffmpeg")
+    assert inst.wait(10.0)
+    status = inst.status()
+    assert status["ok"] is False and "exited 3" in status["error"]
+    assert "boom" in status["tail"]                      # stderr is folded into the tail
+    assert status["check"] is None
+
+
+def test_install_that_succeeds_but_changes_nothing_is_not_success():
+    """The bottle landed somewhere this process cannot see. Reporting Ready on
+    the strength of the exit code would send the user back to a stage that still
+    dies halfway."""
+    inst = install_mod.Installer(lambda id_: {"id": id_, "ok": False, "label": "ffmpeg",
+                                              "detail": "ffmpeg not on PATH"},
+                                 recipes={"ffmpeg": ("/bin/sh", "-c", "true")})
+    inst.start("ffmpeg")
+    assert inst.wait(10.0)
+    status = inst.status()
+    assert status["ok"] is False and "still not there" in status["error"]
+
+
+def test_install_status_is_empty_before_anything_runs(client):
+    body = client.get("/api/setup/install").json()
+    assert body == {"running": False, "id": None, "ok": None, "error": None,
+                    "tail": [], "check": None, "started": None, "finished": None}
 
 
 # ---------------------------------------------------------------------------

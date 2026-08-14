@@ -248,10 +248,58 @@ check("failing checks explain themselves", /HF_TOKEN/.test(setup) && /htdemucs|D
 // them literally puts punctuation in the middle of a command to be copied.
 check("commands render as code, not backticks", !setup.includes("`"));
 check("model sizes are shown", /GB/.test(setup));
-check("a mixed result is counted", /2 of 8 need attention/.test(setup));
+check("a mixed result is counted", /4 of 8 need attention/.test(setup));
 check("no continue while something is missing", ![...document.querySelectorAll("button")].some((b) =>
   b.textContent.includes("Continue to projects"),
 ));
+
+/*
+ * Install from the app.
+ *
+ * The button exists for one state and no other: a row the *server* says it has
+ * a command for (`installable`), that is currently missing. A model row is
+ * missing and has no button, which is the assertion that matters most — the
+ * alternative is a button that posts an id the server refuses, and the user
+ * finds out by reading a 400.
+ */
+const rowOf = (id) => document.querySelector(`[data-check="${id}"]`);
+const installButton = (id) =>
+  [...(rowOf(id)?.querySelectorAll("button") ?? [])].find((b) => /Install/.test(b.textContent));
+
+check("a missing installable row offers to install itself",
+  Boolean(installButton("ffmpeg")) && Boolean(installButton("sox")));
+check("a row nothing can install offers no button",
+  !installButton("hf_token") && !installButton("model_stems") && !installButton("model_translate"));
+check("a passing row offers no button", !installButton("disk"));
+
+const fixtureCalls = globalThis.__DUBBING_FIXTURE_CALLS__;
+const before = fixtureCalls.install;
+installButton("ffmpeg").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+await new Promise((resolve) => setTimeout(resolve, 150));
+check("clicking starts exactly one install", fixtureCalls.install === before + 1);
+check("the row it started says so", /Installing/.test(rowOf("ffmpeg").textContent));
+// The button is replaced by the progress line, not doubled up beside it, and
+// the line carries the installer's own last words — the only honest progress a
+// poll can show for something that takes minutes.
+check("…with its button swapped for the spinner", !installButton("ffmpeg"));
+await new Promise((resolve) => setTimeout(resolve, 250));
+check("…and the last line of output", /Fetching ffmpeg|Downloading|Pouring/.test(
+  rowOf("ffmpeg").textContent,
+));
+// One at a time: the server 409s a second install either way, but the screen
+// has to say so before the click, not after.
+check("the other install button is disabled while one runs", installButton("sox").disabled === true);
+installButton("sox").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+check("…and a click on it starts nothing", fixtureCalls.install === before + 1);
+
+// The simulated install ends, the server re-probes, and the page re-runs the
+// whole checklist — one row turning green is not the same claim as the machine
+// being one step readier.
+await new Promise((resolve) => setTimeout(resolve, 1400));
+check("the installed row turns Ready", /Ready/.test(rowOf("ffmpeg").textContent));
+check("…and drops its Install button", !installButton("ffmpeg"));
+check("…and the count comes down", /3 of 8 need attention/.test(root.textContent));
+check("the other row can be installed again", installButton("sox").disabled === false);
 
 const recheck = [...document.querySelectorAll("button")].find((b) =>
   b.textContent.includes("Re-check"),

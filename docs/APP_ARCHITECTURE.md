@@ -244,6 +244,8 @@ JSON in, JSON out. Errors are uniform, after MamboRambo's `write_error`:
 |---|---|---|
 | GET | `/health` | `{"status":"ok","version":...,"commit":"a1b2c3d"|null,"outputs":...,"busy":...,"queued":...}` |
 | GET | `/api/setup` | first-run environment report (see **Desktop packaging**) |
+| POST | `/api/setup/install` | `{id}` → run the hardcoded argv for that check (`ffmpeg`, `sox`); 400 otherwise, 409 while one runs |
+| GET | `/api/setup/install` | `{running, id, ok, error, tail:[…], check}` — poll it; `check` is a fresh probe once the process exits |
 | GET | `/api/projects` | list run dirs: name, title, langs, duration, stage state, mtime |
 | POST | `/api/projects` | `{source, src_lang, tgt_lang, duration?, name?, context?, genre?, register?}` → create dir, enqueue a full run |
 | GET | `/api/projects/{name}` | manifest + report + derived stage status |
@@ -322,7 +324,8 @@ dies halfway and an absent model directory silently becomes a multi-gigabyte dow
 {"ok": true,
  "checks": [{"id": "model.translate", "label": "Translation model (Gemma 4 12B)",
              "ok": true, "detail": "9.7 GB in /…/models/gemma-4-12B-it-6bit",
-             "required": true, "path": "/…", "bytes": 10424182784}]}
+             "required": true, "installable": false,
+             "path": "/…", "bytes": 10424182784}]}
 ```
 
 * Ids: `ffmpeg`, `sox`, `hf_token`, `model.translate`, `model.tts.<key>` (one per
@@ -337,6 +340,13 @@ dies halfway and an absent model directory silently becomes a multi-gigabyte dow
   (`HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN`), then a `HF_TOKEN=` line in `.env`.
 * **No model is loaded and no import is heavy**: `shutil.which`, `os.environ`, `stat`,
   `shutil.disk_usage`. Milliseconds, safe to poll, and it must stay that way.
+* **`installable` is the server's answer to "can the app fix this?"** — true for exactly
+  the keys of `install.INSTALLERS` (`ffmpeg`, `sox` → `brew install …`), so the UI puts an
+  Install button on a failing row without keeping its own copy of the whitelist. The id maps
+  to a **hardcoded argv**; nothing from the request body is ever executed, and a model id is
+  refused with a 400 that points at the download command already in its `detail`. One
+  install at a time, tracked in-process — not in `JobQueue`, which is for work that loads
+  models and would make a `brew` wait behind a render.
 * **Paths come from the pipeline's own constants** (`translate.MODEL_PATH`,
   `tts.TTS_MODELS`, `transcript.WHISPER_MODEL` / `SRC_ASR_MODEL` / `EN_ASR_MODEL` /
   `TARGET_ASR_MODEL` / `LID_MODEL`), never restated. A hardcoded copy would drift and then
