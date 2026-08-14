@@ -81,8 +81,9 @@ def test_mark_keep_ru_speaker_rule_uses_the_target_script():
     segs = [
         {"id": 0, "start": 0, "end": 5, "speaker": "A", "text": "Привет всем добрый вечер"},
         {"id": 1, "start": 5, "end": 10, "speaker": "A", "text": "Ещё немного по-русски"},
-        # Phonetically transcribed Russian: only the speaker rule can catch it.
-        {"id": 2, "start": 10, "end": 15, "speaker": "A", "text": "עוד קצת עברית"},
+        # Transliterated Russian: not the target script, not the source script
+        # either, so only the speaker rule can catch it.
+        {"id": 2, "start": 10, "end": 15, "speaker": "A", "text": "Nu ladno poyekhali"},
         {"id": 3, "start": 15, "end": 20, "speaker": "B", "text": "שלום לכולם"},
     ]
     segments.mark_keep(segs, None, "ru")

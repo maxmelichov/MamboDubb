@@ -998,14 +998,15 @@ def test_per_segment_evidence_outvotes_the_speaker_prior():
     # one of their segments is kept — including the ones where they genuinely speak
     # the source language, which then never get dubbed. Per-segment evidence, when
     # it is strong, must be able to outvote the prior.
+    # Segments 2 and 3 are code-switched: neither script holds a majority of the
+    # letters, so the text witness has nothing to say about them and the audio
+    # witness is the only thing that can move them off the prior.
     def rows():
         return [
             {"id": 0, "start": 0, "end": 6, "speaker": "A", "text": "This is English speech"},
             {"id": 1, "start": 6, "end": 12, "speaker": "A", "text": "and more English here"},
-            # Phonetically transcribed English: only the speaker rule catches it.
-            {"id": 2, "start": 12, "end": 15, "speaker": "A", "text": "עוד קצת עברית"},
-            # ...and here the same speaker really does speak Hebrew.
-            {"id": 3, "start": 15, "end": 18, "speaker": "A", "text": "שלום לכולם"},
+            {"id": 2, "start": 12, "end": 15, "speaker": "A", "text": "OK אז"},
+            {"id": 3, "start": 15, "end": 18, "speaker": "A", "text": "בסדר fine"},
         ]
 
     # No witness (no LID model): the prior stands, exactly as before.
@@ -1026,6 +1027,53 @@ def test_per_segment_evidence_outvotes_the_speaker_prior():
     segs = rows()
     segments.mark_keep(segs, seg_lang=lambda s: ("he", 0.70) if s["id"] == 3 else None)
     assert segs[3]["keep_reason"] == "speaker_en"
+
+
+def test_source_script_text_outvotes_the_speaker_prior():
+    # The bug: a speaker who alternates between already-dubbed target passages and
+    # untranslated source ones crosses SPEAKER_EN_RATIO, and every one of their
+    # segments then rode `speaker_en` — including plainly source-language lines,
+    # which were never translated or dubbed. The audio witness could not save them:
+    # on short clips it returns nothing, or a low-probability wrong label. The
+    # segment's own text is the witness that is always there.
+    def rows():
+        return [
+            {"id": 0, "start": 0, "end": 6, "speaker": "A", "text": "This is English speech"},
+            {"id": 1, "start": 6, "end": 12, "speaker": "A", "text": "and more English here"},
+            # The same speaker, now genuinely speaking the source language.
+            {"id": 2, "start": 12, "end": 15, "speaker": "A",
+             "text": "זה וראות את גר רבה יושבים"},
+            # A code-switched line: one source word inside a target sentence. Its
+            # letters are still mostly target, so it is not evidence of anything.
+            {"id": 3, "start": 15, "end": 18, "speaker": "A", "text": "we visited שוק yesterday"},
+        ]
+
+    segs = rows()
+    segments.mark_keep(segs)
+    assert segs[0]["keep_reason"] == "latin" and segs[1]["keep_reason"] == "latin"
+    # Source-script text: dubbed, whatever the speaker's prior says.
+    assert (segs[2]["keep"], segs[2]["keep_reason"]) == (False, None)
+    # A majority is required, not a presence: the mixed line stays kept.
+    assert segs[3]["keep"] is True
+
+    # The witness the classifier gives on these clips in the wild — absent, or a
+    # confident-sounding nonsense label — still leaves the text witness in charge.
+    for verdict in (None, ("la", 0.31), ("mi", 0.92)):
+        segs = rows()
+        segments.mark_keep(segs, seg_lang=lambda s, v=verdict: v)
+        assert segs[2]["keep_reason"] is None
+        assert segs[3]["keep"] is True
+
+    # Same-script pair (en→es): script cannot tell the two languages apart, so it
+    # is void as evidence both ways — no speaker is a target speaker there and no
+    # segment is flipped by its text.
+    same = [
+        {"id": 0, "start": 0, "end": 6, "speaker": "A", "text": "This is English speech"},
+        {"id": 1, "start": 6, "end": 12, "speaker": "A", "text": "and more English here"},
+        {"id": 2, "start": 12, "end": 15, "speaker": "A", "text": "Esto ya esta en espanol"},
+    ]
+    segments.mark_keep(same, None, "es", "en")
+    assert [s["keep_reason"] for s in same] == [None, None, None]
 
 
 def test_a_foreign_span_is_kept_even_with_no_text():
@@ -1107,8 +1155,10 @@ def test_keep_rules():
     segs = [
         {"id": 0, "start": 0, "end": 5, "speaker": "A", "text": "This is English speech"},
         {"id": 1, "start": 5, "end": 10, "speaker": "A", "text": "and more English here"},
-        # Phonetically transcribed English: only the speaker rule can catch it.
-        {"id": 2, "start": 10, "end": 15, "speaker": "A", "text": "עוד קצת עברית"},
+        # Code-switched, no script in the majority: only the speaker rule can call
+        # this one (source-script text of the same speaker gets dubbed instead —
+        # see test_source_script_text_outvotes_the_speaker_prior).
+        {"id": 2, "start": 10, "end": 15, "speaker": "A", "text": "OK אז"},
         {"id": 3, "start": 15, "end": 20, "speaker": "B", "text": "שלום לכולם"},
     ]
     segments.mark_keep(segs)

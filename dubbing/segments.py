@@ -906,8 +906,9 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
 
     Three content-free rules: the segment came out of a detected non-source-language
     span, its text is already in the target script, or its speaker is predominantly a
-    target-language speaker (auto-captions often render their speech phonetically in
-    the source script, which the per-segment test alone would miss).
+    target-language speaker and nothing about this one segment says otherwise (the
+    speaker prior catches the lines the per-segment script test cannot judge — text
+    with no script majority either way, and every segment of a same-script pair).
 
     The span rule has to be structural. A span in a language no ASR here reads carries
     no text at all, and judging it by script would file it as transcript noise and drop
@@ -924,12 +925,21 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
 
     The speaker rule is a PRIOR, not a verdict. It is measured over a whole speaker,
     so it also keeps the genuine source-language lines of a mostly-target speaker,
-    which then never get dubbed at all ("why isn't this dubbed?"). `seg_lang(seg)`
-    returns the language classifier's verdict for that one segment as
-    `(lang, prob)` (or None when it has none): a confident "this segment is the
-    source language" outvotes the prior and the segment is dubbed. The bar is
-    deliberately high — the prior was measured, and the classifier's documented
-    mislabels sit in the 0.34-0.60 band — so an unsure verdict changes nothing.
+    which then never get dubbed at all ("why isn't this dubbed?"). Two per-segment
+    witnesses can outvote it, and either one is enough:
+
+    - the segment's own TEXT is dominantly in the source script (cross-script pairs
+      only). A speaker who alternates languages transcribes as source script exactly
+      where they spoke the source language, and that is the one witness always
+      present — it needs no model and does not depend on clip length.
+    - `seg_lang(seg)` returns the language classifier's verdict for that one segment
+      as `(lang, prob)` (or None when it has none) and it names the source language
+      confidently. The bar is deliberately high — the classifier's documented
+      mislabels sit in the 0.34-0.60 band — so an unsure verdict changes nothing.
+
+    The text witness is what the audio one cannot be: short source-language clips
+    routinely come back from the classifier as None or as a low-probability wrong
+    label, so on its own it left whole untranslated passages kept as `speaker_en`.
     """
     def letters(text: str) -> int:
         return sum(1 for ch in (text or "") if ch.isalpha())
@@ -961,7 +971,25 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
     }
 
     def says_source(seg: dict[str, Any]) -> bool:
-        """Per-segment evidence strong enough to outvote the speaker-level prior."""
+        """Per-segment evidence strong enough to outvote the speaker-level prior.
+
+        Two independent witnesses, OR'd. The TEXT witness: the segment's own
+        transcript is written dominantly in the SOURCE script, which for a
+        cross-script pair says this line was not spoken in the target language.
+        The AUDIO witness: the language classifier confidently names the source
+        language over that span. Either alone overturns the prior — the audio
+        witness goes missing or guesses nonsense on short clips, which is how
+        whole passages of genuine source speech used to ride a speaker's prior
+        through the pipeline undubbed.
+
+        "Dominantly" is the same majority-of-letters test the rest of this
+        function measures script with, so a mostly-target line with one
+        source-script word embedded in it is not evidence and does not flip.
+        """
+        # Text witness. Void for a same-script pair, where the two languages are
+        # written identically and script says nothing about which one was spoken.
+        if cross and script.is_script(seg["text"], src):
+            return True
         if seg_lang is None:
             return False
         verdict = seg_lang(seg)

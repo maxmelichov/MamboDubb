@@ -26,7 +26,7 @@ STAGE_TAGS = {
     # alignment+passthrough and the spoken_target/veto work), so the merged tag
     # moves past every claim rather than picking a side.
     "transcript": "transcript/v40",
-    "segments": "segments/v36",
+    "segments": "segments/v37",
     "translate": "translate/v33",
     "tts": "tts/v14",
     "timeline": "timeline/v12",
