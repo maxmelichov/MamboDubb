@@ -233,6 +233,16 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
         source = (body.source or "").strip()
         if not source:
             raise invalid("source is required")
+        # Hebrew needs two local models the other targets do not (the Qwen3-TTS
+        # Hebrew LoRA and its G2P). Said here, not at the tts stage: a run that
+        # found out there would already have paid for stems, ASR and diarization.
+        from dubbing import hebrew
+
+        if hebrew.is_hebrew(body.tgt_lang):
+            gaps = hebrew.missing()
+            if gaps:
+                raise invalid("Hebrew is not available as a target yet: "
+                              + "; ".join(g.replace("\n    ", " — ") for g in gaps))
         from .projects import slugify
 
         name = projects.unique_name(body.name or slugify(source))

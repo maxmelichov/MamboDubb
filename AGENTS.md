@@ -98,6 +98,45 @@ cannot un-keep a segment with no text (nothing to speak — "never silent" wins)
 and re-running the segments stage re-attaches overrides by **time**, not by id,
 since ids are renumbered (`segments.carry_passthrough`).
 
+## Language pairs
+
+The pair is `--src` / `--tgt`, and neither half is assumed about the other.
+
+**Hebrew as a target** (`dubbing/hebrew.py`). Qwen3-TTS has ten languages and
+Hebrew is not one of them. A LoRA over the 1.7B Base checkpoint's `talker` adds
+it *without touching a base weight*: attached, the model speaks Hebrew; disabled
+(`talker.disable_adapter()`), the forward pass is the unmodified base. So one
+loaded checkpoint serves both, `_Synth` toggles per call, and `merge_and_unload`
+is never called — merging would bake the Hebrew deltas in and destroy that. Two
+consequences to keep true:
+
+- **Hebrew is synthesized from stressed IPA, never from Hebrew script.** The
+  adapter was trained that way (Hebrew orthography leaves the vowels out), so
+  `tts.synthesis_text` runs the line through ReNikud Plus and hands the model
+  `ʁˈeɡa` where the record says רגע. The IPA is a synthesis input and nothing
+  else: what is stored, subtitled and ASR-verified is always the orthography,
+  and `SEGMENT_KEYS` has no field for it. It *is* in the clip cache key, next to
+  the adapter tag — a changed G2P must re-synthesize, not replay the old reading.
+- **Only the 1.7B checkpoint fits the adapter** (it carries that talker's output
+  heads). The CLI refuses `--tts-model 0.6b` with `--tgt he`, and a per-segment
+  `tts_opts.model` cannot override it.
+
+Hebrew clips verify with the ivrit-ai fine-tune, not the multilingual base
+model — the base model misreads Hebrew badly enough to fail good clips, and
+under "never silent" a failed verification throws a correct dub away.
+
+**Same-language pairs** (`--src he --tgt he`, `en`→`en`, …) are dubs, not no-ops:
+every speech segment is re-voiced in the cloned voice. `translate.run` decides
+identity *per segment* — `seg["lang"] or src` against the target — so a pure
+same-language run loads no translator at all, while a third-language span inside
+it still gets a real translation hop. Nothing is kept for "already the target
+language": `mark_keep` voids its script and speaker evidence when the pair shares
+a script, and only the pair-independent keeps remain (no text, third language,
+the user's passthrough). Shortening is off for these runs — rewriting a
+speaker's own words in their own language is a rewrite, not a translation — so
+the timeline absorbs overhang with speed-up and drift, which `place` still keeps
+non-overlapping.
+
 ## Working on this
 
 - Fix causes in `dubbing/`, then re-run. Do not hand-edit anything under `outputs/`.

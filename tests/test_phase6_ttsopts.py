@@ -333,7 +333,8 @@ class _FakeSynth:
     def __init__(self):
         self.calls = []
 
-    def generate(self, speak, ref, out, *, seed, greedy, opts=DEFAULT):
+    def generate(self, speak, ref, out, *, seed, greedy, opts=DEFAULT,
+                 synth=None, lang=None):
         self.calls.append({"speak": speak, "ref": ref, "seed": seed,
                            "greedy": greedy, "opts": opts})
         out.parent.mkdir(parents=True, exist_ok=True)

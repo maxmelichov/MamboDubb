@@ -245,12 +245,19 @@ def full_run(workdir: Path, source: dict[str, Any], *,
 
 
 def full_run_argv(workdir: Path, source: dict[str, Any]) -> list[str]:
+    from dubbing import hebrew
+
     opts = _opts({"source": source})
+    tgt = source.get("tgt_lang") or "en"
+    # The Hebrew LoRA fits only the 1.7B talker, and the CLI refuses the other
+    # combination. A project whose checkpoint was chosen before its target reaches
+    # here; correcting it beats failing a run over a setting the UI never linked.
+    tts_model = hebrew.ADAPTER_MODEL if hebrew.is_hebrew(tgt) else opts["tts_model"]
     argv = [str(source["input"]), "-o", str(workdir),
             "--src", source.get("src_lang") or "he",
-            "--tgt", source.get("tgt_lang") or "en",
+            "--tgt", tgt,
             "--register", opts["register"], "--genre", opts["genre"],
-            "--tts-model", opts["tts_model"], "--transcript", opts["transcript"]]
+            "--tts-model", tts_model, "--transcript", opts["transcript"]]
     if source.get("duration_limit"):
         argv += ["--duration", str(source["duration_limit"])]
     if source.get("context"):

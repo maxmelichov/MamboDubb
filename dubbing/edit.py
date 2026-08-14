@@ -451,11 +451,18 @@ def _derived(seg: dict[str, Any], *, start: float, end: float, text: str) -> dic
 # --------------------------------------------------------------- model work
 
 def _langs(m: dict[str, Any], seg: dict[str, Any]) -> tuple[str, str]:
-    """This segment's (source, target) — per-segment override, then the run's."""
+    """This segment's (source, target) — per-segment override, then the run's.
+
+    Normalised through `cli.normalize_lang`, so "iw" and "he" are one language
+    here as they are everywhere else — the pair decides whether this segment needs
+    a translation at all (`translate.same_language`).
+    """
+    from . import cli
+
     src = (m.get("source") or {})
     source = seg.get("src_lang") or seg.get("lang") or src.get("src_lang") or "he"
     target = seg.get("tgt_lang") or src.get("tgt_lang") or "en"
-    return source.lower(), target.lower()
+    return cli.normalize_lang(source), cli.normalize_lang(target)
 
 
 def _established(m: dict[str, Any], target: str):
@@ -519,6 +526,23 @@ def retranslate(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
         segs = [s for s in segs if not manifest.is_locked(s, "text_en")]
     context = (m.get("source") or {}).get("context") or ""
     out: dict[str, str] = {}
+    # Same-language segments need no model: the line is already in the target
+    # language, so "re-translate" means restoring it verbatim (see `translate.run`).
+    # Filtered before the load, so a purely same-language redo never pays for Gemma.
+    same: list[dict[str, Any]] = []
+    todo: list[dict[str, Any]] = []
+    for seg in segs:
+        (same if translate.same_language(*_langs(m, seg)) else todo).append(seg)
+    for seg in same:
+        _unlock(seg, "text_en")
+        invalidate(m, seg["uid"], stages={"translate"})
+        seg["text_en"] = translate._finalize_numbers(
+            (seg.get("text") or "").strip(), _langs(m, seg)[1])
+        out[seg["uid"]] = seg["text_en"]
+    segs = todo
+    if not segs:
+        _progress(progress, 1.0, f"translated {len(out)} segment(s)")
+        return out
     _progress(progress, 0.0, f"loading translator for {len(segs)} segment(s)")
     processor, model, device = translate.load()
     try:
@@ -728,8 +752,10 @@ def _args(m: dict[str, Any], **overrides: Any):
 
     src = m.get("source") or {}
     args = cli.parse_args([str(src.get("input") or "input")])
-    args.src = src.get("src_lang") or args.src
-    args.tgt = src.get("tgt_lang") or args.tgt
+    # Normalised exactly as `cli.main` does, so a manifest carrying the legacy
+    # spelling ("iw") is the same pair here that it is on the headless path.
+    args.src = cli.normalize_lang(src.get("src_lang") or args.src)
+    args.tgt = cli.normalize_lang(src.get("tgt_lang") or args.tgt)
     args.duration = src.get("duration_limit")
     args.context = src.get("context")
     for key in ("register", "genre", "transcript", "tts_model", "dub_foreign", "device"):

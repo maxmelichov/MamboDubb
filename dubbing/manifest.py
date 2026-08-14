@@ -27,8 +27,12 @@ STAGE_TAGS = {
     # moves past every claim rather than picking a side.
     "transcript": "transcript/v40",
     "segments": "segments/v37",
-    "translate": "translate/v33",
-    "tts": "tts/v14",
+    # v34: a same-language pair (he→he, en→en) translates by identity — the target
+    # line is the source line and no translator loads.
+    "translate": "translate/v34",
+    # v15: Hebrew targets synthesize from stressed IPA through the Qwen3-TTS Hebrew
+    # LoRA, and every clip's cache key now carries the adapter and that IPA.
+    "tts": "tts/v15",
     "timeline": "timeline/v12",
     "mix": "mix/v8",
     "report": "report/v1",

@@ -24,6 +24,16 @@ dependencies = [
     "qwen-tts",
     "huggingface-hub>=0.26.0",
     "hf>=0.0.1",
+    # Hebrew as a dub target (dubbing/hebrew.py). `peft` attaches the Hebrew LoRA to
+    # the Qwen3-TTS talker and — just as importantly — switches it off again for the
+    # base checkpoint's own ten languages; the adapter is never merged. It asks for
+    # `transformers` unpinned, so the 4.57.3 override still holds.
+    "peft>=0.19.1",
+    # ReNikud Plus: Hebrew orthography → stressed IPA, which is the only text the
+    # adapter was trained on. Python 3.12+ only (the project range starts at 3.11),
+    # so it is markered rather than dropping 3.11 for everything else — without it
+    # `dubbing.hebrew.missing()` says so and every other target is unaffected.
+    "renikud-plus>=0.3.0 ; python_version >= '3.12'",
     # Gemma 4 (model_type gemma4_unified) is only supported after the June 2026 fix,
     # which is past the last mlx-lm release — hence the git pin in [tool.uv.sources].
     # macOS only: mlx has no Linux wheels; on Linux translation runs in the isolated
