@@ -356,6 +356,20 @@ def test_set_text_needs_something_and_rejects_empty():
         edit.set_text(m, uid, text_en="   ")
 
 
+def test_set_text_with_the_same_value_is_a_no_op():
+    # Clicking into a line and clicking out again is not an edit: the clip
+    # stays, no lock is stamped, nothing queues a resynthesis.
+    m = two_segs()
+    uid = m["segments"][0]["uid"]
+    edit.set_text(m, uid, text_en="  one two  ")   # equals the stored line
+    s = m["segments"][0]
+    assert s["tts"] == {"clip": "clips/a.wav", "dur": 1.8}
+    assert "place" in s
+    assert not manifest.is_locked(s, "text_en")
+    edit.set_text(m, uid, text="aa bb")            # transcription, same story
+    assert "text_en" in s and not manifest.is_locked(s, "text")
+
+
 def test_set_keep_locks_so_mark_keep_cannot_re_decide_it():
     m = two_segs()
     uid = m["segments"][0]["uid"]

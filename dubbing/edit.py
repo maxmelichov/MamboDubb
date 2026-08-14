@@ -158,6 +158,15 @@ def set_text(m: dict[str, Any], uid: str, *, text: str | None = None,
     seg = _require(m, uid)
     if text is None and text_en is None:
         raise EditError("set_text needs text= and/or text_en=")
+    # A committed value identical to what is stored is not an edit. Without this,
+    # an editor that lets the user click into a line and click out again would
+    # invalidate the clip, stamp a lock, and queue a resynthesis — for nothing.
+    if text is not None and text.strip() == seg.get("text"):
+        text = None
+    if text_en is not None and text_en.strip() == seg.get("text_en"):
+        text_en = None
+    if text is None and text_en is None:
+        return seg
     if text is not None:
         if not text.strip():
             raise EditError("text cannot be empty — use set_keep or merge instead")
