@@ -193,7 +193,7 @@ def model_checks() -> list[dict[str, Any]]:
     are per-language-pair or self-downloading, so they are reported and do not
     block.
     """
-    from dubbing import transcript, translate, tts
+    from dubbing import hebrew, transcript, translate, tts
 
     out = [
         model("model.translate", "Translation model (Gemma 4 12B)", translate.MODEL_PATH,
@@ -218,6 +218,16 @@ def model_checks() -> list[dict[str, Any]]:
               required=False, note="only for non-English targets"),
         model("model.lid", "Language ID (VoxLingua107)", transcript.LID_MODEL,
               required=False, note="without it foreign-speech detection is skipped"),
+        # Hebrew is a dub TARGET only with both of these. Not required — every other
+        # target runs without them — but a Hebrew run is refused up front when
+        # either is missing, so the report is where a user finds out first.
+        model("model.tts.he", "Hebrew TTS adapter (Qwen3-TTS LoRA)", hebrew.ADAPTER_DIR,
+              required=False,
+              note=f"only for Hebrew targets — {hebrew.ADAPTER_DOWNLOAD}"),
+        model("model.g2p.he", "Hebrew G2P (ReNikud Plus)", hebrew.G2P_DIR,
+              required=False,
+              note=("only for Hebrew targets — downloads itself on first use, or "
+                    f"{hebrew.G2P_DOWNLOAD}")),
     ]
     return out
 

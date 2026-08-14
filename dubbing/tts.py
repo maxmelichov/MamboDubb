@@ -41,6 +41,7 @@ import numpy as np
 import soundfile as sf
 
 from . import audio
+from . import hebrew as hebrew_mod
 from . import script as script_mod
 from . import ttsopts
 from .script import count_letters, same_script, script_for
@@ -235,6 +236,20 @@ def qwen_language_name(code: str, supported) -> str:
             if str(name).lower() == want.lower():
                 return str(name)
     return "Auto"
+
+
+def synthesis_text(speak: str, lang: str) -> str:
+    """What the checkpoint is actually asked to say, for a line already prepared.
+
+    Identical to `speak` for the ten languages the base model knows. Hebrew is the
+    exception: its LoRA was trained on stressed IPA, and Hebrew orthography leaves
+    the vowels out, so the text field gets `ʁˈeɡa` where the subtitle says רגע (see
+    `dubbing/hebrew.py`). The orthography remains the record — it is what is stored,
+    subtitled and ASR-verified; the IPA never leaves this stage.
+    """
+    if hebrew_mod.is_hebrew(lang):
+        return hebrew_mod.phonemize(speak)
+    return speak
 
 
 # --------------------------------------------------------------------------- refs
@@ -470,9 +485,15 @@ def seed_for(seg: dict[str, Any], speak: str, opts: TtsOpts = ttsopts.DEFAULT) -
 
 
 class Plan(NamedTuple):
-    """What one segment's attempts are made from (see `Engine._plan`)."""
+    """What one segment's attempts are made from (see `Engine._plan`).
+
+    `speak` is the line in its own script — what gets stored, shown and verified.
+    `synth` is what the checkpoint is handed, which differs only for Hebrew, where
+    it is the IPA transcription of `speak` (see `synthesis_text`).
+    """
 
     speak: str
+    synth: str
     ref_path: Path
     ref_key: str
     base_seed: int
@@ -502,13 +523,23 @@ class Engine:
         self.m = m
         src = m.get("source") or {}
         self.src_lang = (src.get("src_lang") or "he").lower()
-        self.tgt_lang = (src.get("tgt_lang") or "en").lower()
+        # "iw" is Hebrew's legacy code and reaches whisper's `language=` as a
+        # rejected value; the pipeline speaks one spelling of each language.
+        tgt = (src.get("tgt_lang") or "en").lower()
+        self.tgt_lang = "he" if hebrew_mod.is_hebrew(tgt) else tgt
         self.workdir = workdir
         self.clips = workdir / "clips"
         self.refs = workdir / "refs"
         self.clips.mkdir(parents=True, exist_ok=True)
         self.refs.mkdir(parents=True, exist_ok=True)
         self.device = device
+        self.hebrew = hebrew_mod.is_hebrew(self.tgt_lang)
+        if self.hebrew:
+            # The Hebrew LoRA is trained against the 1.7B Base talker and carries
+            # that checkpoint's output heads, so the 0.6B one cannot wear it. The
+            # CLI refuses the combination outright; this is the manifest path (a
+            # run whose recorded --tts-model predates the Hebrew target).
+            model = hebrew_mod.ADAPTER_MODEL
         self.tts_model = model if model in TTS_MODELS else DEFAULT_TTS_MODEL
         self.model_tag = TTS_MODELS[self.tts_model]["tag"]
         self._synth = None
@@ -534,7 +565,13 @@ class Engine:
         return self.synth_for(ttsopts.DEFAULT)
 
     def model_for(self, opts: TtsOpts = ttsopts.DEFAULT) -> str:
-        """Which checkpoint this segment uses — its own override, else the run's."""
+        """Which checkpoint this segment uses — its own override, else the run's.
+
+        A Hebrew target has no choice: only the 1.7B Base checkpoint fits the LoRA,
+        so a per-segment `tts_opts.model` cannot pick the 0.6B one out from under it.
+        """
+        if self.hebrew:
+            return hebrew_mod.ADAPTER_MODEL
         return opts.model or self.tts_model
 
     def model_tag_for(self, opts: TtsOpts = ttsopts.DEFAULT) -> str:
@@ -734,7 +771,7 @@ class Engine:
 
     # -- synthesis ---------------------------------------------------------
     def _cache_key(self, speak: str, ref_key: str, seed: int, greedy: bool,
-                   opts: TtsOpts = ttsopts.DEFAULT) -> str:
+                   opts: TtsOpts = ttsopts.DEFAULT, synth: str | None = None) -> str:
         """Everything that changes the audio, hashed. Nothing that changes it may
         stay out of here, or an edited segment silently replays its old clip.
 
@@ -743,6 +780,11 @@ class Engine:
         positions they always did, and per-segment options add a suffix only when
         they are set. A segment with no `tts_opts` therefore hashes to the same
         key it did before this existed, and every cached clip stays valid.
+
+        Hebrew adds one more suffix, for the two things that make its audio: the
+        adapter (a different adapter is a different voice model) and the IPA that
+        was actually synthesized, which `speak` alone does not pin down — a G2P
+        change would otherwise replay clips of the old pronunciation.
         """
         # The target language is part of the key so a ru clip never collides with
         # an en clip of the same text. "en" is left out of the blob to keep every
@@ -753,6 +795,9 @@ class Engine:
         extra = opts.cache_suffix()
         if extra:
             blob += f"|{extra}"
+        if self.hebrew:
+            ipa = hashlib.sha1((synth or "").encode("utf-8")).hexdigest()[:10]
+            blob += f"|{hebrew_mod.ADAPTER_TAG}:{ipa}"
         return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
 
     def _verify(self, clip: Path, speak: str) -> tuple[bool, float, str]:
@@ -787,14 +832,18 @@ class Engine:
         speak = prepare_text(text_en, self.tgt_lang)
         if not speak or len(_tokens(speak, self.tgt_lang)) == 0:
             return None
+        synth = synthesis_text(speak, self.tgt_lang)
+        if not synth.strip():
+            return None            # nothing came back from the G2P to say
         ref = self.ref_for(seg, opts)
         if ref is None:
             return None
         ref_path, ref_key = ref
-        return Plan(speak, ref_path, ref_key, seed_for(seg, speak, opts), opts)
+        return Plan(speak, synth, ref_path, ref_key, seed_for(seg, speak, opts), opts)
 
     def _attempt(self, seg_id: int, speak: str, ref_path: Path, ref_key: str,
-                 base_seed: int, attempt: int, opts: TtsOpts = ttsopts.DEFAULT):
+                 base_seed: int, attempt: int, opts: TtsOpts = ttsopts.DEFAULT,
+                 synth: str | None = None):
         """Generate (or load-from-cache) one attempt's clip.
 
         Returns (clip, meta, verdict). `verdict` is None when the clip was just
@@ -805,14 +854,15 @@ class Engine:
         """
         greedy = opts.greedy or attempt == MAX_TRIES - 1
         seed = base_seed + 1000 * attempt
-        key = self._cache_key(speak, ref_key, seed, greedy, opts)
+        synth = speak if synth is None else synth
+        key = self._cache_key(speak, ref_key, seed, greedy, opts, synth)
         clip = self.clips / f"{key}.wav"
         meta = self.clips / f"{key}.json"
         if clip.is_file() and meta.is_file():
             return clip, meta, json.loads(meta.read_text())
         try:
             self.synth_for(opts).generate(speak, ref_path, clip, seed=seed, greedy=greedy,
-                                          opts=opts)
+                                          opts=opts, synth=synth)
         except Exception as exc:
             print(f"  tts: seg {seg_id} generate failed ({exc})", file=sys.stderr)
             return clip, meta, {"failed": True}
@@ -844,7 +894,7 @@ class Engine:
         plan = self._plan(seg, text_en)
         if plan is None:
             return None
-        speak, ref_path, ref_key, base_seed, opts = plan
+        speak, synth, ref_path, ref_key, base_seed, opts = plan
         slot = float(seg["end"]) - float(seg["start"])
         best: dict[str, Any] | None = None
 
@@ -863,7 +913,7 @@ class Engine:
 
         for attempt, a_path, a_key in attempts:
             clip, meta, verdict = self._attempt(seg["id"], speak, a_path, a_key,
-                                                base_seed, attempt, opts)
+                                                base_seed, attempt, opts, synth)
             if verdict is not None and verdict.get("failed"):
                 continue
             if verdict is None:
@@ -909,17 +959,25 @@ class Engine:
             self._synth = None
         self._synth_model = None
         self._voc = None
+        hebrew_mod.free()
 
 
 class _Synth:
-    """Minimal Qwen3-TTS wrapper: x-vector-only cloning, one call per clip."""
+    """Minimal Qwen3-TTS wrapper: x-vector-only cloning, one call per clip.
+
+    A Hebrew target attaches the Hebrew LoRA to the loaded checkpoint's `talker`.
+    That is an addition, not a swap: with the adapter disabled the forward pass is
+    the unmodified base model's, so this one object still speaks all ten of the
+    checkpoint's own languages — `generate` picks per call (see `_adapter`).
+    """
 
     def __init__(self, *, device: str | None = None, model: str = DEFAULT_TTS_MODEL,
                  lang: str = "en"):
         import torch
 
         self.lang = (lang or "en").lower()
-        self._qwen_lang: str | None = None
+        self.hebrew = hebrew_mod.is_hebrew(self.lang)
+        self._qwen_langs: dict[str, str] = {}
 
         if device and device != "auto":
             self.device = device
@@ -957,27 +1015,68 @@ class _Synth:
             if tok is not None and hasattr(tok, "to"):
                 tok.to(self.device)
             model.device = torch.device(self.device)
+        if self.hebrew:
+            # After the device placement, so the LoRA lands where its base layers
+            # are; cast to the checkpoint's dtype because the adapter ships bf16
+            # and the base runs float32 off CUDA (float16/bf16 NaNs on MPS).
+            model.model.talker = hebrew_mod.attach_adapter(model.model.talker)
+            model.model.talker.to(device=self.device, dtype=self.dtype)
+            model.model.eval()
+            print(f"  tts: Hebrew adapter attached ({hebrew_mod.ADAPTER_DIR})",
+                  file=sys.stderr)
         self._model = model
         return model
 
-    def _language(self, model) -> str:
-        """The checkpoint's name for the target language, resolved once per run."""
-        if self._qwen_lang is None:
+    def _adapter(self, model, lang: str):
+        """Context in which the Hebrew LoRA is enabled for `lang`, or disabled.
+
+        Disabled is the base model exactly — that is the adapter's whole contract,
+        and it is what lets one loaded checkpoint serve a Hebrew line and an English
+        one. A synth that never attached the adapter has nothing to toggle and gets
+        a no-op either way.
+        """
+        import contextlib
+
+        if not self.hebrew or hebrew_mod.is_hebrew(lang):
+            return contextlib.nullcontext()
+        return model.model.talker.disable_adapter()
+
+    def _language(self, model, lang: str) -> str:
+        """The checkpoint's name for a language code, resolved once per code."""
+        if hebrew_mod.is_hebrew(lang):
+            # Not a gap to warn about: the adapter was trained and sampled with
+            # language="Auto", and the IPA in the text field carries the phonetics.
+            return "Auto"
+        got = self._qwen_langs.get(lang)
+        if got is None:
             try:
                 supported = model.get_supported_languages()
             except Exception:
                 supported = _QWEN_LANG_NAMES.values()
-            self._qwen_lang = qwen_language_name(self.lang, supported)
-            if self._qwen_lang == "Auto":
-                print(f"  tts: target {self.lang!r} not in the checkpoint's supported "
+            got = self._qwen_langs[lang] = qwen_language_name(lang, supported)
+            if got == "Auto":
+                print(f"  tts: target {lang!r} not in the checkpoint's supported "
                       "languages — synthesising with language=Auto", file=sys.stderr)
-        return self._qwen_lang
+        return got
 
     def generate(self, speak: str, ref: Path, out: Path, *, seed: int, greedy: bool,
-                 opts: TtsOpts = ttsopts.DEFAULT) -> Path:
+                 opts: TtsOpts = ttsopts.DEFAULT, synth: str | None = None,
+                 lang: str | None = None) -> Path:
+        """`speak` is the line in its own script; `synth` is what the model is told.
+
+        They differ only for Hebrew, where `synth` is the stressed IPA. The token
+        budget is still measured on `speak`: IPA keeps the word boundaries, and the
+        orthography is the text every other length rule in this module reads.
+
+        `lang` names the language of this one call; it defaults to the run's target
+        and exists so a Hebrew-loaded synth can also voice a base-language line —
+        which it does with the adapter switched off, i.e. as the plain base model.
+        """
         import torch
 
         model = self._load()
+        lang = (lang or self.lang).lower()
+        text = synth if synth is not None else speak
         torch.manual_seed(int(seed))
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(int(seed))
@@ -989,13 +1088,14 @@ class _Synth:
                 ref_audio=str(ref), ref_text=opts.ref_text,
                 x_vector_only_mode=not opts.icl,
             )
-        wavs, sr = model.generate_voice_clone(
-            text=speak, language=self._language(model),
-            voice_clone_prompt=self._prompts[key],
-            max_new_tokens=opts.max_new_tokens or max_new_tokens(speak, self.lang),
-            repetition_penalty=opts.repetition_penalty or REPETITION_PENALTY,
-            **sampling_kwargs(greedy, opts),
-        )
+        with self._adapter(model, lang):
+            wavs, sr = model.generate_voice_clone(
+                text=text, language=self._language(model, lang),
+                voice_clone_prompt=self._prompts[key],
+                max_new_tokens=opts.max_new_tokens or max_new_tokens(speak, lang),
+                repetition_penalty=opts.repetition_penalty or REPETITION_PENALTY,
+                **sampling_kwargs(greedy, opts),
+            )
         wav = np.asarray(wavs[0], dtype=np.float32)
         if not opts.keep_pauses:
             wav = _trim_internal_silence(wav, sr)
@@ -1036,7 +1136,22 @@ _ASR_CANDIDATES_MULTI = ("models/faster-whisper-base", "Systran/faster-whisper-b
 
 
 def _asr_candidates(tgt: str) -> tuple[str, ...]:
-    return _ASR_CANDIDATES if (tgt or "en").lower() == "en" else _ASR_CANDIDATES_MULTI
+    """Which ASR verifies a clip in `tgt` — the source stage's constants, reused.
+
+    Hebrew gets the ivrit-ai fine-tune the transcript stage already reads Hebrew
+    with. The multilingual base model transcribes Hebrew badly enough that the
+    word-overlap check would fail good clips, which under "never silent" means a
+    correct dub thrown away for the original audio.
+    """
+    from . import transcript
+
+    tgt = (tgt or "en").lower()
+    if tgt == "en":
+        return _ASR_CANDIDATES
+    if hebrew_mod.is_hebrew(tgt):
+        return (str(transcript.WHISPER_MODEL.relative_to(REPO_ROOT)),
+                transcript.WHISPER_HUB) + _ASR_CANDIDATES_MULTI
+    return _ASR_CANDIDATES_MULTI
 VERIFY_CPU_THREADS = 2   # Mac-only cap on the verify ASR's CPU threads. It runs on a
                          # worker thread while the next clip generates on the GPU (see
                          # run()); left uncapped on Apple Silicon, CTranslate2 grabs
@@ -1138,9 +1253,9 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
             if plan is None:
                 retry.append(seg)
                 continue
-            speak, ref_path, ref_key, base_seed, opts = plan
+            speak, synth, ref_path, ref_key, base_seed, opts = plan
             clip, meta, verdict = engine._attempt(seg["id"], speak, ref_path, ref_key,
-                                                  base_seed, 0, opts)
+                                                  base_seed, 0, opts, synth)
             if verdict is not None and verdict.get("failed"):
                 retry.append(seg)
                 continue

@@ -166,7 +166,8 @@ def test_translate_stage_tag_bumped():
     # v32: two parallel lines each claimed v31 (lock-aware reruns; the news
     # register work) — the merged tag moves past both claims.
     # v33: a user keep is subtitled honestly under either of its two names.
-    assert manifest.STAGE_TAGS["translate"] == "translate/v33"
+    # v34: a same-language pair translates by identity, with no model loaded.
+    assert manifest.STAGE_TAGS["translate"] == "translate/v34"
 
 
 # ------------------------------------------------------- per-segment gloss gating

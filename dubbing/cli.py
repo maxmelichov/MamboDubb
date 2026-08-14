@@ -15,10 +15,44 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import STAGES, fetch, manifest, mix, report, segments, stems, timeline, transcript, translate
+from . import (
+    STAGES, fetch, hebrew, manifest, mix, report, segments, stems, timeline, transcript,
+    translate,
+)
 from . import tts as tts_mod
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# Legacy ISO-639 spellings mean the same language to us, to whisper and to the script
+# table. Normalised once, at the entry point, so exactly one spelling of each language
+# reaches the manifest — otherwise `--src iw --tgt he` looks like a cross-language pair.
+LANG_ALIASES = {"iw": "he", "ji": "yi", "in": "id"}
+
+
+def normalize_lang(code: str) -> str:
+    code = (code or "").strip().lower()
+    return LANG_ALIASES.get(code, code)
+
+
+def check_langs(args: argparse.Namespace) -> None:
+    """Refuse a language pair this machine cannot actually dub, and say why.
+
+    Hebrew is a target only when its two local models are present — the Qwen3-TTS
+    Hebrew LoRA and the G2P that feeds it stressed IPA (see `dubbing/hebrew.py`).
+    A run that discovered this at the tts stage would have already paid for stems,
+    ASR, diarization and translation.
+
+    A same-language pair is *not* refused: `--src he --tgt he` is a dub, not a
+    mistake — every speech segment is re-voiced in the cloned voice with no
+    translation step (see `translate.run`).
+    """
+    if hebrew.is_hebrew(args.tgt):
+        hebrew.require()
+        if args.tts_model != hebrew.ADAPTER_MODEL:
+            raise SystemExit(
+                f"target 'he' needs --tts-model {hebrew.ADAPTER_MODEL}: the Hebrew "
+                f"adapter was trained against that checkpoint's talker and carries its "
+                f"output heads, so it does not fit the {args.tts_model} one.")
 
 
 def default_workdir(source: str) -> Path:
@@ -144,6 +178,8 @@ def apply_force(m: dict[str, Any], force: str | None) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    args.src, args.tgt = normalize_lang(args.src), normalize_lang(args.tgt)
+    check_langs(args)
     try:
         from dotenv import load_dotenv
 
@@ -266,7 +302,16 @@ def _retimers(m, workdir: Path, engine, args):
     compete for one device (MLX unified memory, single GPU) the synthesiser is
     released while the translator runs, and vice versa; on a multi-GPU box each
     keeps its own device and both stay resident.
+
+    A same-language run has none: `(None, None)` tells `timeline.run` not to ask,
+    and it absorbs overhang with speed-up and drift instead — which `place` still
+    keeps non-overlapping, so the invariant is untouched. Shortening a line here
+    would mean loading Gemma to *rewrite the speaker's own words in their own
+    language*, which is a rewrite, not a translation, and a same-language dub says
+    the same number of words in about the same time anyway.
     """
+    if translate.same_language(args.src, args.tgt):
+        return None, None
 
     def shorten_many(requests):
         if translate.exclusive_device():

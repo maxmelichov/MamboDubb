@@ -745,6 +745,16 @@ def _strip_adjacent_repeat(text: str, target: str = "en") -> str:
     return re.sub(r"\s{2,}", " ", text).strip()
 
 
+def same_language(source: str, target: str) -> bool:
+    """True when a segment's source and the target are one language.
+
+    The pair then needs no translation at all — the dub re-voices the line as it
+    was spoken (see `run`). Case-folded only: codes are normalised upstream, and
+    a language does not become a different one by being spelled in capitals.
+    """
+    return bool(source) and (source or "").lower() == (target or "").lower()
+
+
 def pivot_via_english(source: str, target: str) -> bool:
     """True when translation must route src→en→tgt instead of going direct.
 
@@ -753,7 +763,11 @@ def pivot_via_english(source: str, target: str) -> bool:
     labels, neighbour-segment bleed), while the pivot's errors were almost all
     inherited from the measured-good English line — so he→en improvements
     propagate to every target. Codes are normalised upstream; no aliasing here.
+
+    A same-language pair pivots nowhere: there is no hop to make.
     """
+    if same_language(source, target):
+        return False
     return source != "en" and target != "en"
 
 
@@ -1343,6 +1357,19 @@ def needs_subtitle_translation(seg: dict[str, Any]) -> bool:
             and bool(seg.get("lang")) and seg["lang"] != "und")
 
 
+def segment_source(seg: dict[str, Any], source: str) -> str:
+    """The language a segment is spoken in: its own, else the run's."""
+    return (seg.get("lang") or source or "").lower()
+
+
+def _assert_translated(segments: list[dict[str, Any]]) -> None:
+    """Dubbed segments must have a translation; kept segments need not (an
+    "uncovered" keep is untranscribed audio that only plays as original sound)."""
+    missing = [s["id"] for s in segments
+               if not s.get("keep") and not (s.get("text_en") or "").strip()]
+    assert not missing, f"dubbed segments without text_en: {missing}"
+
+
 def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None,
         register: str = "narration", genre: str = "documentary") -> None:
     from . import manifest
@@ -1372,6 +1399,38 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
     todo = [s for s in dub if needs_translation(s)]
     if not todo and not subs:
         return
+
+    # Same-language dubbing (he→he, en→en, …): the target line IS the source line.
+    # There is nothing for a translator to do, so nothing loads Gemma — the stage
+    # completes on identity and stamps its fingerprint like any other run. Decided
+    # per segment rather than per run, because a third-language span carries its own
+    # `lang` and does need a real hop even on a same-language run (Arabic inside a
+    # Hebrew video, dubbed into Hebrew).
+    #
+    # Nothing is kept on "already the target language" grounds: `segments.mark_keep`
+    # voids its script and speaker evidence when the pair shares a script, so every
+    # speech segment is re-voiced in the cloned voice. The keeps that remain are the
+    # ones that never depended on the pair — music, noise, spans with no text, a
+    # confident third language, the user's own passthrough.
+    #
+    # `_finalize_numbers` still runs: digits are not speech, and spelling them is
+    # code's job here exactly as it is on a translated line.
+    identity = [s for s in todo + subs
+                if same_language(segment_source(s, source), target)]
+    for seg in identity:
+        text = _finalize_numbers((seg.get("text") or "").strip(), target)
+        if text:
+            seg["text_en"] = text
+    if identity:
+        print(f"  translate: {len(identity)} segment(s) already in {_lang(target)} — "
+              "kept verbatim, no translation", file=sys.stderr)
+        todo = [s for s in todo if needs_translation(s)]
+        subs = [s for s in subs if needs_translation(s)]
+    if not todo and not subs:
+        manifest.save(workdir, m)
+        _assert_translated(segments)
+        return
+
     context = m["source"].get("context") or ""
     # What was said just before each segment, kept or dubbed — the line the viewer
     # has already heard. Only ever shown to the model as background (see
@@ -1535,11 +1594,7 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
     finally:
         free(model)
     manifest.save(workdir, m)
-    # Dubbed segments must have a translation; kept segments need not (an
-    # "uncovered" keep is untranscribed audio that only plays as original sound).
-    missing = [s["id"] for s in segments
-               if not s.get("keep") and not (s.get("text_en") or "").strip()]
-    assert not missing, f"dubbed segments without text_en: {missing}"
+    _assert_translated(segments)
 
 
 def free(model) -> None:

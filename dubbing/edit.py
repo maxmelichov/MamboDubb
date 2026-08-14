@@ -519,6 +519,23 @@ def retranslate(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
         segs = [s for s in segs if not manifest.is_locked(s, "text_en")]
     context = (m.get("source") or {}).get("context") or ""
     out: dict[str, str] = {}
+    # Same-language segments need no model: the line is already in the target
+    # language, so "re-translate" means restoring it verbatim (see `translate.run`).
+    # Filtered before the load, so a purely same-language redo never pays for Gemma.
+    same: list[dict[str, Any]] = []
+    todo: list[dict[str, Any]] = []
+    for seg in segs:
+        (same if translate.same_language(*_langs(m, seg)) else todo).append(seg)
+    for seg in same:
+        _unlock(seg, "text_en")
+        invalidate(m, seg["uid"], stages={"translate"})
+        seg["text_en"] = translate._finalize_numbers(
+            (seg.get("text") or "").strip(), _langs(m, seg)[1])
+        out[seg["uid"]] = seg["text_en"]
+    segs = todo
+    if not segs:
+        _progress(progress, 1.0, f"translated {len(out)} segment(s)")
+        return out
     _progress(progress, 0.0, f"loading translator for {len(segs)} segment(s)")
     processor, model, device = translate.load()
     try:
