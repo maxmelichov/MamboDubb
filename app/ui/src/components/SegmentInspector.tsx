@@ -6,12 +6,41 @@
  * keep and the language tags are no-model edits and save immediately, even
  * while a job is running. Re-translate and re-voice need the single job slot,
  * so they sit together at the bottom behind a queue.
+ *
+ * Structurally it is MamboRambo's settings card: an eyebrow-labelled stack,
+ * hairline dividers between concerns, and no box inside a box. The rail is
+ * dense — it holds a dozen controls — so the rhythm is tighter than a page
+ * card's, but the vocabulary is identical.
  */
 
 import { useEffect, useState } from "react";
-import { Languages, Lock, Merge, Scissors, TriangleAlert, Volume2 } from "lucide-react";
+import {
+  AudioLines,
+  Languages,
+  ListTree,
+  Lock,
+  Merge,
+  Scissors,
+  Settings2,
+  ShieldCheck,
+  Sparkles,
+  TriangleAlert,
+  Type,
+  Volume2,
+} from "lucide-react";
 import { ABPlayer } from "./ABPlayer";
-import { Button, Field, Kbd, Select, StatePill, TextArea, TextInput } from "./ui";
+import {
+  Button,
+  Checkbox,
+  Divider,
+  Field,
+  Kbd,
+  SectionLabel,
+  Select,
+  StatePill,
+  TextArea,
+  TextInput,
+} from "./ui";
 import { cn } from "../lib/classNames";
 import { duration as fmtDuration, percent, timecode } from "../lib/format";
 import {
@@ -67,30 +96,41 @@ export function SegmentInspector({
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
-      <header className="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-border bg-surface px-3 py-2">
-        <span className="text-[13px] font-semibold tabular-nums">#{seg.id}</span>
-        <StatePill token={meta.token} glyph={meta.glyph} label={meta.label} />
-        <span className="text-[12px] tabular-nums text-secondary">
-          {timecode(seg.start)} – {timecode(seg.end)}
-        </span>
-        <span className="text-[11px] tabular-nums text-muted">
-          {fmtDuration(seg.end - seg.start)}
-        </span>
-        {seg.locked ? (
-          <span className="inline-flex items-center gap-1 text-[11px] text-muted">
-            <Lock className="h-3 w-3" />
-            hand-edited
+      <header className="sticky top-0 z-10 border-b border-border bg-sunken px-4 py-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-mono text-[13px] font-bold tabular-nums text-primary">
+            #{seg.id}
           </span>
-        ) : null}
-        <span className="ml-auto font-mono text-[10px] text-muted">{seg.uid}</span>
+          <StatePill token={meta.token} glyph={meta.glyph} label={meta.label} />
+          {seg.locked ? (
+            <span className="inline-flex items-center gap-1 text-[11px] text-muted">
+              <Lock className="h-3 w-3" />
+              hand-edited
+            </span>
+          ) : null}
+          <span className="ml-auto truncate font-mono text-[10px] text-muted">{seg.uid}</span>
+        </div>
+        <div className="mt-1.5 flex items-baseline gap-2 font-mono text-[11px] tabular-nums text-secondary">
+          {timecode(seg.start)} – {timecode(seg.end)}
+          <span className="text-muted">{fmtDuration(seg.end - seg.start)}</span>
+        </div>
       </header>
 
-      <div className="flex flex-col gap-3 p-3">
-        <ABPlayer seg={seg} />
+      <div className="flex flex-col gap-4 p-4">
+        <section className="flex flex-col gap-2.5">
+          <SectionLabel icon={AudioLines}>Compare</SectionLabel>
+          <ABPlayer seg={seg} />
+        </section>
 
-        <div className="grid grid-cols-2 gap-2">
-          <Field label="Speaker">
-            <div className="flex gap-1">
+        <Divider />
+
+        <section className="flex flex-col gap-2.5">
+          <SectionLabel icon={Type}>Text</SectionLabel>
+
+          {/* 2:3, not 1:1 — "Keep original" needs the wider cell or it wraps
+              inside its own toggle. */}
+          <div className="grid grid-cols-5 gap-3">
+            <Field label="Speaker" className="col-span-2">
               <Select
                 value={speakers.includes(seg.speaker) ? seg.speaker : ""}
                 onChange={(event) => onPatch({ speaker: event.currentTarget.value })}
@@ -102,113 +142,120 @@ export function SegmentInspector({
                   </option>
                 ))}
               </Select>
-            </div>
+            </Field>
+
+            <Field label="This segment" className="col-span-3">
+              {/*
+                Keep is a manual decision once the user makes it — `mark_keep`
+                must never re-decide it, which is what the `locked` flag on the
+                PATCH is for.
+              */}
+              <div className="flex h-9 overflow-hidden rounded-lg border border-border bg-raised">
+                <Toggle
+                  active={!seg.keep}
+                  onClick={() => onPatch({ keep: false })}
+                  label="Dub it"
+                  glyph={STATE_META.dubbed.glyph}
+                  token={STATE_META.dubbed.token}
+                />
+                <span className="w-px shrink-0 bg-border" aria-hidden />
+                <Toggle
+                  active={seg.keep}
+                  onClick={() => onPatch({ keep: true, keep_reason: "manual" })}
+                  label="Keep original"
+                  glyph={STATE_META.kept.glyph}
+                  token={STATE_META.kept.token}
+                />
+              </div>
+            </Field>
+          </div>
+
+          <Field
+            label="Source text"
+            hint={
+              seg.keep_reason ? (
+                <>
+                  kept because <code className="font-mono">{seg.keep_reason}</code>
+                </>
+              ) : null
+            }
+          >
+            <TextArea
+              className="auto-dir min-h-20"
+              value={source}
+              onChange={(event) => setSource(event.currentTarget.value)}
+              onBlur={() => source !== seg.text && onPatch({ text: source })}
+            />
           </Field>
 
-          <Field label="This segment">
-            {/*
-              Keep is a manual decision once the user makes it — `mark_keep`
-              must never re-decide it, which is what the `locked` flag on the
-              PATCH is for.
-            */}
-            <div className="flex overflow-hidden rounded-md border border-border">
-              <Toggle
-                active={!seg.keep}
-                onClick={() => onPatch({ keep: false })}
-                label="Dub it"
-                glyph={STATE_META.dubbed.glyph}
-                token={STATE_META.dubbed.token}
-              />
-              <Toggle
-                active={seg.keep}
-                onClick={() => onPatch({ keep: true, keep_reason: "manual" })}
-                label="Keep original"
-                glyph={STATE_META.kept.glyph}
-                token={STATE_META.kept.token}
-              />
-            </div>
+          <Field
+            label="Target text"
+            hint={
+              <span className="inline-flex flex-wrap items-center gap-1.5">
+                <Kbd>tab</Kbd> to save
+                {seg.locked?.text_en ? " · locked, a re-run will not overwrite it" : null}
+              </span>
+            }
+          >
+            <TextArea
+              className="auto-dir min-h-20"
+              value={target}
+              placeholder="not translated yet"
+              onChange={(event) => setTarget(event.currentTarget.value)}
+              onBlur={() => target !== (seg.text_en ?? "") && onPatch({ text_en: target })}
+            />
           </Field>
-        </div>
+        </section>
 
-        <Field
-          label="Source text"
-          hint={
-            seg.keep_reason ? (
-              <>
-                kept because <code>{seg.keep_reason}</code>
-              </>
-            ) : null
-          }
-        >
-          <TextArea
-            className="auto-dir min-h-20"
-            value={source}
-            onChange={(event) => setSource(event.currentTarget.value)}
-            onBlur={() => source !== seg.text && onPatch({ text: source })}
-          />
-        </Field>
-
-        <Field
-          label="Target text"
-          hint={
-            <span className="flex items-center gap-2">
-              <Kbd>tab</Kbd> to save
-              {seg.locked?.text_en ? " · locked, a re-run will not overwrite it" : null}
-            </span>
-          }
-        >
-          <TextArea
-            className="auto-dir min-h-20"
-            value={target}
-            placeholder="not translated yet"
-            onChange={(event) => setTarget(event.currentTarget.value)}
-            onBlur={() => target !== (seg.text_en ?? "") && onPatch({ text_en: target })}
-          />
-        </Field>
+        <Divider />
 
         {/*
           Per-segment language tags: "this bit is Arabic, translate it to
           English". Empty means "inherit the run's languages".
         */}
-        <div className="grid grid-cols-2 gap-2">
-          <Field label="Spoken language" hint="overrides the run's source language">
-            <Select
-              value={seg.src_lang ?? ""}
-              onChange={(event) => onPatch({ src_lang: event.currentTarget.value || null })}
-            >
-              {LANGS.map((lang) => (
-                <option key={lang || "inherit"} value={lang}>
-                  {lang || "inherit"}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="Translate into" hint="overrides the run's target language">
-            <Select
-              value={seg.tgt_lang ?? ""}
-              onChange={(event) => onPatch({ tgt_lang: event.currentTarget.value || null })}
-            >
-              {LANGS.map((lang) => (
-                <option key={lang || "inherit"} value={lang}>
-                  {lang || "inherit"}
-                </option>
-              ))}
-            </Select>
-          </Field>
-        </div>
+        <section className="flex flex-col gap-2.5">
+          <SectionLabel icon={Languages}>Language overrides</SectionLabel>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Spoken" hint="overrides the run's source language">
+              <Select
+                value={seg.src_lang ?? ""}
+                onChange={(event) => onPatch({ src_lang: event.currentTarget.value || null })}
+              >
+                {LANGS.map((lang) => (
+                  <option key={lang || "inherit"} value={lang}>
+                    {lang || "inherit"}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Translate into" hint="overrides the run's target language">
+              <Select
+                value={seg.tgt_lang ?? ""}
+                onChange={(event) => onPatch({ tgt_lang: event.currentTarget.value || null })}
+              >
+                {LANGS.map((lang) => (
+                  <option key={lang || "inherit"} value={lang}>
+                    {lang || "inherit"}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          </div>
+        </section>
 
-        <TtsOptions
-          opts={seg.tts_opts ?? null}
-          onChange={(tts_opts) => onPatch({ tts_opts })}
-        />
+        <Divider />
+
+        <TtsOptions opts={seg.tts_opts ?? null} onChange={(tts_opts) => onPatch({ tts_opts })} />
+
+        <Divider />
 
         <Verification seg={seg} concern={concern} placement={placement} />
 
-        <div className="flex flex-col gap-2 border-t border-border pt-3">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-muted">
-            Model actions — these queue
-          </span>
-          <div className="flex flex-wrap gap-1.5">
+        <Divider />
+
+        <section className="flex flex-col gap-2.5">
+          <SectionLabel icon={Sparkles}>Model actions — these queue</SectionLabel>
+          <div className="flex flex-wrap gap-2">
             <Button
               onClick={() => {
                 if (
@@ -220,21 +267,23 @@ export function SegmentInspector({
                 onRetranslate();
               }}
               disabled={busy}
+              size="sm"
             >
               <Languages className="h-3.5 w-3.5" />
               Re-translate
             </Button>
-            <Button onClick={onResynthesize} disabled={busy || seg.keep}>
+            <Button onClick={onResynthesize} disabled={busy || seg.keep} size="sm">
               <Volume2 className="h-3.5 w-3.5" />
               Re-voice
             </Button>
           </div>
+        </section>
 
-          <span className="mt-1 text-[11px] font-semibold uppercase tracking-[0.1em] text-muted">
-            Structure
-          </span>
-          <div className="flex flex-wrap gap-1.5">
+        <section className="flex flex-col gap-2.5">
+          <SectionLabel icon={ListTree}>Structure</SectionLabel>
+          <div className="flex flex-wrap gap-2">
             <Button
+              size="sm"
               disabled={splitPoint == null}
               title={
                 splitPoint == null
@@ -243,7 +292,12 @@ export function SegmentInspector({
               }
               onClick={() => {
                 if (splitPoint == null) return;
-                if (!window.confirm(`Split at ${timecode(splitPoint)}? Both halves lose their translation and clip.`)) return;
+                if (
+                  !window.confirm(
+                    `Split at ${timecode(splitPoint)}? Both halves lose their translation and clip.`,
+                  )
+                )
+                  return;
                 onSplit(splitPoint);
               }}
             >
@@ -251,6 +305,7 @@ export function SegmentInspector({
               Split at playhead
             </Button>
             <Button
+              size="sm"
               disabled={!prev || prev.speaker !== seg.speaker}
               title={
                 prev && prev.speaker !== seg.speaker
@@ -259,7 +314,12 @@ export function SegmentInspector({
               }
               onClick={() => {
                 if (!prev) return;
-                if (!window.confirm("Merge with the previous segment? The merged line loses its translation and clip.")) return;
+                if (
+                  !window.confirm(
+                    "Merge with the previous segment? The merged line loses its translation and clip.",
+                  )
+                )
+                  return;
                 onMerge(prev.uid);
               }}
             >
@@ -267,6 +327,7 @@ export function SegmentInspector({
               Merge ←
             </Button>
             <Button
+              size="sm"
               disabled={!next || next.speaker !== seg.speaker}
               title={
                 next && next.speaker !== seg.speaker
@@ -275,7 +336,12 @@ export function SegmentInspector({
               }
               onClick={() => {
                 if (!next) return;
-                if (!window.confirm("Merge with the next segment? The merged line loses its translation and clip.")) return;
+                if (
+                  !window.confirm(
+                    "Merge with the next segment? The merged line loses its translation and clip.",
+                  )
+                )
+                  return;
                 onMerge(next.uid);
               }}
             >
@@ -283,7 +349,7 @@ export function SegmentInspector({
               Merge →
             </Button>
           </div>
-        </div>
+        </section>
       </div>
     </div>
   );
@@ -308,8 +374,10 @@ function Toggle({
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        "flex flex-1 items-center justify-center gap-1.5 px-2 py-1.5 text-[12px] transition-colors",
-        active ? "bg-brand/15 font-medium text-primary" : "bg-raised text-secondary hover:bg-border/50",
+        "flex flex-1 items-center justify-center gap-1.5 whitespace-nowrap px-2 text-[12px] transition-colors",
+        active
+          ? "bg-primary/[0.08] font-semibold text-primary"
+          : "text-secondary hover:bg-border/50",
       )}
     >
       <span aria-hidden style={{ color: token }}>
@@ -330,17 +398,24 @@ function TtsOptions({
 }) {
   const set = (patch: TtsOpts) => onChange({ ...(opts ?? {}), ...patch });
   return (
-    <details className="rounded-md border border-border bg-raised px-2 py-1.5" open={Boolean(opts)}>
-      <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.1em] text-muted">
-        TTS options
+    <details className="group" open={Boolean(opts)}>
+      <summary className="flex cursor-pointer list-none items-center gap-2 [&::-webkit-details-marker]:hidden">
+        <SectionLabel icon={Settings2} className="flex-1">
+          TTS options
+        </SectionLabel>
+        <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-muted transition-transform group-open:rotate-180">
+          ▾
+        </span>
       </summary>
-      <div className="mt-2 grid grid-cols-2 gap-2">
+      <div className="mt-3 grid grid-cols-2 gap-3">
         <Field label="Seed" hint="blank = the run's default">
           <TextInput
             type="number"
             value={opts?.seed ?? ""}
             onChange={(event) =>
-              set({ seed: event.currentTarget.value === "" ? null : Number(event.currentTarget.value) })
+              set({
+                seed: event.currentTarget.value === "" ? null : Number(event.currentTarget.value),
+              })
             }
           />
         </Field>
@@ -351,7 +426,11 @@ function TtsOptions({
             onChange={(event) => set({ style: event.currentTarget.value || null })}
           />
         </Field>
-        <Field label="Reference clip" className="col-span-2" hint="run-relative path, overrides the speaker's reference">
+        <Field
+          label="Reference clip"
+          className="col-span-2"
+          hint="run-relative path, overrides the speaker's reference"
+        >
           <TextInput
             value={opts?.ref ?? ""}
             placeholder="refs/SPEAKER_04.wav"
@@ -359,8 +438,7 @@ function TtsOptions({
           />
         </Field>
         <label className="col-span-2 flex items-center gap-2 text-[12px] text-secondary">
-          <input
-            type="checkbox"
+          <Checkbox
             checked={Boolean(opts?.greedy)}
             onChange={(event) => set({ greedy: event.currentTarget.checked })}
           />
@@ -390,20 +468,14 @@ function Verification({
   const heard = seg.verify?.heard;
 
   return (
-    <div className="rounded-md border border-border bg-raised p-2">
+    <section className="flex flex-col gap-2.5">
       <div className="flex items-center gap-2">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-muted">
+        <SectionLabel icon={ShieldCheck} className="flex-1">
           Verification
-        </span>
-        {seg.tts?.verify ? (
-          <span className="text-[11px] text-secondary">
-            {seg.tts.verify}
-            {seg.tts.tries ? ` · ${seg.tts.tries} ${seg.tts.tries === 1 ? "try" : "tries"}` : null}
-          </span>
-        ) : null}
+        </SectionLabel>
         <span
           className={cn(
-            "ml-auto inline-flex items-center gap-1 text-[12px] tabular-nums",
+            "inline-flex items-center gap-1 font-mono text-[11px] tabular-nums",
             concern === "bad" ? "text-critical" : concern === "soft" ? "text-secondary" : "text-muted",
           )}
         >
@@ -412,39 +484,45 @@ function Verification({
         </span>
       </div>
 
+      {seg.tts?.verify ? (
+        <p className="text-[11px] text-secondary">
+          {seg.tts.verify}
+          {seg.tts.tries ? ` · ${seg.tts.tries} ${seg.tts.tries === 1 ? "try" : "tries"}` : null}
+        </p>
+      ) : null}
+
       {overlap != null ? (
-        <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-border">
+        <div className="h-1 overflow-hidden rounded-full bg-border">
           <div
-            className="h-full rounded-full"
+            className="h-full rounded-full transition-[width] duration-300"
             style={{
               width: `${Math.max(0, Math.min(1, overlap)) * 100}%`,
-              backgroundColor:
-                concern === "bad" ? "var(--color-critical)" : "var(--color-dubbed)",
+              backgroundColor: concern === "bad" ? "var(--color-critical)" : "var(--color-dubbed)",
             }}
           />
         </div>
       ) : null}
 
       {heard ? (
-        <p className="auto-dir mt-2 text-[12px] leading-relaxed text-secondary">
-          <span className="text-muted">heard: </span>
+        <p className="auto-dir rounded-lg border border-border bg-raised p-2.5 text-[12px] leading-relaxed text-secondary">
+          <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-muted">
+            heard{" "}
+          </span>
           {heard}
         </p>
       ) : (
-        <p className="mt-2 text-[12px] text-muted">
+        <p className="text-[12px] text-muted">
           {seg.keep ? "Kept segments are not synthesized, so nothing to verify." : "No clip yet."}
         </p>
       )}
 
       {seg.place ? (
-        <p className="mt-2 text-[11px] tabular-nums text-muted">
+        <p className="font-mono text-[11px] leading-relaxed tabular-nums text-muted">
           placed {timecode(seg.place.start)} · rate {seg.place.rate.toFixed(3)} · drift{" "}
           {seg.place.drift.toFixed(2)}s
-          {placement.length ? (
-            <span className="text-secondary"> — {placement.join(", ")}</span>
-          ) : null}
+          {placement.length ? <span className="text-secondary"> — {placement.join(", ")}</span> : null}
         </p>
       ) : null}
-    </div>
+    </section>
   );
 }

@@ -8,18 +8,23 @@
  *
  * The whole screen stays usable while a job runs. Nothing here disables itself
  * on a running job except the two model actions, which queue.
+ *
+ * Chrome is the same system as the two page screens — same tokens, same
+ * primitives, same eyebrow labels — but tuned for density: every horizontal
+ * band that is not the timeline or the table is a 2-line toolbar on the sunken
+ * tone, so the eye can tell "controls" from "content" without reading.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { Film, Loader2, RefreshCw } from "lucide-react";
-import { AppHeader } from "../components/AppHeader";
+import { Film, Loader2, Minus, Plus, RefreshCw } from "lucide-react";
+import { AppHeader } from "../components/AppShell";
 import { JobBar } from "../components/JobBar";
 import { SegmentInspector } from "../components/SegmentInspector";
 import { SegmentList } from "../components/SegmentList";
 import { Timeline, TimelineLegend } from "../components/Timeline";
 import { VideoPlayer } from "../components/VideoPlayer";
-import { Button, Empty, ErrorBar, Kbd } from "../components/ui";
+import { Badge, Button, ButtonGroup, Empty, ErrorBar, Eyebrow, Kbd } from "../components/ui";
 import { api } from "../lib/api";
 import { FIXTURE_PROJECT } from "../lib/fixtures";
 import { segmentState, totalDuration, type SegmentState } from "../lib/segments";
@@ -77,6 +82,18 @@ export function EditorPage() {
     [segments, selectAndSeek, selectedUid],
   );
 
+  const zoomOut = useCallback(
+    () => setZoom((z) => ZOOM_STEPS[Math.max(0, ZOOM_STEPS.indexOf(z) - 1)] ?? z),
+    [],
+  );
+  const zoomIn = useCallback(
+    () =>
+      setZoom(
+        (z) => ZOOM_STEPS[Math.min(ZOOM_STEPS.length - 1, ZOOM_STEPS.indexOf(z) + 1)] ?? z,
+      ),
+    [],
+  );
+
   // Keyboard. Never while a field has focus — an editor that eats the space bar
   // mid-sentence is worse than one with no shortcuts.
   useEffect(() => {
@@ -114,48 +131,59 @@ export function EditorPage() {
         case "+":
         case "=":
           event.preventDefault();
-          setZoom((z) => ZOOM_STEPS[Math.min(ZOOM_STEPS.length - 1, ZOOM_STEPS.indexOf(z) + 1)] ?? z);
+          zoomIn();
           break;
         case "-":
           event.preventDefault();
-          setZoom((z) => ZOOM_STEPS[Math.max(0, ZOOM_STEPS.indexOf(z) - 1)] ?? z);
+          zoomOut();
           break;
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [actions, selected, step, transport]);
+  }, [actions, selected, step, transport, zoomIn, zoomOut]);
 
   const job = activeJob(state.jobs);
   const queued = state.jobs.filter((j) => j.status === "queued" && j.id !== job?.id).length;
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden">
-      <AppHeader>
-        <span className="min-w-0 flex-1 truncate text-[13px] text-secondary" title={project?.source.title}>
+    <div className="flex h-screen flex-col overflow-hidden bg-plane">
+      <AppHeader
+        actions={
+          <>
+            <Button onClick={() => void actions.reload()} aria-label="Reload" size="sm">
+              <RefreshCw className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => {
+                if (
+                  window.confirm(
+                    "Re-render the preview? This re-runs timeline, mix and report and replaces preview.mp4 — a full video re-encode.",
+                  )
+                ) {
+                  void actions.render();
+                }
+              }}
+            >
+              <Film className="h-3.5 w-3.5" />
+              Render preview
+            </Button>
+          </>
+        }
+      >
+        <span
+          className="min-w-0 flex-1 truncate text-[13px] font-semibold text-primary"
+          title={project?.source.title}
+        >
           {project?.source.title ?? name}
         </span>
-        <span className="text-[11px] uppercase tracking-[0.08em] text-muted">
-          {project ? `${project.source.src_lang} → ${project.source.tgt_lang}` : ""}
-        </span>
-        <Button onClick={() => void actions.reload()} aria-label="Reload">
-          <RefreshCw className="h-3.5 w-3.5" />
-        </Button>
-        <Button
-          variant="primary"
-          onClick={() => {
-            if (
-              window.confirm(
-                "Re-render the preview? This re-runs timeline, mix and report and replaces preview.mp4 — a full video re-encode.",
-              )
-            ) {
-              void actions.render();
-            }
-          }}
-        >
-          <Film className="h-3.5 w-3.5" />
-          Render preview
-        </Button>
+        {project ? (
+          <Badge>
+            {project.source.src_lang} → {project.source.tgt_lang}
+          </Badge>
+        ) : null}
       </AppHeader>
 
       <JobBar
@@ -169,12 +197,12 @@ export function EditorPage() {
 
       {state.loading ? (
         <Empty>
-          <Loader2 className="mx-auto h-5 w-5 animate-spin" />
+          <Loader2 className="mx-auto h-5 w-5 animate-spin" aria-label="Loading" />
         </Empty>
       ) : (
         <div className="flex min-h-0 flex-1">
           <div className="flex min-w-0 flex-1 flex-col">
-            <div className="h-[38%] min-h-40 shrink-0">
+            <div className="h-[38%] min-h-40 shrink-0 border-b border-border">
               <VideoPlayer
                 src={previewUrl}
                 transport={transport}
@@ -183,37 +211,34 @@ export function EditorPage() {
               />
             </div>
 
-            <div ref={timelineRef} className="shrink-0 border-y border-border bg-surface">
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-1.5">
-                <TimelineLegend counts={counts} />
-                <div className="ml-auto flex items-center gap-1.5 text-[11px] text-muted">
-                  <Kbd>←</Kbd>
-                  <Kbd>→</Kbd> segment
-                  <Kbd>space</Kbd> play
-                  <Kbd>k</Kbd> keep
-                  <Kbd>a</Kbd>
-                  <Kbd>b</Kbd> compare
-                  <Button
-                    variant="ghost"
-                    className="px-1.5 py-0"
-                    onClick={() =>
-                      setZoom((z) => ZOOM_STEPS[Math.max(0, ZOOM_STEPS.indexOf(z) - 1)] ?? z)
-                    }
-                  >
-                    −
-                  </Button>
-                  <span className="tabular-nums">{zoom}px/s</span>
-                  <Button
-                    variant="ghost"
-                    className="px-1.5 py-0"
-                    onClick={() =>
-                      setZoom(
-                        (z) => ZOOM_STEPS[Math.min(ZOOM_STEPS.length - 1, ZOOM_STEPS.indexOf(z) + 1)] ?? z,
-                      )
-                    }
-                  >
-                    +
-                  </Button>
+            <section ref={timelineRef} className="shrink-0 border-b border-border bg-surface">
+              {/* The legend wraps inside its own cell rather than pushing the
+                  zoom control onto a second row of its own. */}
+              <div className="flex items-start gap-3 border-b border-border bg-sunken px-3 py-2">
+                <Eyebrow className="mt-1.5 shrink-0">Timeline</Eyebrow>
+                <div className="min-w-0 flex-1">
+                  <TimelineLegend counts={counts} />
+                </div>
+                <div className="flex shrink-0 items-center gap-3 pt-0.5">
+                  <span className="hidden items-center gap-1.5 text-[11px] text-muted lg:flex">
+                    <Kbd>←</Kbd>
+                    <Kbd>→</Kbd> segment
+                    <Kbd>space</Kbd> play
+                    <Kbd>k</Kbd> keep
+                    <Kbd>a</Kbd>
+                    <Kbd>b</Kbd> compare
+                  </span>
+                  <ButtonGroup className="h-7">
+                    <Button variant="ghost" size="xs" onClick={zoomOut} aria-label="Zoom out">
+                      <Minus className="h-3 w-3" />
+                    </Button>
+                    <span className="flex w-16 items-center justify-center bg-raised font-mono text-[11px] tabular-nums text-muted">
+                      {zoom}px/s
+                    </span>
+                    <Button variant="ghost" size="xs" onClick={zoomIn} aria-label="Zoom in">
+                      <Plus className="h-3 w-3" />
+                    </Button>
+                  </ButtonGroup>
                 </div>
               </div>
               <Timeline
@@ -226,7 +251,7 @@ export function EditorPage() {
                 onSelect={selectAndSeek}
                 onSeek={transport.seek}
               />
-            </div>
+            </section>
 
             <div className="min-h-0 flex-1 bg-surface">
               <SegmentList
@@ -257,7 +282,7 @@ export function EditorPage() {
               <Empty>
                 Pick a segment in the timeline or the list.
                 <br />
-                <span className="text-[12px]">
+                <span className="mt-2 inline-flex items-center gap-1.5 text-[12px]">
                   <Kbd>←</Kbd> <Kbd>→</Kbd> step through them.
                 </span>
               </Empty>

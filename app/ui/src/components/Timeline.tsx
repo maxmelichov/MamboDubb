@@ -81,13 +81,13 @@ export function Timeline({
         <div className="relative select-none" style={{ width }}>
           {/* Axis. Recessive: hairline ticks, muted labels, tabular figures. */}
           <div
-            className="relative h-5 cursor-pointer border-b border-grid"
+            className="relative h-5 cursor-pointer border-b border-grid bg-sunken"
             onClick={seekFromEvent}
           >
             {ticks(total, tickStep).map((t) => (
               <div key={t} className="absolute top-0 h-full" style={{ left: t * pxPerSecond }}>
                 <div className="h-2 w-px bg-axis" />
-                <span className="absolute left-1 top-1 text-[10px] tabular-nums text-muted">
+                <span className="absolute left-1 top-0.5 font-mono text-[9px] tabular-nums text-muted">
                   {timecode(t, 0)}
                 </span>
               </div>
@@ -98,7 +98,7 @@ export function Timeline({
             {gaps.map((gap) => (
               <div
                 key={`gap-${gap.start}`}
-                className="hatch-unclaimed absolute inset-y-1 rounded-sm border border-dashed"
+                className="hatch-unclaimed absolute inset-y-1.5 rounded-[3px] border border-dashed"
                 style={{
                   left: gap.start * pxPerSecond + 1,
                   width: Math.max(MIN_MARK_PX, (gap.end - gap.start) * pxPerSecond - 2),
@@ -144,10 +144,10 @@ export function Timeline({
 
           {/* Playhead sits above both lanes so the drift between them is legible. */}
           <div
-            className="pointer-events-none absolute top-0 bottom-0 w-px bg-primary"
+            className="pointer-events-none absolute top-0 bottom-0 z-20 w-px bg-primary"
             style={{ left: currentTime * pxPerSecond }}
           >
-            <div className="absolute -left-[3px] top-0 h-1.5 w-[7px] rounded-b-sm bg-primary" />
+            <div className="absolute -left-[3.5px] top-0 h-2 w-2 rounded-b-full bg-primary" />
           </div>
         </div>
       </div>
@@ -159,8 +159,10 @@ export function Timeline({
 
 function Lane({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="relative h-9 border-b border-grid last:border-b-0">
-      <span className="pointer-events-none absolute left-1 top-0.5 z-10 text-[9px] font-semibold uppercase tracking-[0.14em] text-muted">
+    <div className="relative h-10 border-b border-grid last:border-b-0">
+      {/* The label rides the scroll container, so it needs its own backing to
+          stay legible when a mark passes underneath it. */}
+      <span className="pointer-events-none absolute left-1 top-1 z-10 rounded bg-surface/85 px-1 py-px text-[9px] font-bold uppercase tracking-[0.16em] text-muted">
         {label}
       </span>
       {children}
@@ -207,9 +209,9 @@ function Mark({
       aria-label={`Segment ${seg.id}, ${meta.label}, ${timecode(start)} to ${timecode(end)}`}
       aria-pressed={selected}
       className={cn(
-        "absolute inset-y-1.5 overflow-hidden rounded-sm text-left",
+        "absolute inset-y-2 overflow-hidden rounded-[3px] text-left transition-shadow",
         "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary",
-        selected && "ring-2 ring-primary",
+        selected && "ring-2 ring-primary ring-offset-1 ring-offset-surface",
         busy && "animate-pulse",
         muted && "opacity-40",
       )}
@@ -231,21 +233,23 @@ function Tooltip({ seg, x }: { seg: Segment; x: number }) {
   const meta = STATE_META[segmentState(seg)];
   return (
     <div
-      className="pointer-events-none fixed z-30 max-w-[22rem] rounded-md border border-border bg-raised p-2 text-[12px] shadow-lg"
+      className="pointer-events-none fixed z-30 max-w-[22rem] rounded-xl border border-border bg-raised p-3 text-[12px] shadow-pop"
       style={{ left: Math.min(x, window.innerWidth - 360), top: undefined, bottom: 12 }}
     >
       <div className="flex items-center gap-2 text-muted">
         <span aria-hidden style={{ color: meta.token }}>
           {meta.glyph}
         </span>
-        <span className="font-semibold text-primary">#{seg.id}</span>
-        <span>{meta.label}</span>
-        <span className="tabular-nums">
+        <span className="font-mono font-semibold text-primary">#{seg.id}</span>
+        <span className="text-[10px] font-bold uppercase tracking-[0.12em]">{meta.label}</span>
+        <span className="ml-auto font-mono tabular-nums">
           {timecode(seg.start)} – {timecode(seg.end)}
         </span>
       </div>
-      <p className="auto-dir mt-1 line-clamp-2 text-secondary">{seg.text}</p>
-      {seg.text_en ? <p className="mt-0.5 line-clamp-2 text-primary">{seg.text_en}</p> : null}
+      <p className="auto-dir mt-2 line-clamp-2 leading-relaxed text-secondary">{seg.text}</p>
+      {seg.text_en ? (
+        <p className="mt-1 line-clamp-2 leading-relaxed text-primary">{seg.text_en}</p>
+      ) : null}
     </div>
   );
 }
@@ -264,12 +268,15 @@ export function TimelineLegend({ counts }: { counts: Record<SegmentState, number
   entries.push({ key: "unclaimed", ...UNCLAIMED_META });
 
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-secondary">
+    <div className="flex flex-wrap items-center gap-1.5">
       {entries.map((entry) => (
-        <span key={entry.key} className="inline-flex items-center gap-1.5">
+        <span
+          key={entry.key}
+          className="inline-flex items-center gap-1.5 rounded-md border border-border bg-raised px-1.5 py-1 text-[11px] text-secondary"
+        >
           <span
             aria-hidden
-            className={cn("h-2.5 w-4 rounded-sm", entry.key === "unclaimed" && "hatch-unclaimed")}
+            className={cn("h-2.5 w-3.5 rounded-[2px]", entry.key === "unclaimed" && "hatch-unclaimed")}
             style={{
               backgroundColor: entry.key === "unclaimed" ? "transparent" : entry.token,
               border: entry.key === "unclaimed" ? "1px dashed var(--color-unclaimed)" : undefined,
@@ -280,7 +287,7 @@ export function TimelineLegend({ counts }: { counts: Record<SegmentState, number
           </span>
           {entry.label}
           {entry.count != null ? (
-            <span className="tabular-nums text-muted">{entry.count}</span>
+            <span className="font-mono tabular-nums text-muted">{entry.count}</span>
           ) : null}
         </span>
       ))}
