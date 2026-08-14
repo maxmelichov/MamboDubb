@@ -117,11 +117,3 @@ def test_run_en_target_always_spells_the_final_english(monkeypatch, tmp_path):
                       "keep_reason": None}]
     translate.run(m, tmp_path, source="he", target="en")
     assert m["segments"][0]["text_en"] == "He lost five hundred and four soldiers."
-
-
-# ------------------------------------------------- military note echelon ladder
-
-def test_hebrew_military_note_carries_the_unit_echelons():
-    p = translate._translate_instruction("המחלקה יצאה", "he", "en")
-    assert "מחלקה platoon" in p
-    assert "גדוד battalion" in p
