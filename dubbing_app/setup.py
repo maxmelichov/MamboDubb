@@ -224,12 +224,30 @@ def model_checks() -> list[dict[str, Any]]:
         model("model.tts.he", "Hebrew TTS adapter (Qwen3-TTS LoRA)", hebrew.ADAPTER_DIR,
               required=False,
               note=f"only for Hebrew targets — {hebrew.ADAPTER_DOWNLOAD}"),
-        model("model.g2p.he", "Hebrew G2P (ReNikud Plus)", hebrew.G2P_DIR,
-              required=False,
-              note=("only for Hebrew targets — downloads itself on first use, or "
-                    f"{hebrew.G2P_DOWNLOAD}")),
+        g2p_check(),
     ]
     return out
+
+
+def g2p_check() -> dict[str, Any]:
+    """The Hebrew grapheme→IPA model. Unlike the others this is a *package* first:
+    `renikud-plus` fetches its own weights on first use, so what decides the verdict
+    is whether it is importable, and a local `models/RenikudPlus` is reported when
+    it exists but is never required."""
+    from dubbing import hebrew
+
+    local = hebrew.G2P_FILE.is_file()
+    size = dir_size(hebrew.G2P_DIR) if local else 0
+    if not hebrew.g2p_ready():
+        detail = (f"{hebrew.G2P_PACKAGE} is not installed — run `uv sync`; "
+                  "without it Hebrew is unavailable as a target")
+    elif local:
+        detail = f"{human_bytes(size)} in {hebrew.G2P_DIR}"
+    else:
+        detail = (f"{hebrew.G2P_PACKAGE} installed; weights download from "
+                  f"{hebrew.G2P_HUB} on first use")
+    return check("model.g2p.he", "Hebrew G2P (ReNikud Plus)", hebrew.g2p_ready(),
+                 detail, required=False, path=str(hebrew.G2P_DIR), bytes=size)
 
 
 def demucs_check() -> dict[str, Any]:
