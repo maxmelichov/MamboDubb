@@ -46,7 +46,16 @@ export type ProjectState = {
 
 export type ProjectActions = {
   select: (uid: string | null) => void;
-  patch: (uid: string, patch: SegmentPatch) => Promise<void>;
+  /**
+   * Returns the saved segment, or null if the save failed.
+   *
+   * The return value is not decoration: a verdict flip is a PATCH *and then* a
+   * decision about what to queue, and the only honest input to that decision is
+   * what the server says the segment became — `edit.set_keep` drops the line and
+   * the clip on the way through, so "does this segment still have a translation"
+   * cannot be answered from the patch that was sent.
+   */
+  patch: (uid: string, patch: SegmentPatch) => Promise<Segment | null>;
   split: (uid: string, at: number) => Promise<void>;
   merge: (uid: string, uidB: string) => Promise<void>;
   retranslate: (uids: string[]) => Promise<void>;
@@ -172,7 +181,7 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
   }, [load, name]);
 
   const patch = useCallback(
-    async (uid: string, body: SegmentPatch) => {
+    async (uid: string, body: SegmentPatch): Promise<Segment | null> => {
       // Optimistic: the point of a no-model edit is that it is instant.
       const before = segments;
       setSegments((current) =>
@@ -181,9 +190,11 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
       try {
         const updated = await api.patchSegment(name, uid, body);
         setSegments((current) => current.map((seg) => (seg.uid === uid ? updated : seg)));
+        return updated;
       } catch (err) {
         setSegments(before);
         setError(describe(err));
+        return null;
       }
     },
     [name, segments],
@@ -298,6 +309,17 @@ function predict(seg: Segment, body: SegmentPatch): Segment {
   if (body.keep != null) {
     locked.keep = true;
     next.keep_reason = body.keep ? (body.keep_reason ?? "manual") : null;
+    // A verdict flip invalidates the translate stage in both directions
+    // (`edit.set_keep` → `invalidate(translate)`): a keep's `text_en` is a
+    // subtitle and a dub's is what the voice says, so neither survives the
+    // other — except a line the user wrote, which is locked and is theirs. The
+    // clip goes either way, because the kind of clip is what changed.
+    if (!seg.locked?.text_en) next.text_en = null;
+    next.tts = null;
+    next.place = null;
+    next.verify = null;
+    next.media = { ...(seg.media ?? { source: null, source_window: null, play: null, tts: null }),
+                   play: null, tts: null };
   }
   // An explicit `locked` in the patch is the user's final word — a replace, not
   // a merge, exactly as `edit.set_locked` treats it.

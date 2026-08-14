@@ -68,8 +68,22 @@ let running = false;
  * closing an editor without changing the text saves nothing — which is
  * invisible to a DOM assertion because a no-op PATCH looks exactly like no
  * PATCH from the outside.
+ *
+ * `log` is the same information with the *order* kept, which is what a flip to
+ * "Dub it" has to be judged on: the PATCH clears the line and the clip, so the
+ * translate job must be enqueued after it and the voice job after that. A pair
+ * of counters cannot tell that apart from the same two calls in the wrong
+ * order. Only the calls that queue work are logged — a background refetch of
+ * the segment list is not part of any sequence worth asserting.
  */
-export const calls = { patch: 0, segments: 0, peaks: 0 };
+export const calls = {
+  patch: 0,
+  segments: 0,
+  peaks: 0,
+  retranslate: 0,
+  resynthesize: 0,
+  log: [] as string[],
+};
 (globalThis as { __DUBBING_FIXTURE_CALLS__?: typeof calls }).__DUBBING_FIXTURE_CALLS__ = calls;
 
 // --- enrichment -----------------------------------------------------------
@@ -312,6 +326,7 @@ function hash01(i: number): number {
 
 export function patchSegment(_name: string, uid: string, patch: SegmentPatch): Promise<Segment> {
   calls.patch += 1;
+  calls.log.push("patch");
   const seg = find(uid);
 
   // `dubbing/edit.py` refuses both of these outright, with a 400. The editor
@@ -334,6 +349,20 @@ export function patchSegment(_name: string, uid: string, patch: SegmentPatch): P
   // for exactly this, and a fixture that quietly kept a stale clip would make
   // the editor's optimistic merge look correct when it is not.
   if ("text_en" in patch || "text" in patch) {
+    seg.tts = null;
+    seg.place = null;
+    seg.verify = null;
+  }
+
+  // A verdict flip invalidates the translate stage in *both* directions —
+  // `edit.set_keep` ends in `invalidate(stages={"translate"})`, which takes
+  // `text_en` and everything built on it. A keep's line is a subtitle and a
+  // dub's line is what the voice says, so neither is fit to survive the flip;
+  // a line the user wrote is locked and does survive. This is precisely why
+  // flipping to "Dub it" has to queue work: without it the segment is left
+  // with no translation, no clip, and nothing on its way to fix that.
+  if ("keep" in patch) {
+    if (!seg.locked?.text_en) seg.text_en = null;
     seg.tts = null;
     seg.place = null;
     seg.verify = null;
@@ -451,6 +480,8 @@ export function createProject(body: CreateProjectRequest): Promise<CreateProject
 }
 
 export function enqueue(_name: string, kind: JobKind, uids: string[]): Promise<Job> {
+  if (kind === "retranslate" || kind === "resynthesize") calls[kind] += 1;
+  calls.log.push(kind);
   const job = makeJob(kind, uids);
   return delay(structuredClone(job));
 }

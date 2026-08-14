@@ -589,20 +589,62 @@ const click = (label) => {
   clickIt(button);
 };
 
-// A no-model edit must apply immediately, without a job.
+/*
+ * The verdict, and what it costs.
+ *
+ * "Keep original" is the direction that needs no work — the original audio is
+ * already on disk — so it applies instantly and queues nothing. "Dub it" is the
+ * direction that needs all of it: `edit.set_keep` invalidates the translate
+ * stage, so the line loses its subtitle and its clip on the way through, and a
+ * flip that sent the PATCH and stopped there left the segment with nothing to
+ * say and nothing coming to fix it. That was the bug. Both claims are counted
+ * rather than watched: a job that was never enqueued looks exactly like a job
+ * that has not started.
+ */
 const keptBefore = rows().filter((r) => r.textContent.includes("original audio plays here")).length;
+const sinceKeep = calls().log.length;
 click("Keep original");
 await settle(250);
 check(
   "keep applies immediately, and the row says what will play",
   rows().filter((r) => r.textContent.includes("original audio plays here")).length > keptBefore,
 );
+check("keeping the original queues nothing", calls().log.slice(sinceKeep).join() === "patch");
+
+// …and back. Segment 2's translation was typed by hand a few checks above, so
+// it is locked, survives the flip, and only the voice has to be queued.
 click("Dub it");
-await settle(250);
+await settle(350);
 check(
   "the verdict goes both ways",
   !rowFor(2).textContent.includes("original audio plays here"),
 );
+check(
+  "a dub whose translation survived queues only the voice",
+  calls().log.slice(sinceKeep).join() === "patch,patch,resynthesize",
+);
+
+// The general case: a kept line whose translation the pipeline wrote loses it
+// on the flip, so the translator has to run before the voice does — and the
+// one-job queue is FIFO, so enqueueing in that order *is* running in it.
+const sinceDub = calls().log.length;
+clickIt(rowFor(0).querySelector('[aria-label^="Select segment"]'));
+await settle(200);
+check(
+  "the panel says what Dub it will cost before it is pressed",
+  /queues translate \+ voice for this line/.test(root.textContent),
+);
+click("Dub it");
+await settle(400);
+check(
+  "flipping a kept line to Dub queues the work the flip invalidated",
+  calls().log.slice(sinceDub).join() === "patch,retranslate,resynthesize",
+);
+
+// Let the three jobs those flips queued drain, so the next assertions are about
+// the job they ask for and not about one of these.
+await settle(2000);
+check("the queue drains", document.querySelector("[data-job-strip]") == null);
 
 /*
  * A mark on the strip is a question about a line — what does it say, what did

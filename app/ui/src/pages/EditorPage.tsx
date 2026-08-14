@@ -219,13 +219,60 @@ export function EditorPage() {
     [],
   );
 
-  const toggleKeep = useCallback(
-    (seg: Segment) =>
-      void actions.patch(seg.uid, {
-        keep: !seg.keep,
-        keep_reason: seg.keep ? undefined : "manual",
-      }),
+  /**
+   * Make these lines playable: translate the ones with nothing to say, then
+   * voice all of them.
+   *
+   * Two jobs at most, never 2N — the one-job queue runs them FIFO, so the
+   * translate lands before the voice that needs it, and only one model is
+   * resident at a time either way. A line that already has a translation skips
+   * the translator: it is either the pipeline's, in which case re-running it
+   * changes nothing, or the user's, in which case re-running it would throw
+   * their sentence away.
+   */
+  const queueDubWork = useCallback(
+    async (segs: Segment[]) => {
+      const uids = segs.map((seg) => seg.uid);
+      if (uids.length === 0) return;
+      const untranslated = segs.filter((seg) => !(seg.text_en ?? "").trim());
+      if (untranslated.length > 0) await actions.retranslate(untranslated.map((seg) => seg.uid));
+      await actions.resynthesize(uids);
+    },
     [actions],
+  );
+
+  /**
+   * The verdict, and everything it implies.
+   *
+   * `PATCH {keep:false}` on its own is what the bug was: `edit.set_keep`
+   * invalidates the translate stage in both directions, so flipping a kept line
+   * to "Dub it" leaves it with no subtitle and no clip — and nothing queued to
+   * make either. The line then sits in the run forever, dubbed in name only.
+   * So the flip *is* the PATCH plus the work it creates, in that order, and the
+   * server's answer decides which work: a hand-written translation is locked
+   * and survives the flip, and re-translating over it would discard the very
+   * thing the user typed.
+   *
+   * The other direction queues nothing — the original audio is already on disk
+   * — and cancels nothing either: a running job belongs to whatever asked for
+   * it, not to this line.
+   */
+  const setVerdict = useCallback(
+    async (seg: Segment, keep: boolean) => {
+      if (seg.keep === keep) return;
+      const saved = await actions.patch(
+        seg.uid,
+        keep ? { keep: true, keep_reason: "manual" } : { keep: false },
+      );
+      if (!saved || keep) return;
+      await queueDubWork([saved]);
+    },
+    [actions, queueDubWork],
+  );
+
+  const toggleKeep = useCallback(
+    (seg: Segment) => void setVerdict(seg, !seg.keep),
+    [setVerdict],
   );
 
   /**
@@ -458,6 +505,7 @@ export function EditorPage() {
                   busy={state.busyUids.includes(selected.uid)}
                   playhead={transport.currentTime}
                   onPatch={(patch) => void actions.patch(selected.uid, patch)}
+                  onVerdict={(keep) => void setVerdict(selected, keep)}
                   onSplit={(at) => void actions.split(selected.uid, at)}
                   onMerge={(uidB) => void actions.merge(selected.uid, uidB)}
                   onRetranslate={() => void actions.retranslate([selected.uid])}
