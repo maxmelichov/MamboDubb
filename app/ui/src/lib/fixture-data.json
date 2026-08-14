@@ -1,0 +1,2060 @@
+{
+ "project": {
+  "name": "kan11_v3",
+  "source": {
+   "input": "https://www.youtube.com/watch?v=Z2Uq4aX2KPs",
+   "src_lang": "he",
+   "tgt_lang": "en",
+   "duration_limit": 320.0,
+   "title": "עונה חדשה 🔥 אויבים עונה 5 | פרק 1 - שייח'ה מוזא מקטאר",
+   "duration": 320.0,
+   "transcript_origin": "asr",
+   "context": "Context: an Israeli documentary about Qatar and Sheikha Moza (a woman, Hebrew שייח'ה מוזה, which the ASR often mangles as שייח עמוזה or עמוזה); her son Emir Tamim; the Muslim Brotherhood (Hebrew האחים המוסלמים); and Yusuf al-Qaradawi. Use these established English names and respect grammatical gender.",
+   "genre": "documentary",
+   "register": "narration"
+  },
+  "speakers": {
+   "SPEAKER_00": {
+    "dur": 37.61
+   },
+   "SPEAKER_01": {
+    "dur": 36.58
+   },
+   "SPEAKER_02": {
+    "dur": 17.99
+   },
+   "SPEAKER_03": {
+    "dur": 12.3,
+    "ref": "refs/SPEAKER_03.wav",
+    "ref_span": [
+     206.94,
+     211.44
+    ],
+    "ref_noise": 0.11
+   },
+   "SPEAKER_04": {
+    "dur": 13.24,
+    "ref": "refs/SPEAKER_04.wav",
+    "ref_span": [
+     10.45,
+     14.95
+    ],
+    "ref_noise": 0.01
+   },
+   "SPEAKER_05": {
+    "dur": 50.49,
+    "ref": "refs/SPEAKER_05.wav",
+    "ref_span": [
+     61.71,
+     62.61
+    ],
+    "ref_noise": 0.03
+   },
+   "SPEAKER_06": {
+    "dur": 12.6,
+    "ref": "refs/SPEAKER_06.wav",
+    "ref_span": [
+     33.17,
+     37.67
+    ],
+    "ref_noise": 0.22
+   },
+   "SPEAKER_07": {
+    "dur": 41.07,
+    "ref": "refs/SPEAKER_07.wav",
+    "ref_span": [
+     165.02,
+     169.52
+    ],
+    "ref_noise": 0.05
+   },
+   "SPEAKER_08": {
+    "dur": 26.88,
+    "ref": "refs/SPEAKER_08.wav",
+    "ref_span": [
+     307.46,
+     311.96
+    ],
+    "ref_noise": 0.07
+   }
+  },
+  "stages": {
+   "fetch": "done",
+   "stems": "done",
+   "transcript": "done",
+   "segments": "done",
+   "report": "done",
+   "mix": "done",
+   "translate": "done",
+   "timeline": "done",
+   "tts": "done"
+  },
+  "outputs": {
+   "dub_wav": "dub.wav",
+   "srt": "preview_en.srt",
+   "preview": "preview.mp4"
+  },
+  "report": {
+   "segments": 58,
+   "dubbed": 30,
+   "kept": 28,
+   "keep_reasons": {
+    "latin": 23,
+    "uncovered": 4,
+    "speaker_en": 1
+   },
+   "unaccounted": [],
+   "verify": {
+    "ok": 30,
+    "soft": 0,
+    "keep": 28
+   },
+   "shortened": [],
+   "drift": {
+    "max": 0.74,
+    "mean": 0.028,
+    "over_soft": 1
+   },
+   "speed": {
+    "max": 1.3,
+    "compressed": 14
+   },
+   "uncovered_audible": [
+    {
+     "start": 42.0,
+     "end": 44.8,
+     "duration": 2.8,
+     "rms": 0.0558
+    },
+    {
+     "start": 63.3,
+     "end": 69.1,
+     "duration": 5.8,
+     "rms": 0.0338
+    },
+    {
+     "start": 233.0,
+     "end": 270.8,
+     "duration": 37.8,
+     "rms": 0.0969
+    }
+   ]
+  }
+ },
+ "segments": [
+  {
+   "uid": "s_7ece992e48ee",
+   "id": 0,
+   "start": 2.4,
+   "end": 6.34,
+   "speaker": "SPEAKER_01",
+   "text": "Qatar is probably one of Israel's most dangerous enemies.",
+   "text_en": "Qatar is probably one of Israel's most dangerous enemies.",
+   "keep": true,
+   "keep_reason": "latin",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_0f53603a441a.wav",
+    "dur": 3.94,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 2.4,
+    "end": 6.34,
+    "rate": 1.0,
+    "drift": 0.0,
+    "clip": "clips/keep_0f53603a441a.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_bab945c1491e",
+   "id": 1,
+   "start": 7.27,
+   "end": 9.47,
+   "speaker": "SPEAKER_04",
+   "text": "היא לא מאיימת עלינו ברמה הצבאית.",
+   "text_en": "She does not threaten us on a military level.",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/ab881511d7224a99.wav",
+    "dur": 2.53,
+    "tries": 1,
+    "overlap": 1.0,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 7.27,
+    "end": 9.564,
+    "rate": 1.1096,
+    "drift": 0.0,
+    "clip": "clips/fit_ab881511d7224a99_1.110.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 1.0,
+    "heard": "She does not threaten us on a military level."
+   }
+  },
+  {
+   "uid": "s_2c8ad6532dd8",
+   "id": 2,
+   "start": 9.65,
+   "end": 15.27,
+   "speaker": "SPEAKER_04",
+   "text": "האיום הקטארי הוא איום הרבה יותר גדול, הרבה יותר עמוק והרבה יותר משמעותי למדינת ישראל.",
+   "text_en": "The Qatari threat is a much greater, much deeper, and much more significant threat to the State of Israel.",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/22b23ee29849ea72.wav",
+    "dur": 5.81,
+    "tries": 1,
+    "overlap": 1.0,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 9.664,
+    "end": 15.322,
+    "rate": 1.0229,
+    "drift": 0.014,
+    "clip": "clips/fit_22b23ee29849ea72_1.023.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 1.0,
+    "heard": "The Qatari threat is a much greater, much deeper, and much more significant threat to the state of Israel."
+   }
+  },
+  {
+   "uid": "s_5e51255e0f13",
+   "id": 3,
+   "start": 15.43,
+   "end": 20.85,
+   "speaker": "SPEAKER_04",
+   "text": "בסוף מדובר במדינה עם אג'נדה אחים מוסלמים פר אקסלאנס.",
+   "text_en": "In the end, we are talking about a state with a Muslim Brotherhood agenda par excellence.",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/8ae7f058811e8b55.wav",
+    "dur": 5.27,
+    "tries": 1,
+    "overlap": 1.0,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 15.43,
+    "end": 20.945,
+    "rate": 0.9513,
+    "drift": 0.0,
+    "clip": "clips/fit_8ae7f058811e8b55_0.951.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 1.0,
+    "heard": "In the end, we are talking about a state with a Muslim Brotherhood agenda par excellence."
+   }
+  },
+  {
+   "uid": "s_4c107dfe234f",
+   "id": 4,
+   "start": 21.07,
+   "end": 25.55,
+   "speaker": "SPEAKER_05",
+   "text": "כל ארגון טרור אסלאמי שפועל בעולם, היא מממנת.",
+   "text_en": "She funds every Islamic terrorist organization that operates in the world.",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/35487567ca9601fc.wav",
+    "dur": 4.93,
+    "tries": 1,
+    "overlap": 1.0,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 21.07,
+    "end": 25.655,
+    "rate": 1.0717,
+    "drift": 0.0,
+    "clip": "clips/fit_35487567ca9601fc_1.072.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 1.0,
+    "heard": "She funds every Islamic terrorist organization that operates in the world."
+   }
+  },
+  {
+   "uid": "s_9665431e1ee3",
+   "id": 5,
+   "start": 25.77,
+   "end": 38.37,
+   "speaker": "SPEAKER_06",
+   "text": "קטאר מממן את חמאס, קטאר מממן את אל-קאעידה, קטאר מממן את ISIS, את ג'בהת אל-נוסרה, וקטאר מסייע לאיראנים לממן את חיזבאללה ואת השלוחות האיראניות שקיימו.",
+   "text_en": "Qatar funds Hamas, Qatar funds Al-Qaeda, Qatar funds ISIS, Jabhat al-Nusra, and Qatar assists the Iranians in funding Hezbollah and the Iranian proxies they established.",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": {
+    "text_en": true
+   },
+   "tts": {
+    "clip": "clips/e76c7410845a222a.wav",
+    "dur": 11.97,
+    "tries": 1,
+    "overlap": 0.963,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 25.77,
+    "end": 39.09,
+    "rate": 0.898,
+    "drift": 0.0,
+    "clip": "clips/fit_e76c7410845a222a_0.898.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 0.963,
+    "heard": "Qatar funds Hamas, Qatar funds Al-Qaeda, Qatar funds ISIS, Jabhat Al-Nusrah, and Qatar assists the Iranians in funding H"
+   }
+  },
+  {
+   "uid": "s_382a2c5e3a21",
+   "id": 6,
+   "start": 39.2,
+   "end": 41.98,
+   "speaker": "SPEAKER_01",
+   "text": "Qatar is an enemy without stating that it is.",
+   "text_en": "Qatar is an enemy without stating that it is.",
+   "keep": true,
+   "keep_reason": "latin",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_de2373520203.wav",
+    "dur": 2.78,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 39.2,
+    "end": 41.98,
+    "rate": 1.0,
+    "drift": 0.0,
+    "clip": "clips/keep_de2373520203.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_f92f6f262e08",
+   "id": 7,
+   "start": 44.9,
+   "end": 45.69,
+   "speaker": "SPEAKER_05",
+   "text": "They just want to help.",
+   "text_en": "They just want to help.",
+   "keep": true,
+   "keep_reason": "latin",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_7d7dc4f72a9a.wav",
+    "dur": 0.79,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 44.9,
+    "end": 45.69,
+    "rate": 1.0,
+    "drift": 0.0,
+    "clip": "clips/keep_7d7dc4f72a9a.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_1b8e472e5e04",
+   "id": 8,
+   "start": 45.69,
+   "end": 53.03,
+   "speaker": "SPEAKER_05",
+   "text": "אנחנו רגילים לזהות את האויב בעין, את הנשק, אבל כשבא לך האויב בצורה מתוחכמת",
+   "text_en": "We are used to identifying the enemy by sight, by the weapon, but when the enemy comes to you in a sophisticated way",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/5d1c575d46a251df.wav",
+    "dur": 6.53,
+    "tries": 1,
+    "overlap": 1.0,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 45.695,
+    "end": 53.627,
+    "rate": 0.82,
+    "drift": 0.005,
+    "clip": "clips/fit_5d1c575d46a251df_0.820.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 1.0,
+    "heard": "We are used to identifying the enemy by sight, by the weapon, but when the enemy comes to you in a sophisticated way."
+   }
+  },
+  {
+   "uid": "s_6f93815a53ae",
+   "id": 9,
+   "start": 54.19,
+   "end": 55.21,
+   "speaker": "SPEAKER_05",
+   "text": "וכובש אותך",
+   "text_en": "and conquers you",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/14c79a957dcd2e67.wav",
+    "dur": 1.21,
+    "tries": 1,
+    "overlap": 1.0,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 54.19,
+    "end": 55.654,
+    "rate": 0.82,
+    "drift": 0.0,
+    "clip": "clips/fit_14c79a957dcd2e67_0.820.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 1.0,
+    "heard": "and conquers you."
+   }
+  },
+  {
+   "uid": "s_66cfa48782d2",
+   "id": 10,
+   "start": 58.29,
+   "end": 60.81,
+   "speaker": "SPEAKER_05",
+   "text": "בנינוחות כזאת, בשלוות נפש,",
+   "text_en": "With such composure, with peace of mind,",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/7aa4691bdedd4a4a.wav",
+    "dur": 2.45,
+    "tries": 1,
+    "overlap": 1.0,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 58.29,
+    "end": 61.248,
+    "rate": 0.82,
+    "drift": 0.0,
+    "clip": "clips/fit_7aa4691bdedd4a4a_0.820.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 1.0,
+    "heard": "with such composure, with peace of mind."
+   }
+  },
+  {
+   "uid": "s_9f1e3bf13d0b",
+   "id": 11,
+   "start": 61.71,
+   "end": 62.61,
+   "speaker": "SPEAKER_05",
+   "text": "אין מענה.",
+   "text_en": "There is no answer.",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "",
+    "dur": 0.0,
+    "tries": 3,
+    "overlap": 0.31,
+    "verify": "failed"
+   },
+   "place": null,
+   "verify": {
+    "ok": false,
+    "overlap": 0.31,
+    "heard": "the qatari the qatari threat is is a much"
+   }
+  },
+  {
+   "uid": "s_66538a3e4406",
+   "id": 12,
+   "start": 69.34,
+   "end": 71.82,
+   "speaker": "SPEAKER_05",
+   "text": "שייחה מוזה היא הדמות הכי מרכזית בקטר.",
+   "text_en": "Sheikha Moza is the most central figure in Qatar.",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/a959dc793112a628.wav",
+    "dur": 2.41,
+    "tries": 1,
+    "overlap": 0.889,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 69.34,
+    "end": 71.806,
+    "rate": 0.964,
+    "drift": 0.0,
+    "clip": "clips/fit_a959dc793112a628_0.964.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 0.889,
+    "heard": "Shikha Moza is the most central figure in Qatar."
+   }
+  },
+  {
+   "uid": "s_cfa529b3a3ec",
+   "id": 13,
+   "start": 71.94,
+   "end": 73.78,
+   "speaker": "SPEAKER_07",
+   "text": "היא למעשה אויבת לא מוכרת.",
+   "text_en": "She is, in fact, an unknown enemy.",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/59669fda8b145137.wav",
+    "dur": 2.21,
+    "tries": 1,
+    "overlap": 1.0,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 71.94,
+    "end": 73.846,
+    "rate": 1.1392,
+    "drift": 0.0,
+    "clip": "clips/fit_59669fda8b145137_1.139.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 1.0,
+    "heard": "She is, in fact, an unknown enemy."
+   }
+  },
+  {
+   "uid": "s_907174dd0f56",
+   "id": 14,
+   "start": 73.98,
+   "end": 76.94,
+   "speaker": "SPEAKER_07",
+   "text": "צריך להכיר אותה כדי לדעת איך קטר מתנהלת.",
+   "text_en": "One must know her in order to know how Qatar is managed.",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/98dbff5af9796f54.wav",
+    "dur": 3.52,
+    "tries": 1,
+    "overlap": 1.0,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 73.98,
+    "end": 77.021,
+    "rate": 1.15,
+    "drift": 0.0,
+    "clip": "clips/fit_98dbff5af9796f54_1.150.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 1.0,
+    "heard": "One must know her in order to know how Qatar is managed."
+   }
+  },
+  {
+   "uid": "s_1c1770107e98",
+   "id": 15,
+   "start": 77.04,
+   "end": 79.74,
+   "speaker": "SPEAKER_08",
+   "text": "כשאנחנו מדברים על קטר המודרנית, אנחנו מדברים על שייחה מוזה.",
+   "text_en": "When we talk about modern Qatar, we are talking about Sheikha Moza.",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/a6e9b28ef0577e76.wav",
+    "dur": 3.57,
+    "tries": 1,
+    "overlap": 0.833,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 77.121,
+    "end": 79.846,
+    "rate": 1.3,
+    "drift": 0.081,
+    "clip": "clips/fit_a6e9b28ef0577e76_1.300.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 0.833,
+    "heard": "When we talk about modern Qatar, we are talking about Sheikh Amoza."
+   }
+  },
+  {
+   "uid": "s_df7cca557451",
+   "id": 16,
+   "start": 79.84,
+   "end": 84.46,
+   "speaker": "SPEAKER_05",
+   "text": "שייחה היא בראש ובראשונה זו שקובעה את האסטרטגיה.",
+   "text_en": "Sheikha is, first and foremost, the one who determines the strategy.",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/ce3bf4d355bcce89.wav",
+    "dur": 4.71,
+    "tries": 1,
+    "overlap": 0.909,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 79.946,
+    "end": 84.496,
+    "rate": 1.03,
+    "drift": 0.106,
+    "clip": "clips/fit_ce3bf4d355bcce89_1.030.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 0.909,
+    "heard": "Shika is first and foremost the one who determines the strategy."
+   }
+  },
+  {
+   "uid": "s_885c5a272eaa",
+   "id": 17,
+   "start": 84.66,
+   "end": 88.3,
+   "speaker": "SPEAKER_05",
+   "text": "אישה עם יכולות יוצאות דופן, מאוד חכמה, מאוד מניפולטיבית.",
+   "text_en": "A woman with extraordinary abilities, very smart, very manipulative.",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/ffe80182e151e7a0.wav",
+    "dur": 4.07,
+    "tries": 3,
+    "overlap": 0.78,
+    "verify": "soft"
+   },
+   "place": {
+    "start": 84.66,
+    "end": 88.466,
+    "rate": 1.0711,
+    "drift": 0.0,
+    "clip": "clips/fit_ffe80182e151e7a0_1.071.wav"
+   },
+   "verify": {
+    "ok": false,
+    "overlap": 0.78,
+    "heard": "A woman with extraordinary abilities, very smart, very manipulative."
+   }
+  },
+  {
+   "uid": "s_7009ee928ec2",
+   "id": 18,
+   "start": 88.56,
+   "end": 94.84,
+   "speaker": "SPEAKER_05",
+   "text": "יש לה גם תפקיד מאוד מרכזי בהצגת פניה של קטר בעולם, והיא עושה את זה באומנות רבה.",
+   "text_en": "She also has a very central role in presenting the face of Qatar to the world, and she does it with great artistry.",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/03100e7342b8cf26.wav",
+    "dur": 6.25,
+    "tries": 1,
+    "overlap": 1.0,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 88.566,
+    "end": 94.997,
+    "rate": 0.9705,
+    "drift": 0.006,
+    "clip": "clips/fit_03100e7342b8cf26_0.971.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 1.0,
+    "heard": "She also has a very central role in presenting the face of Qatar to the world and she does it with great artistry."
+   }
+  },
+  {
+   "uid": "s_2973d887743a",
+   "id": 19,
+   "start": 95.1,
+   "end": 99.2,
+   "speaker": "SPEAKER_00",
+   "text": "",
+   "text_en": "",
+   "keep": true,
+   "keep_reason": "uncovered",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_38b65c1093f1.wav",
+    "dur": 4.1,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 95.1,
+    "end": 99.2,
+    "rate": 1.0,
+    "drift": 0.0,
+    "clip": "clips/keep_38b65c1093f1.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_93c9afcd6f1a",
+   "id": 20,
+   "start": 99.3,
+   "end": 102.68,
+   "speaker": "SPEAKER_01",
+   "text": "As a benevolent philanthropist,",
+   "text_en": "As a benevolent philanthropist,",
+   "keep": true,
+   "keep_reason": "latin",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_9820453fb718.wav",
+    "dur": 3.38,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 99.3,
+    "end": 102.68,
+    "rate": 1.0,
+    "drift": 0.0,
+    "clip": "clips/keep_9820453fb718.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_c4b352c6c49b",
+   "id": 21,
+   "start": 102.68,
+   "end": 106.48,
+   "speaker": "SPEAKER_01",
+   "text": "she appears in style magazines.",
+   "text_en": "she appears in style magazines.",
+   "keep": true,
+   "keep_reason": "latin",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_7beb0db60b5f.wav",
+    "dur": 3.8,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 102.685,
+    "end": 106.485,
+    "rate": 1.0,
+    "drift": 0.005,
+    "clip": "clips/keep_7beb0db60b5f.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_6461ef5a394b",
+   "id": 22,
+   "start": 106.48,
+   "end": 111.37,
+   "speaker": "SPEAKER_01",
+   "text": "She speaks out on behalf of poverty and children.",
+   "text_en": "She speaks out on behalf of poverty and children.",
+   "keep": true,
+   "keep_reason": "latin",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_99c8cfd7b01b.wav",
+    "dur": 4.89,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 106.49,
+    "end": 111.38,
+    "rate": 1.0,
+    "drift": 0.01,
+    "clip": "clips/keep_99c8cfd7b01b.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_560f86400c3c",
+   "id": 23,
+   "start": 111.37,
+   "end": 114.88,
+   "speaker": "SPEAKER_07",
+   "text": "צובעת את קטאר בצבעים שמאוד נוחים למצפון המערבי.",
+   "text_en": "She paints Qatar in colors that are very comfortable for the Western conscience.",
+   "keep": false,
+   "keep_reason": null,
+   "lang": "ar",
+   "src_lang": "ar",
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/d8f795beb93dd469.wav",
+    "dur": 4.65,
+    "tries": 1,
+    "overlap": 1.0,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 111.385,
+    "end": 115.444,
+    "rate": 1.15,
+    "drift": 0.015,
+    "clip": "clips/fit_d8f795beb93dd469_1.150.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 1.0,
+    "heard": "She paints Qatar in colors that are very comfortable for the Western conscience."
+   }
+  },
+  {
+   "uid": "s_e911ce6a0956",
+   "id": 24,
+   "start": 115.14,
+   "end": 125.38,
+   "speaker": "SPEAKER_07",
+   "text": "שייח' עמוזה מצליחה למתג את קטאר בתור נסיכות מודרנית שפניה למערב, שמפיצה השכלה וחינוך וזכויות אדם.",
+   "text_en": "Sheikha Moza succeeds in branding Qatar as a modern principality that turns to the West, which spreads knowledge, education, and human rights.",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/52ee96f8f5a94697.wav",
+    "dur": 9.29,
+    "tries": 1,
+    "overlap": 0.909,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 115.544,
+    "end": 126.849,
+    "rate": 0.82,
+    "drift": 0.404,
+    "clip": "clips/fit_52ee96f8f5a94697_0.820.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 0.909,
+    "heard": "Shikamosa succeeds in branding Qatar as a modern principality that turns to the West, which spreads knowledge, education"
+   }
+  },
+  {
+   "uid": "s_ff40e38a4741",
+   "id": 25,
+   "start": 128.7,
+   "end": 135.92,
+   "speaker": "SPEAKER_07",
+   "text": "בפועל, שייח' עמוזה מקדמת תפיסה אידיאולוגית מאוד מאוד קיצונית נגד ישראל, שתומכת בפיגועים, שקוראת לג'יהאד.",
+   "text_en": "In practice, Sheikha Moza promotes a very, very extreme ideological perception against Israel, which supports terrorism and calls for jihad.",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/33c3ff36e3fc123c.wav",
+    "dur": 8.51,
+    "tries": 1,
+    "overlap": 0.9,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 128.7,
+    "end": 136.065,
+    "rate": 1.15,
+    "drift": 0.0,
+    "clip": "clips/fit_33c3ff36e3fc123c_1.150.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 0.9,
+    "heard": "In practice, Shikamosa promotes a very, very extreme ideological perception against Israel, which supports terrorism and"
+   }
+  },
+  {
+   "uid": "s_7631a9ddf4b7",
+   "id": 26,
+   "start": 136.04,
+   "end": 139.1,
+   "speaker": "SPEAKER_05",
+   "text": "מי זאת שקושרת בין בית המלוכה לבין האחים המוסלמים?",
+   "text_en": "Who is the one who links the royal family to the Muslim Brotherhood?",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/d2555e03e6ba4777.wav",
+    "dur": 3.43,
+    "tries": 1,
+    "overlap": 1.0,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 136.165,
+    "end": 140.151,
+    "rate": 0.8575,
+    "drift": 0.125,
+    "clip": "clips/fit_d2555e03e6ba4777_0.858.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 1.0,
+    "heard": "Who is the one who links the royal family to the Muslim Brotherhood?"
+   }
+  },
+  {
+   "uid": "s_6a2ef3143710",
+   "id": 27,
+   "start": 140.3,
+   "end": 142.9,
+   "speaker": "SPEAKER_02",
+   "text": "She is the bridge to Cardali.",
+   "text_en": "She is the bridge to Cardali.",
+   "keep": true,
+   "keep_reason": "latin",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_b07b73d20781.wav",
+    "dur": 2.6,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 140.3,
+    "end": 142.9,
+    "rate": 1.0,
+    "drift": 0.0,
+    "clip": "clips/keep_b07b73d20781.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_6e8817c7bd54",
+   "id": 28,
+   "start": 142.9,
+   "end": 144.7,
+   "speaker": "SPEAKER_02",
+   "text": "She is the bridge to the Muslim Brotherhood.",
+   "text_en": "She is the bridge to the Muslim Brotherhood.",
+   "keep": true,
+   "keep_reason": "latin",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_759bac0e3749.wav",
+    "dur": 1.8,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 142.905,
+    "end": 144.705,
+    "rate": 1.0,
+    "drift": 0.005,
+    "clip": "clips/keep_759bac0e3749.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_1b9bf1fc8752",
+   "id": 29,
+   "start": 144.7,
+   "end": 151.26,
+   "speaker": "SPEAKER_01",
+   "text": "She stands behind this quiet Islamist agenda that has slowly advanced.",
+   "text_en": "She stands behind this quiet Islamist agenda that has slowly advanced.",
+   "keep": true,
+   "keep_reason": "latin",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_cf44991a8c8d.wav",
+    "dur": 6.56,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 144.71,
+    "end": 151.27,
+    "rate": 1.0,
+    "drift": 0.01,
+    "clip": "clips/keep_cf44991a8c8d.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_c8d2defaca10",
+   "id": 30,
+   "start": 151.26,
+   "end": 153.74,
+   "speaker": "SPEAKER_01",
+   "text": "And in my view, destroyed the Middle East.",
+   "text_en": "And in my view, destroyed the Middle East.",
+   "keep": true,
+   "keep_reason": "latin",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_13b016d15162.wav",
+    "dur": 2.48,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 151.275,
+    "end": 153.755,
+    "rate": 1.0,
+    "drift": 0.015,
+    "clip": "clips/keep_13b016d15162.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_8538c8efa5ff",
+   "id": 31,
+   "start": 154.56,
+   "end": 162.14,
+   "speaker": "SPEAKER_07",
+   "text": "מרגע שהיא נכנסה לארמון, במהלך תלושה עשורים היא הצליחה לנתב את קטאר למקום אחר מהמקום שהיא הייתה בו.",
+   "text_en": "From the moment she entered the palace, during three decades she succeeded in steering Qatar to a different place from the place where it was.",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/0d5c04578a3e5df0.wav",
+    "dur": 7.43,
+    "tries": 1,
+    "overlap": 1.0,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 154.56,
+    "end": 162.127,
+    "rate": 0.9802,
+    "drift": 0.0,
+    "clip": "clips/fit_0d5c04578a3e5df0_0.980.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 1.0,
+    "heard": "From the moment she entered the palace, during three decades she succeeded in steering Qatar to a different place from t"
+   }
+  },
+  {
+   "uid": "s_e0e573c76eea",
+   "id": 32,
+   "start": 162.22,
+   "end": 169.94,
+   "speaker": "SPEAKER_07",
+   "text": "היא אחראית לשתי ההפיכות שנעשו שם, הפיכה של בעלה שהעפילה את אביו, והשנייה, העברת שלטון מבעלה לבנה השני.",
+   "text_en": "She is responsible for the two reversals that were made there, the reversal of her husband who overthrew his father, and the second, the transfer of rule from her husband to her second son.",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/ff62869ed5ce88f3.wav",
+    "dur": 11.02,
+    "tries": 1,
+    "overlap": 1.0,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 162.22,
+    "end": 170.702,
+    "rate": 1.3,
+    "drift": 0.0,
+    "clip": "clips/fit_ff62869ed5ce88f3_1.300.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 1.0,
+    "heard": "She is responsible for the two reversals that were made there, the reversal of her husband who overthrew his father, and"
+   }
+  },
+  {
+   "uid": "s_29984bf7ea8e",
+   "id": 33,
+   "start": 170.06,
+   "end": 175.6,
+   "speaker": "SPEAKER_08",
+   "text": "אני לא מכירה אף אישה במזרח התיכון שיש לה השפעה כל כך דרמטית כמו השייח' עמוזה.",
+   "text_en": "I do not know of any woman in the Middle East who has such a dramatic influence as Sheikha Moza.",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/e02c4356dc8b5e72.wav",
+    "dur": 5.57,
+    "tries": 1,
+    "overlap": 0.95,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 170.802,
+    "end": 175.632,
+    "rate": 1.15,
+    "drift": 0.742,
+    "clip": "clips/fit_e02c4356dc8b5e72_1.150.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 0.95,
+    "heard": "I do not know of any woman in the Middle East who has such a dramatic influence as Sheikah I'm Moza."
+   }
+  },
+  {
+   "uid": "s_d75592bd61c6",
+   "id": 34,
+   "start": 175.74,
+   "end": 181.62,
+   "speaker": "SPEAKER_08",
+   "text": "אני חושבת שאיש מאיתנו, כולל היא, לא חזו שזאת האישה שתשנה את פניה של קטאר מקצה לקצה.",
+   "text_en": "I think that none of us, including her, foresaw that this is the woman who will change the face of Qatar from end to end.",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/1155956a35ef1062.wav",
+    "dur": 6.87,
+    "tries": 1,
+    "overlap": 0.96,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 175.74,
+    "end": 182.148,
+    "rate": 1.0685,
+    "drift": 0.0,
+    "clip": "clips/fit_1155956a35ef1062_1.069.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 0.96,
+    "heard": "I think that none of us including her or saw that this is the woman who will change the face of Qatar from end to end."
+   }
+  },
+  {
+   "uid": "s_7ccce7775f01",
+   "id": 35,
+   "start": 182.27,
+   "end": 182.9,
+   "speaker": "SPEAKER_01",
+   "text": "צ'ייכל",
+   "text_en": "צ'ייכל",
+   "keep": true,
+   "keep_reason": "speaker_en",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_3df5d95fd87e.wav",
+    "dur": 0.63,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 182.27,
+    "end": 182.9,
+    "rate": 1.0,
+    "drift": 0.0,
+    "clip": "clips/keep_3df5d95fd87e.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_496cea86584f",
+   "id": 36,
+   "start": 182.9,
+   "end": 187.88,
+   "speaker": "SPEAKER_01",
+   "text": "Sheikh Hamosah is one of the constants from the old emir to the new emir.",
+   "text_en": "Sheikh Hamosah is one of the constants from the old emir to the new emir.",
+   "keep": true,
+   "keep_reason": "latin",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_f1022154ef41.wav",
+    "dur": 4.98,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 182.905,
+    "end": 187.885,
+    "rate": 1.0,
+    "drift": 0.005,
+    "clip": "clips/keep_f1022154ef41.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_6d0f3103f5fb",
+   "id": 37,
+   "start": 187.88,
+   "end": 191.02,
+   "speaker": "SPEAKER_01",
+   "text": "It has been support for Hamas and Islamists.",
+   "text_en": "It has been support for Hamas and Islamists.",
+   "keep": true,
+   "keep_reason": "latin",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_1486221a0d9f.wav",
+    "dur": 3.14,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 187.89,
+    "end": 191.03,
+    "rate": 1.0,
+    "drift": 0.01,
+    "clip": "clips/keep_1486221a0d9f.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_f270fd8afd33",
+   "id": 38,
+   "start": 191.02,
+   "end": 198.54,
+   "speaker": "SPEAKER_02",
+   "text": "Qatari influence operation created the camouflage and the strategic cover for the most deadly attack against Jews since World War II.",
+   "text_en": "Qatari influence operation created the camouflage and the strategic cover for the most deadly attack against Jews since World War II.",
+   "keep": true,
+   "keep_reason": "latin",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_4a3624645138.wav",
+    "dur": 7.52,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 191.035,
+    "end": 198.555,
+    "rate": 1.0,
+    "drift": 0.015,
+    "clip": "clips/keep_4a3624645138.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_268823eb6557",
+   "id": 39,
+   "start": 198.54,
+   "end": 202.54,
+   "speaker": "SPEAKER_02",
+   "text": "The Qatari's enabled this, but they also are just as guilty as the planners.",
+   "text_en": "The Qatari's enabled this, but they also are just as guilty as the planners.",
+   "keep": true,
+   "keep_reason": "latin",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_0fafb5b69a06.wav",
+    "dur": 4.0,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 198.56,
+    "end": 202.56,
+    "rate": 1.0,
+    "drift": 0.02,
+    "clip": "clips/keep_0fafb5b69a06.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_3dc897047167",
+   "id": 40,
+   "start": 202.54,
+   "end": 204.61,
+   "speaker": "SPEAKER_02",
+   "text": "Because without them, there would be no October 7.",
+   "text_en": "Because without them, there would be no October 7.",
+   "keep": true,
+   "keep_reason": "latin",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_85c107f528f6.wav",
+    "dur": 2.07,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 202.565,
+    "end": 204.635,
+    "rate": 1.0,
+    "drift": 0.025,
+    "clip": "clips/keep_85c107f528f6.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_7a0cdbb6177b",
+   "id": 41,
+   "start": 204.94,
+   "end": 216.06,
+   "speaker": "SPEAKER_03",
+   "text": "ומעבר לכך, הכסף הקטרי וההשפעה הקטרית היו בין המחוללים המרכזיים שהובילו לסיומה של מלחמת 40 הימים בהסכם ששירת את הרפובליקה האסלאמית של איראן.",
+   "text_en": "Beyond that, the Qatari money and Qatari influence were among the central factors that led to the conclusion of the Forty Days War in an agreement that served the Islamic Republic of Iran.",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/0b4dda44dd5dcab4.wav",
+    "dur": 10.55,
+    "tries": 1,
+    "overlap": 0.97,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 204.94,
+    "end": 216.275,
+    "rate": 0.9303,
+    "drift": 0.0,
+    "clip": "clips/fit_0b4dda44dd5dcab4_0.930.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 0.97,
+    "heard": "Beyond that, the Qatari money and Qatari influence were among the central factors that led to the conclusion of the 40-d"
+   }
+  },
+  {
+   "uid": "s_8c13eea1a907",
+   "id": 42,
+   "start": 216.38,
+   "end": 217.56,
+   "speaker": "SPEAKER_03",
+   "text": "שלא נתבלבל,",
+   "text_en": "So that we do not get confused,",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/b4c5807b109405ac.wav",
+    "dur": 1.87,
+    "tries": 1,
+    "overlap": 1.0,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 216.38,
+    "end": 218.637,
+    "rate": 0.82,
+    "drift": 0.0,
+    "clip": "clips/fit_b4c5807b109405ac_0.820.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 1.0,
+    "heard": "so that we do not get confused."
+   }
+  },
+  {
+   "uid": "s_599dafd9a420",
+   "id": 43,
+   "start": 219.0,
+   "end": 221.46,
+   "speaker": "SPEAKER_05",
+   "text": "למרות הפנים היפות ולמרות הכול.",
+   "text_en": "Despite the beautiful face and despite everything.",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/a9ef8b11e2e1206b.wav",
+    "dur": 2.69,
+    "tries": 1,
+    "overlap": 1.0,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 219.0,
+    "end": 221.69,
+    "rate": 1.0,
+    "drift": 0.0,
+    "clip": "clips/a9ef8b11e2e1206b.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 1.0,
+    "heard": "despite the beautiful face and despite everything."
+   }
+  },
+  {
+   "uid": "s_661c8d7ba863",
+   "id": 44,
+   "start": 221.8,
+   "end": 232.7,
+   "speaker": "SPEAKER_05",
+   "text": "המטרה בסופו של דבר, זו המטרה של האחים המוסלמים, לכבוש את העולם ולהחזיר את האסלאם לשלוט בעולם.",
+   "text_en": "The goal in the end, this is the goal of the Muslim Brotherhood, is to conquer the world and to bring back Islam to rule the world.",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/d1d26d0eb32e9faa.wav",
+    "dur": 6.75,
+    "tries": 1,
+    "overlap": 1.0,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 221.8,
+    "end": 230.002,
+    "rate": 0.82,
+    "drift": 0.0,
+    "clip": "clips/fit_d1d26d0eb32e9faa_0.820.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 1.0,
+    "heard": "The goal in the end, this is the goal of the Muslim Brotherhood, is to conquer the world and to bring back Islam to rule"
+   }
+  },
+  {
+   "uid": "s_0a9ff5827365",
+   "id": 45,
+   "start": 270.8,
+   "end": 274.74,
+   "speaker": "SPEAKER_00",
+   "text": "Frankly, I had the same concerns when",
+   "text_en": "Frankly, I had the same concerns when",
+   "keep": true,
+   "keep_reason": "latin",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_8e963de8fb63.wav",
+    "dur": 3.94,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 270.8,
+    "end": 274.74,
+    "rate": 1.0,
+    "drift": 0.0,
+    "clip": "clips/keep_8e963de8fb63.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_188417aa5812",
+   "id": 46,
+   "start": 274.74,
+   "end": 277.38,
+   "speaker": "SPEAKER_00",
+   "text": "I was director of the CIA.",
+   "text_en": "I was director of the CIA.",
+   "keep": true,
+   "keep_reason": "latin",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_5fd2cfd20011.wav",
+    "dur": 2.64,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 274.745,
+    "end": 277.385,
+    "rate": 1.0,
+    "drift": 0.005,
+    "clip": "clips/keep_5fd2cfd20011.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_c50f037f91a3",
+   "id": 47,
+   "start": 277.5,
+   "end": 282.1,
+   "speaker": "SPEAKER_00",
+   "text": "",
+   "text_en": "",
+   "keep": true,
+   "keep_reason": "uncovered",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_07e63289b702.wav",
+    "dur": 4.6,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 277.5,
+    "end": 282.1,
+    "rate": 1.0,
+    "drift": 0.0,
+    "clip": "clips/keep_07e63289b702.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_16d4d00a5689",
+   "id": 48,
+   "start": 282.1,
+   "end": 285.54,
+   "speaker": "SPEAKER_00",
+   "text": "that we had to take in",
+   "text_en": "that we had to take in",
+   "keep": true,
+   "keep_reason": "latin",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_885176c4b3aa.wav",
+    "dur": 3.44,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 282.105,
+    "end": 285.545,
+    "rate": 1.0,
+    "drift": 0.005,
+    "clip": "clips/keep_885176c4b3aa.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_e15580ec8be9",
+   "id": 49,
+   "start": 285.54,
+   "end": 286.97,
+   "speaker": "SPEAKER_00",
+   "text": "dealing with Qatar.",
+   "text_en": "dealing with Qatar.",
+   "keep": true,
+   "keep_reason": "latin",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_cea3cb0455e2.wav",
+    "dur": 1.43,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 285.55,
+    "end": 286.98,
+    "rate": 1.0,
+    "drift": 0.01,
+    "clip": "clips/keep_cea3cb0455e2.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_afd3f95d29c8",
+   "id": 50,
+   "start": 287.9,
+   "end": 291.28,
+   "speaker": "SPEAKER_00",
+   "text": "I was never quite sure where their allegiance was.",
+   "text_en": "I was never quite sure where their allegiance was.",
+   "keep": true,
+   "keep_reason": "latin",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_5a8371380db3.wav",
+    "dur": 3.38,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 287.9,
+    "end": 291.28,
+    "rate": 1.0,
+    "drift": 0.0,
+    "clip": "clips/keep_5a8371380db3.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_7a84c0842dc3",
+   "id": 51,
+   "start": 291.4,
+   "end": 293.8,
+   "speaker": "SPEAKER_00",
+   "text": "",
+   "text_en": "",
+   "keep": true,
+   "keep_reason": "uncovered",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_56e8f1a59605.wav",
+    "dur": 2.4,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 291.4,
+    "end": 293.8,
+    "rate": 1.0,
+    "drift": 0.0,
+    "clip": "clips/keep_56e8f1a59605.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_672b00754e1f",
+   "id": 52,
+   "start": 293.9,
+   "end": 295.79,
+   "speaker": "SPEAKER_00",
+   "text": "that they could not be trusts.",
+   "text_en": "that they could not be trusts.",
+   "keep": true,
+   "keep_reason": "latin",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_ed4bcbe1eaa0.wav",
+    "dur": 1.89,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 293.9,
+    "end": 295.79,
+    "rate": 1.0,
+    "drift": 0.0,
+    "clip": "clips/keep_ed4bcbe1eaa0.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_07bfd8d47e26",
+   "id": 53,
+   "start": 296.7,
+   "end": 300.31,
+   "speaker": "SPEAKER_00",
+   "text": "I still would urge that we be very careful with them.",
+   "text_en": "I still would urge that we be very careful with them.",
+   "keep": true,
+   "keep_reason": "latin",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_9dc1be704994.wav",
+    "dur": 3.61,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 296.7,
+    "end": 300.31,
+    "rate": 1.0,
+    "drift": 0.0,
+    "clip": "clips/keep_9dc1be704994.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_b8c4a0f140f5",
+   "id": 54,
+   "start": 300.5,
+   "end": 304.3,
+   "speaker": "SPEAKER_00",
+   "text": "",
+   "text_en": "",
+   "keep": true,
+   "keep_reason": "uncovered",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_1f336cb7db18.wav",
+    "dur": 3.8,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 300.5,
+    "end": 304.3,
+    "rate": 1.0,
+    "drift": 0.0,
+    "clip": "clips/keep_1f336cb7db18.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_d057eb011c0e",
+   "id": 55,
+   "start": 304.3,
+   "end": 306.68,
+   "speaker": "SPEAKER_00",
+   "text": "I'm not sure you can trust their word.",
+   "text_en": "I'm not sure you can trust their word.",
+   "keep": true,
+   "keep_reason": "latin",
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/keep_f2ad699930eb.wav",
+    "dur": 2.38,
+    "tries": 0,
+    "overlap": 1.0,
+    "verify": "keep"
+   },
+   "place": {
+    "start": 304.305,
+    "end": 306.685,
+    "rate": 1.0,
+    "drift": 0.005,
+    "clip": "clips/keep_f2ad699930eb.wav"
+   },
+   "verify": null
+  },
+  {
+   "uid": "s_6620d1f38437",
+   "id": 56,
+   "start": 307.06,
+   "end": 315.92,
+   "speaker": "SPEAKER_08",
+   "text": "קאטר מסתכלת על מדינות, על ארגונים ואנשים, והיא רואה בעצם מה הם צריכים, ובהתאם לזה היא תופרת את החליפה שמתאימה לצרכים שלהם.",
+   "text_en": "Qatar looks at countries, at organizations and people, and she actually sees what they need, and accordingly, she tailors the suit that fits their needs.",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/31818125edff8311.wav",
+    "dur": 9.23,
+    "tries": 1,
+    "overlap": 1.0,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 307.06,
+    "end": 315.975,
+    "rate": 1.0348,
+    "drift": 0.0,
+    "clip": "clips/fit_31818125edff8311_1.035.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 1.0,
+    "heard": "Qatar looks at countries, at organizations and people, and she actually sees what they need. And accordingly, she tailor"
+   }
+  },
+  {
+   "uid": "s_43a1b3edbd09",
+   "id": 57,
+   "start": 316.08,
+   "end": 319.98,
+   "speaker": "SPEAKER_08",
+   "text": "באמצעות הגז הקטארי, קטאר משחדת את אירופה.",
+   "text_en": "Through Qatari gas, Qatar bribes Europe.",
+   "keep": false,
+   "keep_reason": null,
+   "lang": null,
+   "src_lang": null,
+   "tgt_lang": null,
+   "tts_opts": null,
+   "locked": null,
+   "tts": {
+    "clip": "clips/53f7bd2da6dcd970.wav",
+    "dur": 2.83,
+    "tries": 1,
+    "overlap": 0.5,
+    "verify": "ok"
+   },
+   "place": {
+    "start": 316.08,
+    "end": 319.511,
+    "rate": 0.82,
+    "drift": 0.0,
+    "clip": "clips/fit_53f7bd2da6dcd970_0.820.wav"
+   },
+   "verify": {
+    "ok": true,
+    "overlap": 0.5,
+    "heard": "through Katarigas, Katar bribes Europe."
+   }
+  }
+ ]
+}
