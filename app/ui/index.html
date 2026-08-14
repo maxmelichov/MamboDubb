@@ -22,14 +22,14 @@
       light. There is deliberately no media-query variant of it — the OS does
       not get a vote here either.
     -->
-    <meta name="theme-color" content="#0e0e0d" />
+    <meta name="theme-color" content="#110e16" />
     <style>
       html {
         background: #f7f6f2;
         color-scheme: light;
       }
       html.theme-dark {
-        background: #0e0e0d;
+        background: #110e16;
         color-scheme: dark;
       }
     </style>
@@ -45,7 +45,7 @@
         }
         document.documentElement.classList.toggle("theme-dark", dark);
         var meta = document.querySelector('meta[name="theme-color"]');
-        if (meta) meta.setAttribute("content", dark ? "#0e0e0d" : "#f7f6f2");
+        if (meta) meta.setAttribute("content", dark ? "#110e16" : "#f7f6f2");
       })();
     </script>
   </head>

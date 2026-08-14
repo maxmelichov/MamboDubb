@@ -200,18 +200,19 @@ export function ScriptPane({
       className={cn(
         "inline-flex h-6 shrink-0 items-center gap-1 rounded-md border px-2 text-[11px] font-semibold transition-colors",
         filter === key
-          ? "border-transparent bg-primary text-on-primary"
+          ? "border-transparent bg-accent text-on-accent"
           : "border-border bg-raised text-secondary hover:border-axis hover:text-primary",
         count === 0 && filter !== key && "opacity-45",
         /*
           One chip is allowed a hue, and it is the one whose count is news.
           "Failed 3" in the same grey as "All 73" is a number you have to read
           to notice; in the failed hue it is the thing your eye lands on when
-          the bar comes up. The rest stay ink — a filter bar where every chip
+          the bar comes up. The rest stay quiet — a filter bar where every chip
           is coloured is a filter bar with no emphasis in it — and the hue is
           the state's own token, so this chip and the rows it selects are the
-          same red. It goes back to ink when it is the active filter, because
-          then the ink pill *is* the emphasis.
+          same red. It drops the hue when it is the active filter, because then
+          the accent pill *is* the emphasis, and two loud colours on one chip is
+          one too many.
         */
         key === "failed" &&
           count > 0 &&
@@ -269,7 +270,7 @@ export function ScriptPane({
             onChange={(event) => onQuery(event.currentTarget.value)}
             placeholder="Search the script"
             aria-label="Search the script"
-            className="h-7 w-full rounded-md border border-border bg-raised pl-7 pr-2 text-[12.5px] text-primary outline-none transition-colors placeholder:text-muted/70 hover:border-axis focus:border-primary"
+            className="h-7 w-full rounded-md border border-border bg-raised pl-7 pr-2 text-[12.5px] text-primary outline-none transition-colors placeholder:text-muted/70 hover:border-axis focus:border-accent"
           />
         </label>
         {chip("all", "All", counts.all)}

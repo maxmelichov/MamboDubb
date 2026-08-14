@@ -132,7 +132,7 @@ function ThemeToggle() {
       className={cn(
         "grid h-6 w-7 place-items-center rounded-md transition-colors",
         theme === value
-          ? "bg-primary text-on-primary"
+          ? "bg-accent text-on-accent"
           : "text-muted hover:text-primary",
       )}
     >
@@ -168,7 +168,7 @@ function HeaderTools() {
           "inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 transition-colors",
           "text-[10px] font-bold uppercase tracking-[0.14em]",
           onSetup
-            ? "border-transparent bg-primary text-on-primary"
+            ? "border-transparent bg-accent text-on-accent"
             : "border-border bg-raised text-muted hover:border-axis hover:text-primary",
         )}
       >

@@ -427,8 +427,10 @@ function Mark({
         "group/mark absolute inset-y-2 overflow-hidden rounded-[3px] border text-left transition-all",
         // Hover is a real affordance here: the marks are 3–40px wide and the
         // only other cue that they are clickable is the cursor.
-        "hover:inset-y-1.5 hover:ring-2 hover:ring-primary/45",
-        selected && "z-10 ring-2 ring-primary ring-offset-1 ring-offset-surface",
+        // Hover and selection ring in the accent, not in ink: the playhead is
+        // the ink on this strip and it has to stay the brightest thing on it.
+        "hover:inset-y-1.5 hover:ring-2 hover:ring-accent/45",
+        selected && "z-10 ring-2 ring-accent ring-offset-1 ring-offset-surface",
         busy && "animate-pulse",
         // A mark in the OUTPUT lane with nothing placed under it is a
         // *prediction*, not a placement, so it is drawn as one.

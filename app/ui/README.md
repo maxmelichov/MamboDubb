@@ -138,7 +138,16 @@ inline boot script in `index.html` (pre-paint, so there is no flash), `applyThem
 `lib/theme.ts` called from `main.tsx` (the belt to that braces), and the header toggle. Dark
 is not inverted light: the neutrals are re-picked for a near-black plane, elevation swaps
 from a cast shadow to an inset top highlight, and the state hues are a separately validated
-triple. The desktop shell's window `backgroundColor` should match the dark plane, `#0e0e0d`.
+triple. The desktop shell's window `backgroundColor` has to match the dark plane, `#110e16`,
+and the smoke test reads `tauri.conf.json` to check that it does.
+
+**One accent, and it is the brand's.** `--color-accent` is ink in light — which is exactly
+what light always was, so naming it changed nothing there — and the logo's violet `#ce77f2`
+in dark, where a near-white primary button on a near-black plane was a screen with no colour
+in it. It is spent on a closed list: the primary button, the active cell of a nav or filter
+group, the selected script row and timeline mark, the focus ring, and the brand chip. The
+playhead, the transport and the stage track stay ink on purpose. App.css lists the whole set
+next to the token.
 
 ## Layout
 

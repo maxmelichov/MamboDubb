@@ -145,9 +145,15 @@ function Row({
        * on. Before, both were a faint ink wash over an inline-start rule that
        * changed hue between them, which is a difference nobody can see.
        *
-       *   selected     ink wash + inset ring + the rule goes accent (strongest)
-       *   now playing  fainter wash + a short accent tick on the rule (medium)
+       *   selected     accent wash + inset ring + the rule goes accent (strongest)
+       *   now playing  a fainter ink wash + a short ink tick on the rule (medium)
        *   hover        the sunken tone, and nothing else (faintest)
+       *
+       * The two strongest are deliberately different *colours* and not two
+       * strengths of one: the selection is the accent (`primary` in light, the
+       * brand violet in dark) and the playhead stays ink, so on the row that is
+       * both — which is most of them, since selecting a line seeks to it — the
+       * violet rule and the white tick are still two readable facts.
        *
        * The rule itself is the state's hue at every other time — a quiet stripe
        * down the reading edge that says dub/keep/fail without a second glance.
@@ -156,7 +162,14 @@ function Row({
         "group/row relative flex gap-2 border-b border-grid px-2 py-1.5",
         "transition-colors",
         selected
-          ? "bg-primary/[0.07] ring-1 ring-inset ring-primary/25"
+          ? // The wash and the ring are stronger in dark for the same reason
+            // `--mark-wash` is: how much of a hue a fill needs is a property of
+            // the ground. Light's accent is ink and 7% of a near-black already
+            // reads as a tint; dark's is a mid violet, which at 7% over a
+            // near-black plane lightens the row less than the near-white it
+            // replaced and loses the selection. Light's two numbers are the
+            // ones that shipped and are untouched.
+            "bg-accent/[0.07] ring-1 ring-inset ring-accent/25 dark:bg-accent/10 dark:ring-accent/45"
           : now
             ? "bg-primary/[0.045]"
             : "hover:bg-sunken",
@@ -166,7 +179,7 @@ function Row({
         borderInlineStartWidth: 3,
         borderInlineStartStyle: "solid",
         borderInlineStartColor: selected
-          ? "var(--color-primary)"
+          ? "var(--color-accent)"
           : `color-mix(in srgb, ${meta.token} var(--state-rule), transparent)`,
       }}
     >

@@ -70,6 +70,16 @@ export function LogoMark({ className }: { className?: string }) {
 /**
  * The wordmark chip. `compact` drops the border and the box for the workspace
  * header, where the brand has to share a 56px bar with a project title.
+ *
+ * In dark, and only in dark, the mark inside it is drawn in the accent and the
+ * chip's hairline takes a wash of the same: this is the one place on the screen
+ * where the mark is the subject rather than a label, and the accent *is* the
+ * logo's own violet, so the brand is finally wearing its own colour instead of
+ * being a near-white glyph in a near-black box. The border stays at /25 rather
+ * than full strength on purpose — a saturated 1px outline reads as a focus
+ * ring, and focus rings are this same violet. Light keeps the plain hairline
+ * and the ink mark it has always had; the `dark:` variant is the theme class,
+ * never the OS query (see App.css).
  */
 export function Brand({ className, compact }: { className?: string; compact?: boolean }) {
   return (
@@ -78,11 +88,14 @@ export function Brand({ className, compact }: { className?: string; compact?: bo
         "inline-flex items-center gap-2.5 whitespace-nowrap font-black uppercase text-primary",
         compact
           ? "text-[10px] tracking-[0.16em]"
-          : "h-10 rounded-xl border border-border bg-surface px-3.5 text-[11px] tracking-[0.2em] shadow-card",
+          : "h-10 rounded-xl border border-border bg-surface px-3.5 text-[11px] tracking-[0.2em] shadow-card" +
+            " dark:border-accent/25",
         className,
       )}
     >
-      <LogoMark className={compact ? "h-4 w-4" : "h-[18px] w-[18px]"} />
+      <LogoMark
+        className={cn(compact ? "h-4 w-4" : "h-[18px] w-[18px]", !compact && "dark:text-accent")}
+      />
       MamboDubb
     </span>
   );
@@ -180,7 +193,10 @@ export function Button({
         "inline-flex shrink-0 items-center justify-center font-semibold transition-all",
         "active:scale-[0.98] disabled:pointer-events-none disabled:opacity-45",
         buttonSize[size],
-        variant === "primary" && "bg-primary text-on-primary shadow-card hover:opacity-90",
+        // The one saturated control in the app. `accent` is ink in light — the
+        // near-black button that shipped — and the brand's violet in dark, where
+        // a near-white button was the whole reason the theme read as dead.
+        variant === "primary" && "bg-accent text-on-accent shadow-card hover:opacity-90",
         variant === "secondary" &&
           "border border-border bg-raised text-primary shadow-card hover:border-axis",
         variant === "outline" &&
@@ -239,7 +255,7 @@ export function Field({
 const controlBase =
   "w-full rounded-lg border border-border bg-raised px-3 text-[13px] text-primary outline-none " +
   "transition-colors placeholder:text-muted/70 hover:border-axis " +
-  "focus:border-primary disabled:opacity-50";
+  "focus:border-accent disabled:opacity-50";
 
 export function TextInput({ className, ...props }: ComponentProps<"input">) {
   return <input className={cn(controlBase, "h-9", className)} {...props} />;
@@ -341,7 +357,7 @@ export function Checkbox({ className, ...props }: ComponentProps<"input">) {
   return (
     <input
       type="checkbox"
-      className={cn("h-3.5 w-3.5 shrink-0 accent-[var(--color-primary)]", className)}
+      className={cn("h-3.5 w-3.5 shrink-0 accent-[var(--color-accent)]", className)}
       {...props}
     />
   );
