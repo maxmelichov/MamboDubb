@@ -86,6 +86,9 @@ REF_MATCH_MIN = 0.25       # segment window vs canonical ref: same-voice accepta
 
 CLONE_MIN_SEC_PER_WORD = 0.18   # faster than this is chipmunk garble
 CLONE_MAX_SEC_PER_WORD = 0.95   # slower than this is a stall/drawl
+# CJK/hangul speech runs ~5 characters/s; the word constants assume ~3 words/s.
+CLONE_MIN_SEC_PER_CHAR = 0.08   # faster than this is chipmunk garble
+CLONE_MAX_SEC_PER_CHAR = 0.60   # slower than this is a stall/drawl
 CLONE_MIN_OVERLAP = 0.35        # accept
 CLONE_SOFT_OVERLAP = 0.20       # best-effort accept
 MAX_TRIES = 3
@@ -165,11 +168,6 @@ def _speech_units(text: str, lang: str) -> int:
     if script_for(lang) in ("cjk", "hangul"):
         return max(1, sum(1 for ch in text or "" if ch.isalnum()))
     return max(1, len((text or "").split()))
-
-
-# CJK/hangul speech runs ~5 characters/s; the word constants assume ~3 words/s.
-CLONE_MIN_SEC_PER_CHAR = 0.08   # faster than this is chipmunk garble
-CLONE_MAX_SEC_PER_CHAR = 0.60   # slower than this is a stall/drawl
 
 
 def clip_exceeds_slot(clip_sec: float, slot_sec: float) -> bool:
