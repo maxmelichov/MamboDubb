@@ -23,8 +23,7 @@
         "fullscreen": false,
         "acceptFirstMouse": true,
         "titleBarStyle": "Visible",
-        "backgroundColor": "#f7f6f2",
-        "theme": "Light"
+        "backgroundColor": "#0e0e0d"
       }
     ],
     "security": {
