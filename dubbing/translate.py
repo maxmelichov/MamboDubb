@@ -52,7 +52,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-from . import numwords
+from . import PASSTHROUGH_REASON, numwords
 from .script import count_letters, is_script, same_script, script_for
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -1342,7 +1342,11 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
             # A third-language keep whose text never got a target rendering (an
             # "und" verdict, or the translation below fails) must not put a
             # foreign-script line in the subtitles — the placeholder is honest.
-            if seg.get("lang") and not is_target_text(seg["text"], target):
+            # A user passthrough is the same case: the viewer is about to hear the
+            # target language, so the source-language ASR's reading of it (which is
+            # what made the user reach for the override) is not the subtitle.
+            if ((seg.get("lang") or seg.get("keep_reason") == PASSTHROUGH_REASON)
+                    and not is_target_text(seg["text"], target)):
                 seg["text_en"] = "…"
             else:
                 seg["text_en"] = seg["text"]

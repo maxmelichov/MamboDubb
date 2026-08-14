@@ -83,6 +83,23 @@ def main(argv: list[str] | None = None) -> int:
     if args.context is not None:
         m["source"]["context"] = args.context
 
+    # The editor app writes `passthrough` into a finished manifest and re-runs.
+    # Honour it before anything is skipped as up to date: a flip changes what the
+    # translate, tts, timeline and mix stages produced, so their "done" marks come
+    # off and they run again. Their *progress* marks stay, so the stages resume
+    # rather than restart — only the flipped segments lost their work (see
+    # segments.apply_passthrough), and every other line keeps its translation and
+    # its clip. Nothing happens at all when no override changed a verdict.
+    overrides = segments.saved_overrides(m.get("segments") or [])
+    flipped = segments.apply_passthrough(m.get("segments") or [])
+    if flipped:
+        print(f"passthrough: {len(flipped)} segment(s) re-decided by the user "
+              f"({', '.join(str(i) for i in flipped[:8])}"
+              f"{'…' if len(flipped) > 8 else ''}) — redoing from translate",
+              file=sys.stderr)
+        for stale in ("translate", "tts", "timeline", "mix", "report"):
+            (m.get("stages") or {}).pop(stale, None)
+
     if args.force == "all":
         m["stages"], m["progress"] = {}, {}
     elif args.force:
@@ -163,7 +180,9 @@ def main(argv: list[str] | None = None) -> int:
         elif stage == "segments":
             words = words or transcript.load_words(workdir, m)
             segments.run(m, workdir, words, transcript.load_foreign_spans(workdir, m),
-                         dub_foreign=args.dub_foreign, genre=args.genre)
+                         dub_foreign=args.dub_foreign, genre=args.genre,
+                         overrides=overrides,
+                         lang_runs=transcript.load_lang_runs(workdir, m))
         elif stage == "translate":
             translate.run(m, workdir, source=args.src, target=args.tgt, save=save,
                           register=args.register, genre=args.genre)
