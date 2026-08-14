@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from dubbing import STAGES, manifest
 
-from . import errors, events, media, ops, setup, ui
+from . import errors, events, media, ops, peaks, setup, ui
 from .errors import ApiError, busy, invalid, not_found
 from .events import EventBus
 from .jobs import JobQueue
@@ -236,6 +236,11 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
         m = projects.load(name)
         return {"segments": projects.enrich_all(name, m),
                 "speakers": m.get("speakers") or {}}
+
+    @app.get("/api/projects/{name}/peaks")
+    def project_peaks(name: str, file: str = "source", n: int = 1000) -> dict[str, Any]:
+        """Downsampled waveform for a timeline lane. Instant; reads no models."""
+        return peaks.for_project(projects.require_dir(name), file, n)
 
     @app.patch("/api/projects/{name}/segments/{uid}")
     def patch_segment(name: str, uid: str, body: PatchSegment = Body(...)) -> dict[str, Any]:

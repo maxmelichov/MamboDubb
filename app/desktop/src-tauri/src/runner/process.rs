@@ -73,7 +73,12 @@ impl RunnerProcess {
         let mut cmd = Command::new(uv);
         cmd.args(server_args(workspace, &outputs))
             .current_dir(workspace)
-            .stdin(Stdio::null())
+            // Piped, not null: the server watches this pipe (`--exit-on-stdin-close`)
+            // and EOF is how it learns the shell died even when the pid chain lies
+            // (a surviving `uv` wrapper, a SIGKILL that skipped Drop). We never
+            // write to it; holding the write end for the process's lifetime is the
+            // whole mechanism.
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
@@ -204,6 +209,7 @@ pub fn server_args(workspace: &Path, outputs: &Path) -> Vec<String> {
         "0".into(),
         "--outputs".into(),
         outputs.display().to_string(),
+        "--exit-on-stdin-close".into(),
     ]
 }
 
@@ -246,6 +252,7 @@ mod tests {
                 "0",
                 "--outputs",
                 "/ws/outputs",
+                "--exit-on-stdin-close",
             ]
         );
     }
