@@ -1,0 +1,919 @@
+"""Studio server tests — routing, the error envelope, media, jobs, NDJSON.
+
+No models and no real pipeline: the run directory is built by hand
+(`conftest_app.make_project`) and every job runs through an injected fake runner,
+so these are as fast and as deterministic as the rest of the suite.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import sys
+import threading
+import time
+from contextlib import contextmanager
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip("fastapi")
+httpx = pytest.importorskip("httpx")
+pytest.importorskip("uvicorn")
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from dubbing import manifest  # noqa: E402
+from dubbing_app import events, media, ops, runner as runner_mod, server  # noqa: E402
+from dubbing_app.app import create_app  # noqa: E402
+from dubbing_app.jobs import JobQueue  # noqa: E402
+from tests.conftest_app import make_project  # noqa: E402
+
+NAME = "whatsapp_0809"
+
+
+class FakeRunner:
+    """Records what ran, and (optionally) blocks so concurrency can be observed."""
+
+    def __init__(self, hold: threading.Event | None = None):
+        self.hold = hold
+        self.calls: list[tuple[str, str, dict]] = []
+        self.concurrent = 0
+        self.max_concurrent = 0
+        self.cancelled: list[str] = []
+        self._lock = threading.Lock()
+
+    def run(self, job, emit):
+        with self._lock:
+            self.concurrent += 1
+            self.max_concurrent = max(self.max_concurrent, self.concurrent)
+            self.calls.append((job.kind, job.project, dict(job.payload)))
+        try:
+            emit(events.stage_event("tts", "running", 0.5, "1/2"))
+            if self.hold is not None:
+                self.hold.wait(5.0)
+            return {"kind": job.kind}
+        finally:
+            with self._lock:
+                self.concurrent -= 1
+
+    def cancel(self, job):
+        self.cancelled.append(job.id)
+        if self.hold is not None:
+            self.hold.set()
+
+
+@pytest.fixture()
+def outputs(tmp_path):
+    root = tmp_path / "outputs"
+    make_project(root, NAME)
+    return root
+
+
+@pytest.fixture()
+def fake():
+    return FakeRunner()
+
+
+@pytest.fixture()
+def client(outputs, fake):
+    with TestClient(create_app(outputs, runner=fake)) as c:
+        yield c
+
+
+@contextmanager
+def live_server(app):
+    """A real uvicorn on a real loopback socket.
+
+    The NDJSON stream never ends, and both `TestClient` and `httpx.ASGITransport`
+    buffer a response to completion before handing it back — so an endless body
+    deadlocks them. Only a real socket can be read frame by frame, which is
+    exactly the property being tested.
+    """
+    import uvicorn
+
+    sock = server.bind("127.0.0.1", 0)
+    port = sock.getsockname()[1]
+    srv = uvicorn.Server(uvicorn.Config(app, log_config=None, access_log=False))
+    thread = threading.Thread(target=srv.run, kwargs={"sockets": [sock]}, daemon=True)
+    thread.start()
+    try:
+        assert wait_until(lambda: srv.started, 10.0), "server did not start"
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        srv.should_exit = True
+        thread.join(10.0)
+
+
+@pytest.fixture()
+def live(outputs, fake):
+    with live_server(create_app(outputs, runner=fake)) as base:
+        yield base
+
+
+# ---------------------------------------------------------------------------
+# routing
+# ---------------------------------------------------------------------------
+
+def test_health(client):
+    body = client.get("/health").json()
+    assert body["status"] == "ok" and body["version"]
+
+
+def test_list_projects(client):
+    body = client.get("/api/projects").json()
+    assert [p["name"] for p in body["projects"]] == [NAME]
+    project = body["projects"][0]
+    assert project["src_lang"] == "he" and project["tgt_lang"] == "en"
+    assert project["segments"] == 5 and project["complete"] is True
+
+
+def test_get_project(client):
+    body = client.get(f"/api/projects/{NAME}").json()
+    assert body["stages"]["mix"] == "done"
+    assert body["report"]["segments"] == 5
+    assert len(body["manifest"]["segments"]) == 5
+
+
+def test_uids_are_minted_once_and_persisted(client, outputs):
+    first = [s["uid"] for s in client.get(f"/api/projects/{NAME}/segments").json()["segments"]]
+    second = [s["uid"] for s in client.get(f"/api/projects/{NAME}/segments").json()["segments"]]
+    assert first == second and len(set(first)) == 5
+    on_disk = manifest.load(outputs / NAME)
+    assert [s["uid"] for s in on_disk["segments"]] == first
+
+
+def test_segments_are_enriched(client):
+    segs = client.get(f"/api/projects/{NAME}/segments").json()["segments"]
+    dubbed = segs[1]
+    # `place.clip` is what plays — the fitted clip, not the raw tts clip.
+    assert dubbed["media"]["play"].startswith(f"/media/{NAME}/clips/fit_")
+    assert dubbed["media"]["tts"] != dubbed["media"]["play"]
+    assert dubbed["media"]["source"] == f"/media/{NAME}/source.wav#t=0.340,2.200"
+    assert dubbed["media"]["source_window"] == [0.34, 2.2]
+    # the QA signal, straight out of clips/<hash>.json
+    assert dubbed["verify"]["heard"] == "Anti-Zionists."
+    assert dubbed["verify"]["overlap"] == 0.94
+
+
+def test_enrichment_drops_urls_for_missing_files(client, outputs):
+    (outputs / NAME / "clips" / "fit_0000000000000001_1.300.wav").unlink()
+    segs = client.get(f"/api/projects/{NAME}/segments").json()["segments"]
+    assert segs[1]["media"]["play"] is None
+    assert segs[1]["media"]["tts"] is not None
+
+
+# ---------------------------------------------------------------------------
+# the error envelope
+# ---------------------------------------------------------------------------
+
+def envelope_of(response):
+    body = response.json()
+    assert set(body) == {"error"}
+    assert set(body["error"]) == {"code", "message"}
+    assert body["error"]["code"] in ("invalid_request", "not_found", "busy", "internal_error")
+    return body["error"]
+
+
+def test_not_found_envelope(client):
+    r = client.get("/api/projects/does_not_exist")
+    assert r.status_code == 404
+    assert envelope_of(r)["code"] == "not_found"
+
+
+def test_invalid_request_envelope_from_validation(client):
+    uid = client.get(f"/api/projects/{NAME}/segments").json()["segments"][0]["uid"]
+    r = client.patch(f"/api/projects/{NAME}/segments/{uid}", json={"nonsense": 1})
+    assert r.status_code == 400
+    assert envelope_of(r)["code"] == "invalid_request"
+
+
+def test_invalid_project_name_envelope(client):
+    r = client.get("/api/projects/has%20space/segments")
+    assert r.status_code == 400
+    assert envelope_of(r)["code"] == "invalid_request"
+
+
+def test_internal_error_envelope(outputs, fake):
+    app = create_app(outputs, runner=fake)
+
+    @app.get("/boom")
+    def boom():
+        raise ZeroDivisionError("nope")
+
+    with TestClient(app, raise_server_exceptions=False) as c:
+        r = c.get("/boom")
+    assert r.status_code == 500
+    assert envelope_of(r)["code"] == "internal_error"
+
+
+def test_unknown_job_is_not_found(client):
+    r = client.get("/api/jobs/deadbeef")
+    assert r.status_code == 404 and envelope_of(r)["code"] == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# no-model edits
+# ---------------------------------------------------------------------------
+
+def uids(client):
+    return [s["uid"] for s in client.get(f"/api/projects/{NAME}/segments").json()["segments"]]
+
+
+def test_patch_text_locks_the_field(client, outputs):
+    uid = uids(client)[1]
+    r = client.patch(f"/api/projects/{NAME}/segments/{uid}", json={"text_en": "Corrected."})
+    assert r.status_code == 200
+    assert r.json()["segment"]["text_en"] == "Corrected."
+    seg = ops.find(manifest.load(outputs / NAME), uid)
+    assert seg["text_en"] == "Corrected."
+    assert seg["locked"]["text_en"] is True          # a re-run must not overwrite it
+
+
+def test_patch_keep_flip(client, outputs):
+    uid = uids(client)[1]
+    client.patch(f"/api/projects/{NAME}/segments/{uid}", json={"keep": True})
+    seg = ops.find(manifest.load(outputs / NAME), uid)
+    assert seg["keep"] is True and seg["keep_reason"] == "manual"
+    assert seg["locked"]["keep"] is True
+
+
+def test_patch_speaker_and_langs(client, outputs):
+    uid = uids(client)[2]
+    client.patch(f"/api/projects/{NAME}/segments/{uid}",
+                 json={"speaker": "SPEAKER_01", "tgt_lang": "ru"})
+    seg = ops.find(manifest.load(outputs / NAME), uid)
+    assert seg["speaker"] == "SPEAKER_01" and seg["tgt_lang"] == "ru"
+
+
+def test_patch_bounds_rejects_overlap(client):
+    uid = uids(client)[2]
+    r = client.patch(f"/api/projects/{NAME}/segments/{uid}", json={"start": 0.5, "end": 11.2})
+    assert r.status_code == 400
+    assert "overlap" in envelope_of(r)["message"]
+
+
+def test_patch_bounds_requires_both(client):
+    uid = uids(client)[2]
+    r = client.patch(f"/api/projects/{NAME}/segments/{uid}", json={"start": 3.0})
+    assert r.status_code == 400
+
+
+def test_patch_empty_body_is_invalid(client):
+    r = client.patch(f"/api/projects/{NAME}/segments/{uids(client)[0]}", json={})
+    assert r.status_code == 400
+
+
+def test_patch_unknown_uid(client):
+    r = client.patch(f"/api/projects/{NAME}/segments/nope", json={"text": "x"})
+    assert r.status_code == 404
+
+
+def test_split_and_merge(client, outputs):
+    before = uids(client)
+    r = client.post(f"/api/projects/{NAME}/segments/{before[2]}/split", json={"at": 6.0})
+    assert r.status_code == 200
+    a, b = r.json()["uids"]
+    after = uids(client)
+    assert len(after) == 6 and a in after and b in after
+    segs = manifest.load(outputs / NAME)["segments"]
+    assert [s["id"] for s in segs] == list(range(6))     # renumbered, contiguous
+    # the halves are no longer translated or voiced
+    assert not (ops.find({"segments": segs}, b).get("text_en") or "")
+    assert ops.find({"segments": segs}, b).get("tts") is None
+
+    r = client.post(f"/api/projects/{NAME}/segments/{a}/merge", json={"with": b})
+    assert r.status_code == 200
+    assert len(uids(client)) == 5
+
+
+def test_split_outside_bounds(client):
+    r = client.post(f"/api/projects/{NAME}/segments/{uids(client)[1]}/split", json={"at": 99.0})
+    assert r.status_code == 400
+
+
+def test_merge_refuses_different_speakers(client):
+    ids = uids(client)
+    r = client.post(f"/api/projects/{NAME}/segments/{ids[0]}/merge", json={"with": ids[1]})
+    assert r.status_code == 400
+    assert "speaker" in envelope_of(r)["message"]
+
+
+def test_merge_refuses_non_adjacent(client):
+    ids = uids(client)
+    r = client.post(f"/api/projects/{NAME}/segments/{ids[1]}/merge", json={"with": ids[3]})
+    assert r.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# jobs
+# ---------------------------------------------------------------------------
+
+def wait_until(predicate, timeout=5.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def test_retranslate_enqueues_a_job(client, fake):
+    uid = uids(client)[1]
+    r = client.post(f"/api/projects/{NAME}/retranslate", json={"uids": [uid]})
+    assert r.status_code == 202
+    job = r.json()["job"]
+    assert job["kind"] == "retranslate" and job["project"] == NAME
+    assert wait_until(lambda: client.get(f"/api/jobs/{job['id']}").json()["job"]["status"]
+                      == "done")
+    assert fake.calls[0][0] == "retranslate"
+    assert fake.calls[0][2]["uids"] == [uid]
+
+
+def test_retranslate_rejects_unknown_uid(client):
+    r = client.post(f"/api/projects/{NAME}/retranslate", json={"uids": ["nope"]})
+    assert r.status_code == 404
+
+
+def test_retranslate_rejects_empty_uids(client):
+    r = client.post(f"/api/projects/{NAME}/retranslate", json={"uids": []})
+    assert r.status_code == 400
+
+
+def test_render_enqueues_a_job(client, fake):
+    r = client.post(f"/api/projects/{NAME}/render", json={})
+    assert r.status_code == 202
+    assert wait_until(lambda: any(c[0] == "render" for c in fake.calls))
+
+
+def test_one_job_at_a_time(outputs):
+    """The hard constraint: never two model jobs in flight, however many arrive."""
+    bus = events.EventBus()
+    fake = FakeRunner()
+    queue = JobQueue(fake, bus)
+    queue.start()
+    try:
+        jobs = [queue.submit("retranslate", NAME, {"uids": [str(i)]}) for i in range(8)]
+        assert wait_until(lambda: all(j.status in ("done", "failed") for j in jobs))
+    finally:
+        queue.stop()
+    assert fake.max_concurrent == 1
+    assert [j.status for j in jobs] == ["done"] * 8
+    # and in the order submitted
+    assert [c[2]["uids"][0] for c in fake.calls] == [str(i) for i in range(8)]
+
+
+def test_second_job_queues_behind_the_first(outputs):
+    hold = threading.Event()
+    fake = FakeRunner(hold=hold)
+    queue = JobQueue(fake, events.EventBus())
+    queue.start()
+    try:
+        first = queue.submit("render", NAME, {})
+        second = queue.submit("render", NAME, {})
+        assert wait_until(lambda: first.status == "running")
+        time.sleep(0.05)
+        assert second.status == "queued"        # not started, not refused
+        hold.set()
+        assert wait_until(lambda: second.status == "done")
+    finally:
+        queue.stop()
+
+
+def test_cancel_queued_job(outputs):
+    hold = threading.Event()
+    fake = FakeRunner(hold=hold)
+    queue = JobQueue(fake, events.EventBus())
+    queue.start()
+    try:
+        first = queue.submit("render", NAME, {})
+        second = queue.submit("render", NAME, {})
+        assert wait_until(lambda: first.status == "running")
+        queue.cancel(second.id)
+        assert second.status == "cancelled"
+        hold.set()
+        assert wait_until(lambda: first.status == "done")
+    finally:
+        queue.stop()
+    assert [c[0] for c in fake.calls] == ["render"]      # the cancelled one never ran
+
+
+def test_cancel_running_job_via_http(client, outputs):
+    hold = threading.Event()
+    fake = FakeRunner(hold=hold)
+    with TestClient(create_app(outputs, runner=fake)) as c:
+        job = c.post(f"/api/projects/{NAME}/render", json={}).json()["job"]
+        assert wait_until(lambda: c.get(f"/api/jobs/{job['id']}").json()["job"]["status"]
+                          == "running")
+        r = c.delete(f"/api/jobs/{job['id']}")
+        assert r.status_code == 200
+        assert wait_until(lambda: c.get(f"/api/jobs/{job['id']}").json()["job"]["status"]
+                          == "cancelled")
+    assert fake.cancelled == [job["id"]]
+
+
+def test_cancel_finished_job_is_invalid(client):
+    job = client.post(f"/api/projects/{NAME}/render", json={}).json()["job"]
+    assert wait_until(lambda: client.get(f"/api/jobs/{job['id']}").json()["job"]["status"]
+                      == "done")
+    r = client.delete(f"/api/jobs/{job['id']}")
+    assert r.status_code == 400 and envelope_of(r)["code"] == "invalid_request"
+
+
+def test_failed_job_records_the_error(outputs):
+    class Boom:
+        def run(self, job, emit):
+            raise RuntimeError("model exploded")
+
+        def cancel(self, job):
+            pass
+
+    queue = JobQueue(Boom(), events.EventBus())
+    queue.start()
+    try:
+        job = queue.submit("render", NAME, {})
+        assert wait_until(lambda: job.status == "failed")
+    finally:
+        queue.stop()
+    assert "model exploded" in job.error
+
+
+def test_no_model_edits_stay_responsive_while_a_job_runs(outputs):
+    hold = threading.Event()
+    fake = FakeRunner(hold=hold)
+    with TestClient(create_app(outputs, runner=fake)) as c:
+        job = c.post(f"/api/projects/{NAME}/render", json={}).json()["job"]
+        assert wait_until(lambda: c.get(f"/api/jobs/{job['id']}").json()["job"]["status"]
+                          == "running")
+        uid = c.get(f"/api/projects/{NAME}/segments").json()["segments"][1]["uid"]
+        started = time.time()
+        r = c.patch(f"/api/projects/{NAME}/segments/{uid}", json={"keep": True})
+        assert r.status_code == 200
+        assert time.time() - started < 1.0
+        # ... but a structural edit under a running job is refused, not queued.
+        r = c.post(f"/api/projects/{NAME}/segments/{uid}/split", json={"at": 1.0})
+        assert r.status_code == 409 and envelope_of(r)["code"] == "busy"
+        hold.set()
+
+
+# ---------------------------------------------------------------------------
+# media: range serving and path traversal
+# ---------------------------------------------------------------------------
+
+def test_media_serves_whole_file(client, outputs):
+    r = client.get(f"/media/{NAME}/preview.mp4")
+    assert r.status_code == 200
+    assert r.headers["accept-ranges"] == "bytes"
+    assert r.headers["content-type"] == "video/mp4"
+    assert len(r.content) == (outputs / NAME / "preview.mp4").stat().st_size
+
+
+def test_media_range_request(client, outputs):
+    whole = (outputs / NAME / "preview.mp4").read_bytes()
+    r = client.get(f"/media/{NAME}/preview.mp4", headers={"Range": "bytes=10-19"})
+    assert r.status_code == 206
+    assert r.headers["content-range"] == f"bytes 10-19/{len(whole)}"
+    assert r.headers["content-length"] == "10"
+    assert r.content == whole[10:20]
+
+
+def test_media_open_ended_range(client, outputs):
+    whole = (outputs / NAME / "preview.mp4").read_bytes()
+    r = client.get(f"/media/{NAME}/preview.mp4", headers={"Range": "bytes=100-"})
+    assert r.status_code == 206 and r.content == whole[100:]
+
+
+def test_media_suffix_range(client, outputs):
+    whole = (outputs / NAME / "preview.mp4").read_bytes()
+    r = client.get(f"/media/{NAME}/preview.mp4", headers={"Range": "bytes=-16"})
+    assert r.status_code == 206 and r.content == whole[-16:]
+
+
+def test_media_unsatisfiable_range(client, outputs):
+    size = (outputs / NAME / "preview.mp4").stat().st_size
+    r = client.get(f"/media/{NAME}/preview.mp4", headers={"Range": f"bytes={size + 10}-"})
+    assert r.status_code == 416
+    assert r.headers["content-range"] == f"bytes */{size}"
+    assert envelope_of(r)["code"] == "invalid_request"
+
+
+def test_media_head(client, outputs):
+    size = (outputs / NAME / "preview.mp4").stat().st_size
+    r = client.head(f"/media/{NAME}/preview.mp4")
+    assert r.status_code == 200 and r.headers["content-length"] == str(size)
+
+
+def test_media_garbage_range_serves_whole_file(client, outputs):
+    size = (outputs / NAME / "preview.mp4").stat().st_size
+    r = client.get(f"/media/{NAME}/preview.mp4", headers={"Range": "furlongs=1-2"})
+    assert r.status_code == 200 and len(r.content) == size
+
+
+@pytest.mark.parametrize("path", [
+    "../../etc/passwd",
+    "clips/../../../../etc/hosts",
+    "/etc/passwd",
+    # percent-encoded, so it survives the client's own path normalisation and
+    # arrives at the route as a genuine `..` to be refused
+    "..%2F..%2Fetc%2Fpasswd",
+    "clips%2F..%2F..%2Fmanifest.json",
+])
+def test_media_refuses_traversal(client, path):
+    r = client.get(f"/media/{NAME}/{path}")
+    assert r.status_code in (400, 404)
+    assert envelope_of(r)["code"] in ("invalid_request", "not_found")
+
+
+def test_media_refuses_symlink_out_of_the_run_dir(client, outputs, tmp_path):
+    secret = tmp_path / "secret.txt"
+    secret.write_text("HF_TOKEN=hunter2", encoding="utf-8")
+    (outputs / NAME / "escape.wav").symlink_to(secret)
+    r = client.get(f"/media/{NAME}/escape.wav")
+    assert r.status_code == 404
+    assert b"hunter2" not in r.content
+
+
+def test_media_unknown_project(client):
+    r = client.get("/media/nope/preview.mp4")
+    assert r.status_code == 404
+
+
+def test_media_resolve_unit(outputs):
+    workdir = outputs / NAME
+    assert media.resolve(workdir, "preview.mp4").name == "preview.mp4"
+    for bad in ("../../etc/passwd", "/etc/passwd", ""):
+        with pytest.raises(Exception):
+            media.resolve(workdir, bad)
+
+
+# ---------------------------------------------------------------------------
+# NDJSON event stream
+# ---------------------------------------------------------------------------
+
+PRELUDE = 1 + 9          # the "watching" log, then one frame per pipeline stage
+
+
+class Frames:
+    """One reader over a live NDJSON body — `iter_lines()` is single-use."""
+
+    def __init__(self, response):
+        self.lines = response.iter_lines()
+        self.seen: list[dict] = []
+
+    def _next(self) -> dict:
+        for line in self.lines:
+            if line.strip():
+                frame = json.loads(line)      # one JSON object per line, by contract
+                self.seen.append(frame)
+                return frame
+        raise AssertionError("stream ended")
+
+    def take(self, count: int) -> list[dict]:
+        return [self._next() for _ in range(count)]
+
+    def until(self, predicate, limit: int = 200) -> dict | None:
+        for _ in range(limit):
+            frame = self._next()
+            if predicate(frame):
+                return frame
+        return None
+
+
+def test_events_stream_is_ndjson(live):
+    with httpx.Client(base_url=live, timeout=20.0) as c:
+        with c.stream("GET", f"/api/projects/{NAME}/events") as r:
+            assert r.status_code == 200
+            assert r.headers["content-type"].startswith("application/x-ndjson")
+            frames = Frames(r).take(3)
+    assert frames[0]["type"] == "log" and frames[0]["level"] == "info"
+    assert all(isinstance(f, dict) and "type" in f for f in frames)
+    assert {f["type"] for f in frames} <= {"log", "stage", "job", "segment", "heartbeat"}
+
+
+def test_events_prelude_reports_stage_state(live):
+    with httpx.Client(base_url=live, timeout=20.0) as c:
+        with c.stream("GET", f"/api/projects/{NAME}/events") as r:
+            frames = Frames(r).take(PRELUDE)
+    stages = {f["stage"]: f for f in frames if f["type"] == "stage"}
+    assert len(stages) == 9
+    assert stages["mix"]["status"] == "done" and stages["mix"]["progress"] == 1.0
+
+
+def test_events_carry_job_and_stage_progress(live):
+    with httpx.Client(base_url=live, timeout=20.0) as c:
+        with c.stream("GET", f"/api/projects/{NAME}/events") as r:
+            frames = Frames(r)
+            prelude = frames.take(PRELUDE)                # drain the prelude
+            c.post(f"/api/projects/{NAME}/render", json={})
+            done = frames.until(lambda f: f["type"] == "job" and f["status"] == "done")
+    assert done is not None
+    live_frames = frames.seen[len(prelude):]
+    assert {f["type"] for f in live_frames} >= {"job", "stage"}
+    stage = next(f for f in live_frames if f["type"] == "stage" and f.get("message") == "1/2")
+    assert stage["progress"] == 0.5 and stage["job"]
+    assert [f["status"] for f in live_frames
+            if f["type"] == "job"] == ["queued", "running", "done"]
+
+
+def test_events_deliver_failure_as_a_frame_not_a_status(outputs):
+    """A run that dies mid-stream cannot use the status line: it is already sent."""
+
+    class Boom:
+        def run(self, job, emit):
+            emit(events.log_event("about to fail", "error"))
+            raise RuntimeError("mix died")
+
+        def cancel(self, job):
+            pass
+
+    with live_server(create_app(outputs, runner=Boom())) as base:
+        with httpx.Client(base_url=base, timeout=20.0) as c:
+            with c.stream("GET", f"/api/projects/{NAME}/events") as r:
+                assert r.status_code == 200      # the stream itself stays 200 …
+                frames = Frames(r)
+                frames.take(PRELUDE)
+                c.post(f"/api/projects/{NAME}/render", json={})
+                failure = frames.until(
+                    lambda f: f["type"] == "job" and f["status"] == "failed")
+    assert failure is not None and "mix died" in failure["error"]  # … the failure is a frame
+
+
+def test_events_heartbeat_over_the_wire(outputs, fake, monkeypatch):
+    monkeypatch.setattr(events, "HEARTBEAT_SECONDS", 0.05)
+    with live_server(create_app(outputs, runner=fake)) as base:
+        with httpx.Client(base_url=base, timeout=20.0) as c:
+            with c.stream("GET", f"/api/projects/{NAME}/events") as r:
+                frames = Frames(r)
+                frames.take(PRELUDE)
+                beat = frames.until(lambda f: f["type"] == "heartbeat")
+    assert beat is not None
+
+
+def test_events_unknown_project(client):
+    r = client.get("/api/projects/nope/events")
+    assert r.status_code == 404 and envelope_of(r)["code"] == "not_found"
+
+
+def test_stream_heartbeat():
+    async def run():
+        bus = events.EventBus()
+        sub = bus.subscribe(NAME)
+        frames = []
+        gen = events.stream(sub, prelude=[], heartbeat=0.02)
+        async for chunk in gen:
+            frames.append(json.loads(chunk))
+            if len(frames) >= 2:
+                break
+        await gen.aclose()
+        return frames
+
+    frames = asyncio.run(run())
+    assert [f["type"] for f in frames] == ["heartbeat", "heartbeat"]
+    assert all("t" in f for f in frames)
+
+
+def test_stream_encodes_one_object_per_line():
+    payload = events.encode({"type": "log", "message": "עברית\nwith newline"})
+    assert payload.endswith(b"\n") and payload.count(b"\n") == 1
+    assert json.loads(payload)["message"] == "עברית\nwith newline"
+
+
+def test_bus_publish_is_thread_safe():
+    async def run():
+        bus = events.EventBus()
+        sub = bus.subscribe(NAME)
+        threading.Thread(target=lambda: bus.publish(NAME, events.log_event("hi"))).start()
+        event = await asyncio.wait_for(sub.queue.get(), timeout=2.0)
+        return event
+
+    assert asyncio.run(run())["message"] == "hi"
+
+
+# ---------------------------------------------------------------------------
+# progress derived from the pipeline's own stderr
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("line,expected", [
+    ("[tts]", {"stage": "tts", "status": "running", "progress": 0.0}),
+    ("[mix] up to date", {"stage": "mix", "status": "done", "progress": 1.0}),
+    ("[translate] done in 91s", {"stage": "translate", "status": "done", "progress": 1.0}),
+    ("  tts: 30/60", {"stage": "tts", "status": "running", "progress": 0.5}),
+    ("  translate: 3/4", {"stage": "translate", "status": "running", "progress": 0.75}),
+])
+def test_stderr_progress_parsing(line, expected):
+    event = runner_mod.parse_stderr(line)
+    assert event is not None
+    for key, value in expected.items():
+        assert event[key] == value
+
+
+@pytest.mark.parametrize("line", [
+    "  tts: seg 3 unusable → keep original",
+    "Preview: /x/preview.mp4",
+    "  translate: loading models/gemma (mlx 4-bit)",
+    "",
+])
+def test_stderr_non_progress_lines_pass_through(line):
+    assert runner_mod.parse_stderr(line) is None
+
+
+# ---------------------------------------------------------------------------
+# the real subprocess boundary (no models: a stub child, or a rejected spec)
+# ---------------------------------------------------------------------------
+
+STUB_WORKER = '''
+import json, sys, time
+spec = json.loads(sys.stdin.readline())
+print(json.dumps({"type": "stage", "stage": "tts", "status": "running",
+                  "progress": 0.5}), flush=True)
+print("[timeline]", file=sys.stderr, flush=True)
+print("  tts: 5/10", file=sys.stderr, flush=True)
+if spec["payload"].get("sleep"):
+    time.sleep(60)
+if spec["payload"].get("fail"):
+    print(json.dumps({"type": "result", "ok": False, "error": "stub failed"}), flush=True)
+    raise SystemExit(1)
+print(json.dumps({"type": "result", "ok": True, "data": {"stub": True}}), flush=True)
+'''
+
+
+@pytest.fixture()
+def stub_runner(tmp_path):
+    (tmp_path / "stub_worker.py").write_text(STUB_WORKER, encoding="utf-8")
+    return runner_mod.SubprocessRunner(cwd=tmp_path, module="stub_worker")
+
+
+def test_subprocess_runner_streams_both_channels(stub_runner):
+    from dubbing_app.jobs import Job
+
+    seen = []
+    job = Job(id="j1", kind="render", project=NAME, payload={"workdir": "/tmp"})
+    data = stub_runner.run(job, seen.append)
+    assert data == {"stub": True}
+    stages = [f for f in seen if f["type"] == "stage"]
+    # stdout NDJSON …
+    assert any(f["stage"] == "tts" and f["progress"] == 0.5 for f in stages)
+    # … and stderr parsed into the same event shape
+    assert any(f["stage"] == "timeline" and f["status"] == "running" for f in stages)
+    assert any(f["stage"] == "tts" and f["progress"] == 0.5 and f.get("message") == "5/10"
+               for f in stages)
+
+
+def test_subprocess_runner_reports_child_failure(stub_runner):
+    from dubbing_app.jobs import Job
+
+    job = Job(id="j2", kind="render", project=NAME, payload={"workdir": "/tmp", "fail": True})
+    with pytest.raises(RuntimeError, match="stub failed"):
+        stub_runner.run(job, lambda e: None)
+
+
+def test_subprocess_runner_cancel_kills_the_child(stub_runner):
+    from dubbing_app.jobs import Job, JobCancelled
+
+    job = Job(id="j3", kind="render", project=NAME, payload={"workdir": "/tmp", "sleep": True})
+    result: list = []
+
+    def go():
+        try:
+            stub_runner.run(job, lambda e: None)
+        except BaseException as exc:                 # noqa: BLE001 — recorded, not swallowed
+            result.append(exc)
+
+    thread = threading.Thread(target=go, daemon=True)
+    thread.start()
+    assert wait_until(lambda: stub_runner._procs.get(job.id) is not None, 10.0)
+    job.cancelling = True
+    stub_runner.cancel(job)
+    thread.join(15.0)
+    assert not thread.is_alive()
+    assert result and isinstance(result[0], JobCancelled)
+
+
+def test_worker_rejects_an_unknown_kind(outputs):
+    """The real child, end to end — spec on stdin, error frame out, non-zero exit."""
+    from dubbing_app.jobs import Job
+
+    real = runner_mod.SubprocessRunner(python=sys.executable,
+                                       cwd=Path(__file__).resolve().parents[1])
+    job = Job(id="j4", kind="render", project=NAME, payload={"workdir": str(outputs / NAME)})
+    real.spec = lambda j: {"kind": "not_a_kind", "workdir": j.payload["workdir"],
+                           "payload": {}}
+    with pytest.raises(RuntimeError, match="not_a_kind"):
+        real.run(job, lambda e: None)
+
+
+# ---------------------------------------------------------------------------
+# process contract
+# ---------------------------------------------------------------------------
+
+def test_ready_line_is_one_json_object(capsys):
+    import io
+
+    buf = io.StringIO()
+    server.announce(54321, buf)
+    lines = buf.getvalue().splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0]) == {"status": "ready", "port": 54321,
+                                    "version": server.__version__}
+
+
+def test_bind_port_zero_returns_a_real_port():
+    sock = server.bind("127.0.0.1", 0)
+    try:
+        port = sock.getsockname()[1]
+        assert 1024 < port < 65536
+    finally:
+        sock.close()
+
+
+def test_watchdog_skips_when_parent_is_init(monkeypatch):
+    monkeypatch.setattr(server.os, "getppid", lambda: 1)
+    assert server.watchdog() is None
+
+
+def test_watchdog_fires_when_the_parent_changes(monkeypatch):
+    ppids = iter([1234, 1234, 9999, 9999])
+    monkeypatch.setattr(server.os, "getppid", lambda: next(ppids))
+    fired = threading.Event()
+    thread = server.watchdog(on_orphan=fired.set, interval=0.01)
+    assert thread is not None
+    assert fired.wait(2.0)
+
+
+def test_server_arg_defaults():
+    args = server.parse_args(["--host", "127.0.0.1", "--port", "0"])
+    assert args.host == "127.0.0.1" and args.port == 0
+    assert args.outputs.name == "outputs"
+
+
+# ---------------------------------------------------------------------------
+# ops: the pipeline seam
+# ---------------------------------------------------------------------------
+
+def test_app_segment_keys_survive_a_save(tmp_path, outputs):
+    """`uid` would be dropped by manifest.save without the whitelist widening."""
+    workdir = outputs / NAME
+    m = manifest.load(workdir)
+    ops.ensure_uids(m)
+    ops.set_langs(m, m["segments"][0]["uid"], tgt_lang="ru")
+    manifest.save(workdir, m)
+    reloaded = manifest.load(workdir)
+    assert reloaded["segments"][0]["uid"] == m["segments"][0]["uid"]
+    assert reloaded["segments"][0]["tgt_lang"] == "ru"
+
+
+def test_invalidate_cascades_downstream(outputs):
+    m = manifest.load(outputs / NAME)
+    ops.ensure_uids(m)
+    uid = m["segments"][1]["uid"]
+    ops.invalidate(m, uid, stages={"translate"})
+    seg = ops.find(m, uid)
+    assert "text_en" not in seg and "tts" not in seg and "place" not in seg
+
+
+def test_invalidate_tts_keeps_the_translation(outputs):
+    m = manifest.load(outputs / NAME)
+    ops.ensure_uids(m)
+    uid = m["segments"][1]["uid"]
+    ops.invalidate(m, uid, stages={"tts"})
+    seg = ops.find(m, uid)
+    assert seg["text_en"] and "tts" not in seg and "place" not in seg
+
+
+def test_invalidate_reopens_a_pipeline_keep_but_not_a_manual_one(outputs):
+    m = manifest.load(outputs / NAME)
+    ops.ensure_uids(m)
+    failed = m["segments"][0]["uid"]              # keep_reason == "tts_failed"
+    ops.invalidate(m, failed, stages={"tts"})
+    assert ops.find(m, failed)["keep"] is False
+
+    m = manifest.load(outputs / NAME)
+    ops.ensure_uids(m)
+    manual = m["segments"][1]["uid"]
+    ops.set_keep(m, manual, True)
+    ops.invalidate(m, manual, stages={"tts"})
+    assert ops.find(m, manual)["keep"] is True    # the user's edit outranks the pipeline
+
+
+def test_full_run_argv_matches_the_cli(tmp_path):
+    argv = ops.full_run_argv(tmp_path / "run", {
+        "input": "https://youtu.be/abc", "src_lang": "he", "tgt_lang": "ru",
+        "duration_limit": 60, "context": "a note",
+        "app_opts": {"genre": "movie", "register": "dialogue", "tts_model": "0.6b"}})
+    from dubbing import cli
+
+    args = cli.parse_args(argv)                   # the real parser accepts it
+    assert args.source == "https://youtu.be/abc"
+    assert args.tgt == "ru" and args.duration == 60 and args.genre == "movie"
+    assert args.register == "dialogue" and args.tts_model == "0.6b"
+    assert args.context == "a note"
+
+
+def test_rebuild_rejects_stages_it_does_not_cover(outputs):
+    m = manifest.load(outputs / NAME)
+    with pytest.raises(ops.EditError):
+        ops.rebuild(m, outputs / NAME, from_stage="translate")
+    with pytest.raises(ops.EditError):
+        ops.rebuild(m, outputs / NAME, from_stage="nonsense")
