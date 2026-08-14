@@ -40,13 +40,14 @@ dev = [
     "ruff>=0.9.0",
     "pytest>=8.0",
 ]
-# The studio server (dubbing_app/). Kept out of the default set so the headless
-# pipeline's dependency closure is unchanged: `uv run python -m dubbing` needs
-# none of this, and tests/test_app_*.py skip when it is absent.
+# The studio server (dubbing_app/) and the lightweight editor (editor/). Kept out
+# of the default set so the headless pipeline's dependency closure is unchanged:
+# `uv run python -m dubbing` needs none of this, and the app tests skip when absent.
 app = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "httpx>=0.27",
+    "python-multipart>=0.0.9",
 ]
 
 [project.scripts]
@@ -57,7 +58,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["dubbing", "dubbing_app"]
+packages = ["dubbing", "dubbing_app", "editor"]
 
 [tool.uv]
 package = true

@@ -1,0 +1,86 @@
+"""Pipeline runs launched as subprocesses, with pollable logs.
+
+One `python -m dubbing …` process per job. The pipeline is already resumable and
+writes its own state to the manifest, so a job needs to keep nothing but its log
+tail and exit code — a server restart loses the log, not the work.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+import threading
+import uuid
+from collections import deque
+from pathlib import Path
+from typing import Any
+
+from .runs import REPO_ROOT
+
+LOG_LINES = 400
+
+
+class Job:
+    def __init__(self, cmd: list[str], run: str | None, label: str) -> None:
+        self.id = uuid.uuid4().hex[:12]
+        self.cmd = cmd
+        self.run = run
+        self.label = label
+        self.log: deque[str] = deque(maxlen=LOG_LINES)
+        self.returncode: int | None = None
+        self.proc = subprocess.Popen(
+            cmd, cwd=REPO_ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1,
+        )
+        threading.Thread(target=self._pump, daemon=True).start()
+
+    def _pump(self) -> None:
+        assert self.proc.stdout is not None
+        for line in self.proc.stdout:
+            self.log.append(line.rstrip("\n"))
+        self.returncode = self.proc.wait()
+
+    @property
+    def status(self) -> str:
+        if self.returncode is None:
+            return "running"
+        return "done" if self.returncode == 0 else "failed"
+
+    def state(self, tail: int = 60) -> dict[str, Any]:
+        return {
+            "id": self.id, "run": self.run, "label": self.label,
+            "status": self.status, "returncode": self.returncode,
+            "cmd": self.cmd, "log": list(self.log)[-tail:],
+        }
+
+    def cancel(self) -> None:
+        if self.returncode is None:
+            self.proc.terminate()
+
+
+_JOBS: dict[str, Job] = {}
+
+
+def dub_command(source: str, out: Path, *, src: str = "he", tgt: str = "en",
+                duration: float | None = None, force: str | None = None,
+                extra: list[str] | None = None) -> list[str]:
+    cmd = [sys.executable, "-m", "dubbing", source, "-o", str(out), "--src", src, "--tgt", tgt]
+    if duration:
+        cmd += ["--duration", str(duration)]
+    if force:
+        cmd += ["--force", force]
+    return cmd + list(extra or [])
+
+
+def launch(cmd: list[str], run: str | None, label: str) -> Job:
+    job = Job(cmd, run, label)
+    _JOBS[job.id] = job
+    return job
+
+
+def get(job_id: str) -> Job:
+    return _JOBS[job_id]
+
+
+def listing() -> list[dict[str, Any]]:
+    return [j.state(tail=1) for j in reversed(list(_JOBS.values()))]
