@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from dubbing import STAGES
-from dubbing.manifest import SEGMENT_KEYS
+from dubbing.manifest import LOCK_FIELDS, SEGMENT_KEYS
 
 
 def _text(v: Any) -> str:
@@ -82,6 +82,26 @@ EDITABLE: dict[str, tuple[Callable[[Any], Any], str]] = {
 # Wire-name compatibility: the static UI may still send the old names.
 ALIASES = {"lang_override": "tgt_lang"}
 
+# A hand-edit sets its field's flag in `seg["locked"]`, and no stage rerun
+# regenerates a locked field (`manifest.reset_stage`, `manifest.is_locked`).
+# Without this the *next* re-run silently discards the correction: `--force
+# translate` after a source-text fix calls `reset_stage("translate")`, which drops
+# `text_en` on every unlocked segment — including the ones the user retyped by
+# hand three saves ago. Same key as the studio writes, so a run edited from either
+# front end behaves identically.
+LOCKS = {"text": "text", "text_en": "text_en", "speaker": "speaker",
+         # `passthrough` is the user's verdict about the span, which is what
+         # `keep` records once `apply_passthrough` has run.
+         "passthrough": "keep"}
+
+# The mirror image: changing the language pair makes the stored translation wrong,
+# so it releases the lock that would otherwise protect it from being redone —
+# exactly what `dubbing.edit.set_langs` does.
+RELEASES = {"lang": ("text_en",), "tgt_lang": ("text_en",)}
+
+_UNLOCKABLE = sorted(set(LOCKS.values()) - set(LOCK_FIELDS))
+assert not _UNLOCKABLE, f"not in manifest.LOCK_FIELDS: {_UNLOCKABLE}"
+
 REJECTED: dict[str, str] = {
     "tts_instructions": "the synthesiser has no instruction channel: "
                         "generate_voice_clone takes no instruct argument, and the "
@@ -92,6 +112,19 @@ REJECTED: dict[str, str] = {
 # Fields the editor stores must survive manifest.save()'s whitelist.
 _MISSING = sorted(f for f in EDITABLE if f not in SEGMENT_KEYS)
 assert not _MISSING, f"add to manifest.SEGMENT_KEYS: {_MISSING}"
+
+
+def _relock(seg: dict[str, Any], field: str) -> None:
+    """Record that `field` was hand-edited, and release what that edit invalidates."""
+    locked = dict(seg.get("locked") or {})
+    if field in LOCKS:
+        locked[LOCKS[field]] = True
+    for released in RELEASES.get(field, ()):
+        locked.pop(released, None)
+    if locked:
+        seg["locked"] = locked
+    else:
+        seg.pop("locked", None)
 
 
 def earliest(stages: list[str] | set[str]) -> str | None:
@@ -148,6 +181,7 @@ def apply_edits(m: dict[str, Any], edits: list[dict[str, Any]]) -> dict[str, Any
                 seg.pop(name, None)   # cleared: drop it instead of storing a blank
             else:
                 seg[name] = value
+            _relock(seg, name)
             touched = True
             changed_fields.add(name)
             stages.add(stage)

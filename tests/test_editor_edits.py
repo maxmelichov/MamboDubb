@@ -133,6 +133,46 @@ def test_editable_fields_survive_manifest_save(tmp_path):
     assert saved["tgt_lang"] == "es"
 
 
+def test_hand_edits_survive_a_later_global_rerun():
+    """`--force translate` calls `reset_stage("translate")`, which drops `text_en`
+    on every segment it is allowed to. A correction the user typed three saves ago
+    is not the translator's to reissue, so editing has to lock it — the invariant
+    `manifest.reset_stage` spells out and the editor never held up its end."""
+    m = a_manifest()
+    apply_edits(m, edit(0, text_en="Hi there"))
+    assert m["segments"][0]["locked"] == {"text_en": True}
+
+    manifest.reset_stage(m, "translate")            # what --force translate does
+    assert m["segments"][0]["text_en"] == "Hi there"
+    assert "text_en" not in m["segments"][1]        # untouched lines still redo
+
+
+def test_every_hand_edit_locks_its_own_field():
+    m = a_manifest()
+    apply_edits(m, edit(0, text="שלום עולם", speaker="SPEAKER_01", passthrough=True))
+    # `passthrough` is the user's verdict about the span, recorded as `keep`.
+    assert m["segments"][0]["locked"] == {"text": True, "speaker": True, "keep": True}
+
+
+def test_a_language_change_releases_the_translation_it_invalidates():
+    """The stored line is in the wrong language now, so the lock that would stop a
+    re-run replacing it has to come off — same rule as `dubbing.edit.set_langs`."""
+    m = a_manifest()
+    apply_edits(m, edit(0, text_en="Hi there"))
+    apply_edits(m, edit(0, tgt_lang="es"))
+    assert not m["segments"][0].get("locked")
+    manifest.reset_stage(m, "translate")
+    assert "text_en" not in m["segments"][0]
+
+
+def test_locks_reach_the_manifest(tmp_path):
+    m = a_manifest()
+    apply_edits(m, edit(0, text_en="Hi there"))
+    manifest.save(tmp_path, m)
+    saved = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert saved["segments"][0]["locked"] == {"text_en": True}
+
+
 def test_earliest_orders_by_pipeline_position():
     assert earliest(["tts", "translate", "mix"]) == "translate"
     assert earliest([]) is None
