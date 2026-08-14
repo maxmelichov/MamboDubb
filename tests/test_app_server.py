@@ -952,7 +952,80 @@ def test_patch_locked_rejects_unknown_fields(client):
 
 # ------------------------------------------------- the ops -> dubbing.edit seam
 
-@pytest.mark.skipif(not ops.HAVE_EDIT, reason="dubbing.edit not present")
+MOVIE = {"genre": "movie", "register": "dialogue", "tts_model": "0.6b", "device": "cpu"}
+
+
+def movie_project(outputs):
+    """The manifest of a project the UI created with non-default options."""
+    workdir = outputs / NAME
+    m = manifest.load(workdir)
+    m["source"]["app_opts"] = dict(MOVIE)
+    manifest.save(workdir, m)
+    return m
+
+
+def test_edit_jobs_carry_the_projects_recorded_options(monkeypatch, outputs):
+    """The UI's genre/register/tts-model are stored under `source.app_opts`, which
+    `dubbing.edit._args` does not read — so every job that re-runs a stage has to
+    hand them over. Without this a `--genre movie` project is re-rendered as a
+    documentary, in the default voice, and nobody is told."""
+    from dubbing import edit as real_edit
+
+    m = movie_project(outputs)
+    seen: dict[str, dict] = {}
+
+    def fake_rebuild(mm, wd, *, from_stage, progress=None, save=None, **overrides):
+        seen["rebuild"] = overrides
+        return [from_stage]
+
+    def fake_retranslate(mm, wd, uids, *, progress=None, **kw):
+        seen["retranslate"] = kw
+        return {}
+
+    def fake_resynthesize(mm, wd, uids, *, progress=None, **kw):
+        seen["resynthesize"] = kw
+        return {}
+
+    monkeypatch.setattr(real_edit, "rebuild", fake_rebuild)
+    monkeypatch.setattr(real_edit, "retranslate", fake_retranslate)
+    monkeypatch.setattr(real_edit, "resynthesize", fake_resynthesize)
+
+    ops.rebuild(m, outputs / NAME, from_stage="timeline")
+    ops.retranslate(m, outputs / NAME, [])
+    ops.resynthesize(m, outputs / NAME, [])
+
+    assert seen["retranslate"] == {"register": "dialogue", "genre": "movie"}
+    assert seen["resynthesize"] == {"device": "cpu", "model": "0.6b"}
+    # …and the rebuild overrides really land on the argparse namespace the pipeline
+    # computes its fingerprints from.
+    args = real_edit._args(m, **seen["rebuild"])
+    assert (args.genre, args.register, args.tts_model, args.device) == \
+        ("movie", "dialogue", "0.6b", "cpu")
+
+
+def test_a_render_stamps_the_fingerprints_the_full_run_would(outputs):
+    """`dubbing.edit.rebuild` re-marks every stage it runs with a fingerprint, so a
+    render made with the wrong options makes the next headless run redo the whole
+    tail of the pipeline. The two paths must agree stage by stage."""
+    from dubbing import cli
+    from dubbing import edit as real_edit
+
+    m = movie_project(outputs)
+    render = cli.stage_params(real_edit._args(m, **ops.pipeline_overrides(m)), m)
+    full = cli.stage_params(cli.parse_args(ops.full_run_argv(outputs / NAME, m["source"])), m)
+    assert {s: render[s] for s in real_edit.REBUILDABLE} == \
+        {s: full[s] for s in real_edit.REBUILDABLE}
+
+
+def test_pipeline_overrides_never_invent_an_option(outputs):
+    """A project that recorded nothing keeps `dubbing.edit._args`'s own fallbacks —
+    overriding with a guess would be the same drift in the other direction."""
+    m = manifest.load(outputs / NAME)
+    assert ops.pipeline_overrides(m) == {}
+    m["source"]["app_opts"] = {"genre": "movie", "register": None, "captions": "x.json3"}
+    assert ops.pipeline_overrides(m) == {"genre": "movie"}
+
+
 @pytest.mark.parametrize("call,stage", [
     (lambda p: ops.retranslate({"segments": []}, Path("."), [], progress=p), "translate"),
     (lambda p: ops.resynthesize({"segments": []}, Path("."), [], progress=p), "tts"),
@@ -981,7 +1054,6 @@ def test_edit_progress_is_adapted_to_the_pipeline_signature(monkeypatch, call, s
                      "progress": 0.5, "message": "halfway"}]
 
 
-@pytest.mark.skipif(not ops.HAVE_EDIT, reason="dubbing.edit not present")
 def test_resynthesize_leaves_every_segment_placed(monkeypatch, outputs):
     """A re-voiced segment must come back placed. Its new clip has a new length,
     so `invalidate` drops the old placement — and a segment with no placement is
