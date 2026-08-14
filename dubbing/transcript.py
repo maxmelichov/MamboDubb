@@ -64,6 +64,16 @@ FOREIGN_BACK_MAX = 3.0 # how far back a passage may reclaim utterances the class
 # the ivrit-ai Hebrew fine-tune (the numbers in the comments below are its
 # readings). They are shared across all source ASR models for now and may need
 # revisiting per source once other models show different confidence profiles.
+# The source ASR's read is only trustworthy as a NEGATIVE witness ("I cannot read
+# this"). Asserting the opposite it lies confidently: a Hebrew fine-tune renders
+# clear English speech as Hebrew-script transliteration at -0.38, above the fail bar,
+# and that reading alone once dubbed over a man speaking English. A model that
+# actually reads the target language is the positive witness against it — but only
+# when it reads well in absolute terms, beats the source model on the same clip, and
+# returns a phrase rather than a stock hallucination.
+TARGET_READ_LOGPROB = -0.35  # target ASR read that counts as "clean target speech"
+TARGET_READ_MARGIN = 0.10    # ...and it must beat the source ASR's read by this much
+TARGET_READ_WORDS = 3        # ...over at least this many words
 FOREIGN_SRC_LOGPROB = -0.5  # ...and the source ASR must FAIL to read it this well. Its
                        # confidence is the honest witness: on this video it read real
                        # Arabic at -0.64 as garbled non-words, but read the stretches
@@ -779,8 +789,43 @@ def _read_foreign_span(source_wav: Path, a: float, b: float, lang: str
     return " ".join(w["text"] for w in words), words
 
 
+def _reads_as_target(tgt_model, clip, target: str, src_lp: float | None) -> bool:
+    """Whether the target-language ASR reads this clip as clean target speech.
+
+    The one witness that can contradict a confident source-language read, since it
+    is a different model with the opposite bias: on source-language audio it decodes
+    low-confidence gibberish, on real target speech it decodes a fluent phrase. Three
+    conditions together, because each alone has a known failure mode — an absolute
+    floor (a garbage read is never clean), a margin over the source model's read of
+    the *same* clip (whoever reads it better is right, and a tie is no evidence), and
+    a phrase of real words that is not one of Whisper's memorised stock lines
+    ("Thanks for watching" over music scores near zero and means nothing).
+    """
+    if tgt_model is None or not target:
+        return False
+    try:
+        segs, _info = tgt_model.transcribe(clip, language=target, beam_size=5,
+                                           vad_filter=False)
+        segs = list(segs)
+    except Exception as exc:                                    # pragma: no cover
+        print(f"  transcript: target-ASR witness failed ({exc})", file=sys.stderr)
+        return False
+    if not segs:
+        return False
+    lp = sum(s.avg_logprob for s in segs) / len(segs)
+    if lp < TARGET_READ_LOGPROB:
+        return False
+    if src_lp is not None and lp < src_lp + TARGET_READ_MARGIN:
+        return False
+    text = " ".join(s.text.strip() for s in segs).strip()
+    if _ASR_STOCK.search(text):
+        return False
+    words = [w for w in text.split() if any(ch.isalpha() for ch in w)]
+    return len(words) >= TARGET_READ_WORDS and script.is_script(text, target)
+
+
 def _sounds_foreign(lid, src_model, source_wav: Path, a: float, b: float,
-                    source: str) -> str | None:
+                    source: str, tgt_model=None, target: str = "") -> str | None:
     """A name for a passage that is not the source language, or None to dub it.
 
     The deciding witness is the source-language ASR, because it is the one that can be
@@ -795,6 +840,12 @@ def _sounds_foreign(lid, src_model, source_wav: Path, a: float, b: float,
     a Chinese news clip came back `vi` 0.43, `tr` 0.34, `nn` 0.09 and is plainly not
     Hebrew. What it may not do is contradict itself: if it says the source language
     confidently, that outranks the ASR and the passage is dubbed.
+
+    `tgt_model` — an ASR that actually reads the target language — is the positive
+    witness against a source read that is confidently wrong. When it speaks, the
+    verdict is the target language itself and the caller treats the passage as
+    target-language speech (subtitle text, refined edges, a target keep) rather than
+    as an unnamed foreign one.
     """
 
     if b - a < FOREIGN_MIN_SEC or src_model is None:
@@ -804,7 +855,8 @@ def _sounds_foreign(lid, src_model, source_wav: Path, a: float, b: float,
     # fragment at the rim ("מלחמת האזרחים?" at -0.38) once vetoed 10.6 seconds of
     # an English interviewee, which then played neither dubbed nor subtitled.
     trim = min(1.0, (b - a) / 4) if b - a >= 4.0 else 0.0
-    verdict = _judge_span(lid, src_model, source_wav, a + trim, b - trim, source)
+    verdict = _judge_span(lid, src_model, source_wav, a + trim, b - trim, source,
+                          tgt_model, target)
     if verdict != "und" or b - a >= 6.0:
         return verdict
     # An unnamed verdict on a short span is the least trustworthy combination:
@@ -814,12 +866,13 @@ def _sounds_foreign(lid, src_model, source_wav: Path, a: float, b: float,
     # Judged once more with ±2s of context the same audio is he@0.95 with clean
     # ASR. A *named* foreign language (the real Arabic quote, ar@0.96) never
     # reaches this retry.
-    widened = _judge_span(lid, src_model, source_wav, max(0.0, a - 2.0), b + 2.0, source)
+    widened = _judge_span(lid, src_model, source_wav, max(0.0, a - 2.0), b + 2.0, source,
+                          tgt_model, target)
     return verdict if widened == "und" else widened
 
 
 def _judge_span(lid, src_model, source_wav: Path, a: float, b: float,
-                source: str) -> str | None:
+                source: str, tgt_model=None, target: str = "") -> str | None:
     from . import audio
 
     clip = audio.decode_mono(source_wav, 16000, start=a, end=min(b, a + FOREIGN_WINDOW))
@@ -830,9 +883,20 @@ def _judge_span(lid, src_model, source_wav: Path, a: float, b: float,
         return lang                # near-certain foreign label outranks the ASR read
     segs, _info = src_model.transcribe(clip, language=source, beam_size=5, vad_filter=False)
     segs = list(segs)
-    if not segs or sum(s.avg_logprob for s in segs) / len(segs) >= FOREIGN_SRC_LOGPROB:
+    src_lp = (sum(s.avg_logprob for s in segs) / len(segs)) if segs else None
+    # Before the source read is believed either way, ask the model that reads the
+    # target language. This is the only witness that can overturn a confident lie
+    # ("I read this English as Hebrew, at -0.38"), and it is what turns a muted
+    # target-language speaker into a real, visible target span. It is asked only
+    # where the classifier has NOT named a different language confidently: a
+    # target-forced decoder always returns target-language text, so it cannot be
+    # allowed to rename a passage VoxLingua has already identified as Arabic.
+    named = bool(lang) and lang != source and prob >= FOREIGN_MIN_PROB
+    if (not named or lang == target) and _reads_as_target(tgt_model, clip, target, src_lp):
+        return target
+    if src_lp is None or src_lp >= FOREIGN_SRC_LOGPROB:
         return None                                   # it reads as the source language
-    return lang if lang and lang != source and prob >= FOREIGN_MIN_PROB else "und"
+    return lang if named else "und"
 
 
 def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: float,
@@ -871,9 +935,11 @@ def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: floa
         if lang != target:
             # The span is the classifier's word alone — confirmed over the whole
             # run. Its subtitle text comes from the vanilla multilingual ASR below.
-            confirmed = _sounds_foreign(lid, src_model, source_wav, a, b, source)
+            confirmed = _sounds_foreign(lid, src_model, source_wav, a, b, source,
+                                        tgt_model=en_model, target=target)
             if confirmed is None:
                 continue
+        if lang != target and confirmed != target:
             # A passage that ends where nobody paused ended at a window edge, not at a
             # change of speaker: the Arabic run stopped at 446.20, exactly five windows
             # in, with the voice still going to 447.30, and that last second was dubbed
@@ -898,14 +964,18 @@ def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: floa
         # Hebrew side; the English-only model, by contrast, reads it as confident
         # English. Step the end forward while it keeps reading English, so the
         # speaker finishes — bounded so it can't run into the real Hebrew.
-        nxt = lsegs[i + 1][0] if i + 1 < len(lsegs) else total
+        # The next run is the one that starts after this passage ends — not simply
+        # `i + 1`, because a passage confirmed as the target language may have been
+        # grouped out of several runs.
+        nxt = next((s for s, _e, _l in lsegs if s >= b - 1e-6), total)
         b = _extend_english_end(en_model, source_wav, b,
                                 min(b + SPAN_TAIL_MAX, nxt + 0.6, total), target)
         # Same at the leading edge, when the run just before is a fragment VAD broke
         # off this one — near enough to be the same breath, and not itself English
         # (that would already be a span of its own).
-        if i and lsegs[i - 1][2] != target and a - lsegs[i - 1][1] <= VAD_MERGE_GAP:
-            a = _reclaim_leading_fragment(en_model, source_wav, lsegs[i - 1][0], a, b, target)
+        prev = next(((s, e, lg) for s, e, lg in reversed(lsegs) if e <= a + 1e-6), None)
+        if prev and prev[2] != target and a - prev[1] <= VAD_MERGE_GAP:
+            a = _reclaim_leading_fragment(en_model, source_wav, prev[0], a, b, target)
         clip = audio.decode_mono(source_wav, 16000, start=a, end=b)
         segs, _info = en_model.transcribe(clip, language=target, beam_size=5,
                                           vad_filter=False, word_timestamps=True)

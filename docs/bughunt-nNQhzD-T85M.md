@@ -317,3 +317,59 @@ ONE change — two-pass translate-then-revise in translate.py:
 Entity table is COMPUTED from the run's own transcript/translations (general code,
 not a per-video glossary). Validation = the two prompt-agents' problem/control sets
 (staged, waiting on GPUs occupied by user training jobs).
+
+## Round 15 — the muted target-language speaker, made visible (transcript/v39 segments/v34)
+
+The user's top complaint ("he is already speaking English and he got muted") is one
+class with three coinciding conditions (Rounds 3, 7, 11): no transcript words, no
+span, no uncovered fill. mix/v7 made it audible; it was still invisible — no segment,
+no subtitle, nothing the editor app can select or correct. Fixed at the two stages
+that decide, all four conditions reproduced first as failing unit tests.
+
+1. **The source ASR is only a negative witness.** A source-language fine-tune does not
+   fail on target speech, it TRANSLITERATES it and reads its own transliteration at
+   -0.38 — above `FOREIGN_SRC_LOGPROB`. `_judge_span` believed that whenever LID was
+   under the 0.95 override. New `_reads_as_target`: the target-language ASR reads the
+   same clip and must clear all three of an absolute floor (`TARGET_READ_LOGPROB`
+   -0.35), a margin over the source model's read of that clip (`TARGET_READ_MARGIN`
+   0.10 — whoever reads it better is right; a tie is no evidence) and ≥3 real words
+   that are not an `_ASR_STOCK` hallucination. It is not asked where LID already named
+   a different language at ≥0.85 (a target-forced decoder always returns target text,
+   so it cannot rename the Arabic quote).
+2. **A target verdict now routes into the TARGET branch** of
+   `detect_spoken_target_spans`, so the passage gets subtitle text, edge refinement,
+   `lang == target` and a `latin`/`target_lang` keep segment — visible, selectable,
+   correctable — instead of an unnamed `foreign` keep with "…" or nothing at all.
+3. **`fill_uncovered_audible` judged a whole gap by its first 4s.** A gap opening on a
+   music sting and then carrying an English speaker was answered "not target" once and
+   filled with nothing. It now walks the gap in classifier-sized windows and keeps each
+   target-language run inside it, reason `spoken_target` (a named verdict, distinct
+   from an unreadable stretch). Unjudged stretches are still left alone — a keep there
+   would play the mix over the bed that already carries it, and mix/v7 is the floor.
+4. **`speaker_en` over-fire.** It was a speaker-level rule with no appeal: one line over
+   `SPEAKER_EN_RATIO` and every segment of that speaker was kept, including their real
+   source-language lines, which then never got dubbed. `mark_keep(seg_lang=…)` lets a
+   per-segment verdict of "source language" at ≥ `SPEAKER_EN_VETO_PROB` (0.85, clear of
+   the 0.34-0.60 band where every documented mislabel sits) outvote the prior. No
+   witness or an unsure one changes nothing, so the prior still does its original job.
+
+Not re-proposed: word-confidence gating and "repair the phrase" prompting (Round 8,
+both rejected by measurement). Nothing here is per-video: two model witnesses, a
+window scan, and a confidence bar.
+
+### Needs real-audio measurement (thresholds are argued, not yet calibrated)
+
+- **The he→en doc run, 78.5–89.1s English interviewee, and the ru run's same span.**
+  Expect: a span with `lang == "en"`, real subtitle text, a keep segment with reason
+  `latin`; previously only the mix's vocals fill covered it. Log line to look for:
+  `transcript: en-spoken 78.5-89.1s: …`.
+- **`TARGET_READ_LOGPROB` / `TARGET_READ_MARGIN` calibration.** Dump, for every
+  candidate span in a run, `(src_lp, tgt_lp, verdict)` and check the two populations
+  separate: real target speech should sit well above -0.35 with a positive margin,
+  source-language spans well below. If they overlap, raise the floor before the margin.
+- **False-positive check on the archival Arabic (211.9–247.4s chanting).** It must stay
+  `foreign`/uncovered — the ≥0.85 named-language guard should hold, but the base target
+  model's behaviour on chanting is the thing to watch.
+- **`speaker_en` veto rate.** Count segments that lost `speaker_en` in a run with a
+  target-heavy speaker; each one should be a line where that speaker really speaks the
+  source language. A veto on genuine target speech is the regression to look for.

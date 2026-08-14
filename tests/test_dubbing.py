@@ -334,8 +334,7 @@ def test_voice_pause_needs_more_than_a_plosive_gap(monkeypatch):
 def test_a_third_language_is_kept_as_is(monkeypatch):
     # Arabic in a Hebrew documentary: no ASR here reads it, so it is kept as recorded,
     # with no subtitle text — dubbing it from the source model's gibberish is worse.
-    monkeypatch.setattr(transcript, "_sounds_foreign",
-                        lambda lid, mdl, sw, a, b, src: "ar")
+    monkeypatch.setattr(transcript, "_sounds_foreign", lambda *a, **k: "ar")
     spans = _detect(monkeypatch, [(2.0, 6.0), (8.0, 10.0)],
                     [("ar", 0.9), ("he", 1.0)], [])
     assert len(spans) == 1
@@ -346,8 +345,7 @@ def test_a_third_language_is_kept_as_is(monkeypatch):
     assert _detect(monkeypatch, [(2.0, 6.0)], [("he", 1.0)], []) == []
 
     # And an unconfirmed third language is left to the dub rather than aired blind.
-    monkeypatch.setattr(transcript, "_sounds_foreign",
-                        lambda lid, mdl, sw, a, b, src: None)
+    monkeypatch.setattr(transcript, "_sounds_foreign", lambda *a, **k: None)
     assert _detect(monkeypatch, [(2.0, 6.0)], [("ar", 0.9)], []) == []
 
 
@@ -371,8 +369,7 @@ def test_foreign_group_joins_the_pieces_of_one_passage():
 def test_a_foreign_span_ending_mid_utterance_runs_to_the_pause(monkeypatch):
     # The classifier's windows can end a passage while the speaker is still talking;
     # that last second then gets dubbed from gibberish. It runs to the next pause.
-    monkeypatch.setattr(transcript, "_sounds_foreign",
-                        lambda lid, mdl, sw, a, b, src: "ar")
+    monkeypatch.setattr(transcript, "_sounds_foreign", lambda *a, **k: "ar")
     spans = _detect(monkeypatch, [(2.0, 6.0), (8.0, 10.0)],
                     [("ar", 0.9), ("he", 1.0)], [], pause=7.3)
     assert spans[0]["end"] == 7.3
@@ -427,6 +424,81 @@ def test_sounds_foreign_demands_more_than_the_window_labels(monkeypatch):
     # But a confident "this IS the source language" outranks the ASR.
     monkeypatch.setattr(transcript, "detect_language", lambda lid, clip: ("he", 0.99))
     assert sounds(object(), unreadable, "voc.wav", 0.0, 4.0, "he") is None
+
+
+class _FakeAsr:
+    """A whisper stand-in that reads every clip the same scripted way."""
+
+    def __init__(self, text, logprob):
+        self.text, self.logprob = text, logprob
+
+    def transcribe(self, *a, **k):
+        return iter([_FakeSeg(self.text, avg_logprob=self.logprob)]), object()
+
+
+def test_target_asr_outvotes_a_confident_source_read(monkeypatch):
+    # The muted-English bug. VoxLingua has no usable opinion (its documented
+    # mislabels sit at 0.34-0.60) and the Hebrew fine-tune TRANSLITERATES the
+    # English speech into Hebrew script at -0.38 — above the fail bar — so the
+    # passage is judged "source language" and dubbed over a man speaking English.
+    # A model that actually reads the target language is the honest witness.
+    from dubbing import audio
+    monkeypatch.setattr(audio, "decode_mono", lambda *a, **k: [0.0])
+    monkeypatch.setattr(transcript, "detect_language", lambda lid, clip: ("mi", 0.5))
+    lying = _FakeAsr("איי הד דה סיים קונסרנס", -0.38)
+    english = _FakeAsr("I had the same concerns about this", -0.12)
+    sounds = transcript._sounds_foreign
+
+    # Without the witness: dubbed (today's behaviour, and the bug).
+    assert sounds(object(), lying, "voc.wav", 0.0, 8.0, "he") is None
+    # With it: named as the target language, so it becomes a real target span.
+    assert sounds(object(), lying, "voc.wav", 0.0, 8.0, "he",
+                  tgt_model=english, target="en") == "en"
+
+    # Controls — the witness must not fire on source-language speech:
+    honest = _FakeAsr("משפט עברי נקי לגמרי", -0.20)
+    # ...the target model reads real Hebrew as low-confidence gibberish,
+    gibberish = _FakeAsr("the the the a a", -1.10)
+    assert sounds(object(), honest, "voc.wav", 0.0, 8.0, "he",
+                  tgt_model=gibberish, target="en") is None
+    # ...a fluent read that does not beat the source model's own read proves nothing,
+    assert sounds(object(), honest, "voc.wav", 0.0, 8.0, "he",
+                  tgt_model=_FakeAsr("and this is what he said then", -0.22),
+                  target="en") is None
+    # ...a known stock hallucination is not speech ("thanks for watching" over music),
+    assert sounds(object(), lying, "voc.wav", 0.0, 8.0, "he",
+                  tgt_model=_FakeAsr("Thanks for watching!", -0.05), target="en") is None
+    # ...and two words are too little to tell a phrase from a decode artifact.
+    assert sounds(object(), lying, "voc.wav", 0.0, 8.0, "he",
+                  tgt_model=_FakeAsr("Yeah okay", -0.05), target="en") is None
+    # A confident source-language label still outranks everything.
+    monkeypatch.setattr(transcript, "detect_language", lambda lid, clip: ("he", 0.99))
+    assert sounds(object(), lying, "voc.wav", 0.0, 8.0, "he",
+                  tgt_model=english, target="en") is None
+    # And so does a confidently NAMED third language: a target-forced decoder always
+    # returns target-language text, so it may not rename the Arabic quote to English.
+    monkeypatch.setattr(transcript, "detect_language", lambda lid, clip: ("ar", 0.90))
+    assert sounds(object(), _FakeAsr("gibberish", -0.64), "voc.wav", 0.0, 8.0, "he",
+                  tgt_model=english, target="en") == "ar"
+
+
+def test_a_target_verdict_becomes_a_target_span(monkeypatch):
+    # A passage the classifier cannot name but the target ASR reads cleanly is
+    # routed to the TARGET branch: it gets subtitle text, refined edges and
+    # lang == target, so segments/mark_keep files it as a target keep the editor
+    # can see — not an unnamed "foreign" keep with "…" for text.
+    monkeypatch.setattr(transcript, "_sounds_foreign", lambda *a, **k: "en")
+    spans = _detect(monkeypatch, [(2.0, 6.0)], [(None, 0.2)],
+                    ["I had the same concerns"])
+    assert len(spans) == 1
+    assert spans[0]["lang"] == "en"
+    assert spans[0]["text"] == "I had the same concerns"
+    assert spans[0]["words"][0]["text"] == "I"
+    # And that span makes a real, keep=True, target-reason segment downstream.
+    segs = [{"id": 0, "start": spans[0]["start"], "end": spans[0]["end"],
+             "speaker": "A", "text": spans[0]["text"]}]
+    segments.mark_keep(segs, spans)
+    assert (segs[0]["keep"], segs[0]["keep_reason"]) == (True, "latin")
 
 
 def test_leading_fragment_is_reclaimed_when_it_is_speech(monkeypatch):
@@ -709,7 +781,7 @@ def test_uncovered_keep_waits_for_the_previous_speaker_to_stop():
              "keep": False, "keep_reason": None}]
     segments.fill_uncovered_audible(segs, levels, hop, 6.5, is_target_lang=lambda a, b: True,
                                     voice_levels=levels)
-    added = [s for s in segs if s.get("keep_reason") == "uncovered"]
+    added = [s for s in segs if s.get("keep_reason") == "spoken_target"]
     assert added and added[0]["start"] == pytest.approx(2.1, abs=1e-6)   # one frame past the pause edge
 
     # With no pause in reach the gap is left where it was, rather than silently
@@ -718,8 +790,80 @@ def test_uncovered_keep_waits_for_the_previous_speaker_to_stop():
              "keep": False, "keep_reason": None}]
     segments.fill_uncovered_audible(segs, [0.09] * 65, hop, 6.5, is_target_lang=lambda a, b: True,
                                     voice_levels=[0.09] * 65)
-    added = [s for s in segs if s.get("keep_reason") == "uncovered"]
+    added = [s for s in segs if s.get("keep_reason") == "spoken_target"]
     assert added and added[0]["start"] == pytest.approx(1.6, abs=hop)
+
+
+def test_uncovered_fill_judges_the_whole_gap_not_only_its_first_window():
+    # The language witness answers for one LID window (4s). Asking it once, at the
+    # gap's start, decides a twenty-second gap on its first four seconds: a gap that
+    # opens on a music sting and then carries an English speaker was answered "not
+    # target" and filled with nothing — the speaker played neither dubbed nor kept.
+    # Each window is judged on its own and the target-language run is what gets kept.
+    hop = 0.1
+    levels = [0.09] * 200                     # audible throughout
+    segs = [{"id": 0, "start": 0.0, "end": 2.0, "speaker": "A", "text": "…",
+             "keep": False, "keep_reason": None}]
+    asked: list[tuple[float, float]] = []
+
+    def is_target(a: float, b: float) -> bool:
+        asked.append((round(a, 1), round(b, 1)))
+        return a >= 9.99                      # the English starts 8s into the gap
+
+
+
+    segments.fill_uncovered_audible(segs, levels, hop, 20.0, is_target_lang=is_target,
+                                    voice_levels=levels, win=4.0)
+    added = [s for s in segs if s.get("keep_reason") == "spoken_target"]
+    assert len(asked) > 1                     # the whole gap is judged, not its head
+    # The gap opens at 2.1s and is walked in 4s windows; only the target-language
+    # run inside it is kept, and the rest of the gap is left to the mix's floor.
+    assert [(s["start"], s["end"]) for s in added] == [(10.1, 20.0)]
+    assert added[0]["keep"] is True
+
+    # A gap with no target speech in it anywhere is still left alone — the mix's
+    # vocals fill is the floor there, and a keep would double the music bed.
+    segs = [{"id": 0, "start": 0.0, "end": 2.0, "speaker": "A", "text": "…",
+             "keep": False, "keep_reason": None}]
+    segments.fill_uncovered_audible(segs, levels, hop, 20.0,
+                                    is_target_lang=lambda a, b: False,
+                                    voice_levels=levels, win=4.0)
+    assert len(segs) == 1
+
+
+def test_per_segment_evidence_outvotes_the_speaker_prior():
+    # SPEAKER_EN_RATIO is a speaker-level prior: once a speaker crosses it, every
+    # one of their segments is kept — including the ones where they genuinely speak
+    # the source language, which then never get dubbed. Per-segment evidence, when
+    # it is strong, must be able to outvote the prior.
+    def rows():
+        return [
+            {"id": 0, "start": 0, "end": 6, "speaker": "A", "text": "This is English speech"},
+            {"id": 1, "start": 6, "end": 12, "speaker": "A", "text": "and more English here"},
+            # Phonetically transcribed English: only the speaker rule catches it.
+            {"id": 2, "start": 12, "end": 15, "speaker": "A", "text": "עוד קצת עברית"},
+            # ...and here the same speaker really does speak Hebrew.
+            {"id": 3, "start": 15, "end": 18, "speaker": "A", "text": "שלום לכולם"},
+        ]
+
+    # No witness (no LID model): the prior stands, exactly as before.
+    segs = rows()
+    segments.mark_keep(segs)
+    assert [s["keep_reason"] for s in segs] == ["latin", "latin", "speaker_en", "speaker_en"]
+
+    # A confident "this is the source language" on segment 3 sends it to the dub,
+    # while segment 2 — which the witness cannot name — keeps the prior's verdict.
+    segs = rows()
+    said = {2: ("en", 0.72), 3: ("he", 0.97)}
+    segments.mark_keep(segs, seg_lang=lambda s: said.get(s["id"]))
+    assert [s["keep_reason"] for s in segs] == ["latin", "latin", "speaker_en", None]
+    assert not segs[3]["keep"]
+
+    # An unsure witness is not evidence: below the bar the prior still wins, because
+    # the prior was measured and the classifier's mislabels sit in exactly that band.
+    segs = rows()
+    segments.mark_keep(segs, seg_lang=lambda s: ("he", 0.70) if s["id"] == 3 else None)
+    assert segs[3]["keep_reason"] == "speaker_en"
 
 
 def test_a_foreign_span_is_kept_even_with_no_text():

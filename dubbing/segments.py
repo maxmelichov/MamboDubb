@@ -49,6 +49,11 @@ SPLICE_MIN_REMNANT = 0.4 # a trimmed piece shorter than this holds no speakable 
 WORD_OVERLAP = 0.05      # a word must overlap a piece by more than this to belong to it
 
 SPEAKER_EN_RATIO = 0.60
+# ...and how sure the per-segment language witness must be to overturn that prior on
+# one segment. Well above LID_MIN_PROB: every documented mislabel of the classifier
+# sat at 0.34-0.60, and the cost of a wrong veto is dubbing over a speaker who really
+# was speaking the target language — the bug this whole class is about.
+SPEAKER_EN_VETO_PROB = 0.85
 
 # Movie mode only: a standalone beat of at most this many words / seconds whose
 # words are all international interjections (or source-script borrowings of a
@@ -653,7 +658,7 @@ def is_interjection_keep(seg: dict[str, Any], src: str, tgt: str) -> bool:
 
 def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None = None,
               target: str = "en", src: str = "he", dub_foreign: bool = False,
-              genre: str = "documentary") -> None:
+              genre: str = "documentary", seg_lang=None) -> None:
     """Flag segments whose original audio should play instead of a dub.
 
     Three content-free rules: the segment came out of a detected non-source-language
@@ -673,6 +678,15 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
     (not the "…" placeholder), so the translate stage can render it in the target and
     TTS can voice it from the segment's own audio. Anything less confident keeps its
     original audio exactly as before — never silent.
+
+    The speaker rule is a PRIOR, not a verdict. It is measured over a whole speaker,
+    so it also keeps the genuine source-language lines of a mostly-target speaker,
+    which then never get dubbed at all ("why isn't this dubbed?"). `seg_lang(seg)`
+    returns the language classifier's verdict for that one segment as
+    `(lang, prob)` (or None when it has none): a confident "this segment is the
+    source language" outvotes the prior and the segment is dubbed. The bar is
+    deliberately high — the prior was measured, and the classifier's documented
+    mislabels sit in the 0.34-0.60 band — so an unsure verdict changes nothing.
     """
     def letters(text: str) -> int:
         return sum(1 for ch in (text or "") if ch.isalpha())
@@ -702,6 +716,17 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
     en_speakers = {
         spk for spk, (total, lat) in totals.items() if total > 0 and lat / total >= SPEAKER_EN_RATIO
     }
+
+    def says_source(seg: dict[str, Any]) -> bool:
+        """Per-segment evidence strong enough to outvote the speaker-level prior."""
+        if seg_lang is None:
+            return False
+        verdict = seg_lang(seg)
+        if not verdict:
+            return False
+        lang, prob = verdict
+        return lang == src and float(prob) >= SPEAKER_EN_VETO_PROB
+
     for seg in segments:
         lang = span_lang(seg)
         if lang is not None:
@@ -724,7 +749,7 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
             seg["keep"], seg["keep_reason"] = True, "no_text"
         elif cross and script.is_script(seg["text"], target):
             seg["keep"], seg["keep_reason"] = True, target_reason
-        elif seg["speaker"] in en_speakers:
+        elif seg["speaker"] in en_speakers and not says_source(seg):
             seg["keep"], seg["keep_reason"] = True, "speaker_en"
         elif genre == "movie" and is_interjection_keep(seg, src, target):
             # Movie mode: a standalone greeting/interjection beat plays in the
@@ -958,19 +983,48 @@ def extend_keeps_to_speech_end(segs: list[dict[str, Any]], levels, hop: float,
             s["end"] = round(end, 3)
 
 
+def _judge_windows(a: float, b: float, win: float, is_target_lang) -> list[tuple[float, float]]:
+    """The runs of [a, b] the language witness calls the target language.
+
+    The witness answers for one classifier window at a time, so a long gap has to be
+    walked window by window: asking once, at the gap's start, decides twenty seconds
+    on their first four. A remainder shorter than half a window is judged together
+    with the window before it rather than alone — the classifier's verdicts on
+    sub-second fragments are documented noise (a 0.9s piece came back Maori at p>=0.6).
+    """
+    runs: list[list[float]] = []
+    t = a
+    while t < b - 1e-9:
+        c = min(b, t + win)
+        if b - c < win / 2:
+            c = b
+        if is_target_lang(round(t, 3), round(c, 3)):
+            if runs and abs(runs[-1][1] - t) < 1e-9:
+                runs[-1][1] = c
+            else:
+                runs.append([t, c])
+        t = c
+    return [(x, y) for x, y in runs]
+
+
 def fill_uncovered_audible(segs: list[dict[str, Any]], levels, hop: float,
-                           total: float, is_target_lang=None, voice_levels=None) -> None:
+                           total: float, is_target_lang=None, voice_levels=None,
+                           win: float = 4.0) -> None:
     """Keep original audio for audible stretches no segment covers — target only.
 
     A region the language detector mislabels as neither source nor target, and the
     ASR never transcribed, otherwise plays silent — the speaker vanishes (the "1:35
-    goes quiet" gap). Cover it with original audio so it is at least heard.
+    goes quiet" gap). Cover it with original audio so it is at least heard, as a
+    real `spoken_target` keep segment the editor can see, select and correct.
 
     But original audio is only safe to play where it is the *target* language: a
     mislabelled source-language stretch must never air its own voice (the "I can
-    hear the Hebrew speaker" bleed). `is_target_lang(a, b)` runs VoxLingua on the
-    stretch and answers that question; without it (no LID model) nothing is filled,
-    so an uncertain region falls to the background bed rather than risk the bleed.
+    hear the Hebrew speaker" bleed), and a music-only stretch kept here would play
+    the mix on top of the bed that already carries it. `is_target_lang(a, b)` runs
+    VoxLingua on one `win`-second window and answers that question; the gap is
+    walked window by window, and only the target-language runs inside it are kept.
+    Without the witness (no LID model) nothing is filled — the mix's vocals fill is
+    the floor there, so an unjudged region still plays the original voice.
     """
     import numpy as np
 
@@ -1011,13 +1065,20 @@ def fill_uncovered_audible(segs: list[dict[str, Any]], levels, hop: float,
                 a = min((head + 1) * hop, b)
                 break
             head += 1
-        if (b - a >= UNCOVERED_MIN and float(np.max(levels[int(a / hop):j])) >= UNCOVERED_PEAK
-                and is_target_lang(a, b)):
-            added.append((round(a, 3), round(b, 3)))
+        if b - a >= UNCOVERED_MIN and float(np.max(levels[int(a / hop):j])) >= UNCOVERED_PEAK:
+            for wa, wb in _judge_windows(a, b, win, is_target_lang):
+                if (wb - wa >= UNCOVERED_MIN
+                        and float(np.max(levels[int(wa / hop):max(int(wa / hop) + 1,
+                                                                 int(wb / hop))]))
+                        >= UNCOVERED_PEAK):
+                    added.append((round(wa, 3), round(wb, 3)))
         i = j
     for a, b in added:
+        # `spoken_target`, not a bare "uncovered": the witness named this the target
+        # language, which is why its original audio may play at all — and the editor
+        # can tell it apart from a stretch nobody could read.
         segs.append({"id": -1, "start": a, "end": b, "speaker": "SPEAKER_00",
-                     "text": "", "keep": True, "keep_reason": "uncovered"})
+                     "text": "", "keep": True, "keep_reason": "spoken_target"})
     if added:
         segs.sort(key=lambda s: s["start"])
         for k, s in enumerate(segs):
@@ -1039,7 +1100,31 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
         segs = splice_foreign_spans(segs, spans, words, src_lang, tgt_lang)
         for i, seg in enumerate(segs):
             seg["id"] = i
-    mark_keep(segs, spans, tgt_lang, src_lang, dub_foreign, genre=genre)
+    from . import audio, transcript
+
+    src = workdir / m["files"]["source_wav"]
+    lid = transcript.load_lid()
+
+    def seg_lang(seg: dict[str, Any]) -> tuple[str, float] | None:
+        """What the classifier hears in this one segment (None when it cannot ask).
+
+        Asked from the source mix, like every other presence question: Demucs
+        sometimes routes a speaker into the music stem. Only reached for segments
+        the speaker-level prior would otherwise keep, so this costs one embedding
+        pass per line of a mostly-target speaker, not one per segment in the file.
+        """
+        if lid is None:
+            return None
+        try:
+            clip = audio.decode_mono(src, 16000, start=seg["start"],
+                                     end=min(seg["end"], seg["start"] + transcript.LID_WINDOW))
+            return transcript.detect_language(lid, clip)
+        except Exception as exc:                                    # pragma: no cover
+            print(f"  segments: per-segment language check failed ({exc})", file=sys.stderr)
+            return None
+
+    mark_keep(segs, spans, tgt_lang, src_lang, dub_foreign, genre=genre,
+              seg_lang=seg_lang if lid is not None else None)
 
     # Drop sub-word noise fragments (a lone "ב", stray glyphs). Kept as original
     # audio they play a jarring one-letter blip of the source voice between dubbed
@@ -1056,8 +1141,6 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
         f"{lost[0]['t']:.2f}s ({lost[0]['text']!r}) — they would never be heard"
     )
     # Keep segments (original audio) must not clip a speaker mid-sentence.
-    from . import audio
-
     total = float(m["source"].get("duration") or 0.0)
     levels = audio.frame_rms(audio.decode_mono(workdir / m["files"]["vocals"], 16000),
                              16000, 0.1)
@@ -1068,11 +1151,7 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
     # is judged from the source mix, not the vocals — Demucs sometimes routes a
     # speaker into the music stem, and that speech must still count. Falls back to
     # no filling when the LID model is absent.
-    src = workdir / m["files"]["source_wav"]
     src_levels = audio.frame_rms(audio.decode_mono(src, 16000), 16000, 0.1)
-    from . import transcript
-
-    lid = transcript.load_lid()
     is_target = None
     if lid is not None:
         tgt = tgt_lang
@@ -1084,7 +1163,8 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
             return lang == tgt and prob >= transcript.LID_MIN_PROB
 
     fill_uncovered_audible(segs, src_levels, 0.1, total or len(src_levels) * 0.1,
-                           is_target_lang=is_target, voice_levels=levels)
+                           is_target_lang=is_target, voice_levels=levels,
+                           win=transcript.LID_WINDOW)
     m["segments"] = segs
     m["speakers"] = {
         spk: {"dur": round(sum(s["end"] - s["start"] for s in segs if s["speaker"] == spk), 2)}
