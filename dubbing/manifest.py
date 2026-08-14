@@ -27,7 +27,7 @@ STAGE_TAGS = {
     # moves past every claim rather than picking a side.
     "transcript": "transcript/v40",
     "segments": "segments/v36",
-    "translate": "translate/v32",
+    "translate": "translate/v33",
     "tts": "tts/v14",
     "timeline": "timeline/v12",
     "mix": "mix/v8",

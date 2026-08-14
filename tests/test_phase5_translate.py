@@ -165,7 +165,8 @@ def test_non_hebrew_source_gets_no_military_note():
 def test_translate_stage_tag_bumped():
     # v32: two parallel lines each claimed v31 (lock-aware reruns; the news
     # register work) — the merged tag moves past both claims.
-    assert manifest.STAGE_TAGS["translate"] == "translate/v32"
+    # v33: a user keep is subtitled honestly under either of its two names.
+    assert manifest.STAGE_TAGS["translate"] == "translate/v33"
 
 
 # ------------------------------------------------------- per-segment gloss gating

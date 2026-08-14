@@ -52,7 +52,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-from . import PASSTHROUGH_REASON, numwords
+from . import USER_KEEP_REASONS, numwords
 from .script import count_letters, is_script, same_script, script_for
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -1359,8 +1359,10 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
             # foreign-script line in the subtitles — the placeholder is honest.
             # A user passthrough is the same case: the viewer is about to hear the
             # target language, so the source-language ASR's reading of it (which is
-            # what made the user reach for the override) is not the subtitle.
-            if ((seg.get("lang") or seg.get("keep_reason") == PASSTHROUGH_REASON)
+            # what made the user reach for the override) is not the subtitle. Both
+            # of its names count — the studio's `edit.set_keep` writes the same
+            # verdict as MANUAL_REASON (see `dubbing.USER_KEEP_REASONS`).
+            if ((seg.get("lang") or seg.get("keep_reason") in USER_KEEP_REASONS)
                     and not is_target_text(seg["text"], target)):
                 seg["text_en"] = "…"
             else:

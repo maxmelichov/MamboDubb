@@ -1506,6 +1506,25 @@ def test_a_flip_throws_away_the_work_made_for_the_other_path():
         assert field not in segs[0]
 
 
+def test_a_user_keep_is_subtitled_honestly_under_either_of_its_two_names():
+    # One verdict, two words for it: the pipeline's own door writes
+    # `keep_reason="user"`, the studio's (`edit.set_keep`) writes "manual" — and
+    # both stamp `passthrough`. The viewer is about to hear the target language,
+    # so the source-language ASR's mangled reading of that span is not the
+    # subtitle; recognising only one of the two names captions half the user's
+    # overrides with the very garble that made them reach for the override.
+    m = manifest.new({"input": "x", "src_lang": "he", "tgt_lang": "en"})
+    m["segments"] = [
+        seg_for_passthrough(0, 0.0, 3.0, text="ש חמוזה בקטב", keep=True,
+                            keep_reason="user", passthrough=True),
+        seg_for_passthrough(1, 3.0, 6.0, text="ש חמוזה בקטב", keep=True,
+                            keep_reason="manual", passthrough=True),
+    ]
+    # Nothing to dub and nothing to sub-translate, so no model is ever loaded.
+    translate.run(m, None, source="he", target="en")
+    assert [s["text_en"] for s in m["segments"]] == ["…", "…"]
+
+
 def test_applying_passthrough_twice_changes_nothing_the_second_time():
     # It runs on every invocation, so a re-run must not keep re-invalidating work.
     segs = [seg_for_passthrough(0, 0.0, 3.0, passthrough=True),
