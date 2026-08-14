@@ -15,9 +15,9 @@
  *
  * The context note is not decoration. Translation quality moves measurably with
  * a sentence about who and what the video is about and how names are spelled —
- * it is the difference between "Sheikha Moza" and three different manglings.
- * That is why it gets the whole lower half of the primary card rather than a
- * corner of the form.
+ * it is the difference between one consistent spelling of a name and three
+ * different manglings. That is why it gets the whole lower half of the primary
+ * card rather than a corner of the form.
  *
  * Genre and register used to be two more dropdowns. They are two-way choices
  * whose options need a clause to be meaningful ("Documentary — narrated,
@@ -253,7 +253,7 @@ export function ImportPage() {
               )}
               aria-label="Context"
               value={form.context ?? ""}
-              placeholder="Who and what this is about, and how names are spelled. For example: an Israeli documentary about Qatar and Sheikha Moza (Hebrew שייח'ה מוזה — the ASR often mangles it); her son Emir Tamim; the Muslim Brotherhood; Yusuf al-Qaradawi. Use these English spellings and respect grammatical gender."
+              placeholder="Who and what this is about, and how names are spelled. For example: a news interview about the housing market; the host is Dana (she), the guest is Prof. Ronen Levi (he) — keep these spellings."
               onChange={(event) => update({ context: event.currentTarget.value })}
             />
             <p className="mt-3 text-[11.5px] leading-relaxed text-muted">
