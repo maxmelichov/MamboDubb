@@ -44,6 +44,35 @@ that actually mutate the segments when they finish. A/B playback works — the c
 synthesized buzz at the right durations, not silence — so the transport is real even
 though there is no `preview.mp4` to play.
 
+## Setup screen
+
+`/setup` renders `GET /api/setup` — the server's fast filesystem checks (ffmpeg, sox, the
+HF token, each model directory with its size, free disk). Every row states its verdict as a
+glyph, the word *Ready* or *Missing*, and a hue, in that order: the screen reads the same in
+monochrome. The detail sentence is the server's, and it is the point of the row — it says
+what to install, not merely that something is absent.
+
+On boot the app asks once. It routes to `/setup` **only** when the server answers `ok:
+false`; an error, a missing endpoint or a server still starting says nothing, and nothing is
+not a reason to interrupt. Otherwise the screen is a small link in the header. Fixture mode
+never auto-routes, because its checklist deliberately fails two checks so the screen is
+demoable.
+
+## Desktop shell
+
+`src/lib/desktop.ts` is the only file that knows Tauri exists, and every call in it degrades
+to the browser behaviour: `isDesktop()` is false, `pickVideoFile()` and `serverBaseUrl()`
+resolve to null, `revealPath()` is a no-op. The Tauri API package is not a dependency — the
+module reads `window.__TAURI__` when the shell injects it and otherwise dynamic-imports a
+specifier assembled at runtime, so the browser bundle never requires it.
+
+Two things change inside the shell. *Choose file* opens a native dialog and fills in a real
+absolute path (a browser `<input type=file>` can only ever report a name). And the webview's
+origin is the Tauri asset protocol rather than the sidecar, so `initApiBase()` — awaited in
+`main.tsx` before the first render, because `mediaUrl` is called during render — resolves
+`http://127.0.0.1:<port>` once and every path in `api.ts` goes through it. In a browser that
+prefix is `""` and the URLs stay relative, exactly as before.
+
 ## Layout
 
 ```

@@ -19,6 +19,13 @@ export function AppHeader({ children }: { children?: React.ReactNode }) {
         </span>
       ) : null}
       {children}
+      <Link
+        to="/setup"
+        className="ml-auto text-[12px] text-muted transition-colors hover:text-primary"
+        title="What this machine has installed"
+      >
+        Setup
+      </Link>
       <ThemeToggle />
     </header>
   );
