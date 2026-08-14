@@ -164,8 +164,15 @@ export function SetupPage() {
             </Link>
           )}
           <span className="ml-auto max-w-xs text-[12px] leading-relaxed text-muted">
+            {/* `ready` is the server's verdict on the REQUIRED checks only, so it
+                can be true while optional rows sit red above this line — saying
+                "nothing is missing" under a MISSING badge reads as a lie. */}
             {ready
-              ? "Nothing is missing."
+              ? failing.length === 0
+                ? "Nothing is missing."
+                : `Everything required is ready; ${failing.length} optional ` +
+                  `item${failing.length === 1 ? " is" : "s are"} missing for wider ` +
+                  "language pairs."
               : "A missing model fails the stage that needs it, not the whole run."}
           </span>
         </CardSection>
