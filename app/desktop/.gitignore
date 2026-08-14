@@ -1,0 +1,5 @@
+node_modules
+# The UI build, copied in from ../ui/dist by scripts/build_desktop.py.
+dist
+src-tauri/target
+src-tauri/gen/schemas

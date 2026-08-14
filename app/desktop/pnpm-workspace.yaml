@@ -1,0 +1,4 @@
+# pnpm 11 reads build-script approvals from here, not package.json.
+# The Tauri CLI unpacks a platform binary in its postinstall.
+allowBuilds:
+  "@tauri-apps/cli": true
