@@ -1728,3 +1728,16 @@ def test_git_commit_prefers_the_baked_value(monkeypatch):
     monkeypatch.delenv("DUBBING_STUDIO_COMMIT")
     monkeypatch.setattr(setup_mod, "REPO_ROOT", Path("/"))
     assert setup_mod.git_commit(refresh=True) is None
+
+
+def test_create_project_probes_a_local_input_before_making_anything(client, outputs, tmp_path):
+    # Missing file: named at the door, not as an ffmpeg error minutes later.
+    r = client.post("/api/projects", json={"source": str(tmp_path / "nope.mp4")})
+    assert r.status_code == 400
+    assert "input not found" in envelope_of(r)["message"]
+    assert sorted(p.name for p in outputs.iterdir()) == [NAME]
+    # A readable file passes the probe (and the run is created).
+    ok = tmp_path / "clip.mp4"
+    ok.write_bytes(b"\x00" * 64)
+    r = client.post("/api/projects", json={"source": str(ok), "name": "probe_ok"})
+    assert r.status_code == 201

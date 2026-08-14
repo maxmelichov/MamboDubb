@@ -2,11 +2,31 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
 
 from . import audio
+
+
+def localize(video: Path, workdir: Path) -> Path:
+    """Copy an outside-the-run input into the run directory, once.
+
+    A run that keeps pointing at the original file depends on it forever: the mix
+    stage re-reads the video to mux the preview, so moving the file — or macOS
+    denying the app access to its folder (a new TCC identity after a rename did
+    exactly this) — kills a job forty minutes in, at the last stage, with an error
+    that looks like anything but its cause. One copy at fetch time makes the run
+    self-contained; the disk cost is the price of a run that always finishes.
+    """
+    if workdir.resolve() in video.resolve().parents:
+        return video
+    copy = workdir / f"input{video.suffix.lower() or '.mp4'}"
+    if copy.is_file() and copy.stat().st_size == video.stat().st_size:
+        return copy
+    shutil.copy2(video, copy)
+    return copy
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".ts"}
 
@@ -102,6 +122,7 @@ def run(
         video = Path(source).expanduser().resolve()
         if not video.is_file():
             raise SystemExit(f"input not found: {video}")
+        video = localize(video, workdir)
         caps = None
         if captions_file:
             caps = Path(captions_file).expanduser().resolve()

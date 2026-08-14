@@ -350,13 +350,42 @@ def mux(video: Path, track: Path, srt: Path, out: Path, duration: float,
     ])
 
 
+def video_path(m: dict[str, Any], workdir: Path) -> Path:
+    """The video to mux from — the run's own copy whenever there is one.
+
+    Runs made before `fetch.localize` existed record the original's absolute
+    path, which may have moved or sit in a folder macOS no longer lets this
+    process read (TCC denies at open(), not at stat(), so only opening tells the
+    truth). Readable originals outside the run are copied in now — healing the
+    old run — and a truly unreachable one fails here, in words, instead of as a
+    bare ffmpeg 'Operation not permitted' at the end of a forty-minute job.
+    """
+    from . import fetch
+
+    recorded = Path(m["files"]["video"])
+    try:
+        with open(recorded, "rb") as fh:
+            fh.read(1)
+        return fetch.localize(recorded, workdir)
+    except OSError:
+        pass
+    for candidate in sorted(workdir.glob("input.*")):
+        return candidate
+    raise SystemExit(
+        f"mix: cannot read the source video {recorded} — it moved, or macOS denied "
+        f"access to its folder. Copy the file somewhere this app can read (or grant "
+        f"access in System Settings → Privacy & Security → Files and Folders) and "
+        f"re-run; new runs keep their own copy and cannot hit this."
+    )
+
+
 def run(m: dict[str, Any], workdir: Path) -> None:
     track = build_track(m, workdir)
     tgt = (m["source"].get("tgt_lang") or "en").lower()
     srt = workdir / f"preview_{tgt}.srt"
     write_srt(m, srt)
     preview = workdir / "preview.mp4"
-    mux(Path(m["files"]["video"]), track, srt, preview, float(m["source"]["duration"]),
+    mux(video_path(m, workdir), track, srt, preview, float(m["source"]["duration"]),
         lang=tgt)
     m["outputs"] = {"dub_wav": track.name, "srt": srt.name, "preview": preview.name}
     print(f"  mix: {preview.name}", file=sys.stderr)

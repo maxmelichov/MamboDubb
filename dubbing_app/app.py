@@ -233,6 +233,24 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
         source = (body.source or "").strip()
         if not source:
             raise invalid("source is required")
+        # A local-file input is probed by actually opening it: macOS TCC denies at
+        # open(), not at stat(), so this is the only check that tells the truth.
+        # Failing here costs the user a sentence; failing at the fetch (or worse,
+        # mix) stage costs them a job that dies minutes in with an ffmpeg error
+        # that says nothing about permissions.
+        if not source.lower().startswith(("http://", "https://")):
+            path = Path(source).expanduser()
+            try:
+                with open(path, "rb") as fh:
+                    fh.read(1)
+            except FileNotFoundError:
+                raise invalid(f"input not found: {path}. Paste the file's full "
+                              "path, or pick it with Choose file.")
+            except OSError:
+                raise invalid(f"macOS is not letting this app read {path}. Grant "
+                              "access in System Settings → Privacy & Security → "
+                              "Files and Folders, or move the file somewhere the "
+                              "app can read.")
         # Hebrew needs two local models the other targets do not (the Qwen3-TTS
         # Hebrew LoRA and its G2P). Said here, not at the tts stage: a run that
         # found out there would already have paid for stems, ASR and diarization.

@@ -1710,3 +1710,49 @@ def test_passthrough_flip_keeps_a_hand_corrected_line():
     assert segments.apply_passthrough(segs) == [0]
     assert segs[0]["text_en"] == "The user's own wording."
     assert "tts" not in segs[0] and "place" not in segs[0]
+
+
+def test_localize_copies_an_outside_input_into_the_run_once(tmp_path):
+    from dubbing import fetch
+
+    workdir = tmp_path / "run"
+    workdir.mkdir()
+    original = tmp_path / "elsewhere" / "clip.MP4"
+    original.parent.mkdir()
+    original.write_bytes(b"video-bytes" * 100)
+
+    copy = fetch.localize(original, workdir)
+    assert copy.parent == workdir and copy.name == "input.mp4"
+    assert copy.read_bytes() == original.read_bytes()
+    # Idempotent: same size means no second copy...
+    before = copy.stat().st_mtime_ns
+    assert fetch.localize(original, workdir) == copy
+    assert copy.stat().st_mtime_ns == before
+    # ...and a file already inside the run is left where it is.
+    assert fetch.localize(copy, workdir) == copy
+
+
+def test_mix_prefers_the_runs_own_copy_and_names_the_failure(tmp_path):
+    from dubbing import mix
+
+    workdir = tmp_path / "run"
+    workdir.mkdir()
+    gone = tmp_path / "moved-away.mp4"      # recorded, but no longer readable
+    m = {"files": {"video": str(gone)}}
+
+    # With the run's own copy present, the unreadable original does not matter.
+    copy = workdir / "input.mp4"
+    copy.write_bytes(b"x")
+    assert mix.video_path(m, workdir) == copy
+
+    # Without it, the failure says what happened and what to do.
+    copy.unlink()
+    with pytest.raises(SystemExit, match="moved, or macOS denied"):
+        mix.video_path(m, workdir)
+
+    # A readable original outside the run is copied in — healing an old run.
+    outside = tmp_path / "still-here.mp4"
+    outside.write_bytes(b"y" * 32)
+    m2 = {"files": {"video": str(outside)}}
+    healed = mix.video_path(m2, workdir)
+    assert healed.parent == workdir and healed.read_bytes() == outside.read_bytes()

@@ -34,7 +34,7 @@ STAGE_TAGS = {
     # LoRA, and every clip's cache key now carries the adapter and that IPA.
     "tts": "tts/v15",
     "timeline": "timeline/v12",
-    "mix": "mix/v8",
+    "mix": "mix/v9",
     "report": "report/v1",
 }
 
