@@ -3,7 +3,7 @@
 # requires-python = ">=3.10"
 # dependencies = []
 # ///
-"""Build tooling for the Dubbing Studio desktop shell (after MamboRambo's pre_build.py).
+"""Build tooling for the MamboDubb desktop shell (after MamboRambo's pre_build.py).
 
 The shell has no sidecar to compile — the pipeline stays a Python checkout the app
 drives with `uv` — so all this does is get the web UI into place and drive Tauri.
@@ -35,13 +35,13 @@ DESKTOP_DIST = DESKTOP_DIR / "dist"
 
 PLACEHOLDER = """<!doctype html>
 <meta charset="utf-8">
-<title>Dubbing Studio</title>
+<title>MamboDubb</title>
 <style>
   body { font: 15px/1.6 system-ui, sans-serif; margin: 4rem auto; max-width: 34rem;
          color: #e7e7ea; background: #17171b; }
   code { background: #26262c; padding: .15rem .4rem; border-radius: .3rem; }
 </style>
-<h1>Dubbing Studio</h1>
+<h1>MamboDubb</h1>
 <p>This is the placeholder shell frontend. The real UI is built from
   <code>app/ui</code>; run <code>uv run --script scripts/build_desktop.py ui</code> to put it
   here.</p>

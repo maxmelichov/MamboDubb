@@ -1,7 +1,7 @@
 [package]
 name = "dubbing-studio"
 version = "0.1.0"
-description = "Dubbing Studio desktop shell"
+description = "MamboDubb desktop shell"
 authors = ["Maxim Melichov"]
 edition = "2021"
 

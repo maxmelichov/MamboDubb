@@ -143,7 +143,7 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
         finally:
             queue.stop()
 
-    app = FastAPI(title="Dubbing Studio", version=version, docs_url=None, redoc_url=None,
+    app = FastAPI(title="MamboDubb", version=version, docs_url=None, redoc_url=None,
                   lifespan=lifespan)
     app.state.projects = projects
     app.state.bus = bus

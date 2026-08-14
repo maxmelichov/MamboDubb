@@ -42,7 +42,10 @@ from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parent.parent
 ICONS = ROOT / "app" / "desktop" / "src-tauri" / "icons"
-SOURCE = ICONS / "icon.svg"
+# The MamboDubb logo mark (mic + wave + speech bubble), cut from the brand
+# banner, on its native near-white ground. It replaces the drawn SVG as the
+# icon's source of truth; the SVG remains only as the pre-rebrand original.
+SOURCE = ICONS / "logo-mark.png"
 
 MASTER = 1024
 # The macOS icon grid, and the geometry the SVG's tile is drawn on.
@@ -87,25 +90,20 @@ ICONSET = [
 ICO_SIZES = [16, 24, 32, 48, 64, 128, 256]
 
 
-def rasterize(svg: Path) -> Image.Image:
-    """SVG -> a 1024x1024 RGBA master, alpha re-cut from the tile silhouette."""
-    with tempfile.TemporaryDirectory() as tmp:
-        out = Path(tmp)
-        subprocess.run(
-            ["qlmanage", "-t", "-s", str(MASTER), "-o", str(out), str(svg)],
-            check=True,
-            capture_output=True,
-        )
-        rendered = out / f"{svg.name}.png"
-        if not rendered.is_file():
-            raise SystemExit(
-                f"error: qlmanage produced no thumbnail for {svg}. The usual cause is "
-                f"invalid SVG (an XML comment containing a double hyphen will do it) — "
-                f"open the file in Quick Look to see the parser error."
-            )
-        image = Image.open(rendered).convert("RGBA")
-    if image.size != (MASTER, MASTER):
-        image = image.resize((MASTER, MASTER), Image.LANCZOS)
+def rasterize(mark_png: Path) -> Image.Image:
+    """Logo mark -> a 1024x1024 RGBA master: a white macOS tile with the mark
+    centered on it, alpha cut to the tile silhouette. The mark ships on a
+    near-white ground, so compositing onto a white tile needs no keying."""
+    mark = Image.open(mark_png).convert("RGBA")
+    # ~66% of the tile width reads right at every ladder size; taller-than-wide
+    # marks are bounded by height instead so nothing crowds the tile edge.
+    target_w = int(TILE_SIZE * 0.82)
+    target_h = int(TILE_SIZE * 0.66)
+    ratio = min(target_w / mark.width, target_h / mark.height)
+    mark = mark.resize((round(mark.width * ratio), round(mark.height * ratio)),
+                       Image.LANCZOS)
+    image = Image.new("RGBA", (MASTER, MASTER), (255, 255, 255, 255))
+    image.paste(mark, ((MASTER - mark.width) // 2, (MASTER - mark.height) // 2), mark)
     image.putalpha(tile_mask())
     return image
 

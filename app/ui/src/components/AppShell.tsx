@@ -36,7 +36,7 @@ export function PageShell({
     <div className="min-h-screen bg-plane">
       <div className="mx-auto w-full max-w-4xl px-5 pb-20 pt-5 sm:px-8 sm:pt-7">
         <header className="flex h-14 items-center justify-between gap-4">
-          <Link to="/" className="rounded-xl" aria-label="Dubbing Studio — projects">
+          <Link to="/" className="rounded-xl" aria-label="MamboDubb — projects">
             <Brand />
           </Link>
           <HeaderTools />

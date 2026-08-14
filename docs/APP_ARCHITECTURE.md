@@ -1,4 +1,4 @@
-# Dubbing Studio — app architecture and contracts
+# MamboDubb — app architecture and contracts
 
 The editor app: import a video (file or URL), run the dubbing pipeline, then review and
 correct the result segment by segment — a much simpler Premiere Pro whose clips are the

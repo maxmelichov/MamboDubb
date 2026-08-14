@@ -1,4 +1,4 @@
-# Dubbing Studio — editor UI
+# MamboDubb — editor UI
 
 The web front end for the dubbing pipeline: import a video, then review and correct the
 dub segment by segment. React 19 + Vite 7 + Tailwind 4, pnpm, no state library and no

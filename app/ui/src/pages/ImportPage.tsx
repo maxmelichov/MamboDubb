@@ -50,7 +50,11 @@ import { timecode } from "../lib/format";
 import { ago, stageTone, summarizeStages } from "../lib/stages";
 import type { CreateProjectRequest, ProjectSummary } from "../lib/types";
 
-const LANGS = [
+// What can be HEARD is broader than what can be SPOKEN: the ASR + translator
+// handle these sources, but Qwen3-TTS voices exactly ten languages — Hebrew and
+// Arabic are source-only. Offering them as dub targets would create a project
+// whose tts stage can only fail, so the two lists are deliberately different.
+const SRC_LANGS = [
   ["he", "Hebrew"],
   ["en", "English"],
   ["ar", "Arabic"],
@@ -58,6 +62,19 @@ const LANGS = [
   ["fr", "French"],
   ["es", "Spanish"],
   ["de", "German"],
+] as const;
+
+const TGT_LANGS = [
+  ["en", "English"],
+  ["ru", "Russian"],
+  ["fr", "French"],
+  ["es", "Spanish"],
+  ["de", "German"],
+  ["it", "Italian"],
+  ["pt", "Portuguese"],
+  ["zh", "Chinese"],
+  ["ja", "Japanese"],
+  ["ko", "Korean"],
 ] as const;
 
 export function ImportPage() {
@@ -202,7 +219,7 @@ export function ImportPage() {
                 value={form.src_lang}
                 onChange={(event) => update({ src_lang: event.currentTarget.value })}
               >
-                {LANGS.map(([code, label]) => (
+                {SRC_LANGS.map(([code, label]) => (
                   <option key={code} value={code}>
                     {label}
                   </option>
@@ -214,7 +231,7 @@ export function ImportPage() {
                 value={form.tgt_lang}
                 onChange={(event) => update({ tgt_lang: event.currentTarget.value })}
               >
-                {LANGS.map(([code, label]) => (
+                {TGT_LANGS.map(([code, label]) => (
                   <option key={code} value={code}>
                     {label}
                   </option>

@@ -1,4 +1,4 @@
-# Dubbing Studio — desktop shell
+# MamboDubb — desktop shell
 
 A Tauri 2 shell around the studio server. It is the third layer of the stack in
 [docs/APP_ARCHITECTURE.md](../../docs/APP_ARCHITECTURE.md), and it changes nothing about
@@ -114,7 +114,7 @@ The prettier option is the frameless one — `titleBarStyle: "Overlay"` with
 `hiddenTitle: true`, which drops the traffic lights straight onto the web content and
 lets the app's own header act as the title bar. It is deliberately **not** enabled,
 because with the header as it stands today the traffic lights would land on top of the
-"Dubbing Studio" wordmark: `AppHeader` renders `h-10 … px-3` with the wordmark first, so
+"MamboDubb" wordmark: `AppHeader` renders `h-10 … px-3` with the wordmark first, so
 the first ~78 px of that row is exactly where macOS wants to draw its buttons. A title
 bar that overlaps the app name is worse than a plain one.
 
@@ -180,7 +180,7 @@ MamboRambo keeps them:
 `tauri.conf.json` is the one that reaches the bundle (`CFBundleShortVersionString`, the
 `.dmg` filename); `Cargo.toml` is what `app_version()` would report from Rust; the
 `package.json` copy is inert but drifts silently, which is worse. All three are `0.1.0`.
-`productName` is "Dubbing Studio" and the identifier is `com.maxmelichov.dubbingstudio`.
+`productName` is "MamboDubb" and the identifier is `com.maxmelichov.dubbingstudio`.
 
 ## Build and dev
 

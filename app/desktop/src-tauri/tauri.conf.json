@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Dubbing Studio",
+  "productName": "MamboDubb",
   "version": "0.1.0",
-  "identifier": "com.maxmelichov.dubbingstudio",
+  "identifier": "com.maxmelichov.mambodubb",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1430",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Dubbing Studio",
+        "title": "MamboDubb",
         "width": 1280,
         "height": 820,
         "minWidth": 1024,
@@ -48,7 +48,7 @@
     "publisher": "Maxim Melichov",
     "copyright": "Copyright (c) 2026 Maxim Melichov",
     "shortDescription": "Dub a video into another language, locally.",
-    "longDescription": "Dubbing Studio drives the DubbingQwen pipeline from a desktop window: transcribe a video, translate it, synthesise the dub with local models, and edit the result segment by segment. Every model runs on this machine; nothing is uploaded.",
+    "longDescription": "MamboDubb drives its local dubbing pipeline from a desktop window: transcribe a video, translate it, synthesise the dub with local models, and edit the result segment by segment. Every model runs on this machine; nothing is uploaded.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

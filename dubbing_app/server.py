@@ -36,7 +36,7 @@ WATCHDOG_INTERVAL = 1.0
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="python -m dubbing_app.server",
-                                description="Dubbing Studio local server.")
+                                description="MamboDubb local server.")
     p.add_argument("--host", default="127.0.0.1", help="bind address (default: 127.0.0.1)")
     p.add_argument("--port", type=int, default=0, help="bind port, 0 = OS-assigned")
     p.add_argument("--outputs", type=Path, default=REPO_ROOT / "outputs",
@@ -154,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
 
     announce(port)
     served = getattr(app.state, "ui_dir", None)
-    print(f"dubbing studio on http://{args.host}:{port} (outputs {outputs}; "
+    print(f"mambodubb on http://{args.host}:{port} (outputs {outputs}; "
           f"ui {served or 'not served — API only'})", file=sys.stderr, flush=True)
 
     server = uvicorn.Server(uvicorn.Config(app, log_config=log_config, access_log=False))
