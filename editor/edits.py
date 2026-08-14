@@ -48,6 +48,19 @@ def _flag(v: Any) -> bool:
 
 
 # field -> (coercer, stage that must re-run when the field changes)
+#
+# The studio (dubbing_app + dubbing/edit.py) and this editor share one schema:
+# a concept gets ONE manifest key, whichever front end wrote it. Two fields this
+# editor originally proposed were therefore renamed to the canonical keys at
+# merge, and one was dropped outright:
+#   lang_override    -> tgt_lang  (the studio's per-segment target language)
+#   passthrough      -> keep + keep_reason="manual" (+ locked.keep, see below)
+#   tts_instructions -> REJECTED: Qwen3-TTS's clone path has no instruction
+#                       channel at all (generate_voice_clone takes no `instruct`;
+#                       the checkpoints that do cannot clone a reference voice).
+#                       Storing it would be a knob that silently does nothing —
+#                       per-segment control lives in `tts_opts` (seed, greedy,
+#                       ref, ref_text, …), validated by dubbing/ttsopts.py.
 EDITABLE: dict[str, tuple[Callable[[Any], Any], str]] = {
     # source transcript text: the translator's input, so translation redoes.
     "text": (_text, "translate"),
@@ -58,16 +71,27 @@ EDITABLE: dict[str, tuple[Callable[[Any], Any], str]] = {
     # what language this span is actually spoken in (subtitles + translation).
     "lang": (_opt_lang, "translate"),
     # per-segment target language override, for re-translating one line elsewhere.
-    "lang_override": (_opt_lang, "translate"),
-    # free-text style/emotion hint handed to the synthesiser.
-    "tts_instructions": (_text, "tts"),
+    "tgt_lang": (_opt_lang, "translate"),
     # speaker already speaks the target language: keep the original audio.
     "passthrough": (_flag, "tts"),
 }
 
-# Fields the editor owns must survive manifest.save()'s whitelist.
-_MISSING = sorted(f for f in EDITABLE if f not in SEGMENT_KEYS)
+# Wire-name compatibility: the static UI may still send the old names.
+ALIASES = {"lang_override": "tgt_lang"}
+
+REJECTED: dict[str, str] = {
+    "tts_instructions": "the synthesiser has no instruction channel: "
+                        "generate_voice_clone takes no instruct argument, and the "
+                        "checkpoints that do cannot clone a voice — use tts_opts "
+                        "(seed, greedy, ref, ref_text) instead",
+}
+
+# Fields the editor stores must survive manifest.save()'s whitelist. `passthrough`
+# is not stored under its own name — it lands on keep/keep_reason/locked.
+_MISSING = sorted(f for f in EDITABLE if f != "passthrough" and f not in SEGMENT_KEYS)
 assert not _MISSING, f"add to manifest.SEGMENT_KEYS: {_MISSING}"
+for _written in ("keep", "keep_reason", "locked"):
+    assert _written in SEGMENT_KEYS, _written
 
 
 def earliest(stages: list[str] | set[str]) -> str | None:
@@ -99,6 +123,9 @@ def apply_edits(m: dict[str, Any], edits: list[dict[str, Any]]) -> dict[str, Any
             raise ValueError(f"no segment {seg_id} in this run")
         touched = False
         for name, raw in (edit.get("fields") or {}).items():
+            name = ALIASES.get(name, name)
+            if name in REJECTED:
+                raise ValueError(f"field {name!r}: {REJECTED[name]}")
             if name not in EDITABLE:
                 raise ValueError(f"field {name!r} is not editable")
             coerce, stage = EDITABLE[name]
@@ -108,12 +135,18 @@ def apply_edits(m: dict[str, Any], edits: list[dict[str, Any]]) -> dict[str, Any
                 raise ValueError(f"segment {seg_id}, field {name!r}: {exc}") from None
             # Absent and empty are the same state, so clearing an unset field is
             # a no-op rather than a manifest change that invalidates a stage.
-            if value == seg.get(name) or (not value and not seg.get(name)):
+            # `passthrough` is stored as keep/keep_reason, so it compares there.
+            current = bool(seg.get("keep")) if name == "passthrough" else seg.get(name)
+            if value == current or (not value and not current):
                 continue
             if not value and name in ("text", "text_en"):
                 # Blanking these would leave the synthesiser nothing to say.
                 raise ValueError(f"segment {seg_id}, field {name!r}: cannot be empty")
-            if not value:
+            if name == "passthrough":
+                # Canonical form: the studio's manual keep, locked against re-runs.
+                seg["keep"], seg["keep_reason"] = bool(value), ("manual" if value else None)
+                seg.setdefault("locked", {})["keep"] = True
+            elif not value:
                 seg.pop(name, None)   # cleared: drop it instead of storing a blank
             else:
                 seg[name] = value

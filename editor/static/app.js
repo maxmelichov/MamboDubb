@@ -90,7 +90,7 @@ function speakerOptions(current) {
 function renderSegments() {
   const run = encodeURIComponent(view.run);
   $("#segments").innerHTML = view.segments.map((s) => `
-    <div class="seg${s.passthrough ? " passthrough" : ""}" data-id="${s.id}">
+    <div class="seg${s.keep && s.keep_reason === "manual" ? " passthrough" : ""}" data-id="${s.id}">
       <div class="meta">
         <span class="time">#${s.id} ${fmt(s.start)} → ${fmt(s.end)}</span>
         ${s.keep ? `<span class="badge keep">keep: ${esc(s.keep_reason ?? "—")}</span>` : ""}
@@ -107,7 +107,7 @@ function renderSegments() {
         <div class="inline">
           <label>spoken lang <input size="4" data-field="lang" value="${esc(s.lang)}" placeholder="${view.source.src_lang}"></label>
           <label>speaker <select data-field="speaker">${speakerOptions(s.speaker)}</select></label>
-          <label><input type="checkbox" data-field="passthrough" ${s.passthrough ? "checked" : ""}> passthrough (keep original)</label>
+          <label><input type="checkbox" data-field="passthrough" ${s.keep && s.keep_reason === "manual" ? "checked" : ""}> passthrough (keep original)</label>
         </div>
       </div>
       <div class="fields">
@@ -115,11 +115,7 @@ function renderSegments() {
           <textarea rows="2" data-field="text_en">${esc(s.text_en)}</textarea>
         </label>
         <div class="inline">
-          <label>target lang <input size="4" data-field="lang_override" value="${esc(s.lang_override)}" placeholder="${view.source.tgt_lang}"></label>
-          <label style="flex:1">TTS instructions
-            <input style="width:100%" data-field="tts_instructions" value="${esc(s.tts_instructions)}"
-                   placeholder="e.g. calm, slightly amused">
-          </label>
+          <label>target lang <input size="4" data-field="tgt_lang" value="${esc(s.tgt_lang)}" placeholder="${view.source.tgt_lang}"></label>
         </div>
       </div>
     </div>`).join("");

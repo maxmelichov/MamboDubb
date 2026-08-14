@@ -750,6 +750,7 @@ dependencies = [
 app = [
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "python-multipart" },
     { name = "uvicorn" },
 ]
 dev = [
@@ -772,6 +773,7 @@ requires-dist = [
     { name = "pyannote-audio", specifier = ">=3.1.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
+    { name = "python-multipart", marker = "extra == 'app'", specifier = ">=0.0.9" },
     { name = "qwen-tts", editable = "third_party/Qwen3-TTS" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9.0" },
     { name = "sentencepiece", specifier = ">=0.2.0" },
