@@ -334,8 +334,7 @@ def test_voice_pause_needs_more_than_a_plosive_gap(monkeypatch):
 def test_a_third_language_is_kept_as_is(monkeypatch):
     # Arabic in a Hebrew documentary: no ASR here reads it, so it is kept as recorded,
     # with no subtitle text — dubbing it from the source model's gibberish is worse.
-    monkeypatch.setattr(transcript, "_sounds_foreign",
-                        lambda lid, mdl, sw, a, b, src: "ar")
+    monkeypatch.setattr(transcript, "_sounds_foreign", lambda *a, **k: "ar")
     spans = _detect(monkeypatch, [(2.0, 6.0), (8.0, 10.0)],
                     [("ar", 0.9), ("he", 1.0)], [])
     assert len(spans) == 1
@@ -346,8 +345,7 @@ def test_a_third_language_is_kept_as_is(monkeypatch):
     assert _detect(monkeypatch, [(2.0, 6.0)], [("he", 1.0)], []) == []
 
     # And an unconfirmed third language is left to the dub rather than aired blind.
-    monkeypatch.setattr(transcript, "_sounds_foreign",
-                        lambda lid, mdl, sw, a, b, src: None)
+    monkeypatch.setattr(transcript, "_sounds_foreign", lambda *a, **k: None)
     assert _detect(monkeypatch, [(2.0, 6.0)], [("ar", 0.9)], []) == []
 
 
@@ -371,8 +369,7 @@ def test_foreign_group_joins_the_pieces_of_one_passage():
 def test_a_foreign_span_ending_mid_utterance_runs_to_the_pause(monkeypatch):
     # The classifier's windows can end a passage while the speaker is still talking;
     # that last second then gets dubbed from gibberish. It runs to the next pause.
-    monkeypatch.setattr(transcript, "_sounds_foreign",
-                        lambda lid, mdl, sw, a, b, src: "ar")
+    monkeypatch.setattr(transcript, "_sounds_foreign", lambda *a, **k: "ar")
     spans = _detect(monkeypatch, [(2.0, 6.0), (8.0, 10.0)],
                     [("ar", 0.9), ("he", 1.0)], [], pause=7.3)
     assert spans[0]["end"] == 7.3
