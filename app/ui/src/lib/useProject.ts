@@ -176,7 +176,7 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
       // Optimistic: the point of a no-model edit is that it is instant.
       const before = segments;
       setSegments((current) =>
-        current.map((seg) => (seg.uid === uid ? { ...seg, ...body } : seg)),
+        current.map((seg) => (seg.uid === uid ? predict(seg, body) : seg)),
       );
       try {
         const updated = await api.patchSegment(name, uid, body);
@@ -264,6 +264,48 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
   };
 
   return [state, actions];
+}
+
+/**
+ * What the segment will look like once the server has answered.
+ *
+ * A spread of the patch over the segment is not the optimistic result, it is
+ * half of it: saving a translation *also* drops the clip that says the old
+ * words, unsets the placement, voids the verification and locks the field
+ * (`dubbing/edit.set_text` → `invalidate(translate)`). Applying only the half
+ * we sent meant the row kept a ◆ Dubbed badge and a live ▶B button pointing at
+ * audio of the sentence the user had just replaced — until a refetch happened
+ * to land, which on a quiet run is never.
+ *
+ * The PATCH response is the truth and it overwrites this a moment later; this
+ * is only what the row shows in between. It deliberately models the *known*
+ * side effects and nothing speculative.
+ */
+function predict(seg: Segment, body: SegmentPatch): Segment {
+  const next: Segment = { ...seg, ...body };
+  const locked = { ...(seg.locked ?? {}) };
+
+  if (body.text != null || body.text_en != null) {
+    next.tts = null;
+    next.place = null;
+    next.verify = null;
+    next.media = { ...(seg.media ?? { source: null, source_window: null, play: null, tts: null }),
+                   play: null, tts: null };
+    if (body.text != null) locked.text = true;
+    if (body.text_en != null) locked.text_en = true;
+  }
+  if (body.speaker != null) locked.speaker = true;
+  if (body.keep != null) {
+    locked.keep = true;
+    next.keep_reason = body.keep ? (body.keep_reason ?? "manual") : null;
+  }
+  // An explicit `locked` in the patch is the user's final word — a replace, not
+  // a merge, exactly as `edit.set_locked` treats it.
+  const final = body.locked ?? locked;
+  const on = Object.fromEntries(Object.entries(final).filter(([, v]) => v));
+  next.locked = Object.keys(on).length ? on : null;
+
+  return next;
 }
 
 export function activeJob(jobs: Job[]): Job | null {

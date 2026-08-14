@@ -6,19 +6,42 @@
 
 import type { Segment } from "./types";
 
-export type SegmentState = "dubbed" | "kept" | "failed" | "pending";
+export type SegmentState = "dubbed" | "kept" | "failed" | "unvoiced" | "untranslated";
 
 /**
  * Invariant 1 (AGENTS.md) says every segment is either dubbed or plays its
  * original audio — so "failed" is not a normal outcome, it is the pipeline
  * having lost a segment, and it is the thing the reviewer must see first.
+ *
+ * The last two used to be one state called "pending", returned by a ternary
+ * whose two arms were the same word. They are not the same situation and they
+ * do not have the same fix: a line with a translation and no clip needs the
+ * *voice* run over it, and a line with no translation needs the *translator*.
+ * Telling a reviewer "Wait" for both is the row refusing to say which button
+ * to press.
  */
 export function segmentState(seg: Segment): SegmentState {
   if (seg.tts?.verify === "failed") return "failed";
   if (seg.keep) return "kept";
   if (seg.place) return "dubbed";
-  // Not kept and not placed: either still being worked on, or dropped.
-  return seg.text_en ? "pending" : "pending";
+  return seg.text_en ? "unvoiced" : "untranslated";
+}
+
+/**
+ * Has this segment been hand-edited?
+ *
+ * `seg.locked` is an object, and `{}` is truthy — so `seg.locked ? …` painted a
+ * padlock on every segment the server had ever sent an empty lock map for. The
+ * question is always "are any locks *on*", never "is there a lock map".
+ */
+export function lockedFields(seg: Segment): string[] {
+  return Object.entries(seg.locked ?? {})
+    .filter(([, on]) => on)
+    .map(([field]) => field);
+}
+
+export function hasLocks(seg: Segment): boolean {
+  return lockedFields(seg).length > 0;
 }
 
 /**
@@ -60,10 +83,17 @@ export const STATE_META: Record<
     token: "var(--color-failed)",
     onFill: "#ffffff",
   },
-  pending: {
-    label: "Not yet dubbed",
-    short: "Wait",
+  unvoiced: {
+    label: "Needs voice",
+    short: "Voice",
     glyph: "◇",
+    token: "var(--color-unclaimed)",
+    onFill: "#ffffff",
+  },
+  untranslated: {
+    label: "Needs translation",
+    short: "Text",
+    glyph: "○",
     token: "var(--color-unclaimed)",
     onFill: "#ffffff",
   },
@@ -121,10 +151,6 @@ export function placementConcern(seg: Segment): string[] {
   if (seg.place.rate < 0.85) notes.push(`slowed to ${seg.place.rate.toFixed(2)}x`);
   if (Math.abs(seg.place.drift) > 0.4) notes.push(`drifts ${seg.place.drift.toFixed(2)}s`);
   return notes;
-}
-
-export function findAt(segments: Segment[], time: number): Segment | null {
-  return segments.find((s) => time >= s.start && time < s.end) ?? null;
 }
 
 export function neighbours(

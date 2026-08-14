@@ -45,7 +45,7 @@ const store: Store = structuredClone(data) as unknown as Store;
  */
 function seedOverrides(): void {
   const withOpts = store.segments.find((seg) => !seg.keep && seg.tts);
-  if (withOpts) withOpts.tts_opts = { seed: 4711, style: "measured", greedy: true };
+  if (withOpts) withOpts.tts_opts = { seed: 4711, greedy: true };
   const withLang = store.segments.find((seg) => seg.src_lang);
   if (withLang) withLang.tgt_lang = "en";
 }
@@ -71,23 +71,35 @@ function seedOf(uid: string): number {
   return hash;
 }
 
-/** Add the fields `GET /segments` promises and the manifest does not store. */
+/**
+ * Add the fields `GET /segments` promises and the manifest does not store.
+ *
+ * The shape is `Projects.enrich`'s, key for key — `media.play`, `media.tts`,
+ * `media.source`, `media.source_window`. It has to be: these fixtures are the
+ * only implementation of the contract that the smoke test ever exercises, so a
+ * fixture that invents its own field names is not a stand-in for the server,
+ * it is a second, divergent server that hides the first one's bugs. That is
+ * literally how A/B playback shipped broken.
+ */
 function enrich(seg: Segment): Segment {
   const seed = seedOf(seg.uid);
   const sourceDur = Math.max(0.4, seg.end - seg.start);
   return {
     ...seg,
-    source_clip_url: toneUrl({ hz: speakerHz(seg.speaker, 0), dur: sourceDur, seed }),
-    tts_clip_url: seg.tts?.clip
-      ? toneUrl({ hz: speakerHz(seg.speaker, 26), dur: seg.tts.dur || sourceDur, seed: seed + 1 })
-      : null,
-    place_clip_url: seg.place?.clip
-      ? toneUrl({
-          hz: speakerHz(seg.speaker, 26),
-          dur: Math.max(0.4, seg.place.end - seg.place.start),
-          seed: seed + 1,
-        })
-      : null,
+    media: {
+      play: seg.place?.clip
+        ? toneUrl({
+            hz: speakerHz(seg.speaker, 26),
+            dur: Math.max(0.4, seg.place.end - seg.place.start),
+            seed: seed + 1,
+          })
+        : null,
+      tts: seg.tts?.clip
+        ? toneUrl({ hz: speakerHz(seg.speaker, 26), dur: seg.tts.dur || sourceDur, seed: seed + 1 })
+        : null,
+      source: toneUrl({ hz: speakerHz(seg.speaker, 0), dur: sourceDur, seed }),
+      source_window: [seg.start, seg.end],
+    },
   };
 }
 
@@ -226,7 +238,31 @@ export function getSegments(_name: string): Promise<Segment[]> {
 
 export function patchSegment(_name: string, uid: string, patch: SegmentPatch): Promise<Segment> {
   const seg = find(uid);
+
+  // `dubbing/edit.py` refuses both of these outright, with a 400. The editor
+  // refuses them before they are ever sent — but the fixture has to refuse
+  // them too, or the guard above it is untested in the only mode the smoke
+  // test runs in.
+  if ("text_en" in patch && !patch.text_en?.trim()) {
+    return Promise.reject(
+      new Error("text_en cannot be empty — a dubbed segment must say something"),
+    );
+  }
+  if ("text" in patch && !patch.text?.trim()) {
+    return Promise.reject(new Error("text cannot be empty"));
+  }
+
   Object.assign(seg, patch);
+
+  // Editing the line invalidates everything made *from* the line: the clip
+  // provably says the old words. `edit.set_text` calls `invalidate(translate)`
+  // for exactly this, and a fixture that quietly kept a stale clip would make
+  // the editor's optimistic merge look correct when it is not.
+  if ("text_en" in patch || "text" in patch) {
+    seg.tts = null;
+    seg.place = null;
+    seg.verify = null;
+  }
 
   // The user's edits outrank the pipeline: a hand-edited field is locked so a
   // re-run cannot overwrite it (docs/APP_ARCHITECTURE.md, non-negotiables).
@@ -238,7 +274,12 @@ export function patchSegment(_name: string, uid: string, patch: SegmentPatch): P
     locked.keep = true;
     seg.keep_reason = patch.keep ? (patch.keep_reason ?? "manual") : null;
   }
-  seg.locked = Object.keys(locked).length ? locked : null;
+  // `locked` in the patch is the user's final word, applied last, and it is a
+  // replace rather than a merge — `{}` is how "hand this line back to the
+  // pipeline" is expressed (edit.set_locked).
+  const final = patch.locked ? { ...patch.locked } : locked;
+  const on = Object.fromEntries(Object.entries(final).filter(([, v]) => v));
+  seg.locked = Object.keys(on).length ? on : null;
 
   return delay(enrich(seg));
 }

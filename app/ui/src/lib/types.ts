@@ -60,6 +60,24 @@ export type TtsOpts = {
 };
 
 /**
+ * The playable audio for one segment, exactly as `Projects.enrich` writes it
+ * (dubbing_app/projects.py). This is the server's shape and the only shape the
+ * UI knows: an earlier draft of this file invented `place_clip_url` /
+ * `tts_clip_url` / `source_clip_url`, the fixtures implemented *those*, and so
+ * every fixture-backed test passed while A/B playback was dead against the
+ * real server. One name, both sides.
+ */
+export type SegmentMedia = {
+  /** `place.clip` — the file the mix actually uses, after time-fitting */
+  play: string | null;
+  /** `tts.clip` — the raw synthesis, before time-fitting */
+  tts: string | null;
+  /** this segment's window of the source audio, as a `#t=` media fragment */
+  source: string | null;
+  source_window?: [number, number] | null;
+};
+
+/**
  * A segment as `GET /segments` returns it: the manifest record plus the
  * enrichment the UI needs and the manifest deliberately does not store.
  */
@@ -90,12 +108,8 @@ export type Segment = {
   place: SegmentPlace | null;
 
   // --- server-side enrichment, not in the manifest ---
-  /** absolute URL for `place.clip` — the audio that is actually in the mix */
-  place_clip_url?: string | null;
-  /** absolute URL for `tts.clip` — the raw synthesis before time-fitting */
-  tts_clip_url?: string | null;
-  /** absolute URL for this segment's window of the original source audio */
-  source_clip_url?: string | null;
+  /** every playable URL for this segment; see SegmentMedia */
+  media?: SegmentMedia | null;
   /** the verification verdict from clips/<hash>.json */
   verify?: SegmentVerify | null;
 };

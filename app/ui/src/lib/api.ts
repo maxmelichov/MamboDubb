@@ -18,6 +18,7 @@ import type {
   ProjectDetail,
   ProjectSummary,
   Segment,
+  SegmentMedia,
   SegmentPatch,
   SetupStatus,
   StudioEvent,
@@ -115,6 +116,26 @@ const json = (body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 });
 
+// --- the segment seam -----------------------------------------------------
+
+const NO_MEDIA: SegmentMedia = { play: null, tts: null, source: null, source_window: null };
+
+/**
+ * Every segment enters the app through here.
+ *
+ * The one job is `media`: the server always sends it (`Projects.enrich`), but a
+ * segment that arrives from an older server, a hand-written test or a partially
+ * enriched response must still be a legal `Segment` rather than a crash inside
+ * a play button. Filling the absence in *once*, at the seam, is what lets every
+ * component above read `seg.media.play` without a guard — and is where a future
+ * rename of the server's field belongs, so it is one edit and not thirty.
+ */
+function adopt(seg: Segment): Segment {
+  return seg.media ? seg : { ...seg, media: NO_MEDIA };
+}
+
+const adoptAll = (segs: Segment[]): Segment[] => segs.map(adopt);
+
 // --- the surface ----------------------------------------------------------
 
 export const api = {
@@ -168,19 +189,19 @@ export const api = {
   },
 
   getSegments(name: string): Promise<Segment[]> {
-    if (USE_FIXTURES) return fixtures.getSegments(name);
+    if (USE_FIXTURES) return fixtures.getSegments(name).then(adoptAll);
     return request<{ segments: Segment[] }>(
       `/api/projects/${encodeURIComponent(name)}/segments`,
-    ).then((r) => r.segments);
+    ).then((r) => adoptAll(r.segments));
   },
 
   /** Every no-model edit. Must stay responsive while a job runs. */
   patchSegment(name: string, uid: string, patch: SegmentPatch): Promise<Segment> {
-    if (USE_FIXTURES) return fixtures.patchSegment(name, uid, patch);
+    if (USE_FIXTURES) return fixtures.patchSegment(name, uid, patch).then(adopt);
     return request<{ segment: Segment }>(
       `/api/projects/${encodeURIComponent(name)}/segments/${encodeURIComponent(uid)}`,
       { method: "PATCH", body: JSON.stringify(patch) },
-    ).then((r) => r.segment);
+    ).then((r) => adopt(r.segment));
   },
 
   /**
@@ -189,7 +210,7 @@ export const api = {
    * over one round trip on an explicit, rare user action.
    */
   splitSegment(name: string, uid: string, at: number): Promise<Segment[]> {
-    if (USE_FIXTURES) return fixtures.splitSegment(name, uid, at);
+    if (USE_FIXTURES) return fixtures.splitSegment(name, uid, at).then(adoptAll);
     return request<unknown>(
       `/api/projects/${encodeURIComponent(name)}/segments/${encodeURIComponent(uid)}/split`,
       json({ at }),
@@ -197,7 +218,7 @@ export const api = {
   },
 
   mergeSegments(name: string, uid: string, uidB: string): Promise<Segment[]> {
-    if (USE_FIXTURES) return fixtures.mergeSegments(name, uid, uidB);
+    if (USE_FIXTURES) return fixtures.mergeSegments(name, uid, uidB).then(adoptAll);
     return request<unknown>(
       `/api/projects/${encodeURIComponent(name)}/segments/${encodeURIComponent(uid)}/merge`,
       json({ uid: uidB }),
