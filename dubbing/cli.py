@@ -78,6 +78,22 @@ STAGE_OUTPUTS: dict[str, list[str]] = {
 }
 
 
+# Settings that shape the output and are not otherwise recoverable from the
+# manifest. `dubbing.edit._args` reads them back to reproduce this run's own
+# arguments; without them the studio silently falls back to argparse's defaults,
+# re-places a movie timeline at documentary rates and stamps rebuilt stages with
+# fingerprints this CLI would never compute.
+RECORDED_SETTINGS = ("register", "genre", "transcript", "tts_model", "dub_foreign")
+
+
+def source_record(args: argparse.Namespace) -> dict[str, Any]:
+    """What `m["source"]` must remember about the run that made this manifest."""
+    rec: dict[str, Any] = {"input": args.source, "src_lang": args.src,
+                           "tgt_lang": args.tgt, "duration_limit": args.duration}
+    rec.update({key: getattr(args, key) for key in RECORDED_SETTINGS})
+    return rec
+
+
 def stage_params(args: argparse.Namespace, m: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Everything that, when changed, must invalidate a stage's cached result.
 
@@ -138,12 +154,8 @@ def main(argv: list[str] | None = None) -> int:
     workdir = (args.out or default_workdir(args.source)).resolve()
     workdir.mkdir(parents=True, exist_ok=True)
 
-    m = manifest.load(workdir) or manifest.new({
-        "input": args.source, "src_lang": args.src, "tgt_lang": args.tgt,
-        "duration_limit": args.duration,
-    })
-    m["source"].update({"input": args.source, "src_lang": args.src, "tgt_lang": args.tgt,
-                        "duration_limit": args.duration})
+    m = manifest.load(workdir) or manifest.new(source_record(args))
+    m["source"].update(source_record(args))
     if args.context is not None:
         m["source"]["context"] = args.context
 

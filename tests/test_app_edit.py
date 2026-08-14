@@ -751,6 +751,26 @@ def test_resynthesize_overrides_a_tts_lock_when_asked_for_that_segment(monkeypat
     assert not manifest.is_locked(m["segments"][0], "tts")
 
 
+def test_the_run_records_its_own_settings_so_the_studio_reproduces_them():
+    # `edit._args` rebuilds the CLI arguments from `m["source"]` — it is what tells
+    # `_replace_timeline` which tempo policy this run uses and what `rebuild` marks
+    # its stages with. A setting the run never wrote down falls back to argparse's
+    # default, so a --genre movie run got re-placed at documentary rates after any
+    # resynthesize, and rebuild stamped fingerprints the CLI would never compute.
+    argv = ["clip.mp4", "--genre", "movie", "--register", "dialogue",
+            "--tts-model", "0.6b", "--dub-foreign", "--transcript", "asr"]
+    args = cli.parse_args(argv)
+    m = manifest.new(cli.source_record(args))
+    back = edit._args(m)
+    assert (back.genre, back.register, back.tts_model, back.dub_foreign,
+            back.transcript) == ("movie", "dialogue", "0.6b", True, "asr")
+    # The whole promise of `rebuild`: the same fingerprint the CLI would compute,
+    # so a later `python -m dubbing` on this run sees the work as done.
+    assert cli.stage_params(back, m) == cli.stage_params(args, m)
+    # And the stakes on the timeline: the two genres are different tempo policies.
+    assert timeline.rates_for_genre(back.genre) != timeline.rates_for_genre("documentary")
+
+
 def test_rebuild_refuses_stages_that_need_the_source_media():
     m = two_segs()
     with pytest.raises(edit.EditError):
