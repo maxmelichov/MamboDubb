@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from dubbing import segments, timeline, translate
+from dubbing import manifest, segments, timeline, translate
 
 
 def item(i, start, dur, *, end=None, speaker="S0", stretchable=True):
@@ -233,6 +233,29 @@ def test_interjection_keep_still_gets_a_translated_subtitle():
         {"keep": True, "keep_reason": "foreign", "lang": "ar", "text": "مرحبا"})
     assert not translate.needs_subtitle_translation(
         {"keep": True, "keep_reason": "foreign", "lang": "und", "text": "مرحبا"})
+
+
+def test_a_translate_reset_reopens_the_subtitle_translate_itself_wrote():
+    # `reset_stage` keeps a keep's `text_en` because for most keeps it is the
+    # segment's own text, written by the segments stage. Not for the two kinds whose
+    # subtitle comes FROM translate: leaving those behind freezes them at whatever
+    # the last run produced, so `--force translate` re-translates the whole script
+    # around an interjection subtitle that never moves.
+    m = manifest.new({"input": "x"})
+    m["segments"] = [
+        {"id": 0, "start": 0.0, "end": 1.0, "text": "וולקאם", "keep": True,
+         "keep_reason": "interjection", "text_en": "Welcome!"},
+        {"id": 1, "start": 1.0, "end": 2.0, "text": "مرحبا", "keep": True,
+         "keep_reason": "foreign", "lang": "ar", "text_en": "Hello"},
+        {"id": 2, "start": 2.0, "end": 3.0, "text": "OK then", "keep": True,
+         "keep_reason": "latin", "text_en": "OK then"},
+    ]
+    manifest.reset_stage(m, "translate")
+    assert "text_en" not in m["segments"][0]
+    assert "text_en" not in m["segments"][1]
+    # A plain keep is subtitled with its own text by the segments stage: not
+    # translate's to discard.
+    assert m["segments"][2]["text_en"] == "OK then"
 
 
 # ------------------------------------------------------------------ movie prompt

@@ -70,6 +70,13 @@ SEGMENT_KEYS = {
 LOCK_FIELDS = ("text", "text_en", "tts", "place", "keep", "speaker", "bounds")
 
 
+# Keeps whose `text_en` is written by the translate stage rather than copied from
+# the segment's own text — exactly `translate.needs_subtitle_translation`'s two
+# kinds. Theirs is a translation, so a translate reset must reopen it; every other
+# keep's subtitle belongs to the segments stage and is not translate's to discard.
+SUBTITLED_BY_TRANSLATE = ("foreign", "interjection")
+
+
 def is_locked(seg: dict[str, Any], field: str) -> bool:
     """True when the user hand-edited `field` on this segment."""
     return bool((seg.get("locked") or {}).get(field))
@@ -160,9 +167,9 @@ def reset_stage(m: dict[str, Any], stage: str) -> None:
             seg["keep"], seg["keep_reason"] = False, None
         for field in fields:
             if (stage == "translate" and field == "text_en" and seg.get("keep")
-                    and seg.get("keep_reason") != "foreign"):
+                    and seg.get("keep_reason") not in SUBTITLED_BY_TRANSLATE):
                 # Structurally kept segments are subtitled by the segments stage;
-                # foreign keeps get their subtitle *from* translate, so theirs resets.
+                # the keeps whose subtitle comes *from* translate reset with it.
                 continue
             seg.pop(field, None)
 
