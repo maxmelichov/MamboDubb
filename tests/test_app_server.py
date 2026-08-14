@@ -251,6 +251,38 @@ def test_patch_speaker_and_langs(client, outputs):
     assert seg["speaker"] == "SPEAKER_01" and seg["tgt_lang"] == "ru"
 
 
+def test_patch_tts_opts_stores_a_valid_override(client, outputs):
+    uid = uids(client)[1]
+    r = client.patch(f"/api/projects/{NAME}/segments/{uid}",
+                     json={"tts_opts": {"seed": 7, "speed": 1.25}})
+    assert r.status_code == 200
+    seg = ops.find(manifest.load(outputs / NAME), uid)
+    assert seg["tts_opts"] == {"seed": 7, "speed": 1.25}
+    # `None` clears one option and leaves the rest.
+    client.patch(f"/api/projects/{NAME}/segments/{uid}", json={"tts_opts": {"speed": None}})
+    assert ops.find(manifest.load(outputs / NAME), uid)["tts_opts"] == {"seed": 7}
+
+
+@pytest.mark.parametrize("opts,expected", [
+    ({"seed": "banana"}, "seed"),
+    ({"nonsense": 1}, "unknown option"),
+    ({"speed": 99}, "speed"),
+    ({"ref": "../../.ssh/id_rsa"}, "escape"),
+    ({"ref_text": "hello"}, "ref"),
+    ({"greedy": True, "temperature": 0.7}, "greedy"),
+])
+def test_patch_tts_opts_refuses_what_the_synthesiser_cannot_use(client, outputs, opts,
+                                                                expected):
+    """`dubbing.ttsopts` is loud, but `tts.run` is the only thing that reads it —
+    minutes into a job. Storing an unusable override made every future run of the
+    tts stage raise on a manifest nobody is allowed to hand-edit back."""
+    uid = uids(client)[1]
+    r = client.patch(f"/api/projects/{NAME}/segments/{uid}", json={"tts_opts": opts})
+    assert r.status_code == 400, r.text
+    assert expected in envelope_of(r)["message"]
+    assert "tts_opts" not in ops.find(manifest.load(outputs / NAME), uid)
+
+
 def test_patch_bounds_rejects_overlap(client):
     uid = uids(client)[2]
     r = client.patch(f"/api/projects/{NAME}/segments/{uid}", json={"start": 0.5, "end": 11.2})

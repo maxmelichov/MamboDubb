@@ -98,7 +98,27 @@ def set_langs(m: dict[str, Any], uid: str, *, src_lang: str | None = None,
 
 
 def set_tts_opts(m: dict[str, Any], uid: str, **opts: Any) -> dict[str, Any]:
-    return _edit.set_tts_opts(m, uid, **opts)
+    """Per-segment synthesis overrides, validated before they reach the manifest.
+
+    `dubbing.ttsopts` is the schema and it is deliberately loud — but `tts.run` is
+    where it is read, minutes into a job. An unknown key or an out-of-range value
+    stored here is a `ValueError` raised inside every future run of the tts stage,
+    on a manifest the user is not allowed to hand-edit back. So the patch is parsed
+    at the door instead: `ttsopts.merge` applies it, validates the result and
+    strips defaults, and a bad one is a 400 the editor can show.
+    """
+    from dubbing import ttsopts
+
+    seg = _need(m, uid)
+    current = dict(seg.get("tts_opts") or {})
+    try:
+        merged = ttsopts.merge(current, opts)
+    except ValueError as exc:
+        raise EditError(str(exc)) from exc
+    # `None` is how `dubbing.edit.set_tts_opts` clears one, so name every key that
+    # either side knows about and let the validated result decide.
+    patch = {key: merged.get(key) for key in set(current) | set(merged) | set(opts)}
+    return _edit.set_tts_opts(m, uid, **patch)
 
 
 def set_locked(m: dict[str, Any], uid: str, locked: dict[str, bool]) -> dict[str, Any]:
