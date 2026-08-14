@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
-from . import MANUAL_REASON, STAGES, manifest
+from . import MANUAL_REASON, STAGES, manifest, ttsopts
 
 Progress = Callable[[float, str], None]
 
@@ -290,17 +290,20 @@ def set_langs(m: dict[str, Any], uid: str, *, src_lang: str | None = None,
 def set_tts_opts(m: dict[str, Any], uid: str, **opts: Any) -> dict[str, Any]:
     """Per-segment synthesis overrides (seed, greedy, reference, style…).
 
-    The keys and their meanings belong to `dubbing.tts`; this only stores them and
-    drops the clip made without them. `None` removes an option; no options at all
-    removes the whole record.
+    The keys and their meanings belong to `dubbing.ttsopts`, which validates the
+    *result* of the patch, not just the patch: an unknown key, an out-of-range
+    value or a combination that could do nothing (greedy plus a sampler) is
+    rejected here. Storing one unvalidated would only move the `ValueError` into
+    the middle of the next run, where `Engine._plan` raises it and takes the whole
+    stage down instead of the edit that caused it. `None` removes an option; no
+    options at all removes the whole record, as does a patch that only restates
+    the defaults.
     """
     seg = _require(m, uid)
-    current = dict(seg.get("tts_opts") or {})
-    for key, value in opts.items():
-        if value is None:
-            current.pop(key, None)
-        else:
-            current[key] = value
+    try:
+        current = ttsopts.merge(seg.get("tts_opts"), opts)
+    except ValueError as exc:
+        raise EditError(str(exc)) from exc
     if current == (seg.get("tts_opts") or {}):
         return seg
     if current:

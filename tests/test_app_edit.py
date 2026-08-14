@@ -452,6 +452,33 @@ def test_set_tts_opts_merges_removes_and_invalidates():
     assert "tts_opts" not in m["segments"][0]
 
 
+def test_set_tts_opts_refuses_what_the_synthesiser_could_never_honour():
+    # `ttsopts` is loud on purpose — a silently-ignored option looks exactly like a
+    # broken model. Storing one unvalidated only moves the ValueError to the middle
+    # of the next run (`Engine._plan`), where it takes the whole stage down instead
+    # of failing the edit that caused it.
+    m = two_segs()
+    uid = m["segments"][0]["uid"]
+    for bad in ({"nonsense": 1}, {"speed": 99.0}, {"model": "3b"},
+                {"ref_text": "hello"},                       # ref_text needs ref
+                {"greedy": True, "temperature": 0.7}):       # inert together
+        with pytest.raises(edit.EditError):
+            edit.set_tts_opts(m, uid, **bad)
+    assert "tts_opts" not in m["segments"][0]
+    assert m["segments"][0]["tts"] == {"clip": "clips/a.wav", "dur": 1.8}
+
+
+def test_set_tts_opts_stores_a_value_that_equals_the_default_as_no_option_at_all():
+    # `TtsOpts.to_dict` strips defaults, so `{"speed": 1.0}` fingerprints as "" —
+    # a stored option that can never requeue the segment. Normalised away, the
+    # record says what it means and the clip that already matches it survives.
+    m = two_segs()
+    uid = m["segments"][0]["uid"]
+    edit.set_tts_opts(m, uid, speed=1.0)
+    assert "tts_opts" not in m["segments"][0]
+    assert m["segments"][0]["tts"] == {"clip": "clips/a.wav", "dur": 1.8}
+
+
 # --------------------------------------------------------------- edit: structure
 
 def test_split_preserves_every_word():
