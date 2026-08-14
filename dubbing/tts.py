@@ -933,16 +933,15 @@ def pending(segments: list[dict[str, Any]], workdir: Path) -> list[dict[str, Any
     """The dubbed segments this stage must synthesize.
 
     A segment with a usable clip is done — that is the resume mechanism, and the
-    editor's per-segment redo is the same deletion (`edit.invalidate`). A clip the
-    user locked is never re-synthesized on top of, even if the line changed under
-    it: the human's approval outranks the pipeline. A lock whose clip is gone is
-    unhonorable, and never-silent wins — that segment is synthesized again.
-    """
-    from . import manifest
+    editor's per-segment redo is the same deletion (`edit.invalidate`).
 
-    return [s for s in segments
-            if not s.get("keep") and not has_clip(s, workdir)
-            and not (manifest.is_locked(s, "tts") and s.get("tts"))]
+    That is also where a `locked` clip is safe: nothing but the user's own edit
+    deletes a locked record (`manifest.reset_stage`, `clear_failed_keeps` and
+    `edit.invalidate` all skip it), so a locked clip is by definition still on disk
+    and never lands here. A lock whose clip is *gone* is unhonorable — never-silent
+    outranks it and that segment is synthesized again.
+    """
+    return [s for s in segments if not s.get("keep") and not has_clip(s, workdir)]
 
 
 def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = None,
@@ -950,7 +949,6 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
     engine = Engine(m, workdir, device=device, model=model)
     clear_failed_keeps(m["segments"])
     engine.build_speaker_refs()
-    dub = [s for s in m["segments"] if not s["keep"]]
     todo = pending(m["segments"], workdir)
 
     # Generation runs on the GPU, verification (Whisper) on the CPU. Generate each
@@ -961,7 +959,7 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
     # to clip_for, which resumes at attempt 1 straight from the cache.
     import concurrent.futures as cf
 
-    pending: dict[int, tuple] = {}
+    verifying: dict[int, tuple] = {}
     retry: list[dict[str, Any]] = []
     done = 0
     with cf.ThreadPoolExecutor(max_workers=1) as vpool:
@@ -981,10 +979,10 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
                 else:
                     retry.append(seg)
                 continue
-            pending[seg["id"]] = (vpool.submit(engine._verify, clip, speak), clip, meta, speak)
+            verifying[seg["id"]] = (vpool.submit(engine._verify, clip, speak), clip, meta, speak)
 
         for seg in todo:
-            item = pending.get(seg["id"])
+            item = verifying.get(seg["id"])
             if item is None:
                 continue
             fut, clip, meta, speak = item
