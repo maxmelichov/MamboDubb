@@ -58,7 +58,7 @@ import { createPortal } from "react-dom";
 import { Lock, MoreHorizontal, Pause, Play, TriangleAlert } from "lucide-react";
 import { cn } from "../lib/classNames";
 import { speakerLabel, timecode } from "../lib/format";
-import { STATE_META, hasLocks, segmentState, verifyConcern } from "../lib/segments";
+import { STATE_META, hasLocks, segmentState, subtitleOnly, verifyConcern } from "../lib/segments";
 import { StateIcon, TextArea } from "./ui";
 import type { Segment } from "../lib/types";
 
@@ -295,6 +295,25 @@ function Row({
             onCommit={onCommit}
             selected={selected}
           />
+        ) : null}
+
+        {/*
+          The one thing a dimmed line cannot say on its own.
+
+          Typing a translation into a kept row is allowed and it is saved — but
+          `edit.set_text` does not reopen a verdict the user or the span
+          decided, so the line is a *subtitle* and the original audio still
+          plays. Nothing on the row said so: it showed an English sentence
+          under a Hebrew one, in the same place the dubbed rows show what will
+          be spoken, and the reasonable reading is that it will be spoken.
+          Flipping the verdict here instead would be worse — it would overturn
+          a decision the user made, on the strength of them fixing a subtitle.
+        */}
+        {subtitleOnly(seg) ? (
+          <p className="px-2 text-[11px] leading-snug text-muted">
+            This line keeps its original audio — the edit is a subtitle. Switch to “Dub it” to
+            voice it.
+          </p>
         ) : null}
       </div>
 

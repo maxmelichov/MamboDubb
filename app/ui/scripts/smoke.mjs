@@ -652,9 +652,16 @@ check(
   rows().filter((r) => r.textContent.includes("original audio plays here")).length > keptBefore,
 );
 check("keeping the original queues nothing", calls().log.slice(sinceKeep).join() === "patch");
+// Segment 2's translation was typed by hand a few checks above, and a kept line
+// with a hand-written translation is the case the row used to render as a dub:
+// an English sentence under a Hebrew one, in the place a spoken line goes.
+check(
+  "a translation on a kept line says it is only a subtitle",
+  rowFor(2).textContent.includes("the edit is a subtitle"),
+);
 
-// …and back. Segment 2's translation was typed by hand a few checks above, so
-// it is locked, survives the flip, and only the voice has to be queued.
+// …and back. The hand-written line is locked, so it survives the flip and only
+// the voice has to be queued.
 click("Dub it");
 await settle(350);
 check(

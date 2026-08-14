@@ -60,6 +60,19 @@ export function unfinished(seg: Segment): boolean {
 }
 
 /**
+ * A kept line carrying a translation the user typed.
+ *
+ * `edit.set_text` stores it and does *not* reopen the verdict — a keep the user
+ * or the span decided is not overturned by a subtitle — so the line still plays
+ * its original audio. True on screen, invisible on screen: the row shows an
+ * English sentence under a Hebrew one and nothing says it will never be spoken.
+ */
+export function subtitleOnly(seg: Segment): boolean {
+  const en = (seg.text_en ?? "").trim();
+  return Boolean(seg.keep && seg.locked?.text_en && en && en !== seg.text.trim());
+}
+
+/**
  * Colour is never the only channel: every state carries a shape and a word.
  *
  * The shape used to be a Unicode glyph — `◆ ▣ ✕ ◇ ○` — set in the UI font.
