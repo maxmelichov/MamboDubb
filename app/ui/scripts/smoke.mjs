@@ -226,6 +226,73 @@ check("runs say when they last moved", /just now|hours? ago|days? ago/.test(runs
 check("context field is present", /Context/.test(root.textContent));
 check("setup is reachable from the header", /Setup/.test(root.textContent));
 
+/*
+ * The import screen's composition, pinned structurally.
+ *
+ * The screen is three regions and not one column: the primary "new dub" card,
+ * the options rail beside it, and existing runs full width underneath. jsdom
+ * has no layout, so what can honestly be asserted is that all three exist and
+ * hold what they claim to — a redesign that quietly drops the rail, or houses
+ * the runs inside the form card, fails here rather than in a screenshot.
+ */
+check("the brand chip carries the drawn mark", document.querySelector("[data-brand] img") != null);
+check(
+  "the form is a card and a rail, not one column",
+  document.querySelector('[data-region="new-dub"]') != null &&
+    document.querySelector('[data-region="options"]') != null,
+);
+check("existing runs are a region of their own", document.querySelector('[data-region="runs"]') != null);
+check(
+  "…with one card per run in outputs/",
+  document.querySelectorAll('[data-region="runs"] li').length === 3,
+);
+
+/*
+ * The two language lists are *different lists*, and that is not a typo to be
+ * tidied away: the ASR and the translator read more languages than Qwen3-TTS
+ * can speak, so Hebrew and Arabic are source-only. Offering Hebrew as a dub
+ * target creates a run whose tts stage can only fail.
+ */
+const selects = [...document.querySelectorAll("select")];
+const optionsOf = (select) => [...select.options].map((o) => o.value);
+check("the screen has exactly the two language selects", selects.length === 2);
+check(
+  "spoken and dub-into are different lists",
+  optionsOf(selects[0]).join() !== optionsOf(selects[1]).join(),
+);
+check(
+  "…and only the source list offers a language the voice cannot speak",
+  optionsOf(selects[0]).includes("he") && !optionsOf(selects[1]).includes("he"),
+);
+
+// Genre and register are two-way choices with a clause each, so they are rows
+// and a pill rather than two more dropdowns — but they are still one-of-N, and
+// one of each pair is always on.
+const radios = () => [...document.querySelectorAll('[role="radio"]')];
+check("genre and register are pickable without a dropdown", radios().length === 4);
+check(
+  "…and each pair has exactly one answer",
+  radios().filter((r) => r.getAttribute("aria-checked") === "true").length === 2,
+);
+check(
+  "…named with the clause that makes them mean something",
+  /Narrated over pictures/.test(root.textContent) && /Scripted, spoken in scene/.test(root.textContent),
+);
+
+// The primary action, and its refusal: a run with no source is the one thing
+// this screen must not send.
+const startButton = () =>
+  [...document.querySelectorAll("button")].find((b) => b.textContent.includes("Start dubbing"));
+check("the primary action is on the card", startButton() != null);
+startButton().dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+await new Promise((resolve) => setTimeout(resolve, 150));
+check("starting with no source is refused, in words", /Give it a video/.test(root.textContent));
+[...document.querySelectorAll("button")]
+  .find((b) => b.textContent === "Dismiss")
+  .dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+await new Promise((resolve) => setTimeout(resolve, 120));
+check("…and the refusal can be dismissed", !/Give it a video/.test(root.textContent));
+
 const go = async (path, ms) => {
   dom.window.history.pushState({}, "", path);
   dom.window.dispatchEvent(new dom.window.PopStateEvent("popstate"));
