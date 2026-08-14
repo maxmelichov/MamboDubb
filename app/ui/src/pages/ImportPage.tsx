@@ -72,9 +72,11 @@ import { ago, stageTone, summarizeStages } from "../lib/stages";
 import type { CreateProjectRequest, ProjectSummary } from "../lib/types";
 
 // What can be HEARD is broader than what can be SPOKEN: the ASR + translator
-// handle these sources, but Qwen3-TTS voices exactly ten languages — Hebrew and
-// Arabic are source-only. Offering them as dub targets would create a project
-// whose tts stage can only fail, so the two lists are deliberately different.
+// handle these sources, but the synthesizer voices Qwen3-TTS's ten languages
+// plus Hebrew (a LoRA over the same checkpoint; the server refuses a Hebrew
+// target with the download command if the adapter isn't installed). Arabic is
+// still source-only — offering it as a target would create a project whose tts
+// stage can only fail, so the two lists stay deliberately different.
 const SRC_LANGS = [
   ["he", "Hebrew"],
   ["en", "English"],
@@ -87,6 +89,7 @@ const SRC_LANGS = [
 
 const TGT_LANGS = [
   ["en", "English"],
+  ["he", "Hebrew"],
   ["ru", "Russian"],
   ["fr", "French"],
   ["es", "Spanish"],
@@ -320,6 +323,12 @@ export function ImportPage() {
                 </Select>
               </Field>
             </div>
+            {form.src_lang === form.tgt_lang ? (
+              <p className="mt-2 text-[12px] leading-relaxed text-muted" data-same-lang-note>
+                Same language: every line is re-voiced in the speaker's cloned voice —
+                no translation happens.
+              </p>
+            ) : null}
           </CardSection>
 
           <Divider />

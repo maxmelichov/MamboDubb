@@ -760,6 +760,12 @@ dev = [
     { name = "ruff" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "ruff" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "accelerate", specifier = ">=1.0.0" },
@@ -790,6 +796,12 @@ requires-dist = [
     { name = "yt-dlp", specifier = ">=2025.1.0" },
 ]
 provides-extras = ["dev", "app"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8" },
+    { name = "ruff", specifier = ">=0.8" },
+]
 
 [[package]]
 name = "einops"

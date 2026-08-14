@@ -262,7 +262,13 @@ check(
 );
 check(
   "…and only the source list offers a language the voice cannot speak",
-  optionsOf(selects[0]).includes("he") && !optionsOf(selects[1]).includes("he"),
+  // Arabic is the source-only language now; Hebrew became a target via the
+  // LoRA adapter, and the same-language pair (he→he) must be expressible.
+  optionsOf(selects[0]).includes("ar") && !optionsOf(selects[1]).includes("ar"),
+);
+check(
+  "Hebrew is a dub target, so a same-language pair is expressible",
+  optionsOf(selects[1]).includes("he"),
 );
 
 // Genre and register are two-way choices with a clause each, so they are rows

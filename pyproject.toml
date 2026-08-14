@@ -93,3 +93,9 @@ mlx-lm = { git = "https://github.com/ml-explore/mlx-lm", rev = "cf10f962b7a20e63
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.8",
+]
