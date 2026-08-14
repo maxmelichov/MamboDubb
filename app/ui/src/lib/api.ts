@@ -130,8 +130,26 @@ const NO_MEDIA: SegmentMedia = { play: null, tts: null, source: null, source_win
  * component above read `seg.media.play` without a guard — and is where a future
  * rename of the server's field belongs, so it is one edit and not thirty.
  */
+/**
+ * A media path arrives server-relative (`/media/<run>/clip.wav#t=a,b`), which
+ * only resolves in a browser where the server also serves the page. The desktop
+ * shell's origin is the Tauri asset protocol, so a raw path handed to
+ * `new Audio()` resolves against the wrong origin and every play button dies
+ * silently. The base prefix is applied here, once, for the same reason `media`
+ * itself is normalized here — so no component ever has to know.
+ */
+function absMedia(path: string | null | undefined): string | null {
+  if (!path) return null;
+  return path.startsWith("/") ? base + path : path;
+}
+
 function adopt(seg: Segment): Segment {
-  return seg.media ? seg : { ...seg, media: NO_MEDIA };
+  const m = seg.media;
+  if (!m) return { ...seg, media: NO_MEDIA };
+  return {
+    ...seg,
+    media: { ...m, play: absMedia(m.play), tts: absMedia(m.tts), source: absMedia(m.source) },
+  };
 }
 
 const adoptAll = (segs: Segment[]): Segment[] => segs.map(adopt);
