@@ -26,3 +26,4 @@ demucs_out/
 !third_party/**/assets/**
 .claude/worktrees/agent-a01b06e2e91328c3e
 
+.claude/worktrees/

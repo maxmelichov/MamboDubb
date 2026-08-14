@@ -323,11 +323,26 @@ def subtitle_lang3(code: str) -> str:
     return _ISO_639_2.get((code or "").lower(), "und")
 
 
+def tail_pad(track_sec: float, duration: float, *, floor: float = 0.05) -> float:
+    """How long the last video frame must be held so no audio is cut.
+
+    `-t duration` would otherwise truncate a dub track that outlasts the video,
+    which is the one place the never-truncated invariant could be lost after
+    the timeline has already guaranteed it.
+    """
+    return max(0.0, track_sec - duration) if track_sec - duration > floor else 0.0
+
+
 def mux(video: Path, track: Path, srt: Path, out: Path, duration: float,
         lang: str = "en") -> None:
+    # Hold the final frame under any audio that outlasts the video rather than
+    # letting `-t` cut the last line off mid-word.
+    overhang = tail_pad(audio.duration(track), duration)
+    vf = ["-vf", f"tpad=stop_mode=clone:stop_duration={overhang + 0.1:.3f}"] if overhang else []
     audio.run([
         "ffmpeg", "-y", "-v", "error", "-i", str(video), "-i", str(track), "-i", str(srt),
-        "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "1:a:0", "-map", "2:0",
+        "-t", f"{duration + overhang:.3f}", "-map", "0:v:0", "-map", "1:a:0", "-map", "2:0",
+        *vf,
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
         "-c:a", "aac", "-b:a", "192k", "-c:s", "mov_text",
         "-metadata:s:s:0", f"language={subtitle_lang3(lang)}",

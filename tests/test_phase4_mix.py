@@ -144,3 +144,14 @@ def test_fill_fades_at_span_edges(tmp_path):
     half = int(mix.FILL_FADE_SEC / 2 * SR)
     assert out[i0 + half] == pytest.approx(0.05, abs=0.02)
     assert out[(i0 + i1) // 2] == pytest.approx(0.1, abs=0.005)
+
+
+# ------------------------------------------------------------- mux tail padding
+
+def test_tail_pad_holds_the_last_frame_for_overhanging_audio():
+    assert mix.tail_pad(39.7, 38.1) == pytest.approx(1.6)
+
+
+def test_tail_pad_is_zero_when_audio_fits():
+    assert mix.tail_pad(38.0, 38.1) == 0.0
+    assert mix.tail_pad(38.12, 38.1) == 0.0   # within the rounding floor

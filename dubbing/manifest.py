@@ -24,8 +24,8 @@ STAGE_TAGS = {
     "segments": "segments/v33",
     "translate": "translate/v30",
     "tts": "tts/v12",
-    "timeline": "timeline/v10",
-    "mix": "mix/v7",
+    "timeline": "timeline/v11",
+    "mix": "mix/v8",
     "report": "report/v1",
 }
 

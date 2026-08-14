@@ -256,3 +256,36 @@ def test_drift_still_propagates_and_resets_at_a_pause():
     assert places[1]["drift"] > 0          # pushed late by its overlong predecessor
     assert places[2]["drift"] == 0.0       # the pause absorbed it
     assert places[2]["start"] == 6.0
+
+
+# --------------------------------------------------- media end as the last wall
+
+def test_media_end_walls_the_last_clip():
+    """The end of the media is a wall like a speaker change: past it the mux has
+    no video, so audio there is lost rather than merely late."""
+    item = {"id": 0, "source_start": 5.0, "source_end": 8.0, "dur": 4.0,
+            "clip": "c.wav", "speaker": "A", "stretchable": True}
+    free = timeline.place([dict(item)])
+    walled = timeline.place([dict(item)], media_end=8.0)
+    assert free[0]["end"] > 8.0 + 1e-3          # unbounded: runs past the video
+    assert walled[0]["end"] <= 8.0 + 1e-3       # walled: pulled earlier/compressed
+    assert walled[0]["overrun"] == 0.0
+
+
+def test_media_end_default_is_unbounded():
+    """Omitting media_end must reproduce the previous behaviour exactly."""
+    items = [{"id": 0, "source_start": 1.0, "source_end": 3.0, "dur": 2.5,
+              "clip": "a.wav", "speaker": "A", "stretchable": True},
+             {"id": 1, "source_start": 4.0, "source_end": 6.0, "dur": 1.5,
+              "clip": "b.wav", "speaker": "B", "stretchable": True}]
+    assert (timeline.place([dict(i) for i in items])
+            == timeline.place([dict(i) for i in items], None, float("inf")))
+
+
+def test_media_end_never_truncates_audio():
+    """A clip too long for the remaining media still overruns — never cut."""
+    item = {"id": 0, "source_start": 9.0, "source_end": 10.0, "dur": 6.0,
+            "clip": "c.wav", "speaker": "A", "stretchable": True}
+    p = timeline.place([dict(item)], media_end=10.0)[0]
+    held = 6.0 / p["rate"]
+    assert abs((p["end"] - p["start"]) - held) < 0.02

@@ -157,7 +157,8 @@ def rate_for(dur: float, slot: float, drift_in: float, stretchable: bool,
 
 
 def place(items: list[dict[str, Any]],
-          rates: Rates | None = None) -> list[dict[str, Any]]:
+          rates: Rates | None = None,
+          media_end: float = math.inf) -> list[dict[str, Any]]:
     """Pure forward placement. `items` must be sorted by source_start."""
     r = rates or _DEFAULT_RATES
     out: list[dict[str, Any]] = []
@@ -170,8 +171,11 @@ def place(items: list[dict[str, Any]],
         # the whole run would slide late.
         need = min(MIN_GAP, max(MIN_SEAM, it["source_start"] - prev_source_end))
         start = max(it["source_start"], prev_end + need)
-        nxt = items[i + 1]["source_start"] if i + 1 < len(items) else math.inf
-        next_need = min(MIN_GAP, max(MIN_SEAM, nxt - it["source_end"]))
+        # The end of the media is the last clip's wall: past it the mux has no
+        # video left, so audio there is not merely late, it is gone.
+        nxt = items[i + 1]["source_start"] if i + 1 < len(items) else media_end
+        next_need = (min(MIN_GAP, max(MIN_SEAM, nxt - it["source_end"]))
+                     if i + 1 < len(items) else 0.0)
         slot = nxt - next_need - start
         drift = start - it["source_start"]
         # A too-long clip may run TAIL_MAX past its own end into a following
@@ -197,7 +201,7 @@ def place(items: list[dict[str, Any]],
         # next wall that has slack to absorb it.
         wall = nxt - next_need
         overrun = 0.0
-        if i + 1 < len(items) and not same_speaker and end > wall + 1e-6:
+        if not same_speaker and end > wall + 1e-6:
             floor = max(0.0, prev_end + need)
             lead = min(LEAD_MAX, start - floor, end - wall)
             if lead > 1e-6:
@@ -350,11 +354,12 @@ def build_items(m: dict[str, Any]) -> list[dict[str, Any]]:
 def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=None,
         genre: str = "documentary") -> None:
     rates = rates_for_genre(genre)
+    media_end = float(m["source"].get("duration") or math.inf)
     by_id = {s["id"]: s for s in m["segments"]}
     items = build_items(m)
     by_index = {it["id"]: i for i, it in enumerate(items)}
     spoken: dict[int, str] = {}   # segment id -> shortened line actually voiced
-    places = place(items, rates)
+    places = place(items, rates, media_end)
 
     for _round in range(SHORTEN_ROUNDS):
         late = [i for i, p in enumerate(places) if p["drift"] > DRIFT_MAX]
@@ -395,7 +400,7 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
                   f"{len(texts[seg_id].split())} words", file=sys.stderr)
         if not changed:
             break
-        places = place(items, rates)
+        places = place(items, rates, media_end)
 
     if genre == "movie":
         # Rate continuity: one voice must not alternate between compression and
@@ -422,7 +427,7 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
             it["applied_rate"] = p["rate"]
         it["stretchable"] = False
 
-    final = place(items, rates)
+    final = place(items, rates, media_end)
     assert_invariants(final, items)
 
     for it, p in zip(items, final):
