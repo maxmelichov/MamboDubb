@@ -551,6 +551,19 @@ def test_no_model_edits_stay_responsive_while_a_job_runs(outputs):
         hold.set()
 
 
+def test_a_queued_job_does_not_block_a_structural_edit(outputs, fake):
+    """Only a *running* job is renumbered under. A queued one has not read the
+    manifest yet — the child loads it when it starts, not when it is enqueued — so
+    refusing here would block edits behind a queue that may be minutes deep."""
+    client = TestClient(create_app(outputs, runner=fake, ui_dir=""))   # no lifespan:
+    uid = uids(client)[2]                                             # the worker
+    assert client.post(f"/api/projects/{NAME}/render", json={}).status_code == 202
+    assert client.get("/api/jobs").json()["jobs"][0]["status"] == "queued"
+    r = client.post(f"/api/projects/{NAME}/segments/{uid}/split", json={"at": 6.0})
+    assert r.status_code == 200
+    assert fake.calls == []
+
+
 # ---------------------------------------------------------------------------
 # media: range serving and path traversal
 # ---------------------------------------------------------------------------
@@ -592,10 +605,44 @@ def test_media_unsatisfiable_range(client, outputs):
     assert envelope_of(r)["code"] == "invalid_request"
 
 
+def test_media_range_starting_at_the_end_is_416(client, outputs):
+    """The boundary an `<audio>` element hits when it seeks to the very end: the
+    first byte offset equals the size, so there is nothing to send. 200 with an
+    empty body would look like a truncated file to the player."""
+    size = (outputs / NAME / "preview.mp4").stat().st_size
+    r = client.get(f"/media/{NAME}/preview.mp4", headers={"Range": f"bytes={size}-"})
+    assert r.status_code == 416
+    assert r.headers["content-range"] == f"bytes */{size}"
+
+
+def test_media_multi_range_is_answered_whole_not_500(client, outputs):
+    """More than one range is allowed to be refused, but never with a stack trace.
+    RFC 9110 lets a server answer the whole thing, which keeps the client playing."""
+    whole = (outputs / NAME / "preview.mp4").read_bytes()
+    r = client.get(f"/media/{NAME}/preview.mp4", headers={"Range": "bytes=0-9, 20-29"})
+    assert r.status_code == 200 and r.content == whole
+
+
 def test_media_head(client, outputs):
     size = (outputs / NAME / "preview.mp4").stat().st_size
     r = client.head(f"/media/{NAME}/preview.mp4")
     assert r.status_code == 200 and r.headers["content-length"] == str(size)
+
+
+def test_media_head_honours_a_range(client, outputs):
+    size = (outputs / NAME / "preview.mp4").stat().st_size
+    r = client.head(f"/media/{NAME}/preview.mp4", headers={"Range": "bytes=10-19"})
+    assert r.status_code == 206 and not r.content
+    assert r.headers["content-range"] == f"bytes 10-19/{size}"
+    assert r.headers["content-length"] == "10"
+
+
+def test_media_source_url_keeps_its_time_fragment_unescaped(client):
+    """`source.wav#t=a,b` is the A/B preview: the fragment is the browser's, so
+    percent-encoding the `#` would make the player fetch a file that is not there."""
+    seg = client.get(f"/api/projects/{NAME}/segments").json()["segments"][1]
+    assert seg["media"]["source"] == f"/media/{NAME}/source.wav#t=0.340,2.200"
+    assert "%23" not in seg["media"]["source"]
 
 
 def test_media_garbage_range_serves_whole_file(client, outputs):
@@ -742,6 +789,19 @@ def test_events_heartbeat_over_the_wire(outputs, fake, monkeypatch):
                 frames.take(PRELUDE)
                 beat = frames.until(lambda f: f["type"] == "heartbeat")
     assert beat is not None
+
+
+def test_events_subscription_is_released_on_every_disconnect(outputs, fake):
+    """The UI reconnects the stream on every navigation and after every sleep. A
+    subscription left behind per reconnect is an unbounded fan-out on a bus the job
+    worker publishes to from another thread."""
+    app = create_app(outputs, runner=fake, ui_dir="")
+    with live_server(app) as base:
+        for _ in range(3):
+            with httpx.Client(base_url=base, timeout=20.0) as c:
+                with c.stream("GET", f"/api/projects/{NAME}/events") as r:
+                    assert next(r.iter_lines())
+            assert wait_until(lambda: app.state.bus.subscriber_count(NAME) == 0, 5.0)
 
 
 def test_events_unknown_project(client):
