@@ -618,12 +618,29 @@ def resynthesize(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
     return out
 
 
-def _replace_timeline(m: dict[str, Any], workdir: Path) -> None:
-    """Re-run placement only. No shortening round: that would reload the
-    translator to rewrite lines the user did not ask about."""
+def _replace_timeline(m: dict[str, Any], workdir: Path) -> bool:
+    """Re-run placement only. Returns whether it could.
+
+    No shortening round: that would reload the translator to rewrite lines the user
+    did not ask about.
+
+    Placement is all-or-nothing — `timeline.build_items` reads every segment's clip
+    to lay the whole run out in one forward pass — so it can only run when every
+    segment has one. Correcting several lines and re-voicing one of them is the
+    ordinary studio loop and leaves the rest without a clip until they are asked
+    for; there is no timeline to build over that hole, and the tts run that fills
+    it re-places everything anyway. Deferring beats dying with a KeyError after the
+    new clips are already in the manifest.
+    """
     from . import timeline as timeline_mod
 
+    waiting = sum(1 for s in m.get("segments") or [] if not (s.get("tts") or {}).get("clip"))
+    if waiting:
+        print(f"  edit: {waiting} segment(s) still without audio — placement "
+              f"deferred to the next tts run", file=sys.stderr)
+        return False
     timeline_mod.run(m, workdir, genre=getattr(_args(m), "genre", "documentary"))
+    return True
 
 
 def rebuild(m: dict[str, Any], workdir: Path, *, from_stage: str,

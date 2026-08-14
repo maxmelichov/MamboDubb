@@ -771,6 +771,38 @@ def test_the_run_records_its_own_settings_so_the_studio_reproduces_them():
     assert timeline.rates_for_genre(back.genre) != timeline.rates_for_genre("documentary")
 
 
+def test_resynthesize_defers_placement_while_another_segment_awaits_its_clip(monkeypatch):
+    # Correcting several lines and then re-voicing one of them is the ordinary
+    # studio loop, and it leaves the others without a clip until they are asked for.
+    # `timeline.build_items` places the whole run at once and reads `seg["tts"]`
+    # unconditionally, so re-placing over that hole died with a bare KeyError —
+    # after the new clips had already been written into the manifest.
+    m = two_segs()
+    a, b = (s["uid"] for s in m["segments"])
+    edit.set_text(m, b, text_en="a better line")
+    assert "tts" not in m["segments"][1]
+
+    class FakeEngine:
+        def __init__(self, *args, **kw):
+            pass
+
+        def build_speaker_refs(self):
+            pass
+
+        def clip_for(self, seg, text):
+            return {"clip": "clips/new.wav", "dur": 1.0}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(tts_mod, "Engine", FakeEngine)
+    out = edit.resynthesize(m, tmp_workdir(["clips/new.wav", "clips/a.wav"]), [a])
+    assert out[a]["clip"] == "clips/new.wav"
+    # Nothing coherent to place yet — the tts run that fills the hole re-places
+    # everything — but the synthesis the user asked for is recorded, not lost.
+    assert "place" not in m["segments"][0] and "place" not in m["segments"][1]
+
+
 def test_rebuild_refuses_stages_that_need_the_source_media():
     m = two_segs()
     with pytest.raises(edit.EditError):
