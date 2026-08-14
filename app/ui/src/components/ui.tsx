@@ -678,23 +678,15 @@ export function Badge({
  * strip. It draws at the size the caller asks for; below about 10px the two
  * outline states stop separating, so 10 is the floor.
  */
-export function StateIcon({
-  state,
-  className,
-  title,
-}: {
-  state: SegmentState;
-  className?: string;
-  /** Only when the icon is alone. Beside its word it is decoration. */
-  title?: string;
-}) {
+export function StateIcon({ state, className }: { state: SegmentState; className?: string }) {
   const meta = STATE_META[state];
   const Icon = meta.icon;
   return (
+    // Always decoration: every place it appears — the row, the mark, the
+    // control, the tally — already carries the state as a word or an
+    // `aria-label`, so a second announcement of it is noise.
     <Icon
-      aria-hidden={title ? undefined : true}
-      aria-label={title}
-      role={title ? "img" : undefined}
+      aria-hidden
       className={cn("shrink-0", meta.filled && "fill-current", className ?? "h-3 w-3")}
       style={{ color: meta.token }}
     />
