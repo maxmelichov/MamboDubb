@@ -12,11 +12,17 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Dubbing Studio",
         "width": 1280,
         "height": 820,
-        "minWidth": 900,
-        "minHeight": 600
+        "minWidth": 1024,
+        "minHeight": 680,
+        "center": true,
+        "resizable": true,
+        "fullscreen": false,
+        "acceptFirstMouse": true,
+        "titleBarStyle": "Visible"
       }
     ],
     "security": {
@@ -37,12 +43,34 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "category": "Video",
+    "publisher": "Maxim Melichov",
+    "copyright": "Copyright (c) 2026 Maxim Melichov",
+    "shortDescription": "Dub a video into another language, locally.",
+    "longDescription": "Dubbing Studio drives the DubbingQwen pipeline from a desktop window: transcribe a video, translate it, synthesise the dub with local models, and edit the result segment by segment. Every model runs on this machine; nothing is uploaded.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "dmg": {
+        "windowSize": {
+          "width": 700,
+          "height": 460
+        },
+        "appPosition": {
+          "x": 180,
+          "y": 220
+        },
+        "applicationFolderPosition": {
+          "x": 520,
+          "y": 220
+        }
+      }
+    }
   }
 }
