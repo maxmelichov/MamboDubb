@@ -41,7 +41,7 @@ from .runner import SubprocessRunner
 Genre = Literal["documentary", "movie"]
 Register = Literal["narration", "dialogue"]
 Transcript = Literal["auto", "captions", "asr"]
-TtsModel = Literal["1.7b", "0.6b"]
+TtsModel = Literal["1.7b"]  # 0.6b is retired for new runs; old manifests that recorded it still re-run
 
 
 # ---------------------------------------------------------------------------

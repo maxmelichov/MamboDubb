@@ -151,7 +151,7 @@ def test_create_project_reaches_the_cli_with_every_option(client, outputs, fake)
 
     body = {"source": "https://youtu.be/abc", "tgt_lang": "ru", "duration": 60,
             "name": "movieproj", "context": "a note", "genre": "movie",
-            "register": "dialogue", "transcript": "asr", "tts_model": "0.6b",
+            "register": "dialogue", "transcript": "asr", "tts_model": "1.7b",
             "dub_foreign": True, "captions": "caps.json3"}
     r = client.post("/api/projects", json=body)
     assert r.status_code == 201 and r.json()["project"]["name"] == "movieproj"
@@ -162,11 +162,11 @@ def test_create_project_reaches_the_cli_with_every_option(client, outputs, fake)
     args = cli.parse_args(ops.full_run_argv(Path(payload["workdir"]), payload["source"]))
     assert (args.source, args.tgt, args.duration) == ("https://youtu.be/abc", "ru", 60)
     assert (args.genre, args.register, args.transcript) == ("movie", "dialogue", "asr")
-    assert args.tts_model == "0.6b" and args.dub_foreign is True
+    assert args.tts_model == "1.7b" and args.dub_foreign is True
     assert args.context == "a note" and str(args.captions) == "caps.json3"
     # …and the options are on the manifest too, for every later edit job.
     stored = manifest.load(outputs / "movieproj")["source"]["app_opts"]
-    assert stored["genre"] == "movie" and stored["tts_model"] == "0.6b"
+    assert stored["genre"] == "movie" and stored["tts_model"] == "1.7b"
 
 
 def test_create_project_refuses_an_option_the_cli_cannot_take(client, outputs):
@@ -197,7 +197,10 @@ def test_create_project_options_are_exactly_the_cli_choices(flag, dest, literal,
     with pytest.raises(SystemExit):
         cli.parse_args(["src", flag, "__not_a_choice__"])
     tail = capsys.readouterr().err.split("choose from")[-1]
-    assert set(re.findall(r"[\w.\-]+", tail)) == set(get_args(literal))
+    # Superset, not equality: the CLI may accept retired values (0.6b) so an old
+    # run's recorded options still re-run, but the API must never OFFER a value
+    # the CLI would reject — that direction makes an unrunnable project.
+    assert set(re.findall(r"[\w.\-]+", tail)) >= set(get_args(literal))
 
 
 def test_get_project(client):

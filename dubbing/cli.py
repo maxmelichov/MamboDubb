@@ -58,7 +58,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--force", help="stage to re-run, or 'all'")
     p.add_argument("--device", help="torch device override for TTS")
     p.add_argument("--tts-model", choices=("1.7b", "0.6b"), default="1.7b",
-                   help="Qwen3-TTS voice-clone model size (default: 1.7b)")
+                   help="Qwen3-TTS voice-clone model (default 1.7b; 0.6b accepted only so old runs re-run)")
     return p.parse_args(argv)
 
 

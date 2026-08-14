@@ -772,12 +772,12 @@ def test_the_run_records_its_own_settings_so_the_studio_reproduces_them():
     # default, so a --genre movie run got re-placed at documentary rates after any
     # resynthesize, and rebuild stamped fingerprints the CLI would never compute.
     argv = ["clip.mp4", "--genre", "movie", "--register", "dialogue",
-            "--tts-model", "0.6b", "--dub-foreign", "--transcript", "asr"]
+            "--tts-model", "1.7b", "--dub-foreign", "--transcript", "asr"]
     args = cli.parse_args(argv)
     m = manifest.new(cli.source_record(args))
     back = edit._args(m)
     assert (back.genre, back.register, back.tts_model, back.dub_foreign,
-            back.transcript) == ("movie", "dialogue", "0.6b", True, "asr")
+            back.transcript) == ("movie", "dialogue", "1.7b", True, "asr")
     # The whole promise of `rebuild`: the same fingerprint the CLI would compute,
     # so a later `python -m dubbing` on this run sees the work as done.
     assert cli.stage_params(back, m) == cli.stage_params(args, m)
