@@ -434,6 +434,22 @@ def concat_ref(voc: np.ndarray, spans: list[tuple[float, float]], sr: int = REF_
     return np.concatenate(pieces) if pieces else np.zeros(0, dtype=np.float32)
 
 
+def sampling_kwargs(greedy: bool, opts: TtsOpts = ttsopts.DEFAULT) -> dict[str, Any]:
+    """The decode arguments for one attempt, main talker and sub-talker in step.
+
+    A greedy attempt ignores `tts_opts`' sampler entirely — which is exactly why
+    `ttsopts.parse` refuses to store the two together instead of letting the
+    values sit there doing nothing.
+    """
+    base = GREEDY if greedy else SAMPLED
+    out: dict[str, Any] = {"do_sample": not greedy, "subtalker_dosample": not greedy}
+    for k, default in base.items():
+        v = default if greedy or getattr(opts, k) is None else getattr(opts, k)
+        out[k] = v
+        out[f"subtalker_{k}"] = v
+    return out
+
+
 def seed_id(seg: dict[str, Any]) -> str:
     """The identity the derived seed keys on — stable across re-segmentation.
 
@@ -973,18 +989,12 @@ class _Synth:
                 ref_audio=str(ref), ref_text=opts.ref_text,
                 x_vector_only_mode=not opts.icl,
             )
-        base = GREEDY if greedy else SAMPLED
-        vals = {k: (base[k] if greedy or getattr(opts, k) is None else getattr(opts, k))
-                for k in ("temperature", "top_p", "top_k")}
-        sampling = {"do_sample": not greedy, "subtalker_dosample": not greedy}
-        for k, v in vals.items():
-            sampling[k] = v
-            sampling[f"subtalker_{k}"] = v
         wavs, sr = model.generate_voice_clone(
             text=speak, language=self._language(model),
             voice_clone_prompt=self._prompts[key],
             max_new_tokens=opts.max_new_tokens or max_new_tokens(speak, self.lang),
-            repetition_penalty=opts.repetition_penalty or REPETITION_PENALTY, **sampling,
+            repetition_penalty=opts.repetition_penalty or REPETITION_PENALTY,
+            **sampling_kwargs(greedy, opts),
         )
         wav = np.asarray(wavs[0], dtype=np.float32)
         if not opts.keep_pauses:
