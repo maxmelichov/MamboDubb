@@ -80,7 +80,7 @@ export function ABPlayer({ seg }: { seg: Segment }) {
   const dubbedDur = seg.place ? seg.place.end - seg.place.start : (seg.tts?.dur ?? null);
 
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex flex-col gap-2">
       <div className="flex items-stretch gap-1.5">
         <SideButton
           active={side === "a"}
@@ -105,9 +105,9 @@ export function ABPlayer({ seg }: { seg: Segment }) {
           onClick={stop}
           disabled={side == null}
           aria-label="Stop"
-          className="rounded-md border border-border px-2 text-secondary transition-colors hover:border-axis disabled:opacity-40"
+          className="grid w-9 shrink-0 place-items-center rounded-lg border border-border bg-raised text-muted transition-colors hover:border-axis hover:text-primary disabled:pointer-events-none disabled:opacity-40"
         >
-          <Square className="h-3.5 w-3.5" />
+          <Square className="h-3 w-3 fill-current" />
         </button>
       </div>
 
@@ -156,18 +156,29 @@ function SideButton({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "flex flex-1 items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors",
-        active ? "border-brand bg-brand/10" : "border-border bg-raised hover:border-axis",
-        disabled && "cursor-not-allowed opacity-45",
+        "flex flex-1 items-center gap-2 rounded-lg border px-2 py-2 text-left transition-all active:scale-[0.99]",
+        active
+          ? "border-primary bg-primary/[0.06] shadow-card"
+          : "border-border bg-raised hover:border-axis",
+        disabled && "pointer-events-none opacity-45",
       )}
     >
-      <span className="grid h-5 w-5 shrink-0 place-items-center rounded bg-border text-[11px] font-bold text-secondary">
+      <span
+        className={cn(
+          "grid h-6 w-6 shrink-0 place-items-center rounded-md text-[11px] font-black transition-colors",
+          active ? "bg-primary text-on-primary" : "bg-border text-secondary",
+        )}
+      >
         {badge}
       </span>
-      {active ? <Pause className="h-3.5 w-3.5 shrink-0" /> : <Play className="h-3.5 w-3.5 shrink-0" />}
+      {active ? (
+        <Pause className="h-3.5 w-3.5 shrink-0 fill-current" />
+      ) : (
+        <Play className="h-3.5 w-3.5 shrink-0 fill-current" />
+      )}
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-[12px] font-medium">{label}</span>
-        <span className="block text-[11px] tabular-nums text-muted">{meta}</span>
+        <span className="block truncate text-[12px] font-semibold">{label}</span>
+        <span className="block font-mono text-[10px] tabular-nums text-muted">{meta}</span>
       </span>
       <Kbd>{hotkey}</Kbd>
     </button>

@@ -36,15 +36,15 @@ export function SegmentList({
   return (
     <div className="h-full overflow-auto">
       <table className="w-full border-collapse text-[12px]">
-        <thead className="sticky top-0 z-10 bg-surface text-left text-[10px] uppercase tracking-[0.1em] text-muted">
+        <thead className="sticky top-0 z-10 bg-sunken text-left text-[10px] font-bold uppercase tracking-[0.16em] text-muted">
           <tr className="border-b border-border">
-            <th className="w-10 px-2 py-1.5 font-semibold">#</th>
-            <th className="w-24 px-2 py-1.5 font-semibold">State</th>
-            <th className="w-20 px-2 py-1.5 font-semibold">Start</th>
-            <th className="w-12 px-2 py-1.5 font-semibold">Spk</th>
-            <th className="px-2 py-1.5 font-semibold">Source</th>
-            <th className="px-2 py-1.5 font-semibold">Target</th>
-            <th className="w-16 px-2 py-1.5 text-right font-semibold">Verify</th>
+            <th className="w-10 px-3 py-2 font-bold">#</th>
+            <th className="w-28 px-3 py-2 font-bold">State</th>
+            <th className="w-20 px-3 py-2 font-bold">Start</th>
+            <th className="w-12 px-3 py-2 font-bold">Spk</th>
+            <th className="px-3 py-2 font-bold">Source</th>
+            <th className="px-3 py-2 font-bold">Target</th>
+            <th className="w-16 px-3 py-2 text-right font-bold">Verify</th>
           </tr>
         </thead>
         <tbody>
@@ -60,14 +60,18 @@ export function SegmentList({
                 ref={selected ? selectedRef : undefined}
                 onClick={() => onSelect(seg.uid)}
                 className={cn(
-                  "cursor-pointer border-b border-grid align-top",
-                  selected ? "bg-brand/10" : "hover:bg-border/40",
-                  playing && !selected && "bg-border/25",
+                  "cursor-pointer border-b border-grid align-top transition-colors",
+                  // Selection is ink, not the brand blue: blue already means
+                  // "dubbed" three columns to the left.
+                  selected
+                    ? "bg-primary/[0.07] shadow-[inset_2px_0_0_var(--color-primary)]"
+                    : "hover:bg-sunken",
+                  playing && !selected && "bg-sunken/70",
                   busyUids.includes(seg.uid) && "animate-pulse",
                 )}
               >
-                <td className="px-2 py-1.5 tabular-nums text-muted">{seg.id}</td>
-                <td className="px-2 py-1.5">
+                <td className="px-3 py-2 font-mono tabular-nums text-muted">{seg.id}</td>
+                <td className="px-3 py-2">
                   <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-secondary">
                     <span aria-hidden style={{ color: meta.token }}>
                       {meta.glyph}
@@ -75,12 +79,14 @@ export function SegmentList({
                     {meta.label}
                   </span>
                 </td>
-                <td className="px-2 py-1.5 tabular-nums text-secondary">{timecode(seg.start)}</td>
-                <td className="px-2 py-1.5 text-secondary">{speakerLabel(seg.speaker)}</td>
-                <td className="auto-dir max-w-0 truncate px-2 py-1.5 text-secondary">
-                  {seg.text}
+                <td className="px-3 py-2 font-mono tabular-nums text-secondary">
+                  {timecode(seg.start)}
                 </td>
-                <td className="max-w-0 truncate px-2 py-1.5">
+                <td className="px-3 py-2 font-mono text-secondary">
+                  {speakerLabel(seg.speaker)}
+                </td>
+                <td className="auto-dir max-w-0 truncate px-3 py-2 text-secondary">{seg.text}</td>
+                <td className="max-w-0 truncate px-3 py-2">
                   <span className="inline-flex max-w-full items-center gap-1">
                     {seg.locked ? (
                       <Lock className="h-3 w-3 shrink-0 text-muted" aria-label="Hand-edited" />
@@ -88,7 +94,7 @@ export function SegmentList({
                     <span className="truncate">{seg.text_en ?? "—"}</span>
                   </span>
                 </td>
-                <td className="px-2 py-1.5 text-right tabular-nums">
+                <td className="px-3 py-2 text-right font-mono tabular-nums">
                   <span
                     className={cn(
                       "inline-flex items-center gap-1",

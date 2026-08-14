@@ -5,64 +5,111 @@
    wins in either direction. */
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
+/*
+ * The design system, lifted from MamboRambo and refitted for this product.
+ *
+ * Four things carry the house style, and they are all here rather than
+ * scattered through components:
+ *
+ * 1. A *warm* neutral ramp. Not grey — the plane, the borders and the ink all
+ *    sit slightly yellow of neutral, which is what makes the white cards read
+ *    as paper instead of as chrome.
+ * 2. Ink, not colour, is the interaction accent. Primary buttons, the active
+ *    nav pill and the selection ring are all `primary` — near-black on light,
+ *    near-white on dark. That is MamboRambo's look, and here it also buys
+ *    something: it frees the blue to mean one thing only, "dubbed".
+ * 3. Elevation is a big soft shadow at very low alpha, never a hard edge. Dark
+ *    mode cannot use shadow at all, so there the same tokens resolve to a
+ *    deeper spread plus a hairline top highlight.
+ * 4. Radii come from the stock Tailwind scale, which is the one MamboRambo
+ *    uses: md/6 for chips, lg/8 for buttons and inputs, xl/12 for inner tiles,
+ *    2xl/16 for cards.
+ */
 @theme {
-  /* Chrome & ink — the light column of the dataviz reference palette. */
-  --color-plane: #f9f9f7;
-  --color-surface: #fcfcfb;
+  /* Chrome & ink. */
+  --color-plane: #f7f6f2;
+  --color-surface: #ffffff;
   --color-raised: #ffffff;
-  --color-primary: #0b0b0b;
-  --color-secondary: #52514e;
-  --color-muted: #898781;
-  --color-border: #e1e0d9;
-  --color-grid: #e1e0d9;
-  --color-axis: #c3c2b7;
+  --color-sunken: #f4f3ef;
+  --color-primary: #14130f;
+  --color-secondary: #5c584f;
+  --color-muted: #7d7a71;
+  --color-border: #e5e2d8;
+  --color-grid: #e5e2d8;
+  --color-axis: #c8c4b6;
   --color-brand: #2a78d6;
+  /* What sits *on* an ink-filled surface — a primary button's own label. */
+  --color-on-primary: #f7f6f2;
 
   /* Segment-state encoding. Validated all-pairs in both modes with
      scripts/validate_palette.js (dataviz skill):
        light  #2a78d6,#eda100,#d03b3b  — CVD dE 19.8, normal dE 24.1
        dark   #3987e5,#c98500,#d03b3b  — CVD dE 10.2, normal dE 16.9
-     Light-mode yellow sits at 2.11:1 on the surface, below the 3:1 gate, so
-     the relief rule applies: every state also carries an icon and a label,
-     and the segment table repeats the state as text. Never colour alone. */
+     The 2026 restyle moved the surfaces under these fills and left the fills
+     themselves untouched, so the pair separations above still hold. On the new
+     white card the light-mode yellow sits at 2.17:1 (was 2.11:1), still below
+     the 3:1 gate — so the relief rule stands unchanged: every state also
+     carries an icon and a label, and the segment table repeats the state as
+     text. Never colour alone. */
   --color-dubbed: #2a78d6;
   --color-kept: #eda100;
   --color-failed: #d03b3b;
-  --color-unclaimed: #898781;
+  --color-unclaimed: #7d7a71;
 
   --color-good: #0ca30c;
   --color-warning: #fab219;
   --color-serious: #ec835a;
   --color-critical: #d03b3b;
+
+  /* Elevation. Resolved from CSS vars so dark mode can restate them. */
+  --shadow-card: var(--elevation-card);
+  --shadow-lift: var(--elevation-lift);
+  --shadow-pop: var(--elevation-pop);
+
+  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
 :root {
   color-scheme: light;
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: var(--font-sans);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+
+  --elevation-card: 0 1px 2px rgb(20 19 15 / 0.04), 0 8px 30px rgb(20 19 15 / 0.045);
+  --elevation-lift: 0 1px 2px rgb(20 19 15 / 0.04), 0 18px 50px rgb(28 28 23 / 0.07);
+  --elevation-pop: 0 8px 24px rgb(20 19 15 / 0.12), 0 2px 6px rgb(20 19 15 / 0.08);
 }
 
 /* The dark steps are selected for the dark surface, not an automatic flip. */
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --color-plane: #0d0d0d;
-  --color-surface: #1a1a19;
-  --color-raised: #232322;
-  --color-primary: #ffffff;
-  --color-secondary: #c3c2b7;
-  --color-muted: #898781;
-  --color-border: #2c2c2a;
-  --color-grid: #2c2c2a;
-  --color-axis: #383835;
+  --color-plane: #0e0e0d;
+  --color-surface: #171614;
+  --color-raised: #1e1d1b;
+  --color-sunken: #131211;
+  --color-primary: #f5f4f0;
+  --color-secondary: #b5b1a6;
+  --color-muted: #98948b;
+  --color-border: #2b2a27;
+  --color-grid: #2b2a27;
+  --color-axis: #3b3935;
   --color-brand: #3987e5;
+  --color-on-primary: #0e0e0d;
 
   --color-dubbed: #3987e5;
   --color-kept: #c98500;
   --color-failed: #d03b3b;
-  --color-unclaimed: #898781;
+  --color-unclaimed: #98948b;
+
+  /* Shadow is nearly invisible against near-black, so elevation in dark is
+     carried by a hairline highlight on the top edge with the spread behind it
+     doing the rest. */
+  --elevation-card: inset 0 1px 0 rgb(255 255 255 / 0.035), 0 2px 8px rgb(0 0 0 / 0.5);
+  --elevation-lift: inset 0 1px 0 rgb(255 255 255 / 0.045), 0 16px 44px rgb(0 0 0 / 0.55);
+  --elevation-pop: 0 10px 30px rgb(0 0 0 / 0.7), 0 2px 6px rgb(0 0 0 / 0.5);
 }
 
 body {
@@ -71,12 +118,29 @@ body {
   color: var(--color-primary);
 }
 
-button,
-input,
-textarea,
-select {
-  font: inherit;
-  color: inherit;
+/*
+ * These belong in `base`, not at the top level. An unlayered declaration beats
+ * every layered one no matter the specificity, so a bare `button { color:
+ * inherit }` silently overrides `text-*` on every button in the app — which is
+ * exactly how the primary button ended up with an invisible label.
+ */
+@layer base {
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+    color: inherit;
+  }
+
+  /* The focus ring is one recipe everywhere: a soft halo of ink, never a
+     browser default outline that fights the radii. */
+  :where(button, a, input, textarea, select, [tabindex]):focus-visible {
+    outline: none;
+    box-shadow:
+      0 0 0 2px var(--color-surface),
+      0 0 0 4px color-mix(in srgb, var(--color-primary) 45%, transparent);
+  }
 }
 
 /* Unclaimed time is an absence, not a category: no fill, a hatch. The 135°
@@ -97,11 +161,11 @@ select {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--color-muted) 35%, transparent);
+  background: color-mix(in srgb, var(--color-muted) 32%, transparent);
   border-radius: 10px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--color-muted) 60%, transparent);
+  background: color-mix(in srgb, var(--color-muted) 55%, transparent);
 }
 
 /* Right-to-left source text (Hebrew, Arabic) needs the paragraph direction to
@@ -109,4 +173,27 @@ select {
 .auto-dir {
   unicode-bidi: plaintext;
   text-align: start;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* The one entrance animation, on the page-level card stack only. There is no
+   animation library here on purpose. */
+.rise {
+  animation: rise 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rise {
+    animation: none;
+  }
 }

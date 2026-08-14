@@ -73,6 +73,31 @@ origin is the Tauri asset protocol rather than the sidecar, so `initApiBase()` �
 `http://127.0.0.1:<port>` once and every path in `api.ts` goes through it. In a browser that
 prefix is `""` and the URLs stay relative, exactly as before.
 
+## Design system
+
+The look is MamboRambo's, refitted: a warm neutral ramp (the plane, the borders and the ink
+all sit slightly yellow of neutral), 2xl-radius cards on a big soft shadow, and tiny
+uppercase widely-tracked "eyebrow" labels doing all the section titling.
+
+Two rules are worth knowing before you touch it.
+
+**Ink is the accent, not colour.** Primary buttons, the active nav pill, the selected table
+row and the focus ring are all `primary` — near-black on light, near-white on dark. That is
+the house style, and here it also buys correctness: it leaves the blue free to mean exactly
+one thing, "dubbed". Anything painted `--color-brand` or `--color-dubbed` is data, never
+chrome.
+
+**Everything is a primitive.** `components/ui.tsx` holds Button, Card/CardSection, Panel,
+Field, TextInput/TextArea/Select, Badge, StatePill, Progress, Kbd, ErrorBlock/ErrorBar,
+Eyebrow/SectionLabel and Brand/LogoMark. There are no ad-hoc styled containers above that
+file — a new screen composes these or the system stops being one.
+
+`src/App.css` is the whole token layer: surfaces, ink, elevation and the segment-state hues,
+declared once in `@theme` and restated for dark under `:root[data-theme="dark"]`. Element
+resets live inside `@layer base`; an unlayered `button { color: inherit }` beats every
+Tailwind `text-*` utility no matter the specificity, which is a bug that has already been
+written here once.
+
 ## Layout
 
 ```
@@ -105,5 +130,9 @@ src/
 Four segment states, each with a hue **and** a glyph **and** a word — colour never carries
 meaning alone. The hues are validated all-pairs for colour-vision deficiency in both light
 and dark (`dataviz` skill, `scripts/validate_palette.js`); light-mode "kept" sits below the
-3:1 contrast gate, which is why the segment table repeats every state as text. Unclaimed
-time gets no hue: it is an absence, so it is a neutral hatch.
+3:1 contrast gate (2.17:1 on the card surface), which is why the segment table repeats every
+state as text. Unclaimed time gets no hue: it is an absence, so it is a neutral hatch.
+
+The restyle moved the surfaces *under* these fills and left the fills themselves untouched,
+so the validated pair separations still hold. If you ever change one of the three hues,
+re-run the validation rather than eyeballing it.
