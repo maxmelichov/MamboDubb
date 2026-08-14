@@ -80,6 +80,25 @@ check("the pre-paint canvas covers both themes", /theme-dark[^}]*#0e0e0d/.test(h
 check("native number spinners are suppressed", /-webkit-inner-spin-button/.test(css));
 
 /*
+ * The one claim about `request()` this mode can make.
+ *
+ * `VITE_USE_FIXTURES=1` is inlined as a literal, so every `if (USE_FIXTURES)
+ * return fixtures.x()` makes the HTTP path dead code and the bundler removes
+ * `request` entirely — it is not in the artifact to assert against, and there
+ * is no fetch in this mode to drive it with. The guard is still worth pinning,
+ * because what it replaced was a sentence the user had to read: a 200 whose
+ * body is not JSON (an SPA fallback, a captive portal, the wrong port) was cast
+ * straight to the response type, and `getProject` surfaced "TypeError: Cannot
+ * read properties of null (reading 'name')" in the editor's error bar. So this
+ * one reads the source, and says so.
+ */
+const apiSource = readFileSync(new URL("../src/lib/api.ts", import.meta.url), "utf8");
+check(
+  "api.request names a 200 that is not JSON instead of casting it",
+  /if \(text && body === null\)/.test(apiSource) && /is not JSON/.test(apiSource),
+);
+
+/*
  * The state palette, checked structurally rather than by hex.
  *
  * Pinning "kept is #306357" in a test is pinning a *decision* that is allowed
@@ -480,6 +499,45 @@ check(
   "a line with nothing synthesized has a dead B, not a broken one",
   rows().some((r) => clip(r, "B").disabled),
 );
+
+/*
+ * …and pressing one has to hand the element something a browser can load.
+ *
+ * `seg.media.*` is the *server's* name for the clip, which in fixture mode is
+ * `fixture:tone?hz=…`. Assigning that to `<audio src>` is ERR_UNKNOWN_URL_SCHEME
+ * and the button snaps straight back out of its pressed state — which is what
+ * every A/B press did, because `api.audioUrl` (the seam that resolves it) had
+ * no callers at all. The claim is narrow and it is the one that broke: the URL
+ * that reaches the element went through the seam, and it is not the raw one.
+ */
+const played = [];
+dom.window.HTMLMediaElement.prototype.play = function play() {
+  played.push(this.src);
+  return Promise.resolve();
+};
+const press = (el) => el.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+press(clip(rowFor(1), "A"));
+await settle(120);
+check("pressing A puts a clip on the shared element", played.length === 1);
+check(
+  "…resolved through the audio seam, not the server's own name for it",
+  played.length === 1 && !played[0].startsWith("fixture:") && played[0].length > 0,
+);
+check(
+  "…and the button says which side is sounding",
+  clip(rowFor(1), "A").getAttribute("aria-pressed") === "true",
+);
+press(clip(rowFor(1), "B"));
+await settle(120);
+check(
+  "pressing B stops A — one element, one clip",
+  played.length === 2 &&
+    clip(rowFor(1), "A").getAttribute("aria-pressed") === "false" &&
+    clip(rowFor(1), "B").getAttribute("aria-pressed") === "true",
+);
+press(clip(rowFor(1), "B"));
+await settle(120);
+check("pressing the sounding side again stops it", clip(rowFor(1), "B").getAttribute("aria-pressed") === "false");
 
 /*
  * Inline editing. The translation is edited where it is read — that is the
@@ -896,6 +954,36 @@ check(
 // without clobbering anything, because nothing is being typed.
 await settle(1200);
 check("job clears when done", !/Re-voicing/.test(root.textContent));
+
+/*
+ * A subscriber that joins late still learns what is running.
+ *
+ * The editor mounts and subscribes *after* the job is created — that is the
+ * order "Start dubbing" happens in, project first, editor second — so a stream
+ * that only forwards frames from the moment you connect tells a freshly created
+ * run nothing at all: no job strip, and a preview stage sitting on "Nothing has
+ * run yet" for the whole run. The server opens every stream with a prelude
+ * (`app.py::project_events`: a log line, a stage frame per stage, and every job
+ * that has not finished) for exactly this reason, and the fixtures have to do
+ * the same or the flow is green here and dead in the app.
+ */
+click("Render preview");
+await settle(150);
+[...document.querySelectorAll('[role="dialog"] button')]
+  .find((b) => b.textContent === "Render")
+  .dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+await settle(400);
+check("a render queues and the strip says so", /Rendering preview/.test(root.textContent));
+await go("/", 300);
+check("leaving the run leaves its strip behind", document.querySelector("[data-job-strip]") == null);
+await go("/editor/kan11_v3", 700);
+check(
+  "re-opening a run mid-job finds the job again — the stream replays it",
+  /Rendering preview/.test(root.textContent),
+);
+click("Cancel");
+await settle(500);
+check("…and it is the same job, cancellable from here", !/Rendering preview/.test(root.textContent));
 
 check(
   "no console errors",

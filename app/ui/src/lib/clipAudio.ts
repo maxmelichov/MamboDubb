@@ -15,9 +15,25 @@
  *
  * Created lazily rather than at import: `new Audio()` at module scope would run
  * during SSR-less-but-still-headless test boots before jsdom's stubs are in.
+ *
+ * ## The URL that plays is not the URL the caller holds
+ *
+ * A segment's `media.play` / `media.source` is what the *server* calls the clip,
+ * and it is not always something `<audio src>` can load: fixture mode hands out
+ * `fixture:tone?hz=…`, which a browser answers with ERR_UNKNOWN_URL_SCHEME.
+ * `api.audioUrl` is the seam that turns one into the other — and it had no
+ * callers at all, because every A/B path (the row buttons, the `a`/`b` keys)
+ * came straight here and assigned the raw string. So every clip button in
+ * fixture mode fired a network error and snapped back out of its pressed state.
+ *
+ * Resolving here rather than at each call site is what makes that unrepeatable:
+ * there is one assignment to `element.src` in the app and it goes through the
+ * seam. `playing` deliberately stays the caller's URL — the A/B buttons compare
+ * it against `seg.media.*` to decide which side is lit.
  */
 
 import { useSyncExternalStore } from "react";
+import { api } from "./api";
 
 let element: HTMLAudioElement | null = null;
 let playing: string | null = null;
@@ -67,7 +83,11 @@ export function toggleClip(url: string | null): void {
     stopClip();
     return;
   }
-  el.src = url;
+  // The seam: the caller's URL is the server's name for the clip, `src` is the
+  // one a browser can actually fetch. See the note at the top of this file.
+  const src = api.audioUrl(url);
+  if (!src) return;
+  el.src = src;
   el.currentTime = 0;
   playing = url;
   emit();
