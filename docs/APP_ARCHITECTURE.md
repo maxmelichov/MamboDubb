@@ -81,6 +81,43 @@ when a segment is created and preserved across edits. Every API below keys on `u
 `locked` is what makes the editor safe: a re-translate of the whole run must skip a line
 the user corrected. Honour it in `translate.run`/`tts.run` when present.
 
+### `tts_opts` — per-segment synthesis controls
+
+Defined and validated in `dubbing/ttsopts.py` (`parse` raises `ValueError`; `merge` applies
+a partial patch and strips defaults, which is what `set_tts_opts` should call). Every key is
+optional; absent or `{}` means "the pipeline's own choices" and reproduces a default run
+byte for byte.
+
+| key | type | default | effect |
+|---|---|---|---|
+| `seed` | int 0..2³²-1 | derived | replaces the text-derived seed; retry *N* uses `seed + 1000N`. Bump it to re-roll a take. |
+| `greedy` | bool | `false` | deterministic decode on every attempt, not just the last of `MAX_TRIES` |
+| `ref` | str | auto | wav under the run dir to clone from; also disables the canonical-reference escalation |
+| `ref_text` | str | — | transcript of `ref`, switching the clone to ICL mode. **Requires `ref`.** |
+| `model` | `"1.7b"`/`"0.6b"` | run's `--tts-model` | checkpoint for this segment (swaps the loaded model — one line, not a hundred) |
+| `speed` | float 0.5..2.0 | `1.0` | ffmpeg `atempo` baked in before verification |
+| `temperature` | float 0<t≤2 | `0.55` | sampler; rejected together with `greedy` |
+| `top_p` | float 0<p≤1 | `0.85` | ″ |
+| `top_k` | int 1..1000 | `30` | ″ |
+| `repetition_penalty` | float 0.8..2.0 | `1.08` | |
+| `max_new_tokens` | int 32..4096 | derived from the text | |
+| `keep_pauses` | bool | `false` | leave long internal silences instead of compressing to `PAUSE_KEEP` |
+
+Rules the server and UI can rely on:
+
+* **Unknown keys and out-of-range values raise**, in `parse` and again in `tts._plan`. There
+  is no silent coercion — validate on `PATCH` and surface the message.
+* **Every audio-affecting option is in the clip cache key**, and the tts record carries an
+  option fingerprint (`seg["tts"]["opts"]`), so `tts.run` re-synthesizes a segment whose
+  options changed under an otherwise-usable clip. Editing `tts_opts` alone is enough; no
+  `invalidate` call is required (one is still harmless).
+* **Natural-language style instructions are not offered, because they cannot work here.**
+  `instruct` exists only on `generate_voice_design` / `generate_custom_voice`, both gated on
+  a different `tts_model_type` and neither taking reference audio — they design a voice from
+  the description instead of cloning the speaker. `ref_text` (ICL) is the only prosody-
+  carrying knob the Base checkpoint has, and it means "sound like this take", not "sound
+  angry". Do not add a style textbox to the inspector.
+
 ## Edit API — `dubbing/edit.py` (new module)
 
 The server calls only these; it never pokes the manifest directly. Every function takes a
