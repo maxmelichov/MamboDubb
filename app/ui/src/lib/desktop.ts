@@ -95,7 +95,26 @@ async function call<T>(cmd: string, args: Record<string, unknown> | undefined, f
   }
 }
 
-let baseUrlPromise: Promise<string | null> | null = null;
+/**
+ * `call` for the commands that return nothing, where the only interesting
+ * answer is whether it worked — `call` cannot say, because a command that
+ * resolves with `null` and a command that threw both come back as the
+ * fallback. The caller needs the difference: "the shell revealed the file" and
+ * "the shell could not" lead to different affordances.
+ */
+async function callOk(cmd: string, args?: Record<string, unknown>): Promise<boolean> {
+  const invoke = await getInvoke();
+  if (!invoke) return false;
+  try {
+    await invoke<unknown>(cmd, args);
+    return true;
+  } catch (error) {
+    console.warn(`desktop: ${cmd} failed`, error);
+    return false;
+  }
+}
+
+let serverInfoPromise: Promise<unknown> | null = null;
 
 /**
  * Where the studio server is listening, or null when the app should just use
@@ -117,19 +136,41 @@ function baseUrlOf(info: unknown): string | null {
   return null;
 }
 
-export function serverBaseUrl(): Promise<string | null> {
-  if (!baseUrlPromise) {
-    baseUrlPromise = (async () => {
+/**
+ * The whole `ServerInfo`, cached — not just its URL.
+ *
+ * `workspace` comes back in the same handshake and is the only way the UI can
+ * turn a run-relative path (`preview.mp4`, which is all the manifest stores)
+ * into the absolute one `reveal_path` insists on. Asking for it separately
+ * would be a second command for something already in hand.
+ */
+function serverInfo(): Promise<unknown> {
+  if (!serverInfoPromise) {
+    serverInfoPromise = (async () => {
       if (!isDesktop()) return null;
       // `get_server_url` never starts a server (that is its contract); on a
       // fresh launch there is nothing running yet, so fall through to
       // `start_server`, which is idempotent and blocks on the ready line.
-      const running = baseUrlOf(await call<unknown>("get_server_url", undefined, null));
-      if (running) return running;
-      return baseUrlOf(await call<unknown>("start_server", undefined, null));
+      const running = await call<unknown>("get_server_url", undefined, null);
+      if (baseUrlOf(running)) return running;
+      return call<unknown>("start_server", undefined, null);
     })();
   }
-  return baseUrlPromise;
+  return serverInfoPromise;
+}
+
+export async function serverBaseUrl(): Promise<string | null> {
+  return baseUrlOf(await serverInfo());
+}
+
+/** The checkout the shell is pointed at; its `outputs/` holds every run. */
+export async function workspaceDir(): Promise<string | null> {
+  const info = await serverInfo();
+  if (info && typeof info === "object" && "workspace" in info) {
+    const dir = (info as { workspace?: unknown }).workspace;
+    if (typeof dir === "string" && dir) return dir.replace(/\/+$/, "");
+  }
+  return null;
 }
 
 /**
@@ -142,8 +183,34 @@ export function pickVideoFile(): Promise<string | null> {
   return call<string | null>("pick_video_file", undefined, null);
 }
 
-/** Show a produced file in Finder. A no-op in a browser. */
-export function revealPath(path: string): Promise<void> {
-  if (!isDesktop() || !path) return Promise.resolve();
-  return call<void>("reveal_path", { path }, undefined as void);
+/**
+ * Show a produced file in Finder. False in a browser, and false when the shell
+ * refused — `reveal_path` errors on a path that does not exist, which is the
+ * one failure the caller must not paper over: it means the file the button
+ * offered is not there.
+ */
+export function revealPath(path: string): Promise<boolean> {
+  if (!isDesktop() || !path) return Promise.resolve(false);
+  return callOk("reveal_path", { path });
+}
+
+/**
+ * Reveal a file *inside a run*, given the run-relative path the manifest
+ * stores (`preview.mp4`, `preview_en.srt`).
+ *
+ * The manifest never records absolute paths — it is copied between machines —
+ * and `reveal_path` takes nothing else, so the composition has to happen
+ * somewhere. Here, because this is the file that already knows both halves:
+ * the workspace comes from the shell's own handshake and every run lives at
+ * `<workspace>/outputs/<name>/`, which is the layout the shell itself starts
+ * the server with (`--outputs <workspace>/outputs`).
+ *
+ * False means "could not" — no shell, no workspace, or no such file — and the
+ * caller should fall back to opening the URL instead of failing silently.
+ */
+export async function revealRunFile(project: string, relPath: string): Promise<boolean> {
+  if (!isDesktop() || !project || !relPath) return false;
+  const workspace = await workspaceDir();
+  if (!workspace) return false;
+  return revealPath(`${workspace}/outputs/${project}/${relPath}`);
 }
