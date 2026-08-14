@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from dubbing import manifest  # noqa: E402
 from dubbing_app import events, media, ops, runner as runner_mod, server  # noqa: E402
+from dubbing_app import app as app_mod  # noqa: E402
 from dubbing_app.app import create_app  # noqa: E402
 from dubbing_app.jobs import JobQueue  # noqa: E402
 from tests.conftest_app import make_project  # noqa: E402
@@ -131,6 +132,63 @@ def test_list_projects(client):
     project = body["projects"][0]
     assert project["src_lang"] == "he" and project["tgt_lang"] == "en"
     assert project["segments"] == 5 and project["complete"] is True
+
+
+def test_create_project_reaches_the_cli_with_every_option(client, outputs, fake):
+    """The whole creation path on the wire: body → `source` record → job payload →
+    the argv `dubbing.cli` actually parses. A flag that drifted here is an option
+    the user picked in the UI and silently did not get."""
+    from dubbing import cli
+
+    body = {"source": "https://youtu.be/abc", "tgt_lang": "ru", "duration": 60,
+            "name": "movieproj", "context": "a note", "genre": "movie",
+            "register": "dialogue", "transcript": "asr", "tts_model": "0.6b",
+            "dub_foreign": True, "captions": "caps.json3"}
+    r = client.post("/api/projects", json=body)
+    assert r.status_code == 201 and r.json()["project"]["name"] == "movieproj"
+    assert wait_until(lambda: fake.calls, 5.0)
+
+    kind, project, payload = fake.calls[0]
+    assert (kind, project) == ("run", "movieproj")
+    args = cli.parse_args(ops.full_run_argv(Path(payload["workdir"]), payload["source"]))
+    assert (args.source, args.tgt, args.duration) == ("https://youtu.be/abc", "ru", 60)
+    assert (args.genre, args.register, args.transcript) == ("movie", "dialogue", "asr")
+    assert args.tts_model == "0.6b" and args.dub_foreign is True
+    assert args.context == "a note" and str(args.captions) == "caps.json3"
+    # …and the options are on the manifest too, for every later edit job.
+    stored = manifest.load(outputs / "movieproj")["source"]["app_opts"]
+    assert stored["genre"] == "movie" and stored["tts_model"] == "0.6b"
+
+
+def test_create_project_refuses_an_option_the_cli_cannot_take(client, outputs):
+    """argparse would reject it, but only in the job child, minutes later, as a
+    usage dump — after the project directory and its manifest already exist. There
+    is no way back from that project: its one job can never succeed."""
+    r = client.post("/api/projects", json={"source": "x.mp4", "genre": "banana"})
+    assert r.status_code == 400 and envelope_of(r)["code"] == "invalid_request"
+    assert sorted(p.name for p in outputs.iterdir()) == [NAME]
+
+
+@pytest.mark.parametrize("flag,dest,literal", [
+    ("--genre", "genre", app_mod.Genre),
+    ("--register", "register", app_mod.Register),
+    ("--transcript", "transcript", app_mod.Transcript),
+    ("--tts-model", "tts_model", app_mod.TtsModel),
+])
+def test_create_project_options_are_exactly_the_cli_choices(flag, dest, literal, capsys):
+    """`dubbing.cli` cannot be imported here — it drags in torch — so the choice
+    lists are restated in `dubbing_app.app`. This is what keeps the copy honest."""
+    import re
+    from typing import get_args
+
+    from dubbing import cli
+
+    for value in get_args(literal):
+        assert getattr(cli.parse_args(["src", flag, value]), dest) == value
+    with pytest.raises(SystemExit):
+        cli.parse_args(["src", flag, "__not_a_choice__"])
+    tail = capsys.readouterr().err.split("choose from")[-1]
+    assert set(re.findall(r"[\w.\-]+", tail)) == set(get_args(literal))
 
 
 def test_get_project(client):

@@ -16,7 +16,7 @@ from __future__ import annotations
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import Body, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,6 +36,17 @@ from .runner import SubprocessRunner
 # Field edits are allowed at any time (the contract requires it); these are not.
 STRUCTURAL = ("split", "merge", "bounds")
 
+# The `dubbing.cli` choice lists, restated. They cannot be imported: `dubbing.cli`
+# pulls in every stage, and therefore torch and MLX, which is exactly what keeps
+# the server out of this process (see `dubbing_app.runner`). A test asserts these
+# are still character-for-character what the parser accepts. Restating them is
+# what turns a bad option into a 400 instead of a project directory whose one job
+# dies on an argparse usage dump and can never be re-run.
+Genre = Literal["documentary", "movie"]
+Register = Literal["narration", "dialogue"]
+Transcript = Literal["auto", "captions", "asr"]
+TtsModel = Literal["1.7b", "0.6b"]
+
 
 # ---------------------------------------------------------------------------
 # request bodies
@@ -52,12 +63,12 @@ class CreateProject(Strict):
     duration: float | None = None
     name: str | None = None
     context: str | None = None
-    genre: str | None = None
+    genre: Genre | None = None
     # `register` is a BaseModel attribute, so the field is spelled with a trailing
     # underscore and aliased back to the wire name the CLI flag uses.
-    register_: str | None = Field(default=None, alias="register")
-    transcript: str | None = None
-    tts_model: str | None = None
+    register_: Register | None = Field(default=None, alias="register")
+    transcript: Transcript | None = None
+    tts_model: TtsModel | None = None
     dub_foreign: bool = False
     captions: str | None = None
 
