@@ -887,12 +887,16 @@ def _judge_span(lid, src_model, source_wav: Path, a: float, b: float,
     # Before the source read is believed either way, ask the model that reads the
     # target language. This is the only witness that can overturn a confident lie
     # ("I read this English as Hebrew, at -0.38"), and it is what turns a muted
-    # target-language speaker into a real, visible target span.
-    if _reads_as_target(tgt_model, clip, target, src_lp):
+    # target-language speaker into a real, visible target span. It is asked only
+    # where the classifier has NOT named a different language confidently: a
+    # target-forced decoder always returns target-language text, so it cannot be
+    # allowed to rename a passage VoxLingua has already identified as Arabic.
+    named = bool(lang) and lang != source and prob >= FOREIGN_MIN_PROB
+    if (not named or lang == target) and _reads_as_target(tgt_model, clip, target, src_lp):
         return target
     if src_lp is None or src_lp >= FOREIGN_SRC_LOGPROB:
         return None                                   # it reads as the source language
-    return lang if lang and lang != source and prob >= FOREIGN_MIN_PROB else "und"
+    return lang if named else "und"
 
 
 def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: float,

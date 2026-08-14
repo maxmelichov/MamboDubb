@@ -475,6 +475,11 @@ def test_target_asr_outvotes_a_confident_source_read(monkeypatch):
     monkeypatch.setattr(transcript, "detect_language", lambda lid, clip: ("he", 0.99))
     assert sounds(object(), lying, "voc.wav", 0.0, 8.0, "he",
                   tgt_model=english, target="en") is None
+    # And so does a confidently NAMED third language: a target-forced decoder always
+    # returns target-language text, so it may not rename the Arabic quote to English.
+    monkeypatch.setattr(transcript, "detect_language", lambda lid, clip: ("ar", 0.90))
+    assert sounds(object(), _FakeAsr("gibberish", -0.64), "voc.wav", 0.0, 8.0, "he",
+                  tgt_model=english, target="en") == "ar"
 
 
 def test_a_target_verdict_becomes_a_target_span(monkeypatch):
