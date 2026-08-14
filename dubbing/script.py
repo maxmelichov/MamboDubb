@@ -63,11 +63,6 @@ def same_script(lang_a: str, lang_b: str) -> bool:
     return script_for(lang_a) == script_for(lang_b)
 
 
-def _in_script(ch: str, script: str) -> bool:
-    cp = ord(ch)
-    return any(lo <= cp <= hi for lo, hi in _RANGES[script])
-
-
 def count_letters(text: str, script: str) -> int:
     """Letters of `text` belonging to `script` (non-letters never count)."""
     ranges = _RANGES[script]

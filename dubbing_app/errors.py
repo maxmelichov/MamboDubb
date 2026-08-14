@@ -14,8 +14,6 @@ import sys
 import traceback
 from typing import Any
 
-CODES = ("invalid_request", "not_found", "busy", "internal_error")
-
 STATUS = {
     "invalid_request": 400,
     "not_found": 404,

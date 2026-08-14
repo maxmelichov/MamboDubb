@@ -70,7 +70,6 @@ REF_SR = 24000
 REF_TARGET_SEC = 4.5
 MIN_REF_SEC = 2.5    # a clone reference shorter than this yields truncated/garbled clones
 REF_MIN_RMS = 0.018
-REF_MAX_NOISE = 8.0
 REF_JOIN_FADE_SEC = 0.02   # fade at the joins of a concatenated reference
 
 # Voice-outlier rejection for candidate reference windows, thresholds measured on a
@@ -1092,11 +1091,6 @@ def clear_failed_keeps(segments: list[dict[str, Any]]) -> list[int]:
             seg.pop("tts", None)  # the keep-clip record; this run re-decides
             cleared.append(seg["id"])
     return cleared
-
-
-def has_clip(seg: dict[str, Any], workdir: Path) -> bool:
-    """True when this segment already owns audio on disk."""
-    return bool(seg.get("tts")) and (workdir / seg["tts"]["clip"]).is_file()
 
 
 def pending(segments: list[dict[str, Any]], workdir: Path) -> list[dict[str, Any]]:
