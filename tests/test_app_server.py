@@ -79,7 +79,10 @@ def fake():
 
 @pytest.fixture()
 def client(outputs, fake):
-    with TestClient(create_app(outputs, runner=fake)) as c:
+    # ui_dir="" keeps the SPA catch-all out of API tests: with a built dist on
+    # the machine it would answer any unmatched path with index.html, turning
+    # asserted 404s into 200s depending on whether `pnpm build` ever ran here.
+    with TestClient(create_app(outputs, runner=fake, ui_dir="")) as c:
         yield c
 
 
@@ -109,7 +112,7 @@ def live_server(app):
 
 @pytest.fixture()
 def live(outputs, fake):
-    with live_server(create_app(outputs, runner=fake)) as base:
+    with live_server(create_app(outputs, runner=fake, ui_dir="")) as base:
         yield base
 
 
@@ -197,7 +200,7 @@ def test_invalid_project_name_envelope(client):
 
 
 def test_internal_error_envelope(outputs, fake):
-    app = create_app(outputs, runner=fake)
+    app = create_app(outputs, runner=fake, ui_dir="")
 
     @app.get("/boom")
     def boom():
