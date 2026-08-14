@@ -1,9 +1,17 @@
 /**
  * The two shells.
  *
- * `PageShell` is the roomy one — a brand header, a two-line display title and a
- * column of cards on the plane. Import and Setup use it, because both are
- * "arrive, read, decide" screens where breathing room *is* the affordance.
+ * `PageShell` is the roomy one — a brand chip, a segmented nav, a display title
+ * and cards on the plane. Import and Setup use it, because both are "arrive,
+ * read, decide" screens where breathing room *is* the affordance.
+ *
+ * It comes in two widths. `default` is the reading column Setup is written for:
+ * a checklist is a list of sentences and a sentence has a comfortable measure.
+ * `wide` is the composition width — the import screen lays a primary card, an
+ * options rail and a full-width runs region across it, and on a maximised
+ * window the old 56rem column left two thirds of the display empty with a
+ * phone-shaped form marooned in the middle of it. The width is a prop rather
+ * than a breakpoint because it is a property of the *screen*, not the viewport.
  *
  * `AppHeader` is the workspace bar: 44px, bordered, dense, and it never grows,
  * because the editor's job is to give every remaining pixel to the script.
@@ -14,52 +22,113 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { ChevronLeft, Moon, SlidersHorizontal, Sun } from "lucide-react";
+import { ChevronLeft, Clapperboard, Moon, SlidersHorizontal, Sun } from "lucide-react";
 import { USE_FIXTURES } from "../lib/api";
 import { cn } from "../lib/classNames";
 import { currentTheme, onThemeChange, setTheme, type Theme } from "../lib/theme";
-import { Badge, Brand } from "./ui";
+import { Badge, BrandChip, Segmented, segmentedCell } from "./ui";
 
 export function PageShell({
   title,
   accent,
   lede,
+  width = "default",
   children,
 }: {
   title: string;
   /** The second line of the display title, set quieter and italic. */
   accent?: string;
   lede?: ReactNode;
+  /** `wide` opens the page to the composition width; see the note above. */
+  width?: "default" | "wide";
   children: ReactNode;
 }) {
+  const wide = width === "wide";
   return (
     <div className="min-h-screen bg-plane">
-      <div className="mx-auto w-full max-w-4xl px-5 pb-20 pt-5 sm:px-8 sm:pt-7">
-        <header className="flex h-14 items-center justify-between gap-4">
-          <Link to="/" className="rounded-xl" aria-label="MamboDubb — projects">
-            <Brand />
-          </Link>
-          <HeaderTools />
+      <div
+        className={cn(
+          "mx-auto w-full px-5 pb-10 pt-5 sm:px-8 sm:pt-6",
+          wide ? "max-w-[1440px]" : "max-w-4xl",
+        )}
+      >
+        <header className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <Link to="/" className="rounded-full" aria-label="MamboDubb — projects">
+              <BrandChip />
+            </Link>
+            <ShellNav />
+          </div>
+          {/* Setup lives in the nav pill here, so the tool cluster does not
+              carry it a second time. */}
+          <HeaderTools withSetup={false} />
         </header>
 
         <div className="rise">
-          <h1 className="mt-9 text-[2.25rem] leading-[1.1] font-semibold tracking-tight sm:text-[2.75rem]">
-            {title}
-            {accent ? (
-              <>
-                <br />
-                <span className="font-normal italic text-muted/70">{accent}</span>
-              </>
-            ) : null}
-          </h1>
-          {lede ? (
-            <p className="mt-5 max-w-xl text-[15px] leading-relaxed text-secondary">{lede}</p>
-          ) : null}
+          {wide ? (
+            // One line, with the accent set as a clause rather than a second
+            // display line: the wide layout wants its 90px of vertical back for
+            // the composition under it.
+            <div className="mt-8 flex flex-wrap items-end justify-between gap-x-12 gap-y-3">
+              <h1 className="text-[2rem] leading-[1.08] font-semibold tracking-tight sm:text-[2.5rem]">
+                {title}
+                {accent ? (
+                  <span className="font-normal italic text-muted/70"> {accent}</span>
+                ) : null}
+              </h1>
+              {lede ? (
+                <p className="max-w-xl text-[13.5px] leading-relaxed text-secondary">{lede}</p>
+              ) : null}
+            </div>
+          ) : (
+            <>
+              <h1 className="mt-9 text-[2.25rem] leading-[1.1] font-semibold tracking-tight sm:text-[2.75rem]">
+                {title}
+                {accent ? (
+                  <>
+                    <br />
+                    <span className="font-normal italic text-muted/70">{accent}</span>
+                  </>
+                ) : null}
+              </h1>
+              {lede ? (
+                <p className="mt-5 max-w-xl text-[15px] leading-relaxed text-secondary">{lede}</p>
+              ) : null}
+            </>
+          )}
 
-          <div className="mt-9 flex flex-col gap-6">{children}</div>
+          <div className={cn("flex flex-col gap-6", wide ? "mt-7" : "mt-9")}>{children}</div>
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * The shell's navigation: two cells in a pill, one filled with ink.
+ *
+ * It is two links and not three because there are exactly two places this shell
+ * goes — the runs and the machine's readiness. The editor is not on it: you get
+ * there by opening a run, and a nav cell for "the run you are not in" is a dead
+ * control on both screens that show this bar.
+ */
+function ShellNav() {
+  const path = useLocation().pathname;
+  return (
+    <Segmented aria-label="Sections">
+      <Link to="/" className={segmentedCell(path !== "/setup")} title="Every run in the workspace">
+        <Clapperboard className="h-3.5 w-3.5" aria-hidden />
+        Runs
+      </Link>
+      <Link
+        to="/setup"
+        className={segmentedCell(path === "/setup")}
+        title="What this machine has installed"
+      >
+        <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden />
+        Setup
+      </Link>
+    </Segmented>
   );
 }
 
@@ -130,7 +199,7 @@ function ThemeToggle() {
       aria-label={`Switch to ${label} theme`}
       title={`${label[0].toUpperCase()}${label.slice(1)} theme`}
       className={cn(
-        "grid h-6 w-7 place-items-center rounded-md transition-colors",
+        "grid h-6 w-7 place-items-center rounded-full transition-colors",
         theme === value
           ? "bg-primary text-on-primary"
           : "text-muted hover:text-primary",
@@ -144,7 +213,7 @@ function ThemeToggle() {
     <div
       role="group"
       aria-label="Theme"
-      className="flex shrink-0 items-center gap-0.5 rounded-lg border border-border bg-raised p-0.5"
+      className="flex shrink-0 items-center gap-0.5 rounded-full border border-border bg-raised p-0.5"
     >
       {cell("light", Sun, "light")}
       {cell("dark", Moon, "dark")}
@@ -152,8 +221,14 @@ function ThemeToggle() {
   );
 }
 
-/** The theme toggle, the fixtures badge and the Setup link — permanent tools. */
-function HeaderTools() {
+/**
+ * The theme toggle, the fixtures badge and the Setup link — permanent tools.
+ *
+ * `withSetup` is off in `PageShell`, where the nav pill beside the brand chip
+ * already carries Setup and a second link to it two inches away is one control
+ * too many. The editor's bar has no nav pill, so it keeps the link.
+ */
+function HeaderTools({ withSetup = true }: { withSetup?: boolean }) {
   const onSetup = useLocation().pathname === "/setup";
   return (
     <div className="flex shrink-0 items-center gap-2">
@@ -161,6 +236,7 @@ function HeaderTools() {
         <Badge title="VITE_USE_FIXTURES=1 — sample data, no server, no models">fixtures</Badge>
       ) : null}
       <ThemeToggle />
+      {withSetup ? (
       <Link
         to="/setup"
         title="What this machine has installed"
@@ -175,6 +251,7 @@ function HeaderTools() {
         <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden />
         Setup
       </Link>
+      ) : null}
     </div>
   );
 }

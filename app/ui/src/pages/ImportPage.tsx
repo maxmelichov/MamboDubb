@@ -2,14 +2,27 @@
  * Import: pick a source, say what language it is and what language it should
  * become, then start a run.
  *
+ * The shape is a studio composition, not a form in a column. Three regions:
+ *
+ * - **New dub** — the generous card. It holds the two things you *type*: the
+ *   source, and the context note. The single primary action sits in a sunken
+ *   band at its foot, bottom-right, so it reads as the card's conclusion.
+ * - **Options** — the rail beside it. Four labelled groups, hairlined apart:
+ *   languages, genre, register, scope. Nothing here is typed prose; it is all
+ *   picking, which is why it is a rail and not a second column of paragraphs.
+ * - **Existing runs** — full width underneath, as cards. The only other thing
+ *   you can do from this screen is re-open one.
+ *
  * The context note is not decoration. Translation quality moves measurably with
  * a sentence about who and what the video is about and how names are spelled —
  * it is the difference between "Sheikha Moza" and three different manglings.
- * That is why it gets a section of its own rather than a corner of the form.
+ * That is why it gets the whole lower half of the primary card rather than a
+ * corner of the form.
  *
- * Shape: one card, three labelled sections separated by hairlines, and a sunken
- * footer holding the single primary action. Existing runs are a second card of
- * rows below it — the only other thing you can do from this screen.
+ * Genre and register used to be two more dropdowns. They are two-way choices
+ * whose options need a clause to be meaningful ("Documentary — narrated,
+ * factual"), and a clause does not fit in an `<option>`; the genre is rows that
+ * invert to ink when picked, the register is a pill.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -18,12 +31,16 @@ import {
   ArrowRight,
   ChevronRight,
   Clapperboard,
+  Film,
   FileVideo,
   FolderOpen,
   Languages,
   Loader2,
+  MessagesSquare,
+  Mic2,
   PencilLine,
   PlugZap,
+  Timer,
 } from "lucide-react";
 import { PageShell } from "../components/AppShell";
 import { StageTrack } from "../components/StageTrack";
@@ -35,16 +52,20 @@ import {
   Divider,
   Empty,
   ErrorBlock,
-  Eyebrow,
   Field,
   LogoMark,
   NumberInput,
+  OptionList,
+  OptionRow,
   SectionLabel,
+  Segmented,
+  segmentedCell,
   Select,
   TextArea,
   TextInput,
 } from "../components/ui";
 import { api } from "../lib/api";
+import { cn } from "../lib/classNames";
 import { isDesktop, pickVideoFile } from "../lib/desktop";
 import { timecode } from "../lib/format";
 import { ago, stageTone, summarizeStages } from "../lib/stages";
@@ -158,6 +179,7 @@ export function ImportPage() {
 
   return (
     <PageShell
+      width="wide"
       title="New dub."
       accent="Entirely on this machine."
       lede={
@@ -167,179 +189,230 @@ export function ImportPage() {
         </>
       }
     >
-      <Card className="overflow-hidden p-0">
-        <CardSection>
-          <SectionLabel icon={FileVideo}>Source</SectionLabel>
-          <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-            <TextInput
-              className="h-11 flex-1 text-sm"
-              value={form.source}
-              aria-label="Source"
-              placeholder="https://www.youtube.com/watch?v=… or /Users/you/clip.mp4"
-              onChange={(event) => update({ source: event.currentTarget.value })}
-            />
-            <Button size="lg" onClick={() => void chooseFile()}>
-              <FolderOpen className="h-4 w-4" />
-              Choose file
-            </Button>
-            <input
-              ref={fileRef}
-              type="file"
-              accept="video/*,audio/*"
-              className="hidden"
-              onChange={(event) => {
-                const file = event.currentTarget.files?.[0];
-                if (file) update({ source: file.name });
-              }}
-            />
-          </div>
-          <p className="mt-2.5 max-w-2xl text-[12px] leading-relaxed text-muted">
-            {desktop ? (
-              <>
-                A URL, or a local file — <em>Choose file</em> opens a real file dialog and fills
-                in the full path.
-              </>
-            ) : (
-              <>
-                A URL, or an absolute path to a local file. The browser cannot read a file's real
-                path, so <em>Choose file</em> only fills in the name — paste the full path, or use
-                the desktop app.
-              </>
-            )}
-          </p>
-        </CardSection>
-
-        <Divider />
-
-        <CardSection>
-          <SectionLabel icon={Languages}>Languages &amp; scope</SectionLabel>
-          <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-4 sm:grid-cols-4">
-            <Field label="Spoken language">
-              <Select
-                value={form.src_lang}
-                onChange={(event) => update({ src_lang: event.currentTarget.value })}
-              >
-                {SRC_LANGS.map(([code, label]) => (
-                  <option key={code} value={code}>
-                    {label}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-            <Field label="Dub into">
-              <Select
-                value={form.tgt_lang}
-                onChange={(event) => update({ tgt_lang: event.currentTarget.value })}
-              >
-                {TGT_LANGS.map(([code, label]) => (
-                  <option key={code} value={code}>
-                    {label}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-            <Field label="Duration cap" hint="blank = the whole video">
-              <NumberInput
-                min={0}
-                step={10}
-                suffix="sec"
-                value={form.duration ?? ""}
-                placeholder="320"
-                aria-label="Duration cap in seconds"
-                onChange={(event) =>
-                  update({
-                    duration:
-                      event.currentTarget.value === "" ? null : Number(event.currentTarget.value),
-                  })
-                }
-              />
-            </Field>
-            <Field label="Run name" hint="blank to derive one from the title">
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_21rem] xl:grid-cols-[minmax(0,1fr)_24rem]">
+        {/* ------------------------------------------------------- the card */}
+        <Card
+          data-region="new-dub"
+          className="flex flex-col overflow-hidden rounded-3xl p-0 shadow-lift"
+        >
+          <CardSection className="pt-6">
+            <SectionLabel icon={FileVideo}>Source</SectionLabel>
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row">
               <TextInput
-                value={form.name ?? ""}
-                placeholder="kan11_v4"
-                onChange={(event) => update({ name: event.currentTarget.value || null })}
+                className="h-12 flex-1 rounded-xl px-4 text-[14px]"
+                value={form.source}
+                aria-label="Source"
+                placeholder="https://www.youtube.com/watch?v=… or /Users/you/clip.mp4"
+                onChange={(event) => update({ source: event.currentTarget.value })}
               />
-            </Field>
-          </div>
-        </CardSection>
+              <Button size="lg" className="h-12 rounded-xl" onClick={() => void chooseFile()}>
+                <FolderOpen className="h-4 w-4" />
+                Choose file
+              </Button>
+              <input
+                ref={fileRef}
+                type="file"
+                accept="video/*,audio/*"
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.currentTarget.files?.[0];
+                  if (file) update({ source: file.name });
+                }}
+              />
+            </div>
+            <p className="mt-2.5 max-w-2xl text-[12px] leading-relaxed text-muted">
+              {desktop ? (
+                <>
+                  A URL, or a local file — <em>Choose file</em> opens a real file dialog and fills
+                  in the full path.
+                </>
+              ) : (
+                <>
+                  A URL, or an absolute path to a local file. The browser cannot read a file's real
+                  path, so <em>Choose file</em> only fills in the name — paste the full path, or use
+                  the desktop app.
+                </>
+              )}
+            </p>
+          </CardSection>
 
-        <Divider />
+          <Divider />
 
-        <CardSection>
-          <SectionLabel icon={PencilLine}>Voice &amp; context</SectionLabel>
-          <div className="mt-3 grid grid-cols-2 gap-4">
-            <Field label="Genre">
-              <Select
-                value={form.genre ?? ""}
-                onChange={(event) =>
-                  update({
-                    genre: (event.currentTarget.value || null) as CreateProjectRequest["genre"],
-                  })
-                }
-              >
-                <option value="documentary">Documentary</option>
-                <option value="movie">Movie</option>
-              </Select>
-            </Field>
-            <Field label="Register">
-              <Select
-                value={form.register ?? ""}
-                onChange={(event) =>
-                  update({
-                    register: (event.currentTarget.value ||
-                      null) as CreateProjectRequest["register"],
-                  })
-                }
-              >
-                <option value="narration">Narration</option>
-                <option value="dialogue">Dialogue</option>
-              </Select>
-            </Field>
-          </div>
-
-          <Field
-            className="mt-4"
-            label="Context"
-            hint="Who and what this is about, and how names are spelled. This materially improves the translation."
-          >
+          {/* The card's own big text area. Borderless on purpose: inside a card
+              this generous, a second boxed field is a box in a box, and the
+              focus ring in App.css is affordance enough once the caret is in. */}
+          <CardSection className="flex flex-1 flex-col pb-6">
+            <SectionLabel icon={PencilLine}>Context</SectionLabel>
             <TextArea
-              className="min-h-28 text-[13px]"
+              className={cn(
+                "mt-2 min-h-40 flex-1 resize-none border-transparent bg-transparent px-0 text-[13.5px]",
+                "hover:border-transparent focus:border-transparent",
+              )}
+              aria-label="Context"
               value={form.context ?? ""}
-              placeholder="An Israeli documentary about Qatar and Sheikha Moza (Hebrew שייח'ה מוזה — the ASR often mangles it); her son Emir Tamim; the Muslim Brotherhood; Yusuf al-Qaradawi. Use these English spellings and respect grammatical gender."
+              placeholder="Who and what this is about, and how names are spelled. For example: an Israeli documentary about Qatar and Sheikha Moza (Hebrew שייח'ה מוזה — the ASR often mangles it); her son Emir Tamim; the Muslim Brotherhood; Yusuf al-Qaradawi. Use these English spellings and respect grammatical gender."
               onChange={(event) => update({ context: event.currentTarget.value })}
             />
-          </Field>
-        </CardSection>
+            <p className="mt-3 text-[11.5px] leading-relaxed text-muted">
+              Optional, and the single cheapest thing on this screen: a sentence of context
+              materially improves the translation.
+            </p>
+          </CardSection>
 
-        <CardSection
-          tone="sunken"
-          className="flex flex-col gap-4 border-t border-border sm:flex-row sm:items-center sm:justify-between"
-        >
-          <p className="max-w-sm text-[12px] leading-relaxed text-muted">
-            One job runs at a time; the editor opens straight away with live progress.
-          </p>
-          <Button variant="primary" size="lg" onClick={start} disabled={starting}>
-            {starting ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Starting…
-              </>
-            ) : (
-              <>
-                Start dubbing
-                <ArrowRight className="h-4 w-4" />
-              </>
-            )}
-          </Button>
-        </CardSection>
-      </Card>
+          <CardSection
+            tone="sunken"
+            className="flex flex-col gap-4 border-t border-border sm:flex-row sm:items-center sm:justify-between"
+          >
+            <p className="max-w-sm text-[12px] leading-relaxed text-muted">
+              One job runs at a time; the editor opens straight away with live progress.
+            </p>
+            <Button
+              variant="primary"
+              size="lg"
+              className="rounded-xl px-6"
+              onClick={start}
+              disabled={starting}
+            >
+              {starting ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Starting…
+                </>
+              ) : (
+                <>
+                  Start dubbing
+                  <ArrowRight className="h-4 w-4" />
+                </>
+              )}
+            </Button>
+          </CardSection>
+        </Card>
 
-      {error ? <ErrorBlock title="Could not start" onDismiss={() => setError(null)}>{error}</ErrorBlock> : null}
+        {/* ------------------------------------------------------- the rail */}
+        <Card data-region="options" className="flex flex-col overflow-hidden rounded-3xl p-0">
+          <CardSection className="px-5 pt-6 sm:px-5">
+            <SectionLabel icon={Languages}>Languages</SectionLabel>
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <Field label="Spoken language">
+                <Select
+                  aria-label="Spoken language"
+                  value={form.src_lang}
+                  onChange={(event) => update({ src_lang: event.currentTarget.value })}
+                >
+                  {SRC_LANGS.map(([code, label]) => (
+                    <option key={code} value={code}>
+                      {label}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="Dub into">
+                <Select
+                  aria-label="Dub into"
+                  value={form.tgt_lang}
+                  onChange={(event) => update({ tgt_lang: event.currentTarget.value })}
+                >
+                  {TGT_LANGS.map(([code, label]) => (
+                    <option key={code} value={code}>
+                      {label}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            </div>
+          </CardSection>
 
-      <section className="flex flex-col gap-3">
+          <Divider />
+
+          <CardSection className="px-5 sm:px-5">
+            <SectionLabel icon={Clapperboard}>Genre</SectionLabel>
+            <OptionList label="Genre" className="mt-3">
+              <OptionRow
+                icon={Mic2}
+                label="Documentary"
+                hint="Narrated over pictures"
+                selected={form.genre === "documentary"}
+                onClick={() => update({ genre: "documentary" })}
+              />
+              <OptionRow
+                icon={Film}
+                label="Movie"
+                hint="Scripted, spoken in scene"
+                selected={form.genre === "movie"}
+                onClick={() => update({ genre: "movie" })}
+              />
+            </OptionList>
+          </CardSection>
+
+          <Divider />
+
+          <CardSection className="px-5 sm:px-5">
+            <SectionLabel icon={MessagesSquare}>Register</SectionLabel>
+            <Segmented className="mt-3 flex w-full shadow-none" role="radiogroup" aria-label="Register">
+              {(
+                [
+                  ["narration", "Narration"],
+                  ["dialogue", "Dialogue"],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  role="radio"
+                  aria-checked={form.register === value}
+                  onClick={() => update({ register: value })}
+                  className={segmentedCell(form.register === value, "flex-1 justify-center")}
+                >
+                  {label}
+                </button>
+              ))}
+            </Segmented>
+          </CardSection>
+
+          <Divider />
+
+          <CardSection className="px-5 pb-6 sm:px-5">
+            <SectionLabel icon={Timer}>Scope</SectionLabel>
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <Field label="Duration cap" hint="blank = all of it">
+                <NumberInput
+                  min={0}
+                  step={10}
+                  suffix="sec"
+                  value={form.duration ?? ""}
+                  placeholder="320"
+                  aria-label="Duration cap in seconds"
+                  onChange={(event) =>
+                    update({
+                      duration:
+                        event.currentTarget.value === "" ? null : Number(event.currentTarget.value),
+                    })
+                  }
+                />
+              </Field>
+              <Field label="Run name" hint="blank = from the title">
+                <TextInput
+                  value={form.name ?? ""}
+                  placeholder="kan11_v4"
+                  aria-label="Run name"
+                  onChange={(event) => update({ name: event.currentTarget.value || null })}
+                />
+              </Field>
+            </div>
+          </CardSection>
+        </Card>
+      </div>
+
+      {error ? (
+        <ErrorBlock title="Could not start" onDismiss={() => setError(null)}>
+          {error}
+        </ErrorBlock>
+      ) : null}
+
+      {/* ------------------------------------------------------------ runs */}
+      <section data-region="runs" className="flex flex-col gap-3.5">
         <div className="flex items-baseline justify-between gap-3 px-1">
-          <Eyebrow>Existing runs</Eyebrow>
+          <SectionLabel icon={Clapperboard}>Existing runs</SectionLabel>
           <span className="text-[11px] tabular-nums text-muted">
             {projects && projects.length > 0
               ? `${projects.length} ${projects.length === 1 ? "run" : "runs"} in outputs/`
@@ -347,13 +420,15 @@ export function ImportPage() {
           </span>
         </div>
 
-        <Card className="overflow-hidden p-0">
-          {projects == null ? (
+        {projects == null ? (
+          <Card className="rounded-3xl">
             <div className="flex items-center gap-3 px-6 py-7 text-[13px] text-muted">
               <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
               Reading outputs/…
             </div>
-          ) : listError ? (
+          </Card>
+        ) : listError ? (
+          <Card className="rounded-3xl">
             <Empty
               className="py-9"
               icon={PlugZap}
@@ -366,28 +441,28 @@ export function ImportPage() {
             >
               Existing runs live on the server, and it did not answer:{" "}
               <span className="text-secondary">{listError}</span>. Start it with{" "}
-              <code className="font-mono text-secondary">
-                uv run python -m dubbing_app.server
-              </code>
-              , then try again.
+              <code className="font-mono text-secondary">uv run python -m dubbing_app.server</code>,
+              then try again.
             </Empty>
-          ) : projects.length === 0 ? (
+          </Card>
+        ) : projects.length === 0 ? (
+          <Card className="rounded-3xl">
             <Empty className="py-9" icon={Clapperboard} title="No runs yet">
-              Every dub you start lands here, resumable. Fill in the form above and press{" "}
+              Every dub you start lands here, resumable. Fill in the card above and press{" "}
               <em>Start dubbing</em> to make the first one.
             </Empty>
-          ) : (
-            <ul className="divide-y divide-border">
-              {projects.map((project) => (
-                <ProjectRow
-                  key={project.name}
-                  project={project}
-                  onOpen={() => navigate(`/editor/${encodeURIComponent(project.name)}`)}
-                />
-              ))}
-            </ul>
-          )}
-        </Card>
+          </Card>
+        ) : (
+          <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {projects.map((project) => (
+              <ProjectCard
+                key={project.name}
+                project={project}
+                onOpen={() => navigate(`/editor/${encodeURIComponent(project.name)}`)}
+              />
+            ))}
+          </ul>
+        )}
       </section>
     </PageShell>
   );
@@ -396,51 +471,59 @@ export function ImportPage() {
 /**
  * One existing run.
  *
- * The row used to say the title, the run name, the language pair and the
+ * The row this replaces said the title, the run name, the language pair and the
  * duration — everything except the thing you actually came to find out, which
  * is *where this run got to*. A half-finished run and a finished one looked
- * identical, so the only way to tell them apart was to open both. Now the row
+ * identical, so the only way to tell them apart was to open both. The card
  * carries the pipeline position (nine dots, the shared track), a word for it,
  * and when it last moved.
+ *
+ * A card rather than a row because the page is wide now: three runs across at
+ * 1440px is a composition, and the same three as full-width rows is three
+ * hairlines with eleven hundred pixels of nothing in the middle of them.
  */
-function ProjectRow({ project, onOpen }: { project: ProjectSummary; onOpen: () => void }) {
+function ProjectCard({ project, onOpen }: { project: ProjectSummary; onOpen: () => void }) {
   const summary = summarizeStages(project.stages);
   return (
-    <li>
+    <li className="flex">
       <button
         type="button"
         onClick={onOpen}
-        className="group flex w-full items-center gap-4 px-5 py-3.5 text-left transition-colors hover:bg-sunken"
+        className={cn(
+          "group flex w-full flex-col gap-3 rounded-2xl border border-border bg-surface p-4 text-left",
+          "shadow-card transition-all hover:-translate-y-0.5 hover:border-axis hover:shadow-lift",
+        )}
       >
-        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-border bg-sunken text-muted transition-colors group-hover:border-axis group-hover:text-primary">
-          <LogoMark className="h-4 w-4" />
+        <span className="flex items-start gap-3">
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-border bg-sunken text-muted transition-colors group-hover:border-axis group-hover:text-primary">
+            <LogoMark className="h-4 w-4" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[13.5px] font-semibold text-primary">
+              {project.title}
+            </span>
+            <span className="mt-0.5 block truncate font-mono text-[11px] text-muted">
+              {project.name}
+            </span>
+          </span>
+          <ChevronRight className="mt-1 h-4 w-4 shrink-0 text-muted transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
         </span>
 
-        <span className="min-w-0 flex-1">
-          <span className="flex min-w-0 items-center gap-2">
-            <span className="truncate text-[13px] font-semibold text-primary">{project.title}</span>
-            <Badge tone={stageTone(summary)}>{summary.label}</Badge>
-          </span>
-          <span className="mt-0.5 flex min-w-0 items-center gap-2 text-[11px] text-muted">
-            <span className="truncate font-mono">{project.name}</span>
+        <span className="flex flex-wrap items-center gap-2">
+          <Badge tone={stageTone(summary)}>{summary.label}</Badge>
+          <span className="text-[11px] text-muted">{ago(project.mtime)}</span>
+        </span>
+
+        <span className="mt-auto flex items-center justify-between gap-2 border-t border-border pt-3">
+          <StageTrack stages={project.stages} showLabel={false} />
+          <span className="flex shrink-0 items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.14em] text-muted">
+            {project.src_lang} → {project.tgt_lang}
             <span aria-hidden>·</span>
-            <span className="shrink-0 whitespace-nowrap">{ago(project.mtime)}</span>
+            <span className="tabular-nums">
+              {project.duration ? timecode(project.duration, 0) : "—"}
+            </span>
           </span>
         </span>
-
-        <StageTrack
-          stages={project.stages}
-          showLabel={false}
-          className="hidden shrink-0 md:inline-flex"
-        />
-
-        <span className="hidden shrink-0 text-[10px] font-bold uppercase tracking-[0.14em] text-muted sm:block">
-          {project.src_lang} → {project.tgt_lang}
-        </span>
-        <span className="w-12 shrink-0 text-right text-[11px] tabular-nums text-muted">
-          {project.duration ? timecode(project.duration, 0) : "—"}
-        </span>
-        <ChevronRight className="h-4 w-4 shrink-0 text-muted transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
       </button>
     </li>
   );

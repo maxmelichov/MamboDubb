@@ -31,6 +31,7 @@ import {
 import { ChevronDown, TriangleAlert } from "lucide-react";
 import { cn } from "../lib/classNames";
 import { STATE_META, type SegmentState } from "../lib/segments";
+import logoMarkUrl from "../assets/logo-mark.png";
 
 /* ------------------------------------------------------------------ brand */
 
@@ -68,22 +69,42 @@ export function LogoMark({ className }: { className?: string }) {
 }
 
 /**
- * The wordmark chip. `compact` drops the border and the box for the workspace
- * header, where the brand has to share a 56px bar with a project title.
+ * The brand chip — the painted mark in a pill, top-left of every page shell.
+ *
+ * `LogoMark` above is the *functional* mark: one path in `currentColor`, drawn
+ * at 16px inside a run tile where a five-colour gradient would be mud. This one
+ * is the identity: the real artwork, which is a full-colour PNG on white with
+ * no alpha channel.
+ *
+ * That is why the pill is light in **both** themes rather than following the
+ * surface. A white-backed image floated on a near-black plane is a white
+ * rectangle with a logo in it; put it on its own light ground and it reads the
+ * way it was drawn. Dark's `--color-primary` is the near-white ink, so
+ * `bg-primary`/`text-on-primary` gives a light chip with dark lettering there
+ * without inventing a colour that no theme owns. `mix-blend-multiply` is what
+ * makes the last hairline of the PNG's own white disappear into the pill.
  */
-export function Brand({ className, compact }: { className?: string; compact?: boolean }) {
+export function BrandChip({ className }: { className?: string }) {
   return (
     <span
+      data-brand
       className={cn(
-        "inline-flex items-center gap-2.5 whitespace-nowrap font-black uppercase text-primary",
-        compact
-          ? "text-[10px] tracking-[0.16em]"
-          : "h-10 rounded-xl border border-border bg-surface px-3.5 text-[11px] tracking-[0.2em] shadow-card",
+        "inline-flex h-11 items-center gap-2.5 whitespace-nowrap rounded-full border px-3.5 shadow-card",
+        "border-border bg-surface dark:border-transparent dark:bg-primary",
         className,
       )}
     >
-      <LogoMark className={compact ? "h-4 w-4" : "h-[18px] w-[18px]"} />
-      MamboDubb
+      <img
+        src={logoMarkUrl}
+        alt=""
+        aria-hidden
+        width={358}
+        height={264}
+        className="h-[22px] w-auto mix-blend-multiply"
+      />
+      <span className="text-[11px] font-black uppercase tracking-[0.2em] text-primary dark:text-on-primary">
+        MamboDubb
+      </span>
     </span>
   );
 }
@@ -209,6 +230,108 @@ export function ButtonGroup({ className, ...props }: ComponentProps<"div">) {
       )}
       {...props}
     />
+  );
+}
+
+/* ------------------------------------------------------------- selections */
+
+/**
+ * The pill. A rounded track holding two or three cells, of which exactly one is
+ * filled with ink — the shell's nav and the small either/or choices on the
+ * import screen are the same control at two sizes.
+ *
+ * The cell is a className rather than a component because half the callers are
+ * `<Link>`s and half are `<button>`s, and a polymorphic `as` prop to paper over
+ * that costs more than the one function does.
+ */
+export function Segmented({ className, ...props }: ComponentProps<"div">) {
+  return (
+    <div
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full border border-border bg-surface p-1 shadow-card",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+export function segmentedCell(active: boolean, className?: string): string {
+  return cn(
+    "inline-flex h-9 items-center gap-1.5 rounded-full px-3.5 transition-colors",
+    "text-[11px] font-bold uppercase tracking-[0.14em]",
+    active ? "bg-primary text-on-primary" : "text-muted hover:text-primary",
+    className,
+  );
+}
+
+/**
+ * A choice made of rows rather than a `<select>`.
+ *
+ * Worth the vertical space exactly when the option has a *second line* — a
+ * sentence saying what picking it does. "Documentary / narrated, factual" is a
+ * decision; "Documentary" in a dropdown is a word you have to already know.
+ * Selection inverts the row to ink, which is the strongest available "this one
+ * is on" that costs no hue.
+ */
+export function OptionList({
+  label,
+  className,
+  ...props
+}: ComponentProps<"div"> & { label: string }) {
+  return (
+    <div role="radiogroup" aria-label={label} className={cn("flex flex-col gap-1.5", className)} {...props} />
+  );
+}
+
+export function OptionRow({
+  icon: Icon,
+  label,
+  hint,
+  selected,
+  className,
+  ...props
+}: ComponentPropsWithRef<"button"> & {
+  icon?: typeof TriangleAlert;
+  label: string;
+  hint?: ReactNode;
+  selected: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      className={cn(
+        "flex w-full items-center gap-2.5 rounded-xl border px-3 py-2 text-left transition-all",
+        "active:scale-[0.99]",
+        selected
+          ? "border-transparent bg-primary text-on-primary shadow-card"
+          : "border-border bg-raised text-primary hover:border-axis",
+        className,
+      )}
+      {...props}
+    >
+      {Icon ? (
+        <Icon
+          aria-hidden
+          className={cn("h-4 w-4 shrink-0", selected ? "opacity-70" : "text-muted")}
+        />
+      ) : null}
+      <span className="min-w-0 flex-1">
+        <span className="block text-[13px] font-semibold leading-tight">{label}</span>
+        {hint ? (
+          <span
+            className={cn(
+              "mt-0.5 block text-[11px] leading-tight",
+              selected ? "opacity-70" : "text-muted",
+            )}
+          >
+            {hint}
+          </span>
+        ) : null}
+      </span>
+    </button>
   );
 }
 
