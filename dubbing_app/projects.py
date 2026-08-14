@@ -121,8 +121,13 @@ class Projects:
     def list(self) -> list[dict[str, Any]]:
         if not self.root.is_dir():
             return []
+        # A directory without a manifest is not a project: `load()` 404s on it,
+        # so listing it hands the UI a row that can only dead-end (and its
+        # events stream a 404 the client keeps retrying). Abandoned run dirs
+        # exist on real machines; skip them rather than dressing them up.
         names = sorted(p.name for p in self.root.iterdir()
-                       if p.is_dir() and valid_name(p.name))
+                       if p.is_dir() and valid_name(p.name)
+                       and (p / "manifest.json").is_file())
         out = [self.summary(n) for n in names]
         out.sort(key=lambda p: p["mtime"], reverse=True)
         return out

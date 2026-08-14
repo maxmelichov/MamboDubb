@@ -134,6 +134,15 @@ def test_list_projects(client):
     assert project["segments"] == 5 and project["complete"] is True
 
 
+def test_list_skips_a_directory_with_no_manifest(client, outputs):
+    # An abandoned run dir is not a project: get_project 404s on it, so a listed
+    # row could only dead-end in the editor (with its events stream retrying a
+    # permanent 404 underneath).
+    (outputs / "abandoned_run").mkdir()
+    body = client.get("/api/projects").json()
+    assert [p["name"] for p in body["projects"]] == [NAME]
+
+
 def test_create_project_reaches_the_cli_with_every_option(client, outputs, fake):
     """The whole creation path on the wire: body → `source` record → job payload →
     the argv `dubbing.cli` actually parses. A flag that drifted here is an option

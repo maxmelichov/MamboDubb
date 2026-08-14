@@ -108,7 +108,11 @@ export function Timeline({
   const scrollRef = useRef<HTMLDivElement>(null);
   const laneRef = useRef<HTMLDivElement>(null);
 
-  const width = Math.max(320, total * pxPerSecond);
+  // Trailing room equal to the floating Split/zoom cluster, so the end of the
+  // run — exactly where drift accumulates — can always be scrolled out from
+  // under it. Without this, at a zoom where the run fits the strip there is no
+  // scroll range at all and the last marks are permanently covered.
+  const width = Math.max(320, total * pxPerSecond) + 208;
   const gaps = useMemo(() => unclaimedSpans(segments, total), [segments, total]);
   const tickStep = useMemo(
     () => TICK_STEPS.find((step) => step * pxPerSecond >= 64) ?? TICK_STEPS[TICK_STEPS.length - 1],
@@ -132,9 +136,11 @@ export function Timeline({
     (clientX: number) => {
       const rect = laneRef.current?.getBoundingClientRect();
       if (!rect) return;
-      onSeek(Math.max(0, (clientX - rect.left) / pxPerSecond));
+      // Clamp to the run: the lane carries trailing blank room (see `width`),
+      // and a click there means "the end", not a time past the media.
+      onSeek(Math.min(total, Math.max(0, (clientX - rect.left) / pxPerSecond)));
     },
-    [onSeek, pxPerSecond],
+    [onSeek, pxPerSecond, total],
   );
 
   /**
