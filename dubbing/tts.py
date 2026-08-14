@@ -10,6 +10,21 @@ Two guarantees this module owns:
 
 Clips are cached on disk by content hash, which is also the resume mechanism for
 long videos: a killed run picks up at the first uncached clip.
+
+Per-segment overrides live in `seg["tts_opts"]` (see `dubbing/ttsopts.py`): seed,
+forced-greedy decode, a pinned clone reference, model size, tempo, the sampler.
+Every one of them is mixed into the clip's cache key, so changing one on an
+already-dubbed segment cannot replay the old clip.
+
+**Natural-language style instructions are not available on this path.** The
+checkpoint exposes `instruct` only through `generate_voice_design` /
+`generate_custom_voice`, which are gated on `tts_model_type` being `voice_design`
+/ `custom_voice` and take no reference audio at all — they invent a voice from
+the description instead of cloning the speaker, which is the one thing this
+pipeline may not lose. The closest thing the Base checkpoint has is ICL mode
+(`tts_opts.ref_text`): conditioning on a reference's text *and* codes rather than
+only its speaker embedding, which carries the reference clip's prosody. That is
+a "sound like this take", not "sound angry" — and it is the honest limit here.
 """
 
 from __future__ import annotations
@@ -20,14 +35,16 @@ import re
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 import soundfile as sf
 
 from . import audio
 from . import script as script_mod
+from . import ttsopts
 from .script import count_letters, same_script, script_for
+from .ttsopts import TtsOpts
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 # Voice-clone model, selectable per run (--tts-model). The tag is mixed into every
@@ -39,7 +56,15 @@ TTS_MODELS = {
              "tag": "qwen3-tts-0.6b-base"},
 }
 DEFAULT_TTS_MODEL = "1.7b"
+# ttsopts validates `tts_opts.model` without importing this module (it stays free of
+# numpy/torch so the editor can validate cheaply); this keeps the two lists honest.
+assert set(TTS_MODELS) == set(ttsopts.MODELS), "ttsopts.MODELS is out of step with TTS_MODELS"
 CODEC_HZ = 12.5
+
+# Default sampler for a non-greedy attempt — the values `tts_opts` overrides.
+SAMPLED = {"temperature": 0.55, "top_p": 0.85, "top_k": 30}
+GREEDY = {"temperature": 0.01, "top_p": 1.0, "top_k": 1}
+REPETITION_PENALTY = 1.08
 
 REF_SR = 24000
 REF_TARGET_SEC = 4.5
@@ -409,6 +434,50 @@ def concat_ref(voc: np.ndarray, spans: list[tuple[float, float]], sr: int = REF_
     return np.concatenate(pieces) if pieces else np.zeros(0, dtype=np.float32)
 
 
+def seed_id(seg: dict[str, Any]) -> str:
+    """The identity the derived seed keys on — stable across re-segmentation.
+
+    `seg["id"]` is positional: inserting one segment renumbers everything after
+    it, which silently re-rolls every later line's voice take. `uid` (minted once
+    per segment, see APP_ARCHITECTURE.md) does not move, so it is preferred where
+    it exists. Falling back to `id` keeps every pre-uid manifest on exactly the
+    seeds — and therefore exactly the cached clips — it already had.
+    """
+    return str(seg.get("uid") or seg["id"])
+
+
+def seed_for(seg: dict[str, Any], speak: str, opts: TtsOpts = ttsopts.DEFAULT) -> int:
+    """The base seed for a segment: the user's, else derived from identity + text."""
+    if opts.seed is not None:
+        return opts.seed
+    return int(hashlib.sha1(f"{seed_id(seg)}|{speak}".encode()).hexdigest()[:8], 16)
+
+
+class Plan(NamedTuple):
+    """What one segment's attempts are made from (see `Engine._plan`)."""
+
+    speak: str
+    ref_path: Path
+    ref_key: str
+    base_seed: int
+    opts: TtsOpts
+
+
+def needs_synthesis(seg: dict[str, Any], workdir: Path) -> bool:
+    """True when this dubbed segment has no clip that still matches its options.
+
+    A usable clip on disk is normally the whole resume test. It is not enough
+    once options exist: editing `tts_opts` on an already-dubbed line leaves the
+    old clip in place, and without this the re-run would look successful and
+    change nothing. The record carries the option fingerprint it was made with,
+    so a mismatch puts the segment back in the queue.
+    """
+    rec = seg.get("tts")
+    if not rec or not (workdir / rec["clip"]).is_file():
+        return True
+    return rec.get("opts", "") != ttsopts.parse(seg.get("tts_opts")).fingerprint()
+
+
 class Engine:
     """Holds the loaded models and the reference bank for one run."""
 
@@ -427,6 +496,7 @@ class Engine:
         self.tts_model = model if model in TTS_MODELS else DEFAULT_TTS_MODEL
         self.model_tag = TTS_MODELS[self.tts_model]["tag"]
         self._synth = None
+        self._synth_model: str | None = None
         self._asr = None
         self._voc: np.ndarray | None = None
         self._ref_hash: dict[str, str] = {}          # canonical ref path → content hash
@@ -445,9 +515,33 @@ class Engine:
 
     @property
     def synth(self):
+        return self.synth_for(ttsopts.DEFAULT)
+
+    def model_for(self, opts: TtsOpts = ttsopts.DEFAULT) -> str:
+        """Which checkpoint this segment uses — its own override, else the run's."""
+        return opts.model or self.tts_model
+
+    def model_tag_for(self, opts: TtsOpts = ttsopts.DEFAULT) -> str:
+        return TTS_MODELS[self.model_for(opts)]["tag"]
+
+    def synth_for(self, opts: TtsOpts = ttsopts.DEFAULT):
+        """The loaded synth for this segment's model, swapping checkpoints if asked.
+
+        Only ever one is resident: `tts_opts.model` is a per-line escape hatch, and
+        two Qwen3-TTS checkpoints in float32 would not fit alongside everything
+        else (AGENTS.md device notes). Switching therefore frees the other one,
+        which costs a reload — fine for the handful of lines a user overrides,
+        which is why it is not the run-wide default.
+        """
+        want = self.model_for(opts)
+        if self._synth is not None and self._synth_model != want:
+            print(f"  tts: switching checkpoint {self._synth_model} → {want} "
+                  "for a segment override", file=sys.stderr)
+            self._synth.free()
+            self._synth = None
         if self._synth is None:
-            self._synth = _Synth(device=self.device, model=self.tts_model,
-                                 lang=self.tgt_lang)
+            self._synth = _Synth(device=self.device, model=want, lang=self.tgt_lang)
+            self._synth_model = want
         return self._synth
 
     @property
@@ -523,8 +617,32 @@ class Engine:
                       "(voice outlier — likely another speaker)", file=sys.stderr)
         return [c for c, k in zip(cands, keep) if k]
 
-    def ref_for(self, seg: dict[str, Any]) -> tuple[Path, str] | None:
+    def pinned_ref(self, opts: TtsOpts) -> tuple[Path, str] | None:
+        """The reference `tts_opts.ref` names, or None when the segment pins none.
+
+        Loud on a missing file rather than quietly cloning something else: a
+        pinned reference is the user saying "this line must sound like *this*",
+        and falling back to the automatic window would look like the override was
+        ignored. The key carries a content hash, so replacing the wav in place
+        re-synthesizes instead of replaying the clip cloned from the old bytes.
+        """
+        if not opts.ref:
+            return None
+        path = self.workdir / opts.ref
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"tts_opts.ref: no such reference audio under the run directory: {opts.ref}")
+        h = self._ref_hash.get(str(path))
+        if h is None:
+            h = hashlib.sha1(path.read_bytes()).hexdigest()[:10]
+            self._ref_hash[str(path)] = h
+        return path, f"opt:{opts.ref}:{h}"
+
+    def ref_for(self, seg: dict[str, Any], opts: TtsOpts = ttsopts.DEFAULT
+                ) -> tuple[Path, str] | None:
         """The segment's own aligned voice — whoever actually speaks in this window.
+
+        `tts_opts.ref` short-circuits all of this: the user picked the voice.
 
         The reference is cut strictly from the segment's own `[start, end]`, so the
         cloned voice is the real speaker at that exact moment. It deliberately does
@@ -540,6 +658,9 @@ class Engine:
         Without embeddings there is no confirmation, and the short aligned window
         stands — the old behaviour, never a blind widen-by-label.
         """
+        pinned = self.pinned_ref(opts)
+        if pinned is not None:
+            return pinned
         span = seg["end"] - seg["start"]
         got = best_ref_window(self.vocals, seg["start"], seg["end"], min(REF_TARGET_SEC, span))
         if got and got[3] >= REF_MIN_RMS:
@@ -596,12 +717,26 @@ class Engine:
         return None
 
     # -- synthesis ---------------------------------------------------------
-    def _cache_key(self, speak: str, ref_key: str, seed: int, greedy: bool) -> str:
+    def _cache_key(self, speak: str, ref_key: str, seed: int, greedy: bool,
+                   opts: TtsOpts = ttsopts.DEFAULT) -> str:
+        """Everything that changes the audio, hashed. Nothing that changes it may
+        stay out of here, or an edited segment silently replays its old clip.
+
+        The blob is append-only by construction: the model tag, target language,
+        text, reference key, clone mode, seed and greedy flag occupy exactly the
+        positions they always did, and per-segment options add a suffix only when
+        they are set. A segment with no `tts_opts` therefore hashes to the same
+        key it did before this existed, and every cached clip stays valid.
+        """
         # The target language is part of the key so a ru clip never collides with
         # an en clip of the same text. "en" is left out of the blob to keep every
         # existing English cache entry valid.
         lang = "" if self.tgt_lang == "en" else f"|{self.tgt_lang}"
-        blob = f"{self.model_tag}{lang}|{speak}|{ref_key}|xvec|{seed}|{int(greedy)}"
+        blob = (f"{self.model_tag_for(opts)}{lang}|{speak}|{ref_key}"
+                f"|{opts.clone_mode()}|{seed}|{int(greedy)}")
+        extra = opts.cache_suffix()
+        if extra:
+            blob += f"|{extra}"
         return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
 
     def _verify(self, clip: Path, speak: str) -> tuple[bool, float, str]:
@@ -626,20 +761,24 @@ class Engine:
         ov = word_overlap(speak, heard, self.tgt_lang)
         return ov >= CLONE_MIN_OVERLAP, ov, heard[:120]
 
-    def _plan(self, seg: dict[str, Any], text_en: str):
-        """Everything an attempt needs, or None if the segment cannot be voiced."""
+    def _plan(self, seg: dict[str, Any], text_en: str) -> Plan | None:
+        """Everything an attempt needs, or None if the segment cannot be voiced.
+
+        Raises `ValueError` on an unusable `tts_opts` — a mistyped option is a
+        mistake to show the user, not something to quietly synthesize around.
+        """
+        opts = ttsopts.parse(seg.get("tts_opts"))
         speak = prepare_text(text_en, self.tgt_lang)
         if not speak or len(_tokens(speak, self.tgt_lang)) == 0:
             return None
-        ref = self.ref_for(seg)
+        ref = self.ref_for(seg, opts)
         if ref is None:
             return None
         ref_path, ref_key = ref
-        base_seed = int(hashlib.sha1(f"{seg['id']}|{speak}".encode()).hexdigest()[:8], 16)
-        return speak, ref_path, ref_key, base_seed
+        return Plan(speak, ref_path, ref_key, seed_for(seg, speak, opts), opts)
 
     def _attempt(self, seg_id: int, speak: str, ref_path: Path, ref_key: str,
-                 base_seed: int, attempt: int):
+                 base_seed: int, attempt: int, opts: TtsOpts = ttsopts.DEFAULT):
         """Generate (or load-from-cache) one attempt's clip.
 
         Returns (clip, meta, verdict). `verdict` is None when the clip was just
@@ -648,15 +787,16 @@ class Engine:
         is what lets the pipeline in `run` verify one clip while the GPU makes the
         next — the seed/cache scheme is identical to the sequential path.
         """
-        greedy = attempt == MAX_TRIES - 1
+        greedy = opts.greedy or attempt == MAX_TRIES - 1
         seed = base_seed + 1000 * attempt
-        key = self._cache_key(speak, ref_key, seed, greedy)
+        key = self._cache_key(speak, ref_key, seed, greedy, opts)
         clip = self.clips / f"{key}.wav"
         meta = self.clips / f"{key}.json"
         if clip.is_file() and meta.is_file():
             return clip, meta, json.loads(meta.read_text())
         try:
-            self.synth.generate(speak, ref_path, clip, seed=seed, greedy=greedy)
+            self.synth_for(opts).generate(speak, ref_path, clip, seed=seed, greedy=greedy,
+                                          opts=opts)
         except Exception as exc:
             print(f"  tts: seg {seg_id} generate failed ({exc})", file=sys.stderr)
             return clip, meta, {"failed": True}
@@ -671,16 +811,24 @@ class Engine:
         return verdict
 
     @staticmethod
-    def _record(clip: Path, verdict: dict[str, Any], attempt: int) -> dict[str, Any]:
-        return {"clip": f"clips/{clip.name}", "dur": verdict["dur"],
-                "tries": attempt + 1, "overlap": verdict["overlap"], "verify": "ok"}
+    def _record(clip: Path, verdict: dict[str, Any], attempt: int,
+                opts: TtsOpts = ttsopts.DEFAULT) -> dict[str, Any]:
+        rec = {"clip": f"clips/{clip.name}", "dur": verdict["dur"],
+               "tries": attempt + 1, "overlap": verdict["overlap"], "verify": "ok"}
+        # Which options this clip was made under, so `run` can spot a segment whose
+        # options changed under an otherwise-usable clip. Absent for the defaults,
+        # which keeps every existing record byte-identical.
+        fp = opts.fingerprint()
+        if fp:
+            rec["opts"] = fp
+        return rec
 
     def clip_for(self, seg: dict[str, Any], text_en: str) -> dict[str, Any] | None:
         """Bounded retry loop. Returns a tts record, or None to fall back to keep."""
         plan = self._plan(seg, text_en)
         if plan is None:
             return None
-        speak, ref_path, ref_key, base_seed = plan
+        speak, ref_path, ref_key, base_seed, opts = plan
         slot = float(seg["end"]) - float(seg["start"])
         best: dict[str, Any] | None = None
 
@@ -689,14 +837,17 @@ class Engine:
         # text says). After the bounded tries fail, one extra attempt swaps in the
         # speaker's canonical reference — different audio, different cache key, so
         # it is a genuinely new synthesis, never a replay of a cached failure.
+        # A pinned `tts_opts.ref` is exempt: the user chose that voice, and
+        # escalating past it to the speaker's canonical reference would hand back
+        # exactly the voice they were overriding.
         attempts = [(a, ref_path, ref_key) for a in range(MAX_TRIES)]
-        alt = self._canonical_ref(seg)
+        alt = None if opts.ref else self._canonical_ref(seg)
         if alt is not None and alt[1] != ref_key:
             attempts.append((MAX_TRIES, alt[0], alt[1]))
 
         for attempt, a_path, a_key in attempts:
             clip, meta, verdict = self._attempt(seg["id"], speak, a_path, a_key,
-                                                base_seed, attempt)
+                                                base_seed, attempt, opts)
             if verdict is not None and verdict.get("failed"):
                 continue
             if verdict is None:
@@ -708,7 +859,7 @@ class Engine:
                 print(f"  tts: seg {seg['id']} clip {verdict['dur']:.1f}s vs "
                       f"{slot:.1f}s slot — rejected", file=sys.stderr)
                 continue
-            record = self._record(clip, verdict, attempt)
+            record = self._record(clip, verdict, attempt, opts)
             if verdict["ok"]:
                 return record
             if verdict["overlap"] > (best or {}).get("overlap", -1.0):
@@ -740,6 +891,7 @@ class Engine:
         if self._synth is not None:
             self._synth.free()
             self._synth = None
+        self._synth_model = None
         self._voc = None
 
 
@@ -805,38 +957,46 @@ class _Synth:
                       "languages — synthesising with language=Auto", file=sys.stderr)
         return self._qwen_lang
 
-    def generate(self, speak: str, ref: Path, out: Path, *, seed: int, greedy: bool) -> Path:
+    def generate(self, speak: str, ref: Path, out: Path, *, seed: int, greedy: bool,
+                 opts: TtsOpts = ttsopts.DEFAULT) -> Path:
         import torch
 
         model = self._load()
         torch.manual_seed(int(seed))
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(int(seed))
-        key = str(ref)
+        # ICL mode conditions on the reference's codes AND its transcript, so the
+        # prompt differs per (reference, ref_text) pair, not per reference alone.
+        key = (str(ref), opts.ref_text)
         if key not in self._prompts:
             self._prompts[key] = model.create_voice_clone_prompt(
-                ref_audio=str(ref), ref_text=None, x_vector_only_mode=True
+                ref_audio=str(ref), ref_text=opts.ref_text,
+                x_vector_only_mode=not opts.icl,
             )
-        sampling = (
-            {"do_sample": False, "temperature": 0.01, "top_p": 1.0, "top_k": 1,
-             "subtalker_dosample": False, "subtalker_temperature": 0.01,
-             "subtalker_top_p": 1.0, "subtalker_top_k": 1}
-            if greedy else
-            {"do_sample": True, "temperature": 0.55, "top_p": 0.85, "top_k": 30,
-             "subtalker_dosample": True, "subtalker_temperature": 0.55,
-             "subtalker_top_p": 0.85, "subtalker_top_k": 30}
-        )
+        base = GREEDY if greedy else SAMPLED
+        vals = {k: (base[k] if greedy or getattr(opts, k) is None else getattr(opts, k))
+                for k in ("temperature", "top_p", "top_k")}
+        sampling = {"do_sample": not greedy, "subtalker_dosample": not greedy}
+        for k, v in vals.items():
+            sampling[k] = v
+            sampling[f"subtalker_{k}"] = v
         wavs, sr = model.generate_voice_clone(
             text=speak, language=self._language(model),
             voice_clone_prompt=self._prompts[key],
-            max_new_tokens=max_new_tokens(speak, self.lang),
-            repetition_penalty=1.08, **sampling,
+            max_new_tokens=opts.max_new_tokens or max_new_tokens(speak, self.lang),
+            repetition_penalty=opts.repetition_penalty or REPETITION_PENALTY, **sampling,
         )
+        wav = np.asarray(wavs[0], dtype=np.float32)
+        if not opts.keep_pauses:
+            wav = _trim_internal_silence(wav, sr)
         out.parent.mkdir(parents=True, exist_ok=True)
         raw = out.with_suffix(".raw.wav")
-        sf.write(str(raw), _trim_internal_silence(np.asarray(wavs[0], dtype=np.float32), sr), sr)
-        audio.run(["ffmpeg", "-y", "-v", "error", "-i", str(raw), "-acodec", "pcm_s16le",
-                   "-ar", str(audio.SR), "-ac", "1", str(out)])
+        sf.write(str(raw), wav, sr)
+        # The tempo change is baked in here, before verification, so the clip that
+        # gets length-checked and ASR-checked is the clip that gets placed.
+        tempo = (["-af", audio.atempo_chain(opts.speed)] if opts.speed != 1.0 else [])
+        audio.run(["ffmpeg", "-y", "-v", "error", "-i", str(raw), *tempo,
+                   "-acodec", "pcm_s16le", "-ar", str(audio.SR), "-ac", "1", str(out)])
         raw.unlink(missing_ok=True)
         return out
 
@@ -926,7 +1086,7 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
     clear_failed_keeps(m["segments"])
     engine.build_speaker_refs()
     dub = [s for s in m["segments"] if not s["keep"]]
-    todo = [s for s in dub if not (s.get("tts") and (workdir / s["tts"]["clip"]).is_file())]
+    todo = [s for s in dub if needs_synthesis(s, workdir)]
 
     # Generation runs on the GPU, verification (Whisper) on the CPU. Generate each
     # first-attempt clip in order and hand its verify to a single worker thread, so
@@ -945,30 +1105,32 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
             if plan is None:
                 retry.append(seg)
                 continue
-            speak, ref_path, ref_key, base_seed = plan
-            clip, meta, verdict = engine._attempt(seg["id"], speak, ref_path, ref_key, base_seed, 0)
+            speak, ref_path, ref_key, base_seed, opts = plan
+            clip, meta, verdict = engine._attempt(seg["id"], speak, ref_path, ref_key,
+                                                  base_seed, 0, opts)
             if verdict is not None and verdict.get("failed"):
                 retry.append(seg)
                 continue
             if verdict is not None:                    # cache hit — no verify needed
                 if verdict["ok"]:
-                    seg["tts"] = engine._record(clip, verdict, 0)
+                    seg["tts"] = engine._record(clip, verdict, 0, opts)
                 else:
                     retry.append(seg)
                 continue
-            pending[seg["id"]] = (vpool.submit(engine._verify, clip, speak), clip, meta, speak)
+            pending[seg["id"]] = (vpool.submit(engine._verify, clip, speak),
+                                  clip, meta, speak, opts)
 
         for seg in todo:
             item = pending.get(seg["id"])
             if item is None:
                 continue
-            fut, clip, meta, speak = item
+            fut, clip, meta, speak, opts = item
             ok, ov, heard = fut.result()
             verdict = {"ok": ok, "overlap": round(ov, 3), "heard": heard,
                        "dur": round(audio.duration(clip), 3)}
             meta.write_text(json.dumps(verdict, ensure_ascii=False))
             if ok:
-                seg["tts"] = engine._record(clip, verdict, 0)
+                seg["tts"] = engine._record(clip, verdict, 0, opts)
             else:
                 retry.append(seg)
             done += 1

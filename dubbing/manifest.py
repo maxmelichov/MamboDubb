@@ -23,7 +23,7 @@ STAGE_TAGS = {
     "transcript": "transcript/v38",
     "segments": "segments/v33",
     "translate": "translate/v30",
-    "tts": "tts/v12",
+    "tts": "tts/v13",
     "timeline": "timeline/v10",
     "mix": "mix/v7",
     "report": "report/v1",
@@ -42,6 +42,7 @@ SEGMENT_KEYS = {
     "lang",       # third-language keeps only: what the span's speech is, for subtitles
     "text_en",
     "text_mid",   # pivot runs only: the English intermediate text_en was made from
+    "tts_opts",   # per-segment synthesis overrides (dubbing/ttsopts.py); user-set only
     "tts",
     "place",
 }
