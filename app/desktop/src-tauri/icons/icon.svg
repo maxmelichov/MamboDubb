@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Dubbing Studio — application mark. Source of truth for every raster in this
+  directory; regenerate them with scripts/make_icons.py (see that file's header).
+
+  The motif is the product in one glyph: two overlapping speech bubbles — the
+  faint one behind is the original track, the solid one in front is the dub, and
+  it carries the waveform. Deep indigo-violet tile so it does not vanish into a
+  Dock full of blue apps.
+
+  Geometry follows the macOS icon grid: a 1024 canvas with the rounded tile
+  inset to 824x824 (corner radius 185), so the Dock renders it the same size as
+  a system app rather than a size too large.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6D3BF0"/>
+      <stop offset="0.45" stop-color="#4321B8"/>
+      <stop offset="1" stop-color="#150C36"/>
+    </linearGradient>
+
+    <!-- Soft top-left light, so the tile reads as a surface and not a swatch. -->
+    <radialGradient id="sheen" cx="0.28" cy="0.20" r="0.85">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.26"/>
+      <stop offset="0.55" stop-color="#FFFFFF" stop-opacity="0.05"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Halo behind the bubbles: separates them from the dark bottom-right. -->
+    <radialGradient id="halo" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#9A6BFF" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#9A6BFF" stop-opacity="0"/>
+    </radialGradient>
+
+    <linearGradient id="bubble" x1="0.1" y1="0" x2="0.9" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#DCE3FF"/>
+    </linearGradient>
+
+    <linearGradient id="wave" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#4A22D6"/>
+      <stop offset="1" stop-color="#A855F7"/>
+    </linearGradient>
+
+    <!-- Hairline top rim; the same trick every macOS icon uses to look lit. -->
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.55"/>
+      <stop offset="0.35" stop-color="#FFFFFF" stop-opacity="0.06"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <g>
+    <!-- 4 px of bleed. The renderer we use (QuickLook, via scripts/make_icons.py)
+         composites onto white and drops the alpha channel, so the generator re-cuts
+         the exact tile silhouette as the alpha mask; the bleed keeps the discarded
+         white-blended edge pixels outside that cut. Harmless in any other renderer. -->
+    <rect x="96" y="96" width="832" height="832" rx="188" fill="url(#tile)"/>
+    <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#tile)"/>
+    <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#sheen)"/>
+    <rect x="103" y="103" width="818" height="818" rx="182" fill="none"
+          stroke="url(#rim)" stroke-width="6"/>
+  </g>
+
+  <!-- Mark, scaled and centred on the tile. The back bubble sits far enough up and
+       left that its tail clears the front bubble's rim — overlapped, it degenerated
+       into a smudge at every size. -->
+  <g transform="translate(512,512) scale(0.88) translate(-498,-544)">
+    <ellipse cx="500" cy="486" rx="350" ry="320" fill="url(#halo)"/>
+
+    <!-- Behind: the source line. -->
+    <path d="M282 232 H470 A92 92 0 0 1 562 324 V424 A92 92 0 0 1 470 516
+             L344 516 C336 560 300 598 230 626 C220 630 214 620 222 612
+             C256 582 276 552 288 516 L282 516 A92 92 0 0 1 190 424
+             V324 A92 92 0 0 1 282 232 Z"
+          fill="#FFFFFF" fill-opacity="0.20"
+          stroke="#FFFFFF" stroke-opacity="0.62" stroke-width="28"
+          stroke-linejoin="round"/>
+
+    <!-- In front: the dub, carrying the waveform. The dark rim is what keeps
+         the two bubbles separate at 32 px. -->
+    <path d="M478 414 H704 A106 106 0 0 1 810 520 V634 A106 106 0 0 1 704 740
+             L606 740 C598 800 554 842 492 868 C481 872 474 861 483 852
+             C512 822 524 784 526 740 L478 740 A106 106 0 0 1 372 634
+             V520 A106 106 0 0 1 478 414 Z"
+          fill="url(#bubble)"
+          stroke="#180E3E" stroke-opacity="0.85" stroke-width="22"
+          stroke-linejoin="round"/>
+
+    <!-- Gaps wider than the bars: at 32 px the bars blur together, and the gap is
+         what is left to carry the "waveform" reading. -->
+    <g fill="url(#wave)">
+      <rect x="430" y="545" width="32" height="64"  rx="16"/>
+      <rect x="488" y="513" width="32" height="128" rx="16"/>
+      <rect x="546" y="482" width="32" height="190" rx="16"/>
+      <rect x="604" y="504" width="32" height="146" rx="16"/>
+      <rect x="662" y="529" width="32" height="96"  rx="16"/>
+      <rect x="720" y="549" width="32" height="56"  rx="16"/>
+    </g>
+  </g>
+</svg>
