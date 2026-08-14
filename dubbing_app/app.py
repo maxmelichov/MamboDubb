@@ -79,6 +79,10 @@ class PatchSegment(Strict):
     src_lang: str | None = None
     tgt_lang: str | None = None
     tts_opts: dict[str, Any] | None = None
+    # Editing a field locks it, so unlocking needs its own way in: `{}` releases
+    # every lock on the segment, letting a re-run own that field again. Without
+    # this a hand-edit is permanent and the user can never hand the line back.
+    locked: dict[str, bool] | None = None
 
 
 class SplitBody(Strict):
@@ -354,6 +358,10 @@ def _apply_patch(m: dict[str, Any], uid: str, fields: dict[str, Any]) -> dict[st
         ops.set_langs(m, uid, src_lang=fields.get("src_lang"), tgt_lang=fields.get("tgt_lang"))
     if "tts_opts" in fields:
         ops.set_tts_opts(m, uid, **(fields["tts_opts"] or {}))
+    if "locked" in fields:
+        # Applied last: the setters above lock what they touch, so an explicit
+        # `locked` in the same patch is the user's final word on this segment.
+        ops.set_locked(m, uid, fields["locked"] or {})
     return ops.find(m, uid)
 
 

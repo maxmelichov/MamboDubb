@@ -293,6 +293,27 @@ def set_tts_opts(m: dict[str, Any], uid: str, **opts: Any) -> dict[str, Any]:
     return seg
 
 
+def set_locked(m: dict[str, Any], uid: str, locked: dict[str, bool]) -> dict[str, Any]:
+    """Replace this segment's locks outright. `{}` releases every one of them.
+
+    Editing a field locks it, which is what stops a re-run overwriting the user's
+    work — so releasing is the only way to hand a line back to the pipeline after
+    changing your mind. It is deliberately a replace, not a merge: "unlock this"
+    has to be expressible, and a merge could only ever add.
+    """
+    seg = _require(m, uid)
+    unknown = sorted(set(locked) - set(manifest.LOCK_FIELDS))
+    if unknown:
+        raise EditError(f"not lockable: {', '.join(unknown)}; "
+                        f"choose from {', '.join(manifest.LOCK_FIELDS)}")
+    kept = {f: True for f, on in locked.items() if on}
+    if kept:
+        seg["locked"] = kept
+    else:
+        seg.pop("locked", None)
+    return seg
+
+
 # --------------------------------------------------------------- structure
 
 def split(m: dict[str, Any], uid: str, at: float) -> tuple[str, str]:

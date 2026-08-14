@@ -920,3 +920,28 @@ def test_rebuild_rejects_stages_it_does_not_cover(outputs):
     for stage in ("fetch", "stems", "transcript", "segments", "nonsense"):
         with pytest.raises(ops.EditError):
             ops.rebuild(m, outputs / NAME, from_stage=stage)
+
+
+# ------------------------------------------------------ releasing a lock
+
+def test_patch_locked_releases_a_hand_edit(client, outputs):
+    """Editing locks a field; `locked: {}` hands it back to the pipeline. Without
+    this a correction is permanent and can never be undone."""
+    uid = uids(client)[0]
+    r = client.patch(f"/api/projects/{NAME}/segments/{uid}", json={"text_en": "edited"})
+    assert r.status_code == 200
+    assert r.json()["segment"]["locked"] == {"text_en": True}
+
+    r = client.patch(f"/api/projects/{NAME}/segments/{uid}", json={"locked": {}})
+    assert r.status_code == 200
+    assert not r.json()["segment"].get("locked")
+
+    m = manifest.load(outputs / NAME)
+    assert not (ops.find(m, uid) or {}).get("locked")
+
+
+def test_patch_locked_rejects_unknown_fields(client):
+    uid = uids(client)[0]
+    r = client.patch(f"/api/projects/{NAME}/segments/{uid}", json={"locked": {"nope": True}})
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_request"

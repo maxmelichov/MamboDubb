@@ -221,6 +221,19 @@ def set_tts_opts(m: dict[str, Any], uid: str, **opts: Any) -> dict[str, Any]:
     return seg
 
 
+def set_locked(m: dict[str, Any], uid: str, locked: dict[str, bool]) -> dict[str, Any]:
+    """Replace this segment's locks; `{}` releases them all."""
+    if HAVE_EDIT:
+        return _edit.set_locked(m, uid, locked) or _need(m, uid)
+    seg = _need(m, uid)
+    kept = {f: True for f, on in (locked or {}).items() if on}
+    if kept:
+        seg["locked"] = kept
+    else:
+        seg.pop("locked", None)
+    return seg
+
+
 def invalidate(m: dict[str, Any], uid: str, *, stages: set[str]) -> dict[str, Any]:
     """Drop one segment's output for `stages`, so the stage remakes it.
 
