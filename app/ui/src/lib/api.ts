@@ -102,6 +102,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       response.status,
     );
   }
+  /*
+   * A 200 whose body is not JSON is somebody else answering.
+   *
+   * It happens: the SPA fallback of a static host, a captive portal, a stale
+   * service worker — anything that hands back `index.html` for `/api/…`. The
+   * cast below is a lie in that case, and the lie surfaced three layers up as
+   * "TypeError: Cannot read properties of null (reading 'name')" in the
+   * editor's error bar, which tells the user nothing about what to do. Named
+   * here, once, where the response is still in hand.
+   */
+  if (text && body === null) {
+    throw new ApiError(
+      "internal_error",
+      `the studio server answered ${path} with something that is not JSON — ` +
+        "is the port serving the studio server, or something else?",
+      response.status,
+    );
+  }
   return body as T;
 }
 

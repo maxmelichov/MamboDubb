@@ -653,6 +653,42 @@ export function mediaUrl(_name: string, path: string): string {
   return toneUrl({ hz: 150, dur: 4, seed: path.length });
 }
 
+/**
+ * The prelude the server opens every stream with (`app.py::project_events`):
+ * one log line, one stage frame per stage, and one job frame for every job that
+ * has not finished.
+ *
+ * It is not decoration — it is the only reason "Start dubbing" works. The
+ * project is created, the job is enqueued, and *then* the editor mounts and
+ * subscribes; without a replay the queued/running frames were already gone, so
+ * the run's own job strip never appeared and the preview stage sat on "Nothing
+ * has run yet" for the whole run. Against the real server that is not what
+ * happens, which is exactly the kind of divergence these fixtures exist to not
+ * have — a second, kinder server that hides the first one's behaviour.
+ */
+function prelude(): StudioEvent[] {
+  const stages = store.project.stages;
+  return [
+    { type: "log", level: "info", message: `watching ${store.project.name}` },
+    ...RUN_STAGES.map((stage) => ({
+      type: "stage" as const,
+      stage,
+      status: stages[stage] ?? ("pending" as const),
+      ...(stages[stage] === "done" ? { progress: 1 } : {}),
+    })),
+    ...jobs
+      .filter((job) => job.status !== "done")
+      .map((job) => ({
+        type: "job" as const,
+        id: job.id,
+        status: job.status,
+        kind: job.kind,
+        progress: job.progress,
+        error: job.error,
+      })),
+  ];
+}
+
 export function events(
   _name: string,
   signal: AbortSignal,
@@ -661,6 +697,7 @@ export function events(
 ): Promise<void> {
   listeners.add(onMessage);
   onConnectionChange?.(true);
+  for (const event of prelude()) onMessage(event);
   const beat = setInterval(() => onMessage({ type: "heartbeat", t: Date.now() }), 15000);
 
   return new Promise((resolve) => {
