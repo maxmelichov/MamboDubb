@@ -316,6 +316,23 @@ def _emit(progress: Progress | None, event: dict[str, Any]) -> None:
         progress(event)
 
 
+def _edit_progress(progress: Progress | None, stage: str):
+    """Adapt this module's event callback to `dubbing.edit`'s (fraction, message).
+
+    The two halves were specified with different progress shapes — the pipeline
+    reports how far along it is, the server needs a frame it can put on the wire —
+    so the translation lives here, at the seam, rather than either side bending.
+    """
+    if progress is None:
+        return None
+
+    def report(fraction: float, message: str) -> None:
+        progress({"type": "stage", "stage": stage, "status": "running",
+                  "progress": round(float(fraction), 4), "message": message})
+
+    return report
+
+
 def _langs(m: dict[str, Any]) -> tuple[str, str]:
     src = m.get("source") or {}
     return src.get("src_lang") or "he", src.get("tgt_lang") or "en"
@@ -350,7 +367,8 @@ def retranslate(m: dict[str, Any], workdir: Path, uids: Iterable[str], *,
     protects a segment from a *run-global* re-run.
     """
     if HAVE_EDIT:
-        return _edit.retranslate(m, workdir, list(uids), progress=progress)
+        return _edit.retranslate(m, workdir, list(uids),
+                                 progress=_edit_progress(progress, "translate"))
 
     from dubbing import translate
 
@@ -402,7 +420,8 @@ def resynthesize(m: dict[str, Any], workdir: Path, uids: Iterable[str], *,
     true after a clip changes length.
     """
     if HAVE_EDIT:
-        return _edit.resynthesize(m, workdir, list(uids), progress=progress)
+        return _edit.resynthesize(m, workdir, list(uids),
+                                  progress=_edit_progress(progress, "tts"))
 
     uids = [u for u in uids]
     for uid in uids:
@@ -426,7 +445,8 @@ def rebuild(m: dict[str, Any], workdir: Path, *, from_stage: str,
     records stay valid for the headless CLI afterwards.
     """
     if HAVE_EDIT and hasattr(_edit, "rebuild"):
-        return _edit.rebuild(m, workdir, from_stage=from_stage, progress=progress)
+        return _edit.rebuild(m, workdir, from_stage=from_stage,
+                             progress=_edit_progress(progress, from_stage))
 
     from dubbing import mix, report, timeline
     from dubbing import tts as tts_mod

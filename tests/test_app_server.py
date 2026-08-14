@@ -945,3 +945,34 @@ def test_patch_locked_rejects_unknown_fields(client):
     r = client.patch(f"/api/projects/{NAME}/segments/{uid}", json={"locked": {"nope": True}})
     assert r.status_code == 400
     assert r.json()["error"]["code"] == "invalid_request"
+
+
+# ------------------------------------------------- the ops -> dubbing.edit seam
+
+@pytest.mark.skipif(not ops.HAVE_EDIT, reason="dubbing.edit not present")
+@pytest.mark.parametrize("call,stage", [
+    (lambda p: ops.retranslate({"segments": []}, Path("."), [], progress=p), "translate"),
+    (lambda p: ops.resynthesize({"segments": []}, Path("."), [], progress=p), "tts"),
+])
+def test_edit_progress_is_adapted_to_the_pipeline_signature(monkeypatch, call, stage):
+    """`dubbing.edit` reports progress as (fraction, message); this module speaks
+    NDJSON event dicts. The two were specified apart and passing one straight to
+    the other raised `emit() takes 1 positional argument but 2 were given` on the
+    first real job — a path the fake runner never touched."""
+    from dubbing import edit as real_edit
+
+    seen: list[dict] = []
+    captured: dict = {}
+
+    def fake(m, workdir, uids, *, progress=None, **kw):
+        captured["progress"] = progress
+        progress(0.5, "halfway")          # exactly how dubbing.edit calls it
+        return {}
+
+    monkeypatch.setattr(real_edit, "retranslate", fake)
+    monkeypatch.setattr(real_edit, "resynthesize", fake)
+    call(seen.append)
+
+    assert captured["progress"] is not None
+    assert seen == [{"type": "stage", "stage": stage, "status": "running",
+                     "progress": 0.5, "message": "halfway"}]
