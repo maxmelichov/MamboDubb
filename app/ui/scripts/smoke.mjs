@@ -66,6 +66,44 @@ const check = (label, ok) => {
 const root = document.getElementById("root");
 check("import screen renders", /New dub/.test(root.textContent));
 check("context field is present", /Context/.test(root.textContent));
+check("setup is reachable from the header", /Setup/.test(root.textContent));
+
+const go = async (path, ms) => {
+  dom.window.history.pushState({}, "", path);
+  dom.window.dispatchEvent(new dom.window.PopStateEvent("popstate"));
+  await new Promise((resolve) => setTimeout(resolve, ms));
+};
+
+// The setup checklist: every row must say its state in words, not just colour,
+// and a failing row must carry the sentence that says what to do about it.
+await go("/setup", 300);
+const setup = root.textContent;
+check("setup screen renders", /Readiness/.test(setup));
+check("setup lists every check", document.querySelectorAll("[data-check]").length === 8);
+check("passing checks say Ready", /Ready/.test(setup));
+check("failing checks say Missing", /Missing/.test(setup));
+check("state is never colour alone", [...document.querySelectorAll("[data-check]")].every((row) =>
+  /Ready|Missing/.test(row.textContent),
+));
+check("failing checks explain themselves", /HF_TOKEN/.test(setup) && /htdemucs|Demucs/.test(setup));
+check("model sizes are shown", /GB/.test(setup));
+check("a mixed result is counted", /2 of 8 need attention/.test(setup));
+check("no continue while something is missing", ![...document.querySelectorAll("button")].some((b) =>
+  b.textContent.includes("Continue to projects"),
+));
+
+const recheck = [...document.querySelectorAll("button")].find((b) =>
+  b.textContent.includes("Re-check"),
+);
+if (!recheck) throw new Error("smoke: no Re-check button");
+recheck.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+await new Promise((resolve) => setTimeout(resolve, 300));
+check("re-check re-renders the list", document.querySelectorAll("[data-check]").length === 8);
+
+// The gate must not strand the user here: fixture mode never auto-routes, and
+// the import screen is one link away.
+await go("/", 200);
+check("setup does not trap navigation", /New dub/.test(root.textContent));
 
 // Navigate to the editor and let the fixture load.
 dom.window.history.pushState({}, "", "/editor/kan11_v3");
