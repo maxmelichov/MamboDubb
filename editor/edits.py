@@ -166,21 +166,27 @@ def apply_edits(m: dict[str, Any], edits: list[dict[str, Any]]) -> dict[str, Any
                 value = coerce(raw)
             except ValueError as exc:
                 raise ValueError(f"segment {seg_id}, field {name!r}: {exc}") from None
-            # Absent and empty are the same state, so clearing an unset field is
-            # a no-op rather than a manifest change that invalidates a stage.
-            if value == seg.get(name) or (not value and not seg.get(name)):
-                continue
-            if not value and name in ("text", "text_en"):
-                # Blanking these would leave the synthesiser nothing to say.
-                raise ValueError(f"segment {seg_id}, field {name!r}: cannot be empty")
             if name == "passthrough":
-                # The pipeline's own tri-state key: apply_passthrough flips keep
-                # on the next run and carry_passthrough survives re-segmentation.
-                seg["passthrough"] = bool(value)
-            elif not value:
-                seg.pop(name, None)   # cleared: drop it instead of storing a blank
-            else:
+                # The pipeline's own TRI-state key: absent means "decide
+                # automatically", True means "play the original", False means "dub
+                # this span". False is therefore a real value and must not be
+                # folded into "empty" the way a blank text field is — doing that
+                # made "dub this foreign line after all" a silent no-op.
+                if seg.get(name) is value:
+                    continue
                 seg[name] = value
+            else:
+                # Absent and empty are the same state, so clearing an unset field is
+                # a no-op rather than a manifest change that invalidates a stage.
+                if value == seg.get(name) or (not value and not seg.get(name)):
+                    continue
+                if not value and name in ("text", "text_en"):
+                    # Blanking these would leave the synthesiser nothing to say.
+                    raise ValueError(f"segment {seg_id}, field {name!r}: cannot be empty")
+                if not value:
+                    seg.pop(name, None)   # cleared: drop it, don't store a blank
+                else:
+                    seg[name] = value
             _relock(seg, name)
             touched = True
             changed_fields.add(name)

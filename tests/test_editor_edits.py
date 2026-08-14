@@ -102,9 +102,28 @@ def test_passthrough_lands_on_the_pipelines_own_key():
 
 def test_unchanged_values_invalidate_nothing():
     m = a_manifest()
+    apply_edits(m, edit(0, passthrough=False))     # the override exists now
     res = apply_edits(m, [{"id": 0, "fields": {"text_en": "Hello", "speaker": "SPEAKER_00",
                                                "passthrough": False}}])
     assert res == {"changed": [], "fields": [], "force": None}
+
+
+def test_forcing_a_dub_on_a_kept_span_is_a_real_edit():
+    """`passthrough` is tri-state — absent means "decide automatically", False means
+    "dub this span" — so False is a value, not an empty field. Folding it into
+    "empty" made unchecking the box on a line the pipeline kept (a foreign span the
+    user wants dubbed after all) a silent no-op: the save reported "nothing
+    changed" and the next run kept the original audio."""
+    from dubbing import segments as seg_mod
+
+    m = a_manifest()
+    seg = m["segments"][1]
+    seg["keep"], seg["keep_reason"] = True, "foreign"
+
+    res = apply_edits(m, edit(1, passthrough=False))
+    assert seg["passthrough"] is False and res["changed"] == [1]
+    assert seg_mod.apply_passthrough(m["segments"]) == [1]
+    assert seg["keep"] is False and seg["keep_reason"] is None
 
 
 def test_mixed_edits_force_the_earliest_stage():
@@ -289,6 +308,18 @@ def test_a_rerun_of_a_headless_run_stays_on_the_defaults(editor_client, monkeypa
 def test_rerun_rejects_an_unknown_stage(editor_client):
     assert editor_client.post(f"/api/runs/{RUN}/rerun",
                               json={"force": "nonsense"}).status_code == 400
+
+
+def test_the_ui_reads_the_canonical_passthrough_key():
+    """The one thing about the page that cannot be asserted through the API, and
+    the one the schema merge broke: the checkbox was rendered from `keep &&
+    keep_reason === "manual"`, while both front ends write the verdict to
+    `passthrough` and `apply_passthrough` records it as "user". A saved
+    passthrough therefore came back unchecked, every time, forever."""
+    source = (Path(__file__).resolve().parents[1] / "editor" / "static"
+              / "app.js").read_text(encoding="utf-8")
+    assert 's.passthrough' in source
+    assert 'keep_reason === "manual"' not in source
 
 
 def test_unknown_run_is_404(editor_client):
