@@ -6,9 +6,8 @@
  * The vocabulary is MamboRambo's, refitted:
  *
  * - **Card** is the page-level container: 2xl radius, hairline border, one big
- *   soft shadow. **Panel** is its dense cousin for the editor's work surfaces —
- *   same border and surface tokens, tighter radius, no shadow, because a
- *   Premiere-shaped screen made of floating cards is unreadable.
+ *   soft shadow. The editor does not use it — a Final-Cut-shaped screen made of
+ *   floating cards is unreadable, so its regions are plain bordered panes.
  * - **Eyebrow** is the section label everywhere: tiny, black, uppercase, widely
  *   tracked. It is the single strongest signature of the house style.
  * - **Button**'s primary variant is *ink*, not colour. See App.css for why.
@@ -115,26 +114,6 @@ export function CardSection({
       className={cn(
         "px-6 py-5 sm:px-7",
         tone === "sunken" && "bg-sunken",
-        className,
-      )}
-      {...props}
-    />
-  );
-}
-
-/** The dense work surface: same tokens as Card, no shadow, tighter radius. */
-export function Panel({ className, ...props }: ComponentProps<"div">) {
-  return (
-    <div className={cn("rounded-xl border border-border bg-surface", className)} {...props} />
-  );
-}
-
-export function PanelHeader({ className, ...props }: ComponentProps<"div">) {
-  return (
-    <div
-      className={cn(
-        "flex items-center gap-2 border-b border-border bg-sunken px-3 py-2",
-        "text-[10px] font-bold uppercase tracking-[0.18em] text-muted",
         className,
       )}
       {...props}
@@ -305,16 +284,26 @@ export function NumberInput({
 export function TextArea({
   className,
   autoGrow,
+  ref,
   ...props
-}: ComponentProps<"textarea"> & { autoGrow?: boolean }) {
+}: ComponentPropsWithRef<"textarea"> & { autoGrow?: boolean }) {
   const fit = (el: HTMLTextAreaElement | null) => {
-    if (!el || !autoGrow) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight + 2}px`;
+    if (el && autoGrow) {
+      el.style.height = "auto";
+      el.style.height = `${el.scrollHeight + 2}px`;
+    }
+  };
+  // The auto-grow ref is the component's own, so a caller that also wants the
+  // node (to focus it, to place a caret) has to be merged in rather than
+  // allowed to overwrite it — `{...props}` used to do exactly that silently.
+  const attach = (el: HTMLTextAreaElement | null) => {
+    fit(el);
+    if (typeof ref === "function") ref(el);
+    else if (ref) ref.current = el;
   };
   return (
     <textarea
-      ref={fit}
+      ref={attach}
       onInput={(event) => fit(event.currentTarget)}
       className={cn(
         controlBase,
@@ -550,6 +539,101 @@ export function Popover({
   );
 }
 
+/**
+ * A button that asks first.
+ *
+ * `window.confirm` is the wrong control for this app in three separate ways: it
+ * is drawn by the OS in the OS's colours, so a themed dark editor pops a white
+ * system sheet; it blocks the main thread, so the playhead stops; and it is
+ * modal over the *window*, which is far more interruption than "this discards
+ * the translation" deserves. What the question actually needs is to be asked
+ * next to the thing being asked about.
+ *
+ * So it is a small panel hung off the button itself, with the consequence
+ * spelled out and the confirming verb repeated on the confirm button — never
+ * "OK", which tells you nothing about what you are agreeing to. Escape and a
+ * click outside both mean no, which is the default a destructive question
+ * should have.
+ *
+ * Reserved for the genuinely destructive: re-rendering the preview, splitting
+ * and merging (both discard a translation and a clip), and re-translating over
+ * a line the user wrote by hand. Cheap reversible things — keep/dub, a text
+ * edit — are just done.
+ */
+export function ConfirmButton({
+  message,
+  confirmLabel,
+  onConfirm,
+  align = "right",
+  children,
+  ...props
+}: ComponentProps<"button"> & {
+  variant?: ButtonVariant;
+  size?: ControlSize;
+  /** What will happen. One sentence, in the indicative. */
+  message: ReactNode;
+  /** The verb, repeated. Never "OK". */
+  confirmLabel: string;
+  onConfirm: () => void;
+  align?: "left" | "right";
+}) {
+  const [open, setOpen] = useState(false);
+  const wrap = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      if (!wrap.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="relative" ref={wrap}>
+      <Button {...props} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        {children}
+      </Button>
+      {open ? (
+        <div
+          role="dialog"
+          aria-label={confirmLabel}
+          className={cn(
+            "absolute top-full z-50 mt-1.5 w-72 rounded-xl border border-border bg-raised p-3 shadow-pop",
+            align === "right" ? "right-0" : "left-0",
+          )}
+        >
+          <p className="text-[12.5px] leading-relaxed text-secondary">{message}</p>
+          <div className="mt-3 flex justify-end gap-2">
+            <Button size="sm" variant="ghost" onClick={() => setOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={() => {
+                setOpen(false);
+                onConfirm();
+              }}
+            >
+              {confirmLabel}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------- indicators */
 
 type BadgeTone = "neutral" | "good" | "warn" | "bad" | "accent";
@@ -581,37 +665,6 @@ export function Badge({
       )}
       {...props}
     />
-  );
-}
-
-/**
- * A state chip. The colour is a swatch beside the word, never the word's own
- * colour — text always wears text tokens, and the label carries the meaning.
- */
-export function StatePill({
-  token,
-  glyph,
-  label,
-  className,
-}: {
-  token: string;
-  glyph: string;
-  label: string;
-  className?: string;
-}) {
-  return (
-    <span
-      className={cn(
-        "inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-raised px-1.5 py-0.5",
-        "text-[11px] font-medium text-secondary",
-        className,
-      )}
-    >
-      <span aria-hidden style={{ color: token }} className="text-[11px] leading-none">
-        {glyph}
-      </span>
-      {label}
-    </span>
   );
 }
 

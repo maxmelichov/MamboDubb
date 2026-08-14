@@ -201,13 +201,17 @@ body {
   /*
    * The focus ring is one recipe everywhere: a soft halo of ink, never a
    * browser default outline that fights the radii. The selector list is the
-   * full set of things this app makes focusable — `summary` and `[role=…]`
-   * are in it because the TTS disclosure and the segment table are keyboard
-   * stops too, and they were the two that fell through before.
+   * full set of things this app makes focusable — `summary` and the roving
+   * tabindex on the script rows are in it because both are keyboard stops that
+   * are not buttons, and both fell through before.
    *
    * `:where()` keeps specificity at zero so a component can still opt out, and
    * the two-stop shadow means the ring reads on any surface: an inner stop the
    * colour of the surface, then the ink halo outside it.
+   *
+   * `[role="row"]` and the `tr:focus-visible` rule under it are gone with the
+   * table they were written for — the script is a listbox of options now, and
+   * an option is a block box that takes the ring like everything else.
    */
   :where(
     button,
@@ -217,20 +221,12 @@ body {
     select,
     summary,
     [tabindex]:not([tabindex="-1"]),
-    [role="button"],
-    [role="row"]
+    [role="button"]
   ):focus-visible {
     outline: none;
     box-shadow:
       0 0 0 2px var(--color-surface),
       0 0 0 4px color-mix(in srgb, var(--color-primary) 45%, transparent);
-  }
-
-  /* A focused table row cannot take a box-shadow ring reliably (row boxes are
-     not painted like blocks), so it gets an inset ink rule and a wash. */
-  tr:focus-visible {
-    outline: none;
-    box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--color-primary) 55%, transparent);
   }
 }
 
@@ -301,6 +297,25 @@ input[type="number"]::-webkit-inner-spin-button {
 .auto-dir {
   unicode-bidi: plaintext;
   text-align: start;
+}
+
+/*
+ * The long script, without a virtualiser.
+ *
+ * `content-visibility: auto` lets the browser skip layout, style and paint for
+ * any row that is off screen — which is what a windowing library does, done by
+ * the engine, with none of the row-measuring, scroll-anchoring or
+ * find-in-page-breaking that a hand-rolled one brings. `contain-intrinsic-size`
+ * is the estimate it uses for a skipped row so the scrollbar stays honest:
+ * `auto` means "remember the real height once you have measured it", with 76px
+ * — a two-line original over a two-line translation — as the first guess.
+ *
+ * Applied only past a few hundred rows: below that the whole list costs less
+ * than the containment bookkeeping.
+ */
+.script-virtual > [role="option"] {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 76px;
 }
 
 @keyframes rise {
