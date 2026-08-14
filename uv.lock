@@ -734,9 +734,11 @@ dependencies = [
     { name = "mlx-lm", marker = "sys_platform == 'darwin'" },
     { name = "num2words" },
     { name = "numpy" },
+    { name = "peft" },
     { name = "pyannote-audio" },
     { name = "python-dotenv" },
     { name = "qwen-tts" },
+    { name = "renikud-plus", marker = "python_full_version >= '3.12'" },
     { name = "sentencepiece" },
     { name = "silero-vad" },
     { name = "soundfile" },
@@ -770,11 +772,13 @@ requires-dist = [
     { name = "mlx-lm", marker = "sys_platform == 'darwin'", git = "https://github.com/ml-explore/mlx-lm?rev=cf10f962b7a20e63a6df43dbf0faf06070153d40" },
     { name = "num2words", specifier = ">=0.5" },
     { name = "numpy", specifier = ">=1.26" },
+    { name = "peft", specifier = ">=0.19.1" },
     { name = "pyannote-audio", specifier = ">=3.1.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "python-multipart", marker = "extra == 'app'", specifier = ">=0.0.9" },
     { name = "qwen-tts", editable = "third_party/Qwen3-TTS" },
+    { name = "renikud-plus", marker = "python_full_version >= '3.12'", specifier = ">=0.3.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9.0" },
     { name = "sentencepiece", specifier = ">=0.2.0" },
     { name = "silero-vad", specifier = ">=6.2.1" },
@@ -2371,6 +2375,27 @@ wheels = [
 ]
 
 [[package]]
+name = "peft"
+version = "0.20.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "accelerate" },
+    { name = "huggingface-hub" },
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "psutil" },
+    { name = "pyyaml" },
+    { name = "safetensors" },
+    { name = "torch" },
+    { name = "tqdm" },
+    { name = "transformers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b4/08/02541a2c29be7c78698f73d438bc0e733b214f3f35ec5db79fca8da8fc61/peft-0.20.0.tar.gz", hash = "sha256:4769c8093a4ca145fd6fb3fd4dd50449675f5fe46434ad1e98b285a132d4b1d0", size = 880503, upload-time = "2026-07-28T13:46:01.85Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/28/79/13bcabb8048126422d5c4b880575d40886c726f354db88cfeed4325525bb/peft-0.20.0-py3-none-any.whl", hash = "sha256:0fbba16ffebfad3de96e06f2da6860fd860292324b85b6141909fa1e26ea9233", size = 775777, upload-time = "2026-07-28T13:45:59.809Z" },
+]
+
+[[package]]
 name = "pillow"
 version = "12.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3023,6 +3048,20 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/e0/b8/f037d1bf2c133cb24ceb6e7d81d08417080390eddab6ddfd701aa7091874/regex-2026.7.10-cp313-cp313t-win32.whl", hash = "sha256:a2d6d30be35ddd70ce0f8ee259a4c25f24d6d689a45a5ac440f03e6bcc5a21d1", size = 269168, upload-time = "2026-07-10T19:48:35.353Z" },
     { url = "https://files.pythonhosted.org/packages/b6/9c/eaac34f8452a838956e7e89852ad049678cdc1af5d14f72d3b3b658b1ea5/regex-2026.7.10-cp313-cp313t-win_amd64.whl", hash = "sha256:c57b6ad3f7a1bdd101b2966f29dc161adf49727b1e8d3e1e89db2eda8a75c344", size = 280004, upload-time = "2026-07-10T19:48:37.106Z" },
     { url = "https://files.pythonhosted.org/packages/cd/a9/e22e997587bc1d588b0b2cd0572027d39dd3a006216e40bbf0361688c51c/regex-2026.7.10-cp313-cp313t-win_arm64.whl", hash = "sha256:3d8ef9df02c8083c7b4b855e3cb87c8e0ebbcfea088d98c7a886aaefdf88d837", size = 279308, upload-time = "2026-07-10T19:48:38.907Z" },
+]
+
+[[package]]
+name = "renikud-plus"
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "huggingface-hub", marker = "python_full_version >= '3.12'" },
+    { name = "numpy", marker = "python_full_version >= '3.12'" },
+    { name = "onnxruntime", marker = "python_full_version >= '3.12'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/41/bc/8ebe22fc96be36b1a0300361c44df98e1a39ef83a445265f2c8189b990de/renikud_plus-0.3.0.tar.gz", hash = "sha256:123e8c7c4b3bd1d00e4b2161ea10bce29f7f7a4a7e38a034402afeecb767b721", size = 6238, upload-time = "2026-07-17T10:46:43.99Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/35/d6/df772315350329dfbea4508099d37c3deaa731a3686ac50e20d87c89f198/renikud_plus-0.3.0-py3-none-any.whl", hash = "sha256:0fe3b30bf2898471cb314dff89e0758d5290eb701e134e0e980ffb9aa775a805", size = 7049, upload-time = "2026-07-17T10:46:42.969Z" },
 ]
 
 [[package]]
