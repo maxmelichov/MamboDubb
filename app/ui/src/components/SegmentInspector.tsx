@@ -276,8 +276,10 @@ export function SegmentInspector({
         </section>
       </div>
 
-      {/* Everything below here starts shut. See the file header for why. */}
-      <div className="mt-4 flex flex-col px-4 pb-4">
+      {/* Everything below here starts shut. See the file header for why. The
+          last shelf takes a closing rule so the stack reads as a stack and not
+          as a list that ran out. */}
+      <div className="mt-4 flex flex-col px-4 pb-4 [&>details:last-of-type]:border-b">
         <VoiceShelf
           seg={seg}
           speakers={speakers}

@@ -19,9 +19,10 @@ pnpm check            # both
 ```
 
 `pnpm smoke` is the test the type checker cannot be: it boots the real bundle in jsdom
-against the fixture, then asserts both screens render, the timeline draws its marks, a keep
-toggle applies with no job, and a re-translate queues, reports progress and writes its
-result back through the event stream.
+against the fixture, then asserts every screen renders, the theme toggle defaults to dark and
+persists a choice, the timeline draws its marks, the inspector's shelves start shut and
+remember being opened, a keep toggle applies with no job, and a re-translate queues, reports
+progress and writes its result back through the event stream.
 
 `pnpm dev` proxies `/api`, `/media` and `/health` to `http://127.0.0.1:8756`. The server
 binds an OS-assigned port and prints `{"status":"ready","port":N}` on stdout, so set
@@ -43,6 +44,36 @@ with stage/segment/job/log frames, optimistic no-model edits, and queued model a
 that actually mutate the segments when they finish. A/B playback works — the clips are
 synthesized buzz at the right durations, not silence — so the transport is real even
 though there is no `preview.mp4` to play.
+
+## Editor screen
+
+Three panes and a rail. The preview is the pane that **grows** — it and the timeline are the
+workspace, and everything else is sized around them. Under the timeline is the segment
+**navigator**, a fixed strip: position, state, time, one line of text, and nothing else. It
+is a `listbox`, one tab stop with a roving tabindex, and the line of text follows what will
+actually play — a kept segment shows its source, a dubbed one its translation.
+
+The right rail is ordered by how often a reviewer touches a thing, which is not evenly:
+
+| | on the surface |
+|---|---|
+| 1 | the original, then the translation as the one editable field |
+| 2 | A/B the two versions |
+| 3 | dub-or-keep, two named states with the consequence written under them |
+| 4 | re-translate / re-voice this line, each with its cost on its face |
+
+Everything else — speaker and TTS overrides and how the last take verified; the per-segment
+language tags; the transcript text, split/merge and the locks — is on one of three named
+shelves (`Disclosure`) that start **shut** and remember otherwise in `sessionStorage` for the
+session. A shut shelf still shows a one-line summary of its current values, so "nothing
+overridden here" costs no click, and the voice shelf's summary carries the verification
+overlap so a bad take is visible without opening it. A clone that said the wrong words is the
+one thing that jumps to the top of the rail regardless.
+
+Chrome that is not permanent: the job strip renders only while a job runs or the event stream
+is down, and the legend and keyboard shortcuts are behind the timeline's "?" popover — both
+are read on your first day and the day you forget, and neither ever changes. What stays in
+the toolbar is a census of *this run*, which does.
 
 ## Setup screen
 
@@ -88,9 +119,11 @@ one thing, "dubbed". Anything painted `--color-brand` or `--color-dubbed` is dat
 chrome.
 
 **Everything is a primitive.** `components/ui.tsx` holds Button, Card/CardSection, Panel,
-Field, TextInput/TextArea/Select, Badge, StatePill, Progress, Kbd, ErrorBlock/ErrorBar,
-Eyebrow/SectionLabel and Brand/LogoMark. There are no ad-hoc styled containers above that
-file — a new screen composes these or the system stops being one.
+Field, TextInput/TextArea/NumberInput/Select, Badge, StatePill, Progress, Kbd, Empty,
+Disclosure, Popover, ErrorBlock/ErrorBar, Eyebrow/SectionLabel and Brand/LogoMark. There are
+no ad-hoc styled containers above that file — a new screen composes these or the system stops
+being one. `Disclosure` and `Popover` are the two ways something leaves the screen without
+leaving the app, and between them they are why the editor fits.
 
 `src/App.css` is the whole token layer: surfaces, ink, elevation and the segment-state hues,
 declared once in `@theme` and restated for dark under `:root.theme-dark`. Element resets live
@@ -119,8 +152,9 @@ src/
     useProject.ts   the project store: one state object + actions
     useTransport.ts one clock, whether or not there is a video
     segments.ts     derived state — what "dubbed"/"kept"/"failed" mean
+    theme.ts        the light/dark choice: one class, one key, no OS preference
   components/       Timeline, SegmentList, SegmentInspector, ABPlayer, VideoPlayer …
-  pages/            ImportPage, EditorPage
+  pages/            ImportPage, SetupPage, EditorPage
 ```
 
 ## Keyboard

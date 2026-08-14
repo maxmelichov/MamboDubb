@@ -2,16 +2,18 @@
  * The preview stage.
  *
  * This used to be the app's one dark island — a black surround with white
- * transport controls, on the reasoning that video wants black around it. On a
- * black-on-white app that reasoning does not survive contact: the stage sat in
- * the top-left of every editor screen as a slab, and the "no preview yet"
- * state was a black rectangle, which is the single worst thing a screen can
- * show a user who is waiting for something.
+ * transport controls, on the reasoning that video wants black around it. That
+ * reasoning does not survive contact with either theme: in light the stage sat
+ * in the top-left of every editor screen as a slab, and in dark a *second*,
+ * differently-black rectangle inside a near-black app reads as a hole. Either
+ * way the "no preview yet" state was a black rectangle, which is the single
+ * worst thing a screen can show a user who is waiting for something.
  *
- * So the surround is the app's own sunken tone and the transport is the house
- * style. The picture keeps its own edges — `object-contain` on a neutral
- * ground, with a hairline frame — which is all the separation a video actually
- * needs; the letterbox bars are the stage, not the video.
+ * So the surround is the app's own sunken tone, whichever theme that resolves
+ * to, and the transport is the house style. The picture keeps its own edges —
+ * `object-contain` on a neutral ground, with a hairline frame — which is all
+ * the separation a video actually needs; the letterbox bars are the stage, not
+ * the video.
  */
 
 import { Pause, Play, SkipBack, SkipForward } from "lucide-react";

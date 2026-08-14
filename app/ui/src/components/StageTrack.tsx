@@ -57,7 +57,10 @@ export function StageTrack({
                   ? "bg-primary ring-2 ring-primary/25"
                   : done
                     ? "bg-primary"
-                    : "bg-border",
+                    // `axis`, not `border`: a border-coloured dot is a 1.1:1
+                    // difference from the chip it sits on in light and 1.26:1
+                    // in dark, which is a dot you cannot count.
+                    : "bg-axis",
             )}
           />
         );
