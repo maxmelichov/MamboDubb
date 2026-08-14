@@ -1,0 +1,575 @@
+/**
+ * One line of the script.
+ *
+ * This is the object the whole editor is now built around, so it is worth
+ * saying what it is for: a reviewer is checking a *translation against its
+ * original*, and that is a comparison between two pieces of text. Every earlier
+ * shape of this list made that comparison impossible. The seven-column table
+ * gave each half a truncated third of the width. The one-line list showed
+ * whichever half "would play" and hid the other, so checking a translation
+ * meant selecting the row and reading the rail. Both were asking the user to
+ * hold one sentence in their head while they went and found the other.
+ *
+ * So the two lines are stacked, always, both visible, both complete:
+ *
+ *   ORIGINAL      muted, 12.5px  — the reference
+ *   TRANSLATION   ink,   14px    — the work
+ *
+ * and nothing here is ever ellipsis-truncated. A collapsed row clamps at two
+ * lines; the selected row shows everything. Truncating the text is truncating
+ * the only thing on the screen the user came for.
+ *
+ * ## Direction
+ *
+ * The row container is explicitly `dir="ltr"` and the two text lines are
+ * `dir="auto"` + `.auto-dir`. That split is the whole bidi story: the timecode,
+ * the id and the buttons are *chrome*, laid out left-to-right no matter what
+ * language the run is in, while each text line takes its direction from its own
+ * first strong character — so a Hebrew original renders right-to-left directly
+ * above its left-to-right English translation, in one row, correctly, without
+ * either of them dragging the layout around.
+ *
+ * The per-row state rule uses `border-inline-start` rather than `border-left`
+ * so it stays on the reading edge if the *chrome* is ever mirrored.
+ *
+ * There is deliberately no `title` on the row. A composed tooltip
+ * (`${speaker} · ${text}`) is a single string with mixed directions and no
+ * markup to scope them, which the platform renders as a scrambled mess — and it
+ * was duplicating text that is now permanently on screen anyway.
+ */
+
+import { memo, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { Lock, MoreHorizontal, Pause, Play, TriangleAlert } from "lucide-react";
+import { cn } from "../lib/classNames";
+import { speakerLabel, timecode } from "../lib/format";
+import { STATE_META, hasLocks, segmentState, verifyConcern } from "../lib/segments";
+import { TextArea } from "./ui";
+import type { Segment } from "../lib/types";
+
+export type EditTarget = { uid: string; field: "text" | "text_en" } | null;
+
+export type ScriptRowProps = {
+  seg: Segment;
+  selected: boolean;
+  /** the playhead is inside this segment */
+  now: boolean;
+  busy: boolean;
+  /** this row is the list's single tab stop */
+  tabStop: boolean;
+  /** which field of this row is open for editing, if any */
+  editing: "text" | "text_en" | null;
+  /** the clip URL currently sounding, so A/B can show which side is playing */
+  playingUrl: string | null;
+  onSelect: (uid: string) => void;
+  onEdit: (target: EditTarget) => void;
+  onCommit: (uid: string, field: "text" | "text_en", value: string) => void;
+  onPlay: (url: string | null) => void;
+  onToggleKeep: (seg: Segment) => void;
+};
+
+function Row({
+  seg,
+  selected,
+  now,
+  busy,
+  tabStop,
+  editing,
+  playingUrl,
+  onSelect,
+  onEdit,
+  onCommit,
+  onPlay,
+  onToggleKeep,
+}: ScriptRowProps) {
+  const state = segmentState(seg);
+  const meta = STATE_META[state];
+  const concern = verifyConcern(seg);
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  const sourceUrl = seg.media?.source ?? null;
+  const dubUrl = seg.media?.play ?? seg.media?.tts ?? null;
+
+  const translation = seg.text_en ?? "";
+
+  return (
+    <div
+      /*
+       * `listbox`/`option`: this is a single-select picker, and that is the
+       * role that makes `aria-selected` mean "this is the one in the panel".
+       */
+      role="option"
+      dir="ltr"
+      data-uid={seg.uid}
+      aria-selected={selected}
+      // Roving tabindex: the list is one tab stop, not two hundred.
+      tabIndex={tabStop ? 0 : -1}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" && event.target === event.currentTarget) {
+          event.preventDefault();
+          onSelect(seg.uid);
+          onEdit({ uid: seg.uid, field: "text_en" });
+        }
+      }}
+      className={cn(
+        "group/row relative flex gap-2 border-b border-grid px-2 py-1.5",
+        "transition-colors",
+        selected
+          ? "bg-primary/[0.07] ring-1 ring-inset ring-primary/20"
+          : now
+            ? "bg-primary/[0.035]"
+            : "hover:bg-sunken",
+        busy && "animate-pulse",
+      )}
+      style={{
+        borderInlineStartWidth: 3,
+        borderInlineStartStyle: "solid",
+        borderInlineStartColor: now && !selected ? "var(--color-primary)" : meta.token,
+      }}
+    >
+      {/* --- gutter: where this line is, and whether a hand has been on it --- */}
+      <button
+        type="button"
+        onClick={() => onSelect(seg.uid)}
+        aria-label={`Select segment ${seg.id} at ${timecode(seg.start)}`}
+        className="flex w-16 shrink-0 cursor-pointer flex-col items-start gap-px pt-px text-left"
+      >
+        <span
+          className={cn(
+            "font-mono text-[12.5px] tabular-nums",
+            selected || now ? "font-semibold text-primary" : "text-secondary",
+          )}
+        >
+          {timecode(seg.start, 0)}
+        </span>
+        <span className="flex items-center gap-1 font-mono text-[11px] tabular-nums text-muted">
+          #{seg.id}
+          {hasLocks(seg) ? (
+            <Lock className="h-2.5 w-2.5" aria-label="Hand-edited — a re-run will not overwrite it" />
+          ) : null}
+        </span>
+      </button>
+
+      {/* --- body: the meta line, then the two texts --- */}
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <button
+          type="button"
+          onClick={() => onSelect(seg.uid)}
+          className="flex items-center gap-1.5 text-left text-[11px] text-muted"
+        >
+          <span className="font-semibold uppercase tracking-[0.08em]">
+            {speakerLabel(seg.speaker)}
+          </span>
+          <span aria-hidden>·</span>
+          <span aria-hidden style={{ color: meta.token }}>
+            {meta.glyph}
+          </span>
+          {/* The state as a *word*, on every row. Light-mode "kept" is 2.17:1
+              against the card — under the 3:1 gate — and there is no legend
+              on screen any more, so this is the encoding's only spelling out. */}
+          <span className="text-secondary">{meta.short}</span>
+          {concern !== "none" ? (
+            <TriangleAlert
+              className={cn("h-3 w-3", concern === "bad" ? "text-critical" : "text-muted")}
+              aria-label={concern === "bad" ? "Verification failed" : "Verification is low"}
+            />
+          ) : null}
+        </button>
+
+        <Line
+          seg={seg}
+          field="text"
+          value={seg.text}
+          editing={editing === "text"}
+          placeholder="no transcript for this span"
+          className="text-[12.5px] text-muted"
+          onEdit={onEdit}
+          onCommit={onCommit}
+          selected={selected}
+          /* The original is reference, not the work: it opens for editing only
+             through the ⋯ menu ("Correct transcript"), never by a stray click
+             on the line a reviewer is reading. */
+          readOnly
+        />
+
+        <Line
+          seg={seg}
+          field="text_en"
+          value={translation}
+          editing={editing === "text_en"}
+          placeholder={seg.keep ? "no subtitle line for this span" : "not translated yet"}
+          className={cn(
+            "text-[14px] leading-snug",
+            seg.keep ? "text-muted" : "font-medium text-primary",
+          )}
+          onEdit={onEdit}
+          onCommit={onCommit}
+          selected={selected}
+        />
+
+        {/*
+          A kept line still shows both halves — a reviewer's job includes
+          checking the *keep decisions*, and a row that hides the translation of
+          a kept line hides the evidence for the one it is being asked to
+          judge. What it does not do is let the dimmed subtitle read as the
+          thing that will be spoken.
+        */}
+        {seg.keep ? (
+          <p className="text-[11px] text-muted">
+            <span aria-hidden style={{ color: STATE_META.kept.token }}>
+              ▣{" "}
+            </span>
+            original audio plays here
+          </p>
+        ) : null}
+      </div>
+
+      {/*
+        --- actions ---
+        Rendered always (so the row's height never changes under the cursor)
+        but invisible until the row is hovered, selected, or has its menu open.
+        Two hundred rows must not be six hundred buttons competing for the eye.
+      */}
+      <div
+        className={cn(
+          "flex w-[88px] shrink-0 items-start gap-0.5 pt-0.5",
+          "invisible group-hover/row:visible",
+          (selected || menuOpen) && "visible",
+        )}
+      >
+        <ClipButton
+          label="A"
+          title="Play the original audio for this span"
+          url={sourceUrl}
+          playing={playingUrl != null && playingUrl === sourceUrl}
+          onPlay={onPlay}
+        />
+        <ClipButton
+          label="B"
+          title={
+            seg.keep
+              ? "This line is kept, so the original audio is what plays"
+              : "Play what actually went into the mix, after time-fitting"
+          }
+          url={dubUrl}
+          playing={playingUrl != null && playingUrl === dubUrl}
+          onPlay={onPlay}
+        />
+        <RowMenu
+          seg={seg}
+          open={menuOpen}
+          setOpen={(open) => {
+            if (open) onSelect(seg.uid);
+            setMenuOpen(open);
+          }}
+          onCorrect={() => onEdit({ uid: seg.uid, field: "text" })}
+          onToggleKeep={() => onToggleKeep(seg)}
+        />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Memoized on purpose, and the callbacks above it are all stable: a two-hundred
+ * row list re-rendering every row on every `timeupdate` (four times a second,
+ * while playing) is the difference between a scrub that tracks the audio and
+ * one that stutters.
+ */
+export const ScriptRow = memo(Row);
+
+/**
+ * One line of text that turns into a field where it stands.
+ *
+ * "Where it stands" is the requirement and it is why the static paragraph
+ * carries the same padding, radius and border box as the textarea, with the
+ * border merely transparent: a click that shifts the text by three pixels
+ * makes the user re-find the word they were aiming at.
+ */
+function Line({
+  seg,
+  field,
+  value,
+  editing,
+  placeholder,
+  className,
+  selected,
+  readOnly,
+  onEdit,
+  onCommit,
+}: {
+  seg: Segment;
+  field: "text" | "text_en";
+  value: string;
+  editing: boolean;
+  placeholder: string;
+  className?: string;
+  selected: boolean;
+  readOnly?: boolean;
+  onEdit: (target: EditTarget) => void;
+  onCommit: (uid: string, field: "text" | "text_en", value: string) => void;
+}) {
+  if (editing) {
+    return (
+      <RowEditor
+        initial={value}
+        className={className}
+        onCancel={() => onEdit(null)}
+        onCommit={(next) => onCommit(seg.uid, field, next)}
+      />
+    );
+  }
+
+  return (
+    <p
+      dir="auto"
+      data-line={field}
+      onClick={readOnly ? undefined : () => onEdit({ uid: seg.uid, field })}
+      className={cn(
+        "auto-dir rounded-lg border border-transparent px-2 py-1",
+        // Never an ellipsis: a clamp hides *lines*, a truncate hides the end of
+        // a sentence — and the end of a translated sentence is exactly where
+        // the mistakes are. The selected row is uncapped.
+        selected ? "whitespace-pre-wrap" : "line-clamp-2",
+        !readOnly && "cursor-text hover:border-border",
+        !value && "italic text-muted",
+        className,
+      )}
+    >
+      {value || placeholder}
+    </p>
+  );
+}
+
+/**
+ * The field itself.
+ *
+ * Three rules, each of which was a bug:
+ *
+ * 1. **The draft is seeded once, on mount, and never re-seeded.** The old
+ *    inspector re-synced its draft from props on every change of `seg.text_en`
+ *    — so a background job completing, or the 250ms refetch the event stream
+ *    schedules, silently threw away whatever the user was in the middle of
+ *    typing. Mounting the editor *with* the value and never looking at props
+ *    again makes a refetch structurally unable to reach it.
+ * 2. **An empty commit is refused, never sent.** `edit.set_text` 400s on it —
+ *    "a dubbed segment must say something" — and a user who wants the line gone
+ *    wants Keep original, which is a different button with a different meaning.
+ * 3. **Blur commits, Escape reverts**, and Escape has to win: it blurs the
+ *    field on its way out, so the blur handler has to know it was cancelled.
+ */
+function RowEditor({
+  initial,
+  className,
+  onCommit,
+  onCancel,
+}: {
+  initial: string;
+  className?: string;
+  onCommit: (value: string) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState(initial);
+  const cancelled = useRef(false);
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    ref.current?.focus();
+    ref.current?.setSelectionRange(initial.length, initial.length);
+    // Once, on mount. Re-running this on `initial` would re-seed the draft,
+    // which is precisely rule 1 above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const commit = () => {
+    if (cancelled.current) return;
+    // Rule 2. Refused before it is ever sent — and refused by *reverting*,
+    // because a field that will not close until you type something is a trap:
+    // the user who emptied the line meant Keep original, and they can still
+    // reach it with the line intact.
+    if (!draft.trim()) {
+      onCancel();
+      return;
+    }
+    onCommit(draft.trim());
+  };
+
+  return (
+    <span className="flex flex-col">
+      {/*
+        `dir="auto"` and not just the `.auto-dir` class: the class sets
+        `unicode-bidi: plaintext`, which is enough to *render* a Hebrew line
+        right-to-left, but a textarea also has a caret, a selection and a
+        home/end key, and those follow the element's direction. A Hebrew
+        line typed into an LTR box puts the cursor in the wrong place on
+        every keystroke.
+      */}
+      <TextArea
+        ref={ref}
+        dir="auto"
+        data-editing
+        autoGrow
+        value={draft}
+        onChange={(event) => setDraft(event.currentTarget.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            event.stopPropagation();
+            cancelled.current = true;
+            onCancel();
+          }
+          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            event.preventDefault();
+            commit();
+          }
+          // The list's own ↑/↓/space/a/b bindings must not fire mid-word.
+          event.stopPropagation();
+        }}
+        className={cn("auto-dir min-h-0 rounded-lg px-2 py-1", className)}
+      />
+      {!draft.trim() ? (
+        <span className="px-2 pt-0.5 text-[11px] text-critical">
+          A dubbed line has to say something — switch it to Keep original instead.
+        </span>
+      ) : (
+        <span className="px-2 pt-0.5 text-[11px] text-muted">⌘↵ or click away to save</span>
+      )}
+    </span>
+  );
+}
+
+/** A/B, one clip each, on the app's single shared audio element. */
+function ClipButton({
+  label,
+  title,
+  url,
+  playing,
+  onPlay,
+}: {
+  label: string;
+  title: string;
+  url: string | null;
+  playing: boolean;
+  onPlay: (url: string | null) => void;
+}) {
+  return (
+    <button
+      type="button"
+      data-clip={label}
+      data-url={url ?? ""}
+      disabled={!url}
+      aria-pressed={playing}
+      title={url ? title : "No audio for this side yet"}
+      onClick={() => onPlay(url)}
+      className={cn(
+        "inline-flex h-6 items-center gap-0.5 rounded-md border px-1.5 text-[11px] font-bold",
+        "transition-colors",
+        playing
+          ? "border-primary bg-primary text-on-primary"
+          : "border-border bg-raised text-secondary hover:border-axis hover:text-primary",
+        !url && "cursor-not-allowed opacity-40",
+      )}
+    >
+      {playing ? (
+        <Pause className="h-2.5 w-2.5 fill-current" aria-hidden />
+      ) : (
+        <Play className="h-2.5 w-2.5 fill-current" aria-hidden />
+      )}
+      {label}
+    </button>
+  );
+}
+
+/**
+ * The row's overflow menu.
+ *
+ * Portalled to `<body>` and positioned from the trigger's own rect, because the
+ * script list is an `overflow-auto` container: an absolutely-positioned panel
+ * inside it is clipped at the container's edge, which means the menu on the
+ * last visible row — the one you are most likely to be reaching for — would
+ * open into nothing.
+ */
+function RowMenu({
+  seg,
+  open,
+  setOpen,
+  onCorrect,
+  onToggleKeep,
+}: {
+  seg: Segment;
+  open: boolean;
+  setOpen: (open: boolean) => void;
+  onCorrect: () => void;
+  onToggleKeep: () => void;
+}) {
+  const trigger = useRef<HTMLButtonElement>(null);
+  const [at, setAt] = useState<{ top: number; left: number } | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const rect = trigger.current?.getBoundingClientRect();
+    if (rect) setAt({ top: rect.bottom + 4, left: Math.max(8, rect.right - 200) });
+    const close = () => setOpen(false);
+    // Any scroll moves the trigger out from under the panel, so the panel goes.
+    document.addEventListener("mousedown", close);
+    window.addEventListener("scroll", close, true);
+    document.addEventListener("keydown", onEscape);
+    function onEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        setOpen(false);
+      }
+    }
+    return () => {
+      document.removeEventListener("mousedown", close);
+      window.removeEventListener("scroll", close, true);
+      document.removeEventListener("keydown", onEscape);
+    };
+  }, [open, setOpen]);
+
+  const item = (label: string, run: () => void) => (
+    <button
+      type="button"
+      onClick={() => {
+        setOpen(false);
+        run();
+      }}
+      className="w-full rounded-md px-2 py-1.5 text-left text-[12.5px] text-secondary transition-colors hover:bg-sunken hover:text-primary"
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <>
+      <button
+        ref={trigger}
+        type="button"
+        aria-label={`More actions for segment ${seg.id}`}
+        aria-expanded={open}
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen(!open);
+        }}
+        className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-border bg-raised text-secondary transition-colors hover:border-axis hover:text-primary"
+      >
+        <MoreHorizontal className="h-3 w-3" aria-hidden />
+      </button>
+      {open && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              role="menu"
+              onMouseDown={(event) => event.stopPropagation()}
+              style={{ top: at?.top ?? 0, left: at?.left ?? 0 }}
+              className="fixed z-50 w-50 rounded-xl border border-border bg-raised p-1 shadow-pop"
+            >
+              {item("Correct transcript", onCorrect)}
+              {item(seg.keep ? "Dub this line" : "Keep original audio", onToggleKeep)}
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
