@@ -8,11 +8,11 @@
 The shell has no sidecar to compile — the pipeline stays a Python checkout the app
 drives with `uv` — so all this does is get the web UI into place and drive Tauri.
 
-    uv run scripts/build_desktop.py check     # toolchain + a dist to point Tauri at
-    uv run scripts/build_desktop.py ui        # pnpm build in app/ui, copy dist here
-    uv run scripts/build_desktop.py dev       # pnpm tauri dev (Vite on :1430)
-    uv run scripts/build_desktop.py build     # pnpm tauri build  -> .app / .dmg
-    uv run scripts/build_desktop.py build --debug
+    uv run --script scripts/build_desktop.py check     # toolchain + a dist to point Tauri at
+    uv run --script scripts/build_desktop.py ui        # pnpm build in app/ui, copy dist here
+    uv run --script scripts/build_desktop.py dev       # pnpm tauri dev (Vite on :1430)
+    uv run --script scripts/build_desktop.py build     # pnpm tauri build  -> .app / .dmg
+    uv run --script scripts/build_desktop.py build --debug
 
 `check` is wired as app/desktop's `pretauri` hook, so it runs before every `pnpm tauri
 …`; `ui` is the `build` script, which tauri.conf.json runs as `beforeBuildCommand`.
@@ -43,7 +43,7 @@ PLACEHOLDER = """<!doctype html>
 </style>
 <h1>Dubbing Studio</h1>
 <p>This is the placeholder shell frontend. The real UI is built from
-  <code>app/ui</code>; run <code>uv run scripts/build_desktop.py ui</code> to put it
+  <code>app/ui</code>; run <code>uv run --script scripts/build_desktop.py ui</code> to put it
   here.</p>
 """
 
@@ -53,18 +53,27 @@ def run(cmd: list[str], cwd: Path, env: dict | None = None) -> None:
     subprocess.run(cmd, cwd=cwd, check=True, env=env)
 
 
+# Where a tool lives when it is installed but not on the PATH a GUI or a hook inherits.
+# rustup's shims are the usual casualty; Homebrew's bin is the other.
+FALLBACK_DIRS = (Path.home() / ".cargo" / "bin", Path("/opt/homebrew/bin"), Path("/usr/local/bin"))
+
+
 def require(tool: str) -> str:
     """Locate a build tool, honouring the same env override the shell uses for uv."""
     override = os.environ.get(f"DUBSTUDIO_{tool.upper()}_PATH")
     if override and Path(override).is_file():
         return override
     found = shutil.which(tool)
-    if not found:
-        raise SystemExit(
-            f"error: {tool} not found on PATH. Install it, or set "
-            f"DUBSTUDIO_{tool.upper()}_PATH to its location."
-        )
-    return found
+    if found:
+        return found
+    for directory in FALLBACK_DIRS:
+        candidate = directory / tool
+        if candidate.is_file():
+            return str(candidate)
+    raise SystemExit(
+        f"error: {tool} not found on PATH. Install it, or set "
+        f"DUBSTUDIO_{tool.upper()}_PATH to its location."
+    )
 
 
 def write_placeholder() -> None:
@@ -110,10 +119,19 @@ def cmd_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def cargo_env() -> dict:
+    """The Tauri CLI shells out to cargo, so cargo has to be on *its* PATH."""
+    env = os.environ.copy()
+    cargo_bin = str(Path(require("cargo")).parent)
+    if cargo_bin not in env.get("PATH", "").split(os.pathsep):
+        env["PATH"] = cargo_bin + os.pathsep + env.get("PATH", "")
+    return env
+
+
 def cmd_dev(args: argparse.Namespace) -> int:
     pnpm = require("pnpm")
     ensure_desktop_install(pnpm)
-    run([pnpm, "tauri", "dev"], cwd=DESKTOP_DIR)
+    run([pnpm, "tauri", "dev"], cwd=DESKTOP_DIR, env=cargo_env())
     return 0
 
 
@@ -126,7 +144,7 @@ def cmd_build(args: argparse.Namespace) -> int:
         cmd.append("--debug")
     if args.target:
         cmd += ["--target", args.target]
-    run(cmd, cwd=DESKTOP_DIR)
+    run(cmd, cwd=DESKTOP_DIR, env=cargo_env())
     profile = "debug" if args.debug else "release"
     bundle = DESKTOP_DIR / "src-tauri" / "target" / profile / "bundle"
     print(f"\nbundles under {bundle}")

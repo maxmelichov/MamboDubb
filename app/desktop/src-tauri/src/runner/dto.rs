@@ -30,7 +30,10 @@ pub fn parse_ready_line(line: &str) -> Result<ReadySignal, String> {
     let signal: ReadySignal = serde_json::from_str(trimmed)
         .map_err(|err| format!("failed to parse ready signal ({err}): {trimmed}"))?;
     if signal.status != "ready" {
-        return Err(format!("unexpected studio server status: {}", signal.status));
+        return Err(format!(
+            "unexpected studio server status: {}",
+            signal.status
+        ));
     }
     if signal.port == 0 {
         return Err("studio server reported port 0".to_string());
@@ -73,7 +76,8 @@ mod tests {
 
     #[test]
     fn a_traceback_on_stdout_is_reported_verbatim() {
-        let err = parse_ready_line("ModuleNotFoundError: No module named 'dubbing_app'").unwrap_err();
+        let err =
+            parse_ready_line("ModuleNotFoundError: No module named 'dubbing_app'").unwrap_err();
         assert!(err.contains("ModuleNotFoundError"), "{err}");
     }
 

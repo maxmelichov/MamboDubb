@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "pretauri": "uv run ../../scripts/build_desktop.py check",
+    "pretauri": "uv run --script ../../scripts/build_desktop.py check",
     "tauri": "tauri",
     "dev": "pnpm --dir ../ui dev",
-    "build": "uv run ../../scripts/build_desktop.py ui"
+    "build": "uv run --script ../../scripts/build_desktop.py ui"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

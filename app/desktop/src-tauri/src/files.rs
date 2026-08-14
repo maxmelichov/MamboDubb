@@ -87,7 +87,9 @@ mod tests {
 
     #[tokio::test]
     async fn revealing_a_missing_path_is_an_error_not_a_panic() {
-        let err = reveal_path(PathBuf::from("/nope/nothing/here")).await.unwrap_err();
+        let err = reveal_path(PathBuf::from("/nope/nothing/here"))
+            .await
+            .unwrap_err();
         assert!(err.contains("does not exist"), "{err}");
     }
 }

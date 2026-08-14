@@ -121,7 +121,11 @@ impl RunnerProcess {
         if let Err(err) = reader.read_line(&mut line) {
             let stderr = tail(&stderr_ring);
             kill_child(&mut child);
-            return Err(start_error("failed to read ready signal", &err.to_string(), &stderr));
+            return Err(start_error(
+                "failed to read ready signal",
+                &err.to_string(),
+                &stderr,
+            ));
         }
 
         let signal: ReadySignal = match parse_ready_line(&line) {
@@ -335,7 +339,10 @@ mod tests {
             Err(err) => err,
         };
         assert!(err.contains("without a ready signal"), "{err}");
-        assert!(err.contains("ModuleNotFoundError"), "the stderr tail is shown: {err}");
+        assert!(
+            err.contains("ModuleNotFoundError"),
+            "the stderr tail is shown: {err}"
+        );
         let _ = std::fs::remove_file(&uv);
     }
 }
