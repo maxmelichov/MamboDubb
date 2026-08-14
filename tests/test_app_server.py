@@ -1088,6 +1088,24 @@ def test_watchdog_fires_when_the_parent_changes(monkeypatch):
     assert fired.wait(2.0)
 
 
+def test_stdin_watchdog_fires_on_eof():
+    # The shell holds the write end for its whole life; closing it is the signal.
+    read_fd, write_fd = __import__("os").pipe()
+    import os as _os
+    fired = threading.Event()
+    server.stdin_watchdog(stream=_os.fdopen(read_fd, "rb"), on_close=fired.set)
+    assert not fired.wait(0.1), "must not fire while the pipe is open"
+    _os.close(write_fd)
+    assert fired.wait(2.0), "EOF on stdin must shut the server down"
+
+
+def test_stdin_watchdog_is_opt_in():
+    args = server.parse_args(["--port", "0"])
+    assert args.exit_on_stdin_close is False
+    args = server.parse_args(["--port", "0", "--exit-on-stdin-close"])
+    assert args.exit_on_stdin_close is True
+
+
 def test_server_arg_defaults():
     args = server.parse_args(["--host", "127.0.0.1", "--port", "0"])
     assert args.host == "127.0.0.1" and args.port == 0

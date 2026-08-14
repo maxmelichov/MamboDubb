@@ -33,7 +33,7 @@ machine, and a Tauri shell adds nothing until we package for other people.
 
 ## Process contract (server)
 
-`uv run python -m dubbing_app.server --host 127.0.0.1 --port 0 [--outputs DIR] [--ui-dir DIR]`
+`uv run python -m dubbing_app.server --host 127.0.0.1 --port 0 [--outputs DIR] [--ui-dir DIR] [--exit-on-stdin-close]`
 
 1. Bind the port (0 = OS-assigned).
 2. Print **exactly one line** of JSON to stdout, then flush:
@@ -41,6 +41,10 @@ machine, and a Tauri shell adds nothing until we package for other people.
 3. Serve. Logs go to stderr, never stdout — stdout is the handshake channel.
 4. Watchdog: poll `os.getppid()` every second; exit(0) when it changes, so a crashed
    parent never leaves a pipeline running. Skip when the parent is already init (pid 1).
+5. `--exit-on-stdin-close` (the desktop shell always passes it, and pipes stdin rather
+   than nulling it): exit(0) on stdin EOF. The ppid watchdog cannot see through the
+   `uv run` wrapper — a wrapper that outlives the shell keeps the server's parent chain
+   "alive" and leaks a listening server per app launch; the closed pipe cannot lie.
 
 This is deliberately the same handshake `translator/worker.py` already uses, and what a
 Tauri shell would parse.

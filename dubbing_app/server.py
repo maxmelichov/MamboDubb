@@ -46,6 +46,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "pass an empty string to serve the API only)")
     p.add_argument("--no-watchdog", action="store_true",
                    help="do not exit when the parent process goes away")
+    p.add_argument("--exit-on-stdin-close", action="store_true",
+                   help="exit when stdin reaches EOF (the desktop shell holds the "
+                        "other end of the pipe, so EOF means the shell is gone)")
     return p.parse_args(argv)
 
 
@@ -84,6 +87,35 @@ def watchdog(on_orphan=None, interval: float = WATCHDOG_INTERVAL) -> threading.T
     return thread
 
 
+def stdin_watchdog(stream=None, on_close=None) -> threading.Thread:
+    """Exit when stdin closes.
+
+    The ppid watchdog cannot see through `uv run`: killing the shell kills the
+    wrapper, but a wrapper that survives (or a shell that was SIGKILLed before
+    its Drop ran) leaves this server's parent chain alive and a stray server
+    listening forever — that is exactly the leak that produced five orphaned
+    servers in one afternoon of app relaunches. The pipe does not lie: the shell
+    holds the write end of stdin for the process's whole life, and EOF here
+    means it is gone, no matter what happened to the pids in between. Blocking
+    `read()` costs nothing and needs no polling.
+    """
+    stream = stream if stream is not None else sys.stdin.buffer
+    exit_ = on_close or (lambda: os._exit(0))
+
+    def loop() -> None:
+        try:
+            while stream.read(4096):
+                pass  # the shell never writes; drain defensively anyway
+        except Exception:
+            pass  # a broken pipe is the same news as EOF
+        print("stdin closed; shutting down", file=sys.stderr, flush=True)
+        exit_()
+
+    thread = threading.Thread(target=loop, name="stdin-watchdog", daemon=True)
+    thread.start()
+    return thread
+
+
 def configure_logging() -> dict:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr,
                         format="%(levelname)s %(name)s: %(message)s")
@@ -117,6 +149,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.no_watchdog:
         watchdog()
+    if args.exit_on_stdin_close:
+        stdin_watchdog()
 
     announce(port)
     served = getattr(app.state, "ui_dir", None)
