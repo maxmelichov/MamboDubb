@@ -807,6 +807,99 @@ def test_worker_rejects_an_unknown_kind(outputs):
         real.run(job, lambda e: None)
 
 
+# ------------------------------------------- edits made while a job is running
+
+def edit_on_disk(workdir, uid, **fields):
+    """Exactly what `PATCH /segments/{uid}` does: load, one ops setter, save."""
+    disk = manifest.load(workdir)
+    if "locked" in fields:
+        ops.set_locked(disk, uid, fields.pop("locked"))
+    if fields:
+        ops.set_text(disk, uid, **fields)
+    manifest.save(workdir, disk)
+
+
+def test_a_job_does_not_overwrite_edits_made_while_it_ran(outputs, monkeypatch):
+    """The job child holds its own copy of the manifest for minutes while the
+    server keeps answering PATCHes against the same file — the contract says
+    no-model edits never wait for a job. Saving that copy at the end used to throw
+    every one of those edits away."""
+    from dubbing_app import worker
+
+    workdir = outputs / NAME
+    segs = manifest.load(workdir)["segments"]
+    target, edited = segs[1]["uid"], segs[3]["uid"]
+
+    def fake_retranslate(m, wd, uids, *, progress=None):
+        edit_on_disk(wd, edited, text_en="hand corrected")     # the user, mid-job
+        for uid in uids:
+            ops.find(m, uid)["text_en"] = "machine"
+        return {uid: "machine" for uid in uids}
+
+    monkeypatch.setattr(ops, "retranslate", fake_retranslate)
+    worker.execute({"kind": "retranslate", "workdir": str(workdir),
+                    "payload": {"uids": [target]}})
+
+    saved = manifest.load(workdir)
+    assert ops.find(saved, edited)["text_en"] == "hand corrected"
+    assert ops.find(saved, edited)["locked"] == {"text_en": True}
+    assert ops.find(saved, target)["text_en"] == "machine"     # the job still lands
+
+
+def test_a_job_replays_a_lock_release_made_while_it_ran(outputs, monkeypatch):
+    """`PATCH {"locked": {}}` deletes a key rather than changing one, so a merge
+    that only looked at what is *present* on disk would silently re-lock it."""
+    from dubbing_app import worker
+
+    workdir = outputs / NAME
+    edited = manifest.load(workdir)["segments"][3]["uid"]
+    edit_on_disk(workdir, edited, text_en="hand corrected")
+    assert ops.find(manifest.load(workdir), edited)["locked"] == {"text_en": True}
+
+    def fake_resynthesize(m, wd, uids, *, progress=None):
+        edit_on_disk(wd, edited, locked={})                    # hand it back
+        return {}
+
+    monkeypatch.setattr(ops, "resynthesize", fake_resynthesize)
+    worker.execute({"kind": "resynthesize", "workdir": str(workdir), "payload": {"uids": []}})
+
+    assert not ops.find(manifest.load(workdir), edited).get("locked")
+
+
+def test_a_render_merges_at_every_stage_save(outputs, monkeypatch):
+    """`dubbing.edit.rebuild` writes after each stage, so the end-of-job merge is
+    not enough — every one of those writes is a chance to clobber a live edit."""
+    from dubbing_app import worker
+
+    workdir = outputs / NAME
+    edited = manifest.load(workdir)["segments"][3]["uid"]
+
+    def fake_rebuild(m, wd, *, from_stage, progress=None, save=None):
+        assert save is not None, "the child must own the write path"
+        edit_on_disk(wd, edited, text_en="hand corrected")
+        save()                                    # what rebuild does per stage
+        assert ops.find(m, edited)["text_en"] == "hand corrected"
+        return [from_stage]
+
+    monkeypatch.setattr(ops, "rebuild", fake_rebuild)
+    worker.execute({"kind": "render", "workdir": str(workdir), "payload": {}})
+    assert ops.find(manifest.load(workdir), edited)["text_en"] == "hand corrected"
+
+
+def test_a_job_keeps_its_own_work_when_nothing_else_changed(outputs):
+    """The merge must only replay what actually moved on disk — re-applying an
+    untouched disk copy wholesale would revert the job itself."""
+    from dubbing_app.worker import Journal
+
+    workdir = outputs / NAME
+    m = manifest.load(workdir)
+    journal = Journal(workdir, m)
+    uid = m["segments"][1]["uid"]
+    ops.find(m, uid)["text_en"] = "machine"
+    assert journal.merge(manifest.load(workdir)) == []
+    assert ops.find(m, uid)["text_en"] == "machine"
+
+
 # ---------------------------------------------------------------------------
 # process contract
 # ---------------------------------------------------------------------------

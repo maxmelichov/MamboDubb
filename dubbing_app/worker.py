@@ -14,6 +14,7 @@ printed.
 
 from __future__ import annotations
 
+import copy
 import json
 import sys
 import traceback
@@ -31,6 +32,73 @@ def emit(event: dict[str, Any]) -> None:
 
 def log(message: str, level: str = "info") -> None:
     emit({"type": "log", "level": level, "message": message})
+
+
+_ABSENT = object()
+
+
+class Journal:
+    """The manifest write path for a job child, edit-safe.
+
+    The child loads the manifest once and then works on its own copy for minutes.
+    The server keeps answering `PATCH /segments/{uid}` against the same file the
+    whole time — that is the contract, no-model edits never wait for a job — so a
+    plain `manifest.save` at the end silently throws away every edit made while
+    the job ran.
+
+    Each save therefore re-reads the file first and re-applies whatever changed on
+    disk since this child last wrote: a hand-edit outranks the machine's work,
+    which is the same rule `manifest.reset_stage` follows for `locked` fields.
+    Comparing against a snapshot rather than against `locked` alone is what makes
+    a *release* (`PATCH {"locked": {}}`, which deletes keys) replay too.
+
+    Matching by `uid` is enough: structural edits renumber segments and the server
+    refuses them outright while a job is running (`guard_structural`), so the
+    segment set cannot change underneath this.
+    """
+
+    # `id` is positional and belongs to whoever renumbered last; `uid` is identity.
+    SKIP = frozenset({"id", "uid"})
+
+    def __init__(self, workdir: Path, m: dict[str, Any]) -> None:
+        self.workdir = workdir
+        self.m = m
+        self.base = self._snapshot(m)
+
+    @staticmethod
+    def _snapshot(m: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        return {seg["uid"]: copy.deepcopy(seg)
+                for seg in (m.get("segments") or []) if seg.get("uid")}
+
+    def merge(self, disk: dict[str, Any] | None) -> list[str]:
+        """Re-apply onto our copy the edits `disk` gained since our last write."""
+        if not disk:
+            return []
+        mine = {seg["uid"]: seg for seg in (self.m.get("segments") or []) if seg.get("uid")}
+        touched: list[str] = []
+        for seg in disk.get("segments") or []:
+            uid = seg.get("uid")
+            was, ours = self.base.get(uid), mine.get(uid)
+            if was is None or ours is None:
+                continue
+            for key in manifest.SEGMENT_KEYS - self.SKIP:
+                old, new = was.get(key, _ABSENT), seg.get(key, _ABSENT)
+                if old == new:
+                    continue                      # nobody touched it while we worked
+                if new is _ABSENT:
+                    ours.pop(key, None)
+                else:
+                    ours[key] = copy.deepcopy(new)
+                if uid not in touched:
+                    touched.append(uid)
+        return touched
+
+    def save(self) -> None:
+        merged = self.merge(manifest.load(self.workdir))
+        if merged:
+            log(f"kept {len(merged)} segment edit(s) made while this job ran")
+        manifest.save(self.workdir, self.m)
+        self.base = self._snapshot(self.m)
 
 
 def execute(spec: dict[str, Any]) -> Any:
@@ -51,6 +119,7 @@ def execute(spec: dict[str, Any]) -> Any:
         raise RuntimeError(f"no manifest in {workdir}")
     ops.ensure_uids(m)
     uids = list(payload.get("uids") or [])
+    journal = Journal(workdir, m)
 
     try:
         if kind == "retranslate":
@@ -58,14 +127,17 @@ def execute(spec: dict[str, Any]) -> Any:
         elif kind == "resynthesize":
             result = ops.resynthesize(m, workdir, uids, progress=emit)
         elif kind == "render":
-            ops.rebuild(m, workdir, from_stage="timeline", progress=emit)
+            # `rebuild` saves after every stage, and each of those writes is a
+            # chance to clobber a live edit — so it gets the journal, not `save`.
+            ops.rebuild(m, workdir, from_stage="timeline", progress=emit,
+                        save=journal.save)
             result = {"preview": "preview.mp4"}
         else:
             raise RuntimeError(f"unknown job kind {kind!r}")
     finally:
         # Whatever happened, persist what got done — the pipeline resumes from the
         # manifest, so a half-finished job must not throw its work away.
-        manifest.save(workdir, m)
+        journal.save()
     return result
 
 
