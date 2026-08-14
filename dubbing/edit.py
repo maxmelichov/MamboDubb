@@ -399,8 +399,8 @@ def merge(m: dict[str, Any], uid_a: str, uid_b: str) -> str:
     merged["keep"] = bool(a.get("keep") and b.get("keep"))
     merged["keep_reason"] = (a.get("keep_reason")
                              if merged["keep"] and a.get("keep_reason") == b.get("keep_reason")
-                             else ("manual" if merged["keep"] else None))
-    for key in ("lang", "src_lang", "tgt_lang", "tts_opts"):
+                             else (MANUAL_REASON if merged["keep"] else None))
+    for key in ("lang", "src_lang", "tgt_lang", "tts_opts", "passthrough"):
         if a.get(key) != b.get(key):
             merged.pop(key, None)
     m["segments"][i:j + 1] = [merged]
@@ -416,6 +416,12 @@ def _derived(seg: dict[str, Any], *, start: float, end: float, text: str) -> dic
     old uid named, and a UI still pointing at that uid must be told so rather than
     silently shown a different piece of audio. Locks go too: they were the user's
     approval of text that no longer exists.
+
+    `passthrough` does not: it is the user's word about the SPAN, not about the
+    text, and every second of the span is still covered by the pieces carved out
+    of it. Dropped, it would survive as far as the next re-segmentation and no
+    further — `mark_keep` would re-decide both halves with no override left for
+    `carry_passthrough` to re-attach, and the passage would be dubbed again.
     """
     out: dict[str, Any] = {
         "id": seg.get("id", 0),
@@ -427,7 +433,7 @@ def _derived(seg: dict[str, Any], *, start: float, end: float, text: str) -> dic
         "keep": bool(seg.get("keep")),
         "keep_reason": seg.get("keep_reason") if seg.get("keep") else None,
     }
-    for key in ("lang", "src_lang", "tgt_lang", "tts_opts"):
+    for key in ("lang", "src_lang", "tgt_lang", "tts_opts", "passthrough"):
         if seg.get(key) is not None:
             out[key] = seg[key]
     return out

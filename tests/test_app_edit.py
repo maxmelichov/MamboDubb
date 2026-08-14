@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from dubbing import cli, edit, manifest, timeline, translate
+from dubbing import cli, edit, manifest, segments, timeline, translate
 from dubbing import tts as tts_mod
 
 
@@ -562,6 +562,38 @@ def test_merge_keeps_only_when_both_halves_were_kept():
             seg(id=1, start=2.0, end=4.0, text="bb"))
     uid2 = edit.merge(m2, *(s["uid"] for s in m2["segments"]))
     assert not edit.find(m2, uid2)["keep"]
+
+
+def test_a_split_carries_the_users_verdict_about_the_span():
+    # `passthrough` is the user's word about the SPAN, not about the text, and a
+    # split leaves every second of that span covered. Dropped, the halves' `keep`
+    # survives only until the next `python -m dubbing`: the segments stage rebuilds
+    # from scratch, `mark_keep` re-decides both halves, and there is no override
+    # left for `carry_passthrough` to re-attach — the passage is dubbed again.
+    m = mk(seg(start=0.0, end=4.0, text="aa bb cc dd", keep=True,
+               keep_reason="user", passthrough=True))
+    edit.split(m, m["segments"][0]["uid"], 2.0)
+    assert [s.get("passthrough") for s in m["segments"]] == [True, True]
+    assert segments.saved_overrides(m["segments"]) == [(0.0, 2.0, True), (2.0, 4.0, True)]
+
+
+def test_a_merge_carries_an_override_only_when_both_halves_agreed():
+    both = mk(seg(start=0.0, end=2.0, text="aa", keep=True, keep_reason="user",
+                  passthrough=True),
+              seg(id=1, start=2.0, end=4.0, text="bb", keep=True, keep_reason="user",
+                  passthrough=True))
+    a, b = (s["uid"] for s in both["segments"])
+    edit.merge(both, a, b)
+    assert both["segments"][0]["passthrough"] is True
+
+    # Disagreement has no answer, so the merged span carries none — same rule the
+    # language and synthesis overrides already follow.
+    split_minds = mk(seg(start=0.0, end=2.0, text="aa", keep=True,
+                         keep_reason="user", passthrough=True),
+                     seg(id=1, start=2.0, end=4.0, text="bb", passthrough=False))
+    a, b = (s["uid"] for s in split_minds["segments"])
+    edit.merge(split_minds, a, b)
+    assert "passthrough" not in split_minds["segments"][0]
 
 
 def test_structural_edits_leave_the_list_ordered_and_non_overlapping():
