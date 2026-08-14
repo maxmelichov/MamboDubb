@@ -188,9 +188,32 @@ await new Promise((resolve) => setTimeout(resolve, 600));
 
 const editor = root.textContent;
 check("editor renders", /Render preview/.test(editor));
-check("legend names every state", ["Dubbed", "Kept original", "Failed", "Unclaimed time"].every((s) => editor.includes(s)));
-check("segments loaded", document.querySelectorAll("tbody tr").length > 40);
+check("segments loaded", document.querySelectorAll('[role="option"]').length > 40);
 check("timeline drew marks", document.querySelectorAll('[aria-label^="Segment "]').length > 40);
+
+/*
+ * Chrome that is not permanent. The legend and the shortcut list live behind
+ * one "?" button now — so the assertion is not "they are on screen", it is
+ * "they are one click away and complete when you get there". The run's census
+ * stays visible, because that is data and it changes.
+ */
+check("the toolbar counts the run", /\d+\s*dubbed/.test(editor));
+check("the legend is not permanent chrome", !editor.includes("Unclaimed time"));
+const help = [...document.querySelectorAll("button")].find(
+  (b) => b.getAttribute("aria-label") === "Legend and keyboard shortcuts",
+);
+if (!help) throw new Error("smoke: no legend/shortcuts popover trigger");
+help.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+await new Promise((resolve) => setTimeout(resolve, 120));
+const helpText = root.textContent;
+check(
+  "the popover names every state",
+  ["Dubbed", "Kept original", "Failed", "Unclaimed time"].every((s) => helpText.includes(s)),
+);
+check("the popover lists the shortcuts", /play \/ pause/.test(helpText) && /zoom the timeline/.test(helpText));
+help.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+await new Promise((resolve) => setTimeout(resolve, 120));
+check("the popover closes again", !/play \/ pause/.test(root.textContent));
 
 // No panel in the editor may be blank. With nothing selected the rail is the
 // run's report, and the preview stage says why there is no picture rather than
@@ -200,19 +223,82 @@ check("uncovered speech is surfaced", /Audible, uncovered/.test(editor));
 check("the empty preview explains itself", /there is no video/.test(editor));
 check("the preview shows the pipeline position", /stages done/.test(editor));
 
-// The table is one tab stop with a roving tabindex, not fifty-eight, and it is
-// a grid so `aria-selected` on a row means something.
-check("the segment table is reachable by keyboard", document.querySelector('tbody tr[tabindex="0"]') != null);
-check("only one row is a tab stop", document.querySelectorAll('tbody tr[tabindex="0"]').length === 1);
+// The navigator is one tab stop with a roving tabindex, not fifty-eight, and
+// it is a listbox so `aria-selected` on a row means something.
+check(
+  "the segment navigator is reachable by keyboard",
+  document.querySelector('[role="option"][tabindex="0"]') != null,
+);
+check(
+  "only one row is a tab stop",
+  document.querySelectorAll('[role="option"][tabindex="0"]').length === 1,
+);
+// The navigator carries the state as a word, which is the relief for the two
+// hues that sit under 3:1 — the legend is behind a popover now, so this is the
+// only place the encoding is spelled out on screen.
+check(
+  "every row says its state in words",
+  [...document.querySelectorAll('[role="option"]')].every((row) =>
+    /Dub|Keep|Fail|Wait/.test(row.textContent),
+  ),
+);
 
 // Select a segment and confirm the inspector fills in.
-document.querySelectorAll("tbody tr")[1].dispatchEvent(
-  new dom.window.MouseEvent("click", { bubbles: true }),
-);
+const rows = () => [...document.querySelectorAll('[role="option"]')];
+rows()[1].dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
 await new Promise((resolve) => setTimeout(resolve, 200));
 const withInspector = root.textContent;
-check("inspector opens on selection", /Verification/.test(withInspector));
+check("inspector opens on selection", /Translation/.test(withInspector));
 check("inspector has A\\/B playback", /Original/.test(withInspector) && /Kept \(same audio\)|Dubbed/.test(withInspector));
+
+/*
+ * The rail's whole premise: the four frequent things are on it and everything
+ * else is on a named shelf that starts shut. Both halves are asserted — a
+ * redesign that quietly leaves a shelf open by default has not reduced
+ * anything.
+ */
+check(
+  "the frequent controls are on the surface",
+  ["Original", "Translation", "Dub it", "Keep original", "Re-voice this line"].every((s) =>
+    withInspector.includes(s),
+  ),
+);
+check("the model actions state their cost", /~1 min · queues/.test(withInspector));
+const shelves = [...document.querySelectorAll("aside details")];
+check("the rest is on named shelves", shelves.length === 3);
+check(
+  "the shelves are named for what is on them",
+  ["Voice & speaker", "Languages", "Advanced"].every((label) =>
+    shelves.some((d) => d.querySelector("summary").textContent.includes(label)),
+  ),
+);
+check("every shelf starts shut", shelves.every((d) => !d.open));
+check("a shut shelf still summarises itself", /inherit → inherit/.test(withInspector));
+// `<details>` keeps its content in the DOM either way, so "hidden" has to be
+// asked as "which shelf is this on, and is that shelf shut".
+const onAShutShelf = (text) => shelves.some((d) => !d.open && d.textContent.includes(text));
+check(
+  "the rare controls are shut away, not merely small",
+  ["Reference clip", "Split at playhead", "Translate into", "Correct the transcript"].every(
+    onAShutShelf,
+  ),
+);
+
+const voice = shelves.find((d) => d.querySelector("summary").textContent.includes("Voice"));
+voice.querySelector("summary").dispatchEvent(
+  new dom.window.MouseEvent("click", { bubbles: true }),
+);
+await new Promise((resolve) => setTimeout(resolve, 150));
+check("opening a shelf reveals its controls", voice.open && /Reference clip/.test(voice.textContent));
+check("verification lives with the voice that produced it", /Last take/.test(voice.textContent));
+check("the open state is remembered for the session",
+  dom.window.sessionStorage.getItem("dubbing-studio.open.seg.voice") === "1");
+voice.querySelector("summary").dispatchEvent(
+  new dom.window.MouseEvent("click", { bubbles: true }),
+);
+await new Promise((resolve) => setTimeout(resolve, 150));
+check("and closing is remembered too",
+  dom.window.sessionStorage.getItem("dubbing-studio.open.seg.voice") === "0");
 const click = (label) => {
   const button = [...document.querySelectorAll("button")].find((b) =>
     b.textContent.includes(label),
@@ -231,11 +317,17 @@ check(
   (root.textContent.match(/Kept original/g) ?? []).length > keptBefore,
 );
 
+// Back to dubbed — a kept line shows its *source* in the navigator, because
+// the source is what plays, and the re-translation below has to be visible.
+click("Dub it");
+await settle(200);
+check("the toggle goes both ways", /Dubbed/.test(root.textContent));
+
 // A model action must queue and report progress instead of blocking the UI.
-click("Re-translate");
+click("Re-translate this line");
 await settle(150);
 check("model action queues and reports", /Re-translating/.test(root.textContent));
-check("editor still interactive during a job", document.querySelectorAll("tbody tr").length > 40);
+check("editor still interactive during a job", rows().length > 40);
 
 // …and the finished job writes its result back through the event stream.
 await settle(900);

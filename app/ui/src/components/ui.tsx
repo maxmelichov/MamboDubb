@@ -14,9 +14,21 @@
  * - **Button**'s primary variant is *ink*, not colour. See App.css for why.
  * - Controls share one recipe (`controlBase`) so an input, a select and a
  *   button line up on the same baseline at the same height.
+ * - **Disclosure** and **Popover** are the two ways something leaves the
+ *   screen without leaving the app: a named shelf that remembers whether it is
+ *   open, and a panel hung off a button for reference material. Between them
+ *   they are why the editor fits.
  */
 
-import { useId, type ComponentProps, type ReactNode } from "react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type ComponentProps,
+  type ComponentPropsWithRef,
+  type ReactNode,
+} from "react";
 import { ChevronDown, TriangleAlert } from "lucide-react";
 import { cn } from "../lib/classNames";
 
@@ -180,7 +192,7 @@ export function Button({
   size = "md",
   className,
   ...props
-}: ComponentProps<"button"> & { variant?: ButtonVariant; size?: ControlSize }) {
+}: ComponentPropsWithRef<"button"> & { variant?: ButtonVariant; size?: ControlSize }) {
   return (
     <button
       type="button"
@@ -342,6 +354,199 @@ export function Checkbox({ className, ...props }: ComponentProps<"input">) {
       className={cn("h-3.5 w-3.5 shrink-0 accent-[var(--color-primary)]", className)}
       {...props}
     />
+  );
+}
+
+/* ------------------------------------------------------- progressive detail */
+
+/**
+ * Where the rest of it lives.
+ *
+ * The inspector holds about thirty controls and a reviewer touches four of
+ * them on a normal segment. The other twenty-six are not unimportant, they are
+ * *infrequent* — and the fix for infrequent is a shelf with its name on it, not
+ * a smaller font.
+ *
+ * Three rules make a shelf honest, and they are all enforced here rather than
+ * left to each caller:
+ *
+ * 1. **The label is a noun phrase for what is inside**, never "More" or an
+ *    ellipsis. If you cannot name the shelf, the things on it do not belong
+ *    together.
+ * 2. **A shut shelf still says what is on it.** `summary` is one line of the
+ *    current values, so the common case — "nothing overridden here" — is
+ *    answered without a click. A shelf that reveals nothing until opened is
+ *    just a hidden control.
+ * 3. **Closed is the default, and the session remembers otherwise.** Someone
+ *    working through fifty segments tuning voices opens "Voice & speaker" once
+ *    and it stays open for the rest of the sitting; someone who never touches
+ *    it never sees it. `sessionStorage` and not `localStorage` on purpose —
+ *    the memory should last exactly as long as the task does.
+ */
+const DISCLOSURE_KEY = "dubbing-studio.open.";
+
+function readOpen(id: string, fallback: boolean): boolean {
+  try {
+    const value = window.sessionStorage.getItem(DISCLOSURE_KEY + id);
+    return value == null ? fallback : value === "1";
+  } catch {
+    return fallback;
+  }
+}
+
+function writeOpen(id: string, open: boolean): void {
+  try {
+    window.sessionStorage.setItem(DISCLOSURE_KEY + id, open ? "1" : "0");
+  } catch {
+    // Remembering is a nicety; not remembering is not a failure.
+  }
+}
+
+export function Disclosure({
+  id,
+  icon: Icon,
+  label,
+  summary,
+  tone = "neutral",
+  defaultOpen = false,
+  className,
+  children,
+}: {
+  /** Stable across mounts — it is the sessionStorage key. */
+  id: string;
+  icon?: typeof TriangleAlert;
+  label: string;
+  /** One line of the current values, shown only while shut. */
+  summary?: ReactNode;
+  /** `warn` tints the shut summary, so a problem is visible without opening. */
+  tone?: "neutral" | "warn";
+  defaultOpen?: boolean;
+  className?: string;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(() => readOpen(id, defaultOpen));
+
+  return (
+    <details
+      open={open}
+      onToggle={(event) => {
+        const next = event.currentTarget.open;
+        setOpen(next);
+        writeOpen(id, next);
+      }}
+      className={cn("group border-t border-border", className)}
+    >
+      <summary
+        className={cn(
+          "flex cursor-pointer list-none items-center gap-2 py-2.5 transition-colors",
+          "hover:text-primary [&::-webkit-details-marker]:hidden",
+        )}
+      >
+        {Icon ? <Icon className="h-3.5 w-3.5 shrink-0 text-muted" aria-hidden /> : null}
+        <span className="shrink-0 text-[11px] font-bold uppercase tracking-[0.14em] text-secondary">
+          {label}
+        </span>
+        {summary ? (
+          <span
+            className={cn(
+              "min-w-0 flex-1 truncate text-right text-[11px] group-open:hidden",
+              tone === "warn" ? "font-semibold text-critical" : "text-muted",
+            )}
+          >
+            {summary}
+          </span>
+        ) : (
+          <span className="flex-1" />
+        )}
+        <ChevronDown
+          aria-hidden
+          className="h-3.5 w-3.5 shrink-0 text-muted transition-transform group-open:rotate-180"
+        />
+      </summary>
+      <div className="flex flex-col gap-3 pb-4">{children}</div>
+    </details>
+  );
+}
+
+/**
+ * A small panel hung off a button — the reference material that used to be
+ * printed permanently across the top of the timeline.
+ *
+ * A legend and a shortcut list are read twice: once on the first day, and once
+ * on the day you forget. Leaving them on screen for every other minute of
+ * every other day is how a workspace ends up with no room in it. The trigger
+ * keeps them one keystroke away and costs one button.
+ */
+export function Popover({
+  label,
+  trigger,
+  title,
+  align = "right",
+  className,
+  children,
+}: {
+  /** The trigger's accessible name. */
+  label: string;
+  trigger: ReactNode;
+  /** Heading inside the panel, and the panel's accessible name. */
+  title: string;
+  align?: "left" | "right";
+  className?: string;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrap = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      if (!wrap.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      // Escape closes and hands focus back, or the keyboard user is stranded
+      // wherever the panel put them.
+      event.stopPropagation();
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="relative" ref={wrap}>
+      <Button
+        ref={triggerRef}
+        size="sm"
+        aria-label={label}
+        aria-expanded={open}
+        title={label}
+        onClick={() => setOpen((v) => !v)}
+        className={open ? "border-primary" : undefined}
+      >
+        {trigger}
+      </Button>
+      {open ? (
+        <div
+          role="dialog"
+          aria-label={title}
+          className={cn(
+            "absolute top-full z-40 mt-1.5 w-80 rounded-xl border border-border bg-raised p-3.5 shadow-pop",
+            align === "right" ? "right-0" : "left-0",
+            className,
+          )}
+        >
+          <Eyebrow className="mb-2.5">{title}</Eyebrow>
+          {children}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

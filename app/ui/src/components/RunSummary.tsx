@@ -18,7 +18,7 @@ import { ArrowUpRight, ListChecks, TriangleAlert } from "lucide-react";
 import { cn } from "../lib/classNames";
 import { timecode } from "../lib/format";
 import { STATE_META, type SegmentState } from "../lib/segments";
-import { Eyebrow, Kbd, SectionLabel } from "./ui";
+import { Disclosure, Eyebrow, SectionLabel } from "./ui";
 import type { ProjectDetail } from "../lib/types";
 
 export function RunSummary({
@@ -38,15 +38,15 @@ export function RunSummary({
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
-      <header className="sticky top-0 z-10 border-b border-border bg-sunken px-4 py-3">
+      <header className="sticky top-0 z-10 border-b border-border bg-sunken px-4 py-2.5">
         <Eyebrow>This run</Eyebrow>
-        <p className="mt-1.5 text-[13px] font-semibold text-primary">
+        <p className="mt-1 text-[13px] font-semibold text-primary">
           {segments} segment{segments === 1 ? "" : "s"} over {timecode(total, 0)}
         </p>
       </header>
 
-      <div className="flex flex-col gap-4 p-4">
-        <section className="flex flex-col gap-2">
+      <div className="flex flex-col gap-3.5 px-4 py-3.5">
+        <section className="flex flex-col gap-1.5">
           <SectionLabel icon={ListChecks}>Coverage</SectionLabel>
           {(Object.keys(STATE_META) as SegmentState[]).map((state) => (
             <StateRow
@@ -76,7 +76,7 @@ export function RunSummary({
             </section>
 
             {gaps.length > 0 ? (
-              <section className="flex flex-col gap-2">
+              <section className="flex flex-col gap-1.5">
                 <SectionLabel icon={TriangleAlert}>
                   Audible, uncovered — {gaps.length}
                 </SectionLabel>
@@ -106,9 +106,15 @@ export function RunSummary({
               </section>
             ) : null}
 
+            {/* A breakdown by machine-readable reason code is diagnostic, not
+                a headline — it goes on a shelf like everything else of that
+                kind, with the total on the outside. */}
             {Object.keys(report.keep_reasons).length > 0 ? (
-              <section className="flex flex-col gap-2">
-                <SectionLabel>Why segments were kept</SectionLabel>
+              <Disclosure
+                id="run.keepReasons"
+                label="Why segments were kept"
+                summary={`${Object.keys(report.keep_reasons).length} reasons`}
+              >
                 <ul className="flex flex-col gap-1 text-[12px]">
                   {Object.entries(report.keep_reasons)
                     .sort((a, b) => b[1] - a[1])
@@ -120,7 +126,7 @@ export function RunSummary({
                       </li>
                     ))}
                 </ul>
-              </section>
+              </Disclosure>
             ) : null}
           </>
         ) : (
@@ -130,12 +136,10 @@ export function RunSummary({
           </p>
         )}
 
-        <p className="mt-1 border-t border-border pt-4 text-[12px] leading-relaxed text-muted">
-          Pick a segment in the timeline or the list to edit it.{" "}
-          <span className="inline-flex items-center gap-1 whitespace-nowrap">
-            <Kbd>←</Kbd>
-            <Kbd>→</Kbd> steps through them.
-          </span>
+        {/* The shortcuts that used to be repeated here are in the timeline's
+            "?" popover now, which is also where the legend went. */}
+        <p className="border-t border-border pt-3.5 text-[12px] leading-relaxed text-muted">
+          Pick a segment in the timeline or the list below to edit it.
         </p>
       </div>
     </div>

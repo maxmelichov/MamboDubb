@@ -33,6 +33,24 @@ const LATENCY_MS = 45;
 type Store = { project: ProjectDetail; segments: Segment[] };
 
 const store: Store = structuredClone(data) as unknown as Store;
+
+/**
+ * Three fields the snapshot happens not to contain.
+ *
+ * `fixture-data.json` is a faithful dump of a real run, and that run never had
+ * a per-segment TTS override or a language tag on it — so two of the
+ * inspector's three shelves would demo as permanently empty, which is exactly
+ * the state that hides a layout bug. This adds one of each, by position rather
+ * than by content, and it is the only place fixture mode invents anything.
+ */
+function seedOverrides(): void {
+  const withOpts = store.segments.find((seg) => !seg.keep && seg.tts);
+  if (withOpts) withOpts.tts_opts = { seed: 4711, style: "measured", greedy: true };
+  const withLang = store.segments.find((seg) => seg.src_lang);
+  if (withLang) withLang.tgt_lang = "en";
+}
+seedOverrides();
+
 const jobs: Job[] = [];
 const listeners = new Set<(event: StudioEvent) => void>();
 let jobSeq = 0;

@@ -1,23 +1,33 @@
 /**
  * The editor.
  *
- * Layout is Premiere-shaped on purpose: preview and timeline stack on the left
- * in playback order, the inspector holds the right rail so the selection never
- * moves under the cursor, and the segment table sits under the timeline as the
- * dense, sortable-by-eye view of the same data.
+ * Premiere-shaped: preview and timeline stack on the left in playback order,
+ * the inspector holds the right rail so the selection never moves under the
+ * cursor, and the segment navigator sits under the timeline.
+ *
+ * What changed, and why, after watching it in use:
+ *
+ * **The picture gets the room.** The preview used to be pinned at 38% of the
+ * height while the segment table took everything left over — so the largest
+ * pane on a video editor's screen was a spreadsheet, and the video was a
+ * postage stamp. Now the preview is the growing pane and the navigator is a
+ * fixed strip: the workspace is the video and the timeline, and the list is
+ * how you get around them.
+ *
+ * **Only one thing is on screen at a time.** The job strip renders only when
+ * there is a job (or the stream has dropped); the legend and the shortcut
+ * hints, which were two permanent rows of chrome across the top of the
+ * timeline, are behind one "?" button. What replaces them in the toolbar is a
+ * single line of counts — that is information about *this run*, not a key to
+ * be re-read every minute.
  *
  * The whole screen stays usable while a job runs. Nothing here disables itself
  * on a running job except the two model actions, which queue.
- *
- * Chrome is the same system as the two page screens — same tokens, same
- * primitives, same eyebrow labels — but tuned for density: every horizontal
- * band that is not the timeline or the table is a 2-line toolbar on the sunken
- * tone, so the eye can tell "controls" from "content" without reading.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { Film, Loader2, Minus, Plus, RefreshCw } from "lucide-react";
+import { Film, HelpCircle, Loader2, Minus, Plus, RefreshCw } from "lucide-react";
 import { AppHeader } from "../components/AppShell";
 import { JobBar } from "../components/JobBar";
 import { RunSummary } from "../components/RunSummary";
@@ -34,11 +44,12 @@ import {
   ErrorBar,
   Eyebrow,
   Kbd,
+  Popover,
   Progress,
 } from "../components/ui";
 import { api } from "../lib/api";
 import { FIXTURE_PROJECT } from "../lib/fixtures";
-import { segmentState, totalDuration, type SegmentState } from "../lib/segments";
+import { STATE_META, segmentState, totalDuration, type SegmentState } from "../lib/segments";
 import { summarizeStages } from "../lib/stages";
 import { activeJob, useProject } from "../lib/useProject";
 import { useTransport } from "../lib/useTransport";
@@ -46,6 +57,17 @@ import type { Job, ProjectDetail } from "../lib/types";
 import type { StageProgress } from "../lib/useProject";
 
 const ZOOM_STEPS = [0.5, 1, 2, 4, 8, 16, 32];
+
+/** Every shortcut the editor binds, in the order they are learned. */
+const SHORTCUTS: [string[], string][] = [
+  [["space"], "play / pause"],
+  [["←", "→"], "previous / next segment"],
+  [["shift", "←", "→"], "nudge the playhead one second"],
+  [["a"], "play the original for the selection"],
+  [["b"], "play the dub for the selection"],
+  [["k"], "switch between dub and keep"],
+  [["+", "−"], "zoom the timeline"],
+];
 
 export function EditorPage() {
   const params = useParams<{ name: string }>();
@@ -167,19 +189,21 @@ export function EditorPage() {
           <>
             <Button
               onClick={() => void actions.reload()}
-              aria-label="Reload this run from disk"
-              title="Reload this run from disk"
+              title="Read this run's manifest from disk again"
               size="sm"
             >
               <RefreshCw className="h-3.5 w-3.5" />
+              Reload
             </Button>
             <Button
               variant="primary"
               size="sm"
+              title="Re-runs timeline, mix and report and replaces preview.mp4"
               onClick={() => {
                 if (
                   window.confirm(
-                    "Re-render the preview? This re-runs timeline, mix and report and replaces preview.mp4 — a full video re-encode.",
+                    "Re-render the preview? This re-runs timeline, mix and report and replaces " +
+                      "preview.mp4 — a full video re-encode, typically a few minutes.",
                   )
                 ) {
                   void actions.render();
@@ -205,6 +229,7 @@ export function EditorPage() {
         ) : null}
       </AppHeader>
 
+      {/* Renders nothing at all unless there is a job or the stream dropped. */}
       <JobBar
         job={job}
         queued={queued}
@@ -222,7 +247,8 @@ export function EditorPage() {
       ) : (
         <div className="flex min-h-0 flex-1">
           <div className="flex min-w-0 flex-1 flex-col">
-            <div className="h-[38%] min-h-40 shrink-0 border-b border-border">
+            {/* The workspace. This is the pane that grows. */}
+            <div className="min-h-40 flex-1 border-b border-border">
               <VideoPlayer
                 src={previewUrl}
                 transport={transport}
@@ -240,23 +266,10 @@ export function EditorPage() {
             </div>
 
             <section ref={timelineRef} className="shrink-0 border-b border-border bg-surface">
-              {/* The legend wraps inside its own cell rather than pushing the
-                  zoom control onto a second row of its own. */}
-              <div className="flex items-start gap-3 border-b border-border bg-sunken px-3 py-2">
-                {/* The legend is the key to the encoding, so it gets the row's
-                    width; the lanes below already say "timeline". */}
-                <div className="min-w-0 flex-1">
-                  <TimelineLegend counts={counts} />
-                </div>
-                <div className="flex shrink-0 items-center gap-3 pt-0.5">
-                  <span className="hidden items-center gap-1.5 text-[11px] text-muted lg:flex">
-                    <Kbd>←</Kbd>
-                    <Kbd>→</Kbd> segment
-                    <Kbd>space</Kbd> play
-                    <Kbd>k</Kbd> keep
-                    <Kbd>a</Kbd>
-                    <Kbd>b</Kbd> compare
-                  </span>
+              <div className="flex items-center gap-3 border-b border-border bg-sunken px-3 py-1.5">
+                <Eyebrow className="shrink-0">Timeline</Eyebrow>
+                <StateCounts counts={counts} />
+                <div className="ml-auto flex shrink-0 items-center gap-2">
                   <ButtonGroup className="h-7">
                     <Button variant="ghost" size="xs" onClick={zoomOut} aria-label="Zoom out">
                       <Minus className="h-3 w-3" />
@@ -268,6 +281,7 @@ export function EditorPage() {
                       <Plus className="h-3 w-3" />
                     </Button>
                   </ButtonGroup>
+                  <EditorHelp counts={counts} />
                 </div>
               </div>
               <Timeline
@@ -282,18 +296,35 @@ export function EditorPage() {
               />
             </section>
 
-            <div className="min-h-0 flex-1 bg-surface">
-              <SegmentList
-                segments={segments}
-                selectedUid={selectedUid}
-                currentTime={transport.currentTime}
-                busyUids={state.busyUids}
-                onSelect={selectAndSeek}
-              />
-            </div>
+            {/*
+              A fixed strip, not the leftover space. Eight or nine lines is
+              enough to see where you are and what is around you, which is what
+              a navigator is for; the segment being worked on is in the rail.
+            */}
+            <section className="flex h-[15rem] shrink-0 flex-col bg-surface">
+              <div className="flex shrink-0 items-center gap-2 border-b border-border bg-sunken px-3 py-1.5">
+                <Eyebrow className="shrink-0">Segments</Eyebrow>
+                <span className="text-[11px] text-muted">
+                  {segments.length} line{segments.length === 1 ? "" : "s"}
+                </span>
+                <span className="ml-auto hidden shrink-0 items-center gap-1.5 text-[11px] text-muted sm:flex">
+                  <Kbd>←</Kbd>
+                  <Kbd>→</Kbd> to step
+                </span>
+              </div>
+              <div className="min-h-0 flex-1">
+                <SegmentList
+                  segments={segments}
+                  selectedUid={selectedUid}
+                  currentTime={transport.currentTime}
+                  busyUids={state.busyUids}
+                  onSelect={selectAndSeek}
+                />
+              </div>
+            </section>
           </div>
 
-          <aside className="w-[26rem] shrink-0 border-l border-border bg-surface">
+          <aside className="w-[27rem] shrink-0 border-l border-border bg-surface xl:w-[29rem]">
             {selected ? (
               <SegmentInspector
                 seg={selected}
@@ -319,6 +350,66 @@ export function EditorPage() {
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * What this run is made of, in one line.
+ *
+ * This is not the legend — it is a census, and it belongs on screen for the
+ * same reason the legend does not: it changes as you work, and the legend
+ * never does. States with nothing in them are omitted rather than greyed;
+ * "0 failed" is a fact nobody needs printed at them all day.
+ */
+function StateCounts({ counts }: { counts: Record<SegmentState, number> }) {
+  const present = (Object.keys(STATE_META) as SegmentState[]).filter((s) => counts[s] > 0);
+  if (present.length === 0) return null;
+  return (
+    <span className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px] text-muted">
+      {present.map((state) => (
+        <span key={state} className="inline-flex items-center gap-1 whitespace-nowrap">
+          <span aria-hidden style={{ color: STATE_META[state].token }}>
+            {STATE_META[state].glyph}
+          </span>
+          <span className="font-mono tabular-nums text-secondary">{counts[state]}</span>
+          {STATE_META[state].label.toLowerCase()}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/**
+ * The reference material, behind one button.
+ *
+ * The legend and the shortcut list are both things you read on your first day
+ * and on the day you forget — and neither changes, ever. They used to occupy
+ * two rows across the top of the timeline on every frame of every session,
+ * which is a lot of rent for something read twice.
+ */
+function EditorHelp({ counts }: { counts: Record<SegmentState, number> }) {
+  return (
+    <Popover
+      label="Legend and keyboard shortcuts"
+      title="What the colours mean"
+      trigger={<HelpCircle className="h-3.5 w-3.5" />}
+      className="w-[19rem]"
+    >
+      <TimelineLegend counts={counts} />
+      <Eyebrow className="mt-3.5 mb-2">Keyboard</Eyebrow>
+      <dl className="flex flex-col gap-1.5 text-[11px]">
+        {SHORTCUTS.map(([keys, does]) => (
+          <div key={does} className="flex items-baseline gap-2">
+            <dt className="flex shrink-0 items-center gap-1">
+              {keys.map((key) => (
+                <Kbd key={key}>{key}</Kbd>
+              ))}
+            </dt>
+            <dd className="min-w-0 flex-1 text-right text-muted">{does}</dd>
+          </div>
+        ))}
+      </dl>
+    </Popover>
   );
 }
 
