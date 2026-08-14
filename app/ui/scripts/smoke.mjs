@@ -345,6 +345,41 @@ check(
   document.querySelector("[data-playhead]") != null,
 );
 
+/*
+ * The lanes draw the run's actual audio behind the marks — "make the audio look
+ * like audio". Two claims worth pinning: the picture is there for both lanes,
+ * and it is scaled by the *audio's* duration rather than the timeline's, which
+ * is the difference between a waveform that lines up with the marks and one
+ * that slides against them.
+ */
+const waves = [...document.querySelectorAll("[data-waveform]")];
+check(
+  "both lanes draw their audio",
+  waves.length === 2 &&
+    waves.map((w) => w.getAttribute("data-waveform")).join() === "source,dub",
+);
+check(
+  "the waveform is a path with real values in it",
+  waves.every((w) => (w.querySelector("path")?.getAttribute("d") ?? "").split("L").length > 100),
+);
+check(
+  "the picture is scaled by the audio's own duration",
+  // 320s of fixture audio at the default 4px/s.
+  waves.every((w) => /width:\s*1280px/.test(w.getAttribute("style") ?? "")),
+);
+check(
+  "the buckets stay inside the server's clamp",
+  waves.every((w) => {
+    const n = Number(w.getAttribute("viewBox").split(" ")[2]);
+    return n >= 16 && n <= 4000;
+  }),
+);
+check(
+  "the marks stay on top of it, and stay clickable",
+  document.querySelectorAll("[data-mark]").length > 40 &&
+    waves.every((w) => w.getAttribute("aria-hidden") === "true"),
+);
+
 // One tab stop, not two hundred.
 check(
   "the script is reachable by keyboard",
@@ -437,6 +472,43 @@ check(
   "the invalidated clip is modelled locally, not left stale",
   /Voice/.test(rowFor(2).textContent) && clip(rowFor(2), "B").disabled,
 );
+
+/*
+ * Closing a field you only opened to read must cost nothing.
+ *
+ * `edit.set_text` invalidates the clip and the placement and stamps a lock, so
+ * a PATCH that carries the text back unchanged is a re-voice queued against a
+ * line nobody edited — which is exactly what "I don't want the retranscription
+ * to happen without any change" is about. Fixture mode counts its own calls
+ * because a no-op save is invisible from the DOM: it looks the same as no save.
+ */
+// The bundle is imported into *this* module's realm, so its `globalThis` is
+// Node's, not jsdom's `window` — the counter lands on whichever one the fixture
+// module saw.
+const calls = () => globalThis.__DUBBING_FIXTURE_CALLS__ ?? dom.window.__DUBBING_FIXTURE_CALLS__;
+check("fixture mode counts its own round trips", calls() != null);
+const patchesBefore = calls().patch;
+clickIt(rowFor(3).querySelector('[data-line="text_en"]'));
+await settle(150);
+check("a field opens on the line it was clicked", rowFor(3).querySelector("[data-editing]") != null);
+rowFor(3).querySelector("[data-editing]").blur();
+await settle(250);
+check("closing an unchanged field saves nothing", calls().patch === patchesBefore);
+check(
+  "…and leaves the line the pipeline's",
+  rowFor(3).querySelector('[aria-label^="Hand-edited"]') == null,
+);
+
+// Whitespace is not an edit either — the editor commits a trimmed draft, so
+// the comparison it is refused by has to be trimmed too.
+clickIt(rowFor(3).querySelector('[data-line="text_en"]'));
+await settle(150);
+const padded = rowFor(3).querySelector("[data-editing]");
+setValue(padded, `   ${padded.value}  `);
+await settle(80);
+padded.blur();
+await settle(250);
+check("re-spacing a line is not an edit", calls().patch === patchesBefore);
 
 /*
  * Filters, and the bulk fix behind them. `POST /resynthesize` has always taken
@@ -533,6 +605,35 @@ check(
 );
 
 /*
+ * A mark on the strip is a question about a line — what does it say, what did
+ * it become, what does it sound like — and all three answers are in the script
+ * row. So the click has to *bring that row to the reviewer*, centred, whether
+ * or not the video is playing. Recorded rather than measured because jsdom has
+ * no layout: what matters is that the list was told to centre the right row.
+ */
+const scrolls = [];
+dom.window.Element.prototype.scrollIntoView = function scrollIntoView(options) {
+  scrolls.push({ uid: this.getAttribute?.("data-uid") ?? null, options });
+};
+const someMark = [...document.querySelectorAll("[data-mark]")].find((m) =>
+  /^Segment 9,/.test(m.getAttribute("aria-label") ?? ""),
+);
+if (!someMark) throw new Error("smoke: no mark for segment 9");
+clickIt(someMark);
+await settle(250);
+const centred = scrolls.filter((s) => s.options?.block === "center").pop();
+check("clicking a mark selects its line", rowFor(9).getAttribute("aria-selected") === "true");
+check(
+  "…and scrolls the script to it, centred",
+  centred != null && centred.uid === rowFor(9).getAttribute("data-uid"),
+);
+check(
+  "…with its A and B one click away",
+  rowFor(9).querySelector('[data-clip="A"]') != null &&
+    rowFor(9).querySelector('[data-clip="B"]') != null,
+);
+
+/*
  * The chrome that is not permanent. The keyboard map lives behind "?", and the
  * run's health — the uncovered-speech list, which is the highest-value thing
  * report.json produces — lives behind "⋯". Neither of them changes while you
@@ -558,8 +659,36 @@ clickIt(menu);
 await settle(120);
 check("run health surfaces uncovered speech", /Audible, uncovered/.test(root.textContent));
 check("run health counts the states", /Kept original/.test(root.textContent));
+
+/*
+ * "I can't easily open the ready file." Both of the things a finished run is
+ * for are one click away and named: the video in the header, the subtitles in
+ * this menu. Each one goes through `openRunFile`, which reveals the file in
+ * Finder inside the shell and opens the served URL in a browser — the old
+ * button was desktop-only *and* handed the shell a run-relative path it always
+ * refused.
+ */
+const fileRows = [...document.querySelectorAll("[data-run-file]")];
+check(
+  "the run's files are listed by name",
+  fileRows.map((b) => b.getAttribute("data-run-file")).join() === "preview.mp4,preview_en.srt",
+);
+check("the subtitles are reachable at last", /Subtitles \(\.srt\)/.test(root.textContent));
+check(
+  "each file says what the click will do",
+  fileRows.every((b) => /Open .* in a new tab/.test(b.getAttribute("title") ?? "")),
+);
 clickIt(menu);
 await settle(120);
+
+const openPreview = [...document.querySelectorAll("header button")].find((b) =>
+  /Open preview|Show in Finder/.test(b.textContent),
+);
+check("the finished video is one click from the header", openPreview != null);
+check(
+  "…and the header stays at its height",
+  document.querySelector("header").className.includes("h-11"),
+);
 
 // No panel in the editor may be blank: with no preview file the stage says why
 // there is no picture rather than showing an empty rectangle.
