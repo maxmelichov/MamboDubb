@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from dubbing import STAGES, manifest
 
-from . import errors, events, media, ops
+from . import errors, events, media, ops, setup, ui
 from .errors import ApiError, busy, invalid, not_found
 from .events import EventBus
 from .jobs import JobQueue
@@ -107,10 +107,14 @@ class RenderBody(Strict):
 # app
 # ---------------------------------------------------------------------------
 
-def create_app(outputs: Path, *, runner=None, version: str | None = None) -> FastAPI:
+def create_app(outputs: Path, *, runner=None, version: str | None = None,
+               ui_dir: str | Path | None = None) -> FastAPI:
     from . import __version__
 
     version = version or __version__
+    # Read once at startup, not per request: `/health` is polled.
+    commit = setup.git_commit()
+    ui_root = ui.resolve_dir(ui_dir)
     projects = Projects(Path(outputs))
     projects.root.mkdir(parents=True, exist_ok=True)
     bus = EventBus()
@@ -160,9 +164,18 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None) -> Fas
     @app.get("/health")
     def health() -> dict[str, Any]:
         current = queue.current
-        return {"status": "ok", "version": version, "outputs": str(projects.root),
+        return {"status": "ok", "version": version, "commit": commit,
+                "outputs": str(projects.root),
                 "busy": current.id if current else None,
                 "queued": len(queue.active())}
+
+    # -- setup / first run -------------------------------------------------
+
+    @app.get("/api/setup")
+    def setup_report() -> dict[str, Any]:
+        """Can this machine run the pipeline? Filesystem and env only — no model
+        is loaded, so the desktop shell may call it before anything else."""
+        return setup.report(projects.root)
 
     # -- projects ----------------------------------------------------------
 
@@ -328,6 +341,10 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None) -> Fas
     @app.get("/media/{name}")
     def media_root(name: str):
         raise not_found("no such media file")
+
+    # -- built UI (LAST: the catch-all must never shadow a route above) ------
+
+    ui.install(app, ui_root)
 
     return app
 

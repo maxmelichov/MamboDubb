@@ -33,7 +33,7 @@ machine, and a Tauri shell adds nothing until we package for other people.
 
 ## Process contract (server)
 
-`uv run python -m dubbing_app.server --host 127.0.0.1 --port 0 [--outputs DIR]`
+`uv run python -m dubbing_app.server --host 127.0.0.1 --port 0 [--outputs DIR] [--ui-dir DIR]`
 
 1. Bind the port (0 = OS-assigned).
 2. Print **exactly one line** of JSON to stdout, then flush:
@@ -238,7 +238,8 @@ JSON in, JSON out. Errors are uniform, after MamboRambo's `write_error`:
 
 | method | path | purpose |
 |---|---|---|
-| GET | `/health` | `{"status":"ok","version":...}` |
+| GET | `/health` | `{"status":"ok","version":...,"commit":"a1b2c3d"|null,"outputs":...,"busy":...,"queued":...}` |
+| GET | `/api/setup` | first-run environment report (see **Desktop packaging**) |
 | GET | `/api/projects` | list run dirs: name, title, langs, duration, stage state, mtime |
 | POST | `/api/projects` | `{source, src_lang, tgt_lang, duration?, name?, context?, genre?, register?}` → create dir, enqueue a full run |
 | GET | `/api/projects/{name}` | manifest + report + derived stage status |
@@ -272,6 +273,70 @@ Chosen over MamboRambo's binary framing because our payloads are metadata, not W
 kept from it: **errors travel as a frame**, so a mid-run failure surfaces without needing a
 non-200 status on an already-streaming response. Send a heartbeat every 15 s so proxies and
 sleeping laptops do not silently drop the stream.
+
+## Desktop packaging
+
+Installed, there is no `pnpm dev` and no second origin: the shell starts **one** process —
+this server — and points a webview at `http://127.0.0.1:<port>` from the ready line. So the
+server serves the app as well as the API.
+
+### Single-process serving of the built UI
+
+`create_app(outputs, ..., ui_dir=None)` / `--ui-dir DIR`:
+
+* `None` (default) → `<repo>/app/ui/dist`. An **empty string** disables UI serving; the
+  process is then API-only, which is what `pnpm dev` wants.
+* Serving only happens when the directory holds an `index.html`. Without one — a checkout
+  that never ran `pnpm build` — behaviour is exactly as before: `GET /` is a 404 envelope.
+* `dist/assets/` is a real static mount (its own traversal guard, ETag/304 for free).
+* A catch-all `GET /{path}` is registered **last**: an existing file under `ui_dir` is
+  served, anything else falls back to `index.html`, because `/editor/<name>` exists only in
+  the browser router and a hard reload on it must still get the app.
+* `health`, `api` and `media` first segments are refused by the catch-all **explicitly**,
+  not merely by route order. Order alone still hands `index.html` to a *misspelled* API
+  path, which turns "no such project" into HTML that `fetch().json()` cannot parse.
+* Paths follow `media.resolve`'s discipline — resolve, then compare against the root — so
+  `../`, an absolute path and a symlink planted in `dist/` are all 404, never a file leak.
+
+The stdout ready line is unchanged (`{"status":"ready","port":...,"version":...}`); the
+shell needs nothing new to parse.
+
+### Version stamp
+
+`/health` carries `commit`: `git rev-parse --short HEAD`, run once at startup and cached
+(`/health` is polled — a subprocess per poll would be absurd), `null` outside a repository.
+`DUBBING_STUDIO_COMMIT` overrides it, which is the packaged path: a build with no `.git`
+bakes the hash in at build time, the way the translator worker's ready signal does.
+
+### Setup / first-run API
+
+`GET /api/setup` answers "can this machine actually run the pipeline?" — the question no
+error inside the editor answers legibly, since a missing `ffmpeg` surfaces as a stage that
+dies halfway and an absent model directory silently becomes a multi-gigabyte download.
+
+```json
+{"ok": true,
+ "checks": [{"id": "model.translate", "label": "Translation model (Gemma 4 12B)",
+             "ok": true, "detail": "9.7 GB in /…/models/gemma-4-12B-it-6bit",
+             "required": true, "path": "/…", "bytes": 10424182784}]}
+```
+
+* Ids: `ffmpeg`, `sox`, `hf_token`, `model.translate`, `model.tts.<key>` (one per
+  `tts.TTS_MODELS`), `model.asr.he`, `model.asr.src`, `model.asr.en`, `model.asr.tgt`,
+  `model.lid`, `model.demucs`, `disk`. `label` and `detail` are for display; `id` is stable.
+* **`ok` is the conjunction of the `required` checks only.** Required = a default run cannot
+  work: ffmpeg, sox, the translator, the default TTS checkpoint, the English ASR that
+  verifies every clip. Everything else is informational — Demucs and Pyannote download
+  themselves, a missing `HF_TOKEN` degrades diarization to one speaker, the other ASR/TTS
+  models matter only for particular language pairs — and must not gate first run.
+* **The token is reported as present or absent, never echoed.** Env first
+  (`HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN`), then a `HF_TOKEN=` line in `.env`.
+* **No model is loaded and no import is heavy**: `shutil.which`, `os.environ`, `stat`,
+  `shutil.disk_usage`. Milliseconds, safe to poll, and it must stay that way.
+* **Paths come from the pipeline's own constants** (`translate.MODEL_PATH`,
+  `tts.TTS_MODELS`, `transcript.WHISPER_MODEL` / `SRC_ASR_MODEL` / `EN_ASR_MODEL` /
+  `TARGET_ASR_MODEL` / `LID_MODEL`), never restated. A hardcoded copy would drift and then
+  report a green tick for a directory the pipeline does not open.
 
 ## UI contract
 

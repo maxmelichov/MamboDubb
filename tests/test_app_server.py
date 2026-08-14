@@ -1004,3 +1004,222 @@ def test_resynthesize_leaves_every_segment_placed(monkeypatch, outputs):
 
     unplaced = [s["uid"] for s in m["segments"] if not s.get("place")]
     assert unplaced == [], f"segments left unplaced: {unplaced}"
+
+
+# ---------------------------------------------------------------------------
+# built UI — single-process serving (desktop packaging)
+# ---------------------------------------------------------------------------
+
+INDEX = "<!doctype html><title>Dubbing Studio</title><div id=root></div>"
+
+
+def make_dist(root: Path) -> Path:
+    """A stand-in for `app/ui/dist` as Vite writes it."""
+    dist = root / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text(INDEX, encoding="utf-8")
+    (dist / "assets" / "index-abc123.js").write_text("export const x = 1;\n", encoding="utf-8")
+    (dist / "favicon.svg").write_text("<svg/>", encoding="utf-8")
+    return dist
+
+
+@pytest.fixture()
+def dist(tmp_path):
+    return make_dist(tmp_path / "ui")
+
+
+@pytest.fixture()
+def ui_client(outputs, fake, dist):
+    with TestClient(create_app(outputs, runner=fake, ui_dir=str(dist))) as c:
+        yield c
+
+
+def test_ui_index_at_root(ui_client):
+    resp = ui_client.get("/")
+    assert resp.status_code == 200 and "Dubbing Studio" in resp.text
+
+
+def test_ui_catch_all_serves_index_for_browser_routes(ui_client):
+    """`/editor/<name>` exists only in the browser router — a hard reload on it
+    must still get the app, not a 404."""
+    for path in (f"/editor/{NAME}", "/editor/x/deep", "/import"):
+        resp = ui_client.get(path)
+        assert resp.status_code == 200, path
+        assert "Dubbing Studio" in resp.text, path
+
+
+def test_ui_serves_real_files(ui_client):
+    asset = ui_client.get("/assets/index-abc123.js")
+    assert asset.status_code == 200 and "export const x" in asset.text
+    icon = ui_client.get("/favicon.svg")
+    assert icon.status_code == 200 and icon.text == "<svg/>"
+
+
+def test_ui_never_shadows_the_api(ui_client):
+    assert ui_client.get("/health").json()["status"] == "ok"
+    assert [p["name"] for p in ui_client.get("/api/projects").json()["projects"]] == [NAME]
+    # A *misspelled* API path must stay JSON: handing index.html to a fetch()
+    # would turn "no such project" into an unparseable HTML body.
+    for path in ("/api/nope", "/api/projects/ghost", "/media/ghost/x.wav", "/media/ghost"):
+        resp = ui_client.get(path)
+        assert resp.status_code == 404, path
+        assert resp.json()["error"]["code"] == "not_found", path
+
+
+def test_ui_refuses_traversal(ui_client, tmp_path):
+    (tmp_path / "secret.txt").write_text("hf_token", encoding="utf-8")
+    # Percent-encoded so the client cannot normalise it away before it is sent.
+    resp = ui_client.get("/%2e%2e/secret.txt")
+    assert resp.status_code == 404 and "hf_token" not in resp.text
+
+
+def test_ui_resolve_file_guards(dist, tmp_path):
+    from dubbing_app import ui as ui_mod
+    from dubbing_app.errors import ApiError
+
+    assert ui_mod.resolve_file(dist, "favicon.svg") == (dist / "favicon.svg").resolve()
+    assert ui_mod.resolve_file(dist, "editor/whatsapp") is None      # -> index fallback
+    outside = tmp_path / "secret.txt"
+    outside.write_text("x", encoding="utf-8")
+    (dist / "link.txt").symlink_to(outside)
+    for bad in ("../secret.txt", "/etc/passwd", "a/../../secret.txt", "link.txt"):
+        with pytest.raises(ApiError) as exc:
+            ui_mod.resolve_file(dist, bad)
+        assert exc.value.code == "not_found", bad
+
+
+def test_ui_absent_dist_is_api_only(outputs, fake, tmp_path):
+    with TestClient(create_app(outputs, runner=fake, ui_dir=str(tmp_path / "nope"))) as c:
+        root = c.get("/")
+        assert root.status_code == 404 and root.json()["error"]["code"] == "not_found"
+        assert c.get("/health").json()["status"] == "ok"
+
+
+def test_ui_dir_empty_string_disables(outputs, fake, dist, monkeypatch):
+    from dubbing_app import ui as ui_mod
+
+    monkeypatch.setattr(ui_mod, "DEFAULT_UI_DIR", dist)
+    assert ui_mod.resolve_dir(None) == dist
+    assert ui_mod.resolve_dir("") is None and ui_mod.resolve_dir("  ") is None
+    with TestClient(create_app(outputs, runner=fake, ui_dir="")) as c:
+        assert c.get("/").status_code == 404
+
+
+def test_server_ui_dir_flag():
+    assert server.parse_args([]).ui_dir is None
+    assert server.parse_args(["--ui-dir", ""]).ui_dir == ""
+    assert server.parse_args(["--ui-dir", "/x/dist"]).ui_dir == "/x/dist"
+
+
+# ---------------------------------------------------------------------------
+# setup / first-run checks
+# ---------------------------------------------------------------------------
+
+def test_setup_report_shape(client):
+    body = client.get("/api/setup").json()
+    assert isinstance(body["ok"], bool)
+    by_id = {c["id"]: c for c in body["checks"]}
+    for wanted in ("ffmpeg", "sox", "hf_token", "model.translate", "model.tts.1.7b",
+                   "model.asr.en", "model.lid", "model.demucs", "disk"):
+        assert wanted in by_id, wanted
+    for c in body["checks"]:
+        assert {"id", "label", "ok", "detail", "required"} <= set(c)
+        assert isinstance(c["ok"], bool) and isinstance(c["detail"], str) and c["label"]
+    # `ok` is the conjunction of the required checks only; Demucs and free space
+    # are informational and must never gate first run.
+    assert by_id["model.demucs"]["required"] is False
+    assert by_id["disk"]["required"] is False
+    assert body["ok"] == all(c["ok"] for c in body["checks"] if c["required"])
+
+
+def test_setup_model_paths_come_from_the_pipeline(client):
+    """The check reads `dubbing`'s own constants, so it cannot drift from what
+    the pipeline actually opens."""
+    from dubbing import transcript, translate, tts
+
+    by_id = {c["id"]: c for c in client.get("/api/setup").json()["checks"]}
+    assert by_id["model.translate"]["path"] == str(translate.MODEL_PATH)
+    assert by_id["model.asr.en"]["path"] == str(transcript.EN_ASR_MODEL)
+    assert by_id["model.lid"]["path"] == str(transcript.LID_MODEL)
+    assert by_id["model.asr.he"]["path"] == str(transcript.WHISPER_MODEL)
+    for key, spec in tts.TTS_MODELS.items():
+        assert by_id[f"model.tts.{key}"]["path"].endswith(spec["dir"])
+    assert by_id[f"model.tts.{tts.DEFAULT_TTS_MODEL}"]["required"] is True
+
+
+def test_setup_reports_token_presence_never_the_value(client, monkeypatch):
+    monkeypatch.setenv("HF_TOKEN", "hf_supersecret_value")
+    body = client.get("/api/setup").json()
+    check = next(c for c in body["checks"] if c["id"] == "hf_token")
+    assert check["ok"] is True and check["required"] is False
+    assert "hf_supersecret_value" not in json.dumps(body)
+
+    monkeypatch.delenv("HF_TOKEN")
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+    from dubbing_app import setup as setup_mod
+
+    monkeypatch.setattr(setup_mod, "REPO_ROOT", Path("/nonexistent"))
+    check = next(c for c in client.get("/api/setup").json()["checks"] if c["id"] == "hf_token")
+    assert check["ok"] is False
+
+
+def test_setup_reads_token_from_env_file(tmp_path):
+    from dubbing_app import setup as setup_mod
+
+    env = tmp_path / ".env"
+    env.write_text("# comment\nHF_TOKEN='hf_from_file'\n", encoding="utf-8")
+    check = setup_mod.hf_token_check(env)
+    assert check["ok"] is True and "hf_from_file" not in json.dumps(check)
+    env.write_text("HF_TOKEN=\n", encoding="utf-8")
+    assert setup_mod.hf_token_check(env)["ok"] is False
+    assert setup_mod.hf_token_check(tmp_path / "missing")["ok"] is False
+
+
+def test_setup_loads_no_model(client):
+    """Pure filesystem and env: nothing heavy may be imported, or the desktop
+    shell's first-run probe would cost ten seconds and a gigabyte of RAM."""
+    heavy = {"torch", "mlx", "mlx_lm", "demucs", "faster_whisper", "speechbrain",
+             "transformers", "pyannote"}
+    before = set(sys.modules)
+    client.get("/api/setup")
+    added = {n.split(".")[0] for n in set(sys.modules) - before}
+    assert not (added & heavy), sorted(added & heavy)
+
+
+def test_setup_disk_check_is_informational(outputs):
+    from dubbing_app import setup as setup_mod
+
+    check = setup_mod.disk_check(outputs / "does" / "not" / "exist" / "yet")
+    assert check["required"] is False and check["bytes"] > 0
+
+
+def test_setup_model_check_reports_size(tmp_path):
+    from dubbing_app import setup as setup_mod
+
+    d = tmp_path / "model"
+    (d / "sub").mkdir(parents=True)
+    (d / "sub" / "weights.bin").write_bytes(b"x" * 2048)
+    check = setup_mod.model("model.x", "X", d)
+    assert check["ok"] is True and check["bytes"] == 2048 and "2 KB" in check["detail"]
+    missing = setup_mod.model("model.y", "Y", tmp_path / "gone", note="downloads on use")
+    assert missing["ok"] is False and missing["bytes"] == 0
+    assert "downloads on use" in missing["detail"]
+
+
+# ---------------------------------------------------------------------------
+# version stamp
+# ---------------------------------------------------------------------------
+
+def test_health_carries_the_commit(client):
+    commit = client.get("/health").json()["commit"]
+    assert commit is None or all(ch in "0123456789abcdef" for ch in commit)
+
+
+def test_git_commit_prefers_the_baked_value(monkeypatch):
+    from dubbing_app import setup as setup_mod
+
+    monkeypatch.setenv("DUBBING_STUDIO_COMMIT", "deadbee")
+    assert setup_mod.git_commit(refresh=True) == "deadbee"
+    monkeypatch.delenv("DUBBING_STUDIO_COMMIT")
+    monkeypatch.setattr(setup_mod, "REPO_ROOT", Path("/"))
+    assert setup_mod.git_commit(refresh=True) is None

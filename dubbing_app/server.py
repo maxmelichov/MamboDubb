@@ -1,6 +1,7 @@
 """Process entry point.
 
-    uv run python -m dubbing_app.server --host 127.0.0.1 --port 0 [--outputs DIR]
+    uv run python -m dubbing_app.server --host 127.0.0.1 --port 0 \
+        [--outputs DIR] [--ui-dir DIR]
 
 The handshake, deliberately identical to `translator/worker.py`'s and to what a
 Tauri shell would parse:
@@ -40,6 +41,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--port", type=int, default=0, help="bind port, 0 = OS-assigned")
     p.add_argument("--outputs", type=Path, default=REPO_ROOT / "outputs",
                    help="run directory root (default: outputs/)")
+    p.add_argument("--ui-dir", default=None,
+                   help="directory of the built UI (default: app/ui/dist; "
+                        "pass an empty string to serve the API only)")
     p.add_argument("--no-watchdog", action="store_true",
                    help="do not exit when the parent process goes away")
     return p.parse_args(argv)
@@ -106,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
 
     outputs = args.outputs.resolve()
     outputs.mkdir(parents=True, exist_ok=True)
-    app = create_app(outputs)
+    app = create_app(outputs, ui_dir=args.ui_dir)
 
     sock = bind(args.host, args.port)
     port = sock.getsockname()[1]
@@ -115,8 +119,9 @@ def main(argv: list[str] | None = None) -> int:
         watchdog()
 
     announce(port)
-    print(f"dubbing studio on http://{args.host}:{port} (outputs {outputs})",
-          file=sys.stderr, flush=True)
+    served = getattr(app.state, "ui_dir", None)
+    print(f"dubbing studio on http://{args.host}:{port} (outputs {outputs}; "
+          f"ui {served or 'not served — API only'})", file=sys.stderr, flush=True)
 
     server = uvicorn.Server(uvicorn.Config(app, log_config=log_config, access_log=False))
     server.run(sockets=[sock])
