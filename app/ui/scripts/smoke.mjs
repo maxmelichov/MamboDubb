@@ -221,7 +221,7 @@ check("dark is persisted too", dom.window.localStorage.getItem("dubbing-studio.t
 await new Promise((resolve) => setTimeout(resolve, 200));
 const runs = root.textContent;
 check("runs say how far they got", /Complete/.test(runs) && /Running translate/.test(runs));
-check("a failed run names the stage", /Failed at transcript/.test(runs));
+check("a failed run names the stage", /Failed at fetch/.test(runs));
 check("runs say when they last moved", /just now|hours? ago|days? ago/.test(runs));
 check("context field is present", /Context/.test(root.textContent));
 check("setup is reachable from the header", /Setup/.test(root.textContent));
@@ -911,6 +911,24 @@ check("the empty preview explains itself", /there is no video/.test(root.textCon
 check("the preview shows the pipeline position", /stages done/.test(root.textContent));
 
 /*
+ * What the transport is on, said in the DOM.
+ *
+ * Three modes — the preview, the run's original audio, nothing — and the chip
+ * that names the middle one must not appear in the other two, because a label
+ * reading "Original audio" over the finished dub is worse than no label. This
+ * run's manifest names a preview.mp4 (which is what the mode is decided on;
+ * fixture mode cannot serve the file itself, hence the status board below it),
+ * so it is the "a preview exists" case and the chip is absent. The other two
+ * modes are exercised on the two runs at the very bottom of this file.
+ */
+const transportBar = () => document.querySelector("[data-transport]");
+check("the transport says what it is on", transportBar()?.getAttribute("data-transport") === "preview");
+check(
+  "no original-audio chip on a run that has a preview",
+  document.querySelector("[data-transport-note]") == null,
+);
+
+/*
  * Confirmation is themed and local, never `window.confirm` — which is drawn by
  * the OS, blocks the main thread and stops the playhead.
  */
@@ -984,6 +1002,73 @@ check(
 click("Cancel");
 await settle(500);
 check("…and it is the same job, cancellable from here", !/Rendering preview/.test(root.textContent));
+
+/*
+ * Play before render.
+ *
+ * "i can start playing. but because it still not ready it shown nothing": for
+ * the whole hour between `fetch` and `mix` the play button was live and there
+ * was no preview.mp4 behind it. `source.wav` is on disk from the very first
+ * stage, so that is what the transport plays until the preview exists — and
+ * when even that is missing the button is honestly dead rather than a clock
+ * ticking over silence.
+ *
+ * jsdom plays nothing, so every claim here is structural: which file is in the
+ * element, whether the element is there at all, and what the controls say.
+ */
+const transportMode = () => transportBar()?.getAttribute("data-transport") ?? null;
+const transportMedia = () => document.querySelector("[data-transport-media]");
+const playButton = () =>
+  [...document.querySelectorAll("button")].find((b) =>
+    ["Play", "Pause"].includes(b.getAttribute("aria-label")),
+  );
+const clock = () => document.querySelector("[data-timecode]").textContent;
+const pressSpace = () =>
+  dom.window.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: " ", bubbles: true }));
+
+// A run stopped mid-pipeline: past fetch, nowhere near mix.
+await go("/editor/doha_panel_v2", 700);
+check("a run with no preview plays its original audio", transportMode() === "source");
+const audio = transportMedia();
+check("…out of a media element with a real file in it", audio != null && audio.getAttribute("src").length > 0);
+check(
+  "…composed through the media seam, not the fixture's own name for the clip",
+  !audio.getAttribute("src").startsWith("fixture:"),
+);
+check(
+  "…with the picture hidden, so the panel stays the run's status board",
+  /\bhidden\b/.test(audio.className) && /mix stage/.test(root.textContent),
+);
+check(
+  "…and one chip says which of the two it is",
+  document.querySelectorAll("[data-transport-note]").length === 1 &&
+    /Original audio \(no preview yet\)/.test(transportBar().textContent),
+);
+check("…behind a live play button", playButton() != null && !playButton().disabled);
+const running = clock();
+pressSpace();
+await settle(250);
+check("space drives it", clock() !== running);
+
+// A run that fell over on its first stage: no source.wav, nothing to play.
+await go("/editor/archive_reel", 700);
+check("a run that never fetched has nothing to play", transportMode() === "none");
+check("…so no media element is mounted at all", transportMedia() == null);
+check(
+  "…the play button is dead, and its tooltip says why",
+  playButton().disabled && /fetch stage hasn't run/.test(playButton().getAttribute("title")),
+);
+check("…and no chip claims otherwise", document.querySelector("[data-transport-note]") == null);
+const stopped = clock();
+pressSpace();
+await settle(250);
+check("…space does nothing either — the key is the same control", clock() === stopped);
+// …and the run is its own: opening it used to show the finished snapshot's
+// fifty-eight lines, which is a kinder server than the real one.
+check(
+  "a run with no segments stage has no script, and says so",
+  document.querySelectorAll('[role="option"]').length === 0 && /No segments yet/.test(root.textContent),
+);
 
 check(
   "no console errors",

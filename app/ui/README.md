@@ -45,6 +45,12 @@ that actually mutate the segments when they finish. A/B playback works — the c
 synthesized buzz at the right durations, not silence — so the transport is real even
 though there is no `preview.mp4` to play.
 
+The list has two more runs beside the snapshot, and opening either gives that run's own
+state rather than the snapshot's: one stopped mid-pipeline, which is past `fetch` and so
+plays its `source.wav` under the "Original audio" chip, and one that failed at `fetch`,
+which has nothing to play and a dead play button that says why. Those are the editor's
+three transport modes, and the only place they can all be seen at once.
+
 ## Editor screen
 
 Three panes and a rail. The preview is the pane that **grows** — it and the timeline are the

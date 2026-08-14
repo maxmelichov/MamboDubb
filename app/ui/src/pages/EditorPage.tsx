@@ -57,7 +57,7 @@ import { ScriptPane, filterSegments, type ScriptFilter } from "../components/Scr
 import { SelectionPanel } from "../components/SelectionPanel";
 import { StageTrack } from "../components/StageTrack";
 import { Timeline } from "../components/Timeline";
-import { VideoPlayer } from "../components/VideoPlayer";
+import { VideoPlayer, type TransportMode } from "../components/VideoPlayer";
 import type { EditTarget } from "../components/ScriptRow";
 import {
   Badge,
@@ -84,6 +84,9 @@ import type { Job, ProjectDetail, Segment } from "../lib/types";
 import type { StageProgress } from "../lib/useProject";
 
 const ZOOM_STEPS = [0.5, 1, 2, 4, 8, 16, 32];
+
+/** The run's own audio, written by `fetch` (dubbing/fetch.py) long before `mix`. */
+const SOURCE_AUDIO = "source.wav";
 
 /** Every shortcut the editor binds, in the order they are learned. */
 const SHORTCUTS: [string[], string][] = [
@@ -145,9 +148,48 @@ export function EditorPage() {
     [filter, query, segments],
   );
 
-  const previewUrl = project?.outputs.preview
-    ? api.mediaUrl(name, project.outputs.preview)
-    : null;
+  /**
+   * What the transport plays, and why.
+   *
+   * `preview.mp4` is written by `mix`, at the very end of the pipeline — but
+   * `source.wav` is written by `fetch`, at the very start, and for the whole
+   * hour in between the transport had a live play button attached to nothing:
+   * "i can start playing. but because it still not ready it shown nothing". So
+   * the original audio stands in until the preview exists, and when it does not
+   * exist either the play button is honestly dead.
+   *
+   * Both URLs are composed through the api seam rather than as `/media/…`
+   * strings: the desktop shell's origin is the Tauri asset protocol, so a
+   * root-relative path handed to a media element there resolves against the
+   * wrong origin and plays nothing — which is exactly the bug that killed every
+   * A/B button once already. `audioUrl` is the second half of that seam, and
+   * the half that makes fixture mode's synthetic clip loadable.
+   *
+   * `outputs.preview` and not `previewUrl` decides the mode, because the
+   * manifest is what knows whether the file exists; the URL is only how it is
+   * reached, and in fixture mode there is no video to reach.
+   */
+  const previewPath = project?.outputs.preview ?? null;
+  const previewUrl = previewPath ? api.mediaUrl(name, previewPath) || null : null;
+  const fetched = project?.stages.fetch === "done";
+  const sourceUrl = useMemo(
+    () => (!previewPath && fetched ? api.audioUrl(api.mediaUrl(name, SOURCE_AUDIO)) : null),
+    [fetched, name, previewPath],
+  );
+  const transportMode: TransportMode = previewPath ? "preview" : sourceUrl ? "source" : "none";
+
+  /**
+   * Nothing to play means nothing playing.
+   *
+   * The mode changes under a running transport more often than it looks:
+   * `/editor/a` → `/editor/b` is the same route, so this component is not
+   * remounted and the clock carries across. A playhead sweeping a run that has
+   * no audio at all is the same lie the live play button was telling.
+   */
+  const pause = transport.pause;
+  useEffect(() => {
+    if (transportMode === "none") pause();
+  }, [pause, transportMode]);
 
   const counts = useMemo(() => {
     const out: Record<SegmentState, number> = {
@@ -347,7 +389,10 @@ export function EditorPage() {
       switch (event.key) {
         case " ":
           event.preventDefault();
-          transport.toggle();
+          // Nothing on disk to play: the button is disabled and the key is the
+          // same control, so it refuses in the same case rather than starting a
+          // clock over silence.
+          if (transportMode !== "none") transport.toggle();
           break;
         case "ArrowDown":
           event.preventDefault();
@@ -404,7 +449,7 @@ export function EditorPage() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [actions, selected, splitAt, step, toggleKeep, transport, zoomIn, zoomOut]);
+  }, [actions, selected, splitAt, step, toggleKeep, transport, transportMode, zoomIn, zoomOut]);
 
   const job = activeJob(state.jobs);
   const queued = state.jobs.filter((j) => j.status === "queued" && j.id !== job?.id).length;
@@ -499,12 +544,18 @@ export function EditorPage() {
             */}
             <aside className="flex min-h-0 max-h-[45%] shrink-0 flex-col bg-surface xl:max-h-none xl:w-[42%] xl:min-w-[26rem] xl:max-w-[40rem]">
               <VideoPlayer
-                src={previewUrl}
+                src={previewUrl ?? sourceUrl}
+                mode={transportMode}
                 transport={transport}
                 duration={total}
                 className="h-40 shrink-0 xl:h-auto xl:aspect-video"
                 placeholder={
-                  <PreviewPlaceholder project={project} job={job} stage={state.stage} />
+                  <PreviewPlaceholder
+                    project={project}
+                    job={job}
+                    stage={state.stage}
+                    mode={transportMode}
+                  />
                 }
               />
               {selected ? (
@@ -912,10 +963,13 @@ function PreviewPlaceholder({
   project,
   job,
   stage,
+  mode,
 }: {
   project: ProjectDetail | null;
   job: Job | null;
   stage: StageProgress | null;
+  /** What the transport is on, so the panel does not promise a clock that is not one. */
+  mode: TransportMode;
 }) {
   const summary = summarizeStages(project?.stages);
   const working = job != null && (job.status === "running" || job.status === "queued");
@@ -942,7 +996,11 @@ function PreviewPlaceholder({
             ? (stage?.message ?? "preview.mp4 is written by the mix stage, at the end.")
             : summary.complete
               ? "Render preview re-runs timeline, mix and report and writes preview.mp4."
-              : "preview.mp4 is written by the mix stage. Until then the transport is a virtual clock, so the timeline and the script still work."}
+              : mode === "source"
+                ? "preview.mp4 is written by the mix stage, at the end. Until then press play " +
+                  "and the transport plays the run's original audio, in step with the script."
+                : "preview.mp4 is written by the mix stage. There is nothing to play until " +
+                  "fetch has written source.wav, but the timeline and the script still work."}
         </p>
 
         <div className="mt-3 flex justify-center">
