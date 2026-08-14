@@ -13,6 +13,7 @@ import { FileVideo, Loader2 } from "lucide-react";
 import { AppHeader } from "../components/AppHeader";
 import { Button, ErrorBar, Field, Panel, PanelHeader, Select, TextArea, TextInput } from "../components/ui";
 import { api } from "../lib/api";
+import { isDesktop, pickVideoFile } from "../lib/desktop";
 import { timecode } from "../lib/format";
 import type { CreateProjectRequest, ProjectSummary } from "../lib/types";
 
@@ -29,6 +30,9 @@ const LANGS = [
 export function ImportPage() {
   const navigate = useNavigate();
   const fileRef = useRef<HTMLInputElement>(null);
+  // Computed once: the platform does not change while the page is open, and a
+  // button must not swap its behaviour a tick after the user reads it.
+  const desktop = isDesktop();
 
   const [form, setForm] = useState<CreateProjectRequest>({
     source: "",
@@ -57,6 +61,20 @@ export function ImportPage() {
       cancelled = true;
     };
   }, []);
+
+  /**
+   * In the shell, a native dialog gives back the absolute path the pipeline
+   * needs. In a browser the same button opens `<input type=file>`, which can
+   * only ever report a name — hence the hint telling the user to paste a path.
+   */
+  const chooseFile = async () => {
+    if (!desktop) {
+      fileRef.current?.click();
+      return;
+    }
+    const path = await pickVideoFile();
+    if (path) update({ source: path });
+  };
 
   const start = async () => {
     if (!form.source.trim()) {
@@ -90,11 +108,18 @@ export function ImportPage() {
           <Field
             label="Source"
             hint={
-              <>
-                A URL, or an absolute path to a local file. The browser cannot read a file's real
-                path, so <em>Choose file</em> only fills in the name — paste the full path until
-                the desktop shell lands.
-              </>
+              desktop ? (
+                <>
+                  A URL, or a local file — <em>Choose file</em> opens a real file dialog and fills
+                  in the full path.
+                </>
+              ) : (
+                <>
+                  A URL, or an absolute path to a local file. The browser cannot read a file's real
+                  path, so <em>Choose file</em> only fills in the name — paste the full path, or
+                  use the desktop app.
+                </>
+              )
             }
           >
             <div className="flex gap-1.5">
@@ -103,7 +128,7 @@ export function ImportPage() {
                 placeholder="https://www.youtube.com/watch?v=… or /Users/you/clip.mp4"
                 onChange={(event) => update({ source: event.currentTarget.value })}
               />
-              <Button onClick={() => fileRef.current?.click()}>
+              <Button onClick={() => void chooseFile()}>
                 <FileVideo className="h-3.5 w-3.5" />
                 Choose file
               </Button>
