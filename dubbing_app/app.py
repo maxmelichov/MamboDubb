@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from dubbing import STAGES, manifest
 
-from . import errors, events, media, ops
+from . import errors, events, media, ops, ui
 from .errors import ApiError, busy, invalid, not_found
 from .events import EventBus
 from .jobs import JobQueue
@@ -107,10 +107,12 @@ class RenderBody(Strict):
 # app
 # ---------------------------------------------------------------------------
 
-def create_app(outputs: Path, *, runner=None, version: str | None = None) -> FastAPI:
+def create_app(outputs: Path, *, runner=None, version: str | None = None,
+               ui_dir: str | Path | None = None) -> FastAPI:
     from . import __version__
 
     version = version or __version__
+    ui_root = ui.resolve_dir(ui_dir)
     projects = Projects(Path(outputs))
     projects.root.mkdir(parents=True, exist_ok=True)
     bus = EventBus()
@@ -328,6 +330,10 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None) -> Fas
     @app.get("/media/{name}")
     def media_root(name: str):
         raise not_found("no such media file")
+
+    # -- built UI (LAST: the catch-all must never shadow a route above) ------
+
+    ui.install(app, ui_root)
 
     return app
 

@@ -1004,3 +1004,109 @@ def test_resynthesize_leaves_every_segment_placed(monkeypatch, outputs):
 
     unplaced = [s["uid"] for s in m["segments"] if not s.get("place")]
     assert unplaced == [], f"segments left unplaced: {unplaced}"
+
+
+# ---------------------------------------------------------------------------
+# built UI — single-process serving (desktop packaging)
+# ---------------------------------------------------------------------------
+
+INDEX = "<!doctype html><title>Dubbing Studio</title><div id=root></div>"
+
+
+def make_dist(root: Path) -> Path:
+    """A stand-in for `app/ui/dist` as Vite writes it."""
+    dist = root / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text(INDEX, encoding="utf-8")
+    (dist / "assets" / "index-abc123.js").write_text("export const x = 1;\n", encoding="utf-8")
+    (dist / "favicon.svg").write_text("<svg/>", encoding="utf-8")
+    return dist
+
+
+@pytest.fixture()
+def dist(tmp_path):
+    return make_dist(tmp_path / "ui")
+
+
+@pytest.fixture()
+def ui_client(outputs, fake, dist):
+    with TestClient(create_app(outputs, runner=fake, ui_dir=str(dist))) as c:
+        yield c
+
+
+def test_ui_index_at_root(ui_client):
+    resp = ui_client.get("/")
+    assert resp.status_code == 200 and "Dubbing Studio" in resp.text
+
+
+def test_ui_catch_all_serves_index_for_browser_routes(ui_client):
+    """`/editor/<name>` exists only in the browser router — a hard reload on it
+    must still get the app, not a 404."""
+    for path in (f"/editor/{NAME}", "/editor/x/deep", "/import"):
+        resp = ui_client.get(path)
+        assert resp.status_code == 200, path
+        assert "Dubbing Studio" in resp.text, path
+
+
+def test_ui_serves_real_files(ui_client):
+    asset = ui_client.get("/assets/index-abc123.js")
+    assert asset.status_code == 200 and "export const x" in asset.text
+    icon = ui_client.get("/favicon.svg")
+    assert icon.status_code == 200 and icon.text == "<svg/>"
+
+
+def test_ui_never_shadows_the_api(ui_client):
+    assert ui_client.get("/health").json()["status"] == "ok"
+    assert [p["name"] for p in ui_client.get("/api/projects").json()["projects"]] == [NAME]
+    # A *misspelled* API path must stay JSON: handing index.html to a fetch()
+    # would turn "no such project" into an unparseable HTML body.
+    for path in ("/api/nope", "/api/projects/ghost", "/media/ghost/x.wav", "/media/ghost"):
+        resp = ui_client.get(path)
+        assert resp.status_code == 404, path
+        assert resp.json()["error"]["code"] == "not_found", path
+
+
+def test_ui_refuses_traversal(ui_client, tmp_path):
+    (tmp_path / "secret.txt").write_text("hf_token", encoding="utf-8")
+    # Percent-encoded so the client cannot normalise it away before it is sent.
+    resp = ui_client.get("/%2e%2e/secret.txt")
+    assert resp.status_code == 404 and "hf_token" not in resp.text
+
+
+def test_ui_resolve_file_guards(dist, tmp_path):
+    from dubbing_app import ui as ui_mod
+    from dubbing_app.errors import ApiError
+
+    assert ui_mod.resolve_file(dist, "favicon.svg") == (dist / "favicon.svg").resolve()
+    assert ui_mod.resolve_file(dist, "editor/whatsapp") is None      # -> index fallback
+    outside = tmp_path / "secret.txt"
+    outside.write_text("x", encoding="utf-8")
+    (dist / "link.txt").symlink_to(outside)
+    for bad in ("../secret.txt", "/etc/passwd", "a/../../secret.txt", "link.txt"):
+        with pytest.raises(ApiError) as exc:
+            ui_mod.resolve_file(dist, bad)
+        assert exc.value.code == "not_found", bad
+
+
+def test_ui_absent_dist_is_api_only(outputs, fake, tmp_path):
+    with TestClient(create_app(outputs, runner=fake, ui_dir=str(tmp_path / "nope"))) as c:
+        root = c.get("/")
+        assert root.status_code == 404 and root.json()["error"]["code"] == "not_found"
+        assert c.get("/health").json()["status"] == "ok"
+
+
+def test_ui_dir_empty_string_disables(outputs, fake, dist, monkeypatch):
+    from dubbing_app import ui as ui_mod
+
+    monkeypatch.setattr(ui_mod, "DEFAULT_UI_DIR", dist)
+    assert ui_mod.resolve_dir(None) == dist
+    assert ui_mod.resolve_dir("") is None and ui_mod.resolve_dir("  ") is None
+    with TestClient(create_app(outputs, runner=fake, ui_dir="")) as c:
+        assert c.get("/").status_code == 404
+
+
+def test_server_ui_dir_flag():
+    assert server.parse_args([]).ui_dir is None
+    assert server.parse_args(["--ui-dir", ""]).ui_dir == ""
+    assert server.parse_args(["--ui-dir", "/x/dist"]).ui_dir == "/x/dist"
+
