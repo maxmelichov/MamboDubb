@@ -49,6 +49,9 @@ SEGMENT_KEYS = {
     "text_mid",   # pivot runs only: the English intermediate text_en was made from
     "tts",
     "place",
+    # Editor-owned (editor/edits.py): human corrections that must survive a save.
+    "tts_instructions",   # free-text style/emotion hint for the synthesiser
+    "lang_override",      # per-segment target language, overriding source.tgt_lang
 }
 
 

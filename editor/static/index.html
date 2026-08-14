@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dubbing Editor</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <a href="#/" class="brand">Dubbing Editor</a>
+    <span id="crumb"></span>
+    <span class="spacer"></span>
+    <button id="save" hidden>Save edits</button>
+    <button id="rerun" hidden>Re-run pipeline</button>
+  </header>
+
+  <main id="import-screen">
+    <h1>Import</h1>
+    <form id="import-form">
+      <label>Video URL <input name="url" type="url" placeholder="https://www.youtube.com/watch?v=..."></label>
+      <label>…or a local file <input name="file" type="file" accept="video/*,audio/*"></label>
+      <div class="row">
+        <label>Source lang <input name="src" value="he" size="4"></label>
+        <label>Target lang <input name="tgt" value="en" size="4"></label>
+        <label>First N seconds <input name="duration" type="number" step="1" placeholder="all" size="6"></label>
+      </div>
+      <button type="submit">Start dubbing</button>
+    </form>
+
+    <h2>Runs</h2>
+    <table id="runs"><tbody></tbody></table>
+  </main>
+
+  <main id="editor-screen" hidden>
+    <section id="run-head"></section>
+    <div id="segments"></div>
+  </main>
+
+  <aside id="jobs" hidden>
+    <div class="jobs-head"><strong id="job-label"></strong><span id="job-status"></span>
+      <button id="job-close">×</button></div>
+    <pre id="job-log"></pre>
+  </aside>
+
+  <div id="toast" hidden></div>
+  <audio id="player"></audio>
+  <script src="/app.js"></script>
+</body>
+</html>
