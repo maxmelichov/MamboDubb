@@ -172,8 +172,12 @@ def set_text(m: dict[str, Any], uid: str, *, text: str | None = None,
         # The clip provably says the old line, whatever the user approved about it.
         _unlock(seg, "tts")
         # Invalidate before locking, or the write below is the very thing this
-        # call's own lock would protect from it.
-        invalidate(m, uid, stages={"tts"})
+        # call's own lock would protect from it. `translate`, not `tts`: supplying
+        # the line by hand replaces the translate stage's result, so a keep the
+        # translator's own failure caused (`mt_failed`) is answered and reopened —
+        # left standing, the user's line would only ever be a subtitle. A keep the
+        # span or the user decided is untouched; see `invalidate`'s undo table.
+        invalidate(m, uid, stages={"translate"})
         seg["text_en"] = text_en.strip()
         if lock:
             _lock(seg, "text_en")

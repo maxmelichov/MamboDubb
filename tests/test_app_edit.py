@@ -313,6 +313,31 @@ def test_set_text_en_replaces_even_a_previously_locked_line():
     assert m["segments"][0]["text_en"] == "second go"
 
 
+def test_set_text_en_reopens_the_keep_the_failed_translation_caused():
+    # `mt_failed` is the pipeline's own verdict about text that no longer exists:
+    # the translator gave up, so the span fell back to its original audio. Writing
+    # the translation by hand is the user answering exactly that, and leaving the
+    # keep standing means their line is only ever a subtitle — never spoken.
+    m = mk(seg(keep=True, keep_reason="mt_failed", text_en="aa bb cc dd",
+               tts={"clip": "clips/keep_x.wav", "dur": 2.0}))
+    uid = m["segments"][0]["uid"]
+    edit.set_text(m, uid, text_en="hello world")
+    s = m["segments"][0]
+    assert s["text_en"] == "hello world"
+    assert not s["keep"] and s["keep_reason"] is None
+    assert "tts" not in s                      # the keep-slice is not what plays now
+
+
+def test_set_text_en_does_not_reopen_a_keep_the_user_or_the_span_decided():
+    # Editing the subtitle of a genuinely foreign span is not a request to dub it,
+    # and neither is editing one the user chose to pass through.
+    for reason in ("foreign", "user", "manual"):
+        m = mk(seg(keep=True, keep_reason=reason, lang="ar", text_en="old sub"))
+        edit.set_text(m, m["segments"][0]["uid"], text_en="better sub")
+        assert m["segments"][0]["keep"], reason
+        assert m["segments"][0]["keep_reason"] == reason
+
+
 def test_set_source_text_invalidates_the_translation():
     m = two_segs()
     uid = m["segments"][0]["uid"]
