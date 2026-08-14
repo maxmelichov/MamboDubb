@@ -1,0 +1,22 @@
+{
+  "name": "dubbing-studio-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "pretauri": "uv run ../../scripts/build_desktop.py check",
+    "tauri": "tauri",
+    "dev": "pnpm --dir ../ui dev",
+    "build": "uv run ../../scripts/build_desktop.py ui"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
+    "@tauri-apps/plugin-http": "^2",
+    "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/plugin-store": "^2"
+  }
+}
