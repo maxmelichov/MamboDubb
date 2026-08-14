@@ -33,6 +33,23 @@ from . import __version__
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WATCHDOG_INTERVAL = 1.0
 
+# Where command-line tools actually live on a Mac. A GUI-launched app inherits
+# launchd's minimal PATH (/usr/bin:/bin:...), not the shell profile's — so the
+# same checkout that works from a terminal reports ffmpeg/sox MISSING inside the
+# installed app, and every stage's shell-out would fail the same way. The server
+# is the ancestor of every job child, so widening PATH once here fixes them all.
+TOOL_DIRS = ("/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin")
+
+
+def widen_path(env: dict | None = None) -> str:
+    env = env if env is not None else os.environ
+    parts = [p for p in env.get("PATH", "").split(os.pathsep) if p]
+    for d in TOOL_DIRS:
+        if d not in parts and Path(d).is_dir():
+            parts.append(d)
+    env["PATH"] = os.pathsep.join(parts)
+    return env["PATH"]
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="python -m dubbing_app.server",
@@ -139,6 +156,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parse_args(argv)
     log_config = configure_logging()
+    widen_path()
 
     outputs = args.outputs.resolve()
     outputs.mkdir(parents=True, exist_ok=True)

@@ -1108,6 +1108,20 @@ def test_stdin_watchdog_fires_on_eof():
     assert fired.wait(2.0), "EOF on stdin must shut the server down"
 
 
+def test_widen_path_appends_only_missing_real_dirs():
+    # A GUI-launched app gets launchd's PATH; the homebrew dir must be appended
+    # exactly once, and a dir already present must not be duplicated.
+    env = {"PATH": "/usr/bin:/bin:/opt/homebrew/bin"}
+    server.widen_path(env)
+    assert env["PATH"].count("/opt/homebrew/bin") == 1
+    env2 = {"PATH": "/usr/bin:/bin"}
+    server.widen_path(env2)
+    for d in server.TOOL_DIRS:
+        if Path(d).is_dir():
+            assert d in env2["PATH"].split(":")
+    assert env2["PATH"].startswith("/usr/bin:/bin")
+
+
 def test_stdin_watchdog_is_opt_in():
     args = server.parse_args(["--port", "0"])
     assert args.exit_on_stdin_close is False
