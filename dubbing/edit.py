@@ -451,11 +451,18 @@ def _derived(seg: dict[str, Any], *, start: float, end: float, text: str) -> dic
 # --------------------------------------------------------------- model work
 
 def _langs(m: dict[str, Any], seg: dict[str, Any]) -> tuple[str, str]:
-    """This segment's (source, target) — per-segment override, then the run's."""
+    """This segment's (source, target) — per-segment override, then the run's.
+
+    Normalised through `cli.normalize_lang`, so "iw" and "he" are one language
+    here as they are everywhere else — the pair decides whether this segment needs
+    a translation at all (`translate.same_language`).
+    """
+    from . import cli
+
     src = (m.get("source") or {})
     source = seg.get("src_lang") or seg.get("lang") or src.get("src_lang") or "he"
     target = seg.get("tgt_lang") or src.get("tgt_lang") or "en"
-    return source.lower(), target.lower()
+    return cli.normalize_lang(source), cli.normalize_lang(target)
 
 
 def _established(m: dict[str, Any], target: str):
@@ -745,8 +752,10 @@ def _args(m: dict[str, Any], **overrides: Any):
 
     src = m.get("source") or {}
     args = cli.parse_args([str(src.get("input") or "input")])
-    args.src = src.get("src_lang") or args.src
-    args.tgt = src.get("tgt_lang") or args.tgt
+    # Normalised exactly as `cli.main` does, so a manifest carrying the legacy
+    # spelling ("iw") is the same pair here that it is on the headless path.
+    args.src = cli.normalize_lang(src.get("src_lang") or args.src)
+    args.tgt = cli.normalize_lang(src.get("tgt_lang") or args.tgt)
     args.duration = src.get("duration_limit")
     args.context = src.get("context")
     for key in ("register", "genre", "transcript", "tts_model", "dub_foreign", "device"):

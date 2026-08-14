@@ -50,6 +50,23 @@ uv run hf download ivrit-ai/whisper-large-v3-turbo-ct2 \
 
 Demucs (`htdemucs_ft`) and Pyannote download themselves on first use.
 
+### Dubbing *into* Hebrew
+
+Qwen3-TTS does not speak Hebrew. One extra download adds it — a LoRA over the
+same 1.7B Base checkpoint, so there is no second synthesiser to load:
+
+```bash
+uv run hf download notmax123/QwenTTS-he-1.7B --local-dir models/QwenTTS-he-1.7B
+```
+
+The grapheme→IPA model it reads from (`renikud-plus`, installed by `uv sync`)
+fetches its own weights on first use; `hf download notmax123/RenikudPlus
+model.onnx --local-dir models/RenikudPlus` puts them under `models/` instead.
+
+With both present, `--tgt he` works, including `--src he --tgt he` — a
+same-language run re-voices every line in the cloned voice and never loads the
+translator. Without them the run is refused up front, naming the command.
+
 ## Linux (CUDA)
 
 Everything above applies, except translation: `mlx-lm` is macOS-only, and the main
