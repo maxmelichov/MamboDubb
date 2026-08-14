@@ -286,8 +286,11 @@ function Row({
             placeholder="not translated yet"
             className={cn(
               "text-[14px] leading-snug",
-              seg.keep ? "text-muted opacity-70" : "font-medium text-primary",
+              seg.keep ? "text-muted" : "font-medium text-primary",
             )}
+            /* Dimmed as a *reading* line only: a field you are typing into is
+               the one thing on the row that must be at full strength. */
+            dimmed={seg.keep}
             onEdit={onEdit}
             onCommit={onCommit}
             selected={selected}
@@ -364,6 +367,7 @@ function Line({
   editing,
   placeholder,
   className,
+  dimmed,
   selected,
   readOnly,
   onEdit,
@@ -375,6 +379,8 @@ function Line({
   editing: boolean;
   placeholder: string;
   className?: string;
+  /** Held back from the line above it — never from the field. */
+  dimmed?: boolean;
   selected: boolean;
   readOnly?: boolean;
   onEdit: (target: EditTarget) => void;
@@ -402,6 +408,7 @@ function Line({
         // a sentence — and the end of a translated sentence is exactly where
         // the mistakes are. The selected row is uncapped.
         selected ? "whitespace-pre-wrap" : "line-clamp-2",
+        dimmed && "opacity-70",
         !readOnly && "cursor-text hover:border-border",
         !value && "italic text-muted",
         className,
