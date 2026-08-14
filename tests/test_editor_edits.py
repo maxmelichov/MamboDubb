@@ -1,13 +1,23 @@
-"""Editor manifest patching — pure logic, no server and no models."""
+"""The lightweight editor: its manifest patching, and its HTTP surface.
+
+The patching half is pure logic — a manifest dict in, what changed out. The HTTP
+half runs against the real FastAPI app over a run directory built by hand
+(`conftest_app.make_project`), so the shapes asserted are the ones that go on the
+wire; no model is ever loaded and no pipeline process is ever spawned.
+"""
 
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
 
 import pytest
 
-from dubbing import manifest
-from editor.edits import EDITABLE, apply_edits, earliest
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from dubbing import manifest  # noqa: E402
+from editor.edits import EDITABLE, apply_edits, earliest  # noqa: E402
 
 
 def a_manifest() -> dict:
@@ -176,3 +186,112 @@ def test_locks_reach_the_manifest(tmp_path):
 def test_earliest_orders_by_pipeline_position():
     assert earliest(["tts", "translate", "mix"]) == "translate"
     assert earliest([]) is None
+
+
+# ---------------------------------------------------------------------------
+# the HTTP surface
+# ---------------------------------------------------------------------------
+
+pytest.importorskip("fastapi")
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from editor import jobs, runs  # noqa: E402
+from editor.app import app as editor_app  # noqa: E402
+from tests.conftest_app import make_project  # noqa: E402
+
+RUN = "whatsapp_0809"
+
+
+@pytest.fixture()
+def editor_client(tmp_path, monkeypatch):
+    """The editor pointed at a temp `outputs/`. Nothing is ever launched."""
+    root = tmp_path / "outputs"
+    make_project(root, RUN)
+    monkeypatch.setattr(runs, "OUTPUTS", root.resolve())
+    monkeypatch.setattr(runs, "UPLOADS", root.resolve() / "_uploads")
+    with TestClient(editor_app) as client:
+        yield client
+
+
+def launched(monkeypatch) -> list:
+    """Capture the command a route would have run, instead of running it."""
+    calls: list[list[str]] = []
+
+    class Fake:
+        def __init__(self, cmd):
+            self.id, self.cmd = "job1", cmd
+
+        def state(self, tail: int = 60):
+            return {"id": self.id, "cmd": self.cmd, "status": "running", "log": []}
+
+    def fake_launch(cmd, run, label):
+        calls.append(cmd)
+        return Fake(cmd)
+
+    monkeypatch.setattr(jobs, "launch", fake_launch)
+    return calls
+
+
+def test_save_round_trips_through_the_real_routes(editor_client):
+    """The whole Save button: read the run, PATCH what changed, read it back."""
+    view = editor_client.get(f"/api/runs/{RUN}").json()
+    assert [s["id"] for s in view["segments"]] == list(range(5))
+
+    r = editor_client.patch(f"/api/runs/{RUN}/segments", json={"edits": [
+        {"id": 1, "fields": {"text_en": "Corrected.", "passthrough": True}}]})
+    assert r.status_code == 200
+    assert r.json() == {"changed": [1], "fields": ["passthrough", "text_en"],
+                        "force": "tts"}
+
+    seg = editor_client.get(f"/api/runs/{RUN}").json()["segments"][1]
+    assert seg["text_en"] == "Corrected."
+    assert seg["passthrough"] is True                  # the pipeline's own key
+    assert seg["locked"] == {"text_en": True, "keep": True}
+
+
+def test_a_rerun_reproduces_the_runs_own_fingerprints(editor_client, monkeypatch):
+    """A run created with non-default options has to be re-run with them. Every
+    option the command drops changes that stage's fingerprint, and an upstream
+    fingerprint change is not "re-run that stage": `reset_stage("segments")`
+    empties `m["segments"]`, so the whole run — and every edit made here — is
+    discarded and rebuilt from the source media."""
+    from dubbing import cli
+
+    workdir = runs.workdir(RUN)
+    m = manifest.load(workdir)
+    m["source"]["app_opts"] = {"genre": "movie", "register": "dialogue",
+                               "tts_model": "0.6b", "transcript": "asr",
+                               "dub_foreign": True}
+    manifest.save(workdir, m)
+
+    calls = launched(monkeypatch)
+    r = editor_client.post(f"/api/runs/{RUN}/rerun", json={"force": "tts"})
+    assert r.status_code == 200
+
+    args = cli.parse_args(calls[0][3:])                # drop [python, -m, dubbing]
+    created = cli.parse_args([str(m["source"]["input"]), "-o", str(workdir),
+                              "--src", "he", "--tgt", "en", "--genre", "movie",
+                              "--register", "dialogue", "--tts-model", "0.6b",
+                              "--transcript", "asr", "--dub-foreign"])
+    assert cli.stage_params(args, m) == cli.stage_params(created, m)
+    assert args.force == "tts"
+
+
+def test_a_rerun_of_a_headless_run_stays_on_the_defaults(editor_client, monkeypatch):
+    """Nothing recorded, nothing invented: `python -m dubbing` stores no options
+    today, so a run made by it has none to hand back."""
+    calls = launched(monkeypatch)
+    editor_client.post(f"/api/runs/{RUN}/rerun", json={})
+    assert "--genre" not in calls[0] and "--tts-model" not in calls[0]
+
+
+def test_rerun_rejects_an_unknown_stage(editor_client):
+    assert editor_client.post(f"/api/runs/{RUN}/rerun",
+                              json={"force": "nonsense"}).status_code == 400
+
+
+def test_unknown_run_is_404(editor_client):
+    assert editor_client.get("/api/runs/nope").status_code == 404
+    assert editor_client.patch("/api/runs/nope/segments",
+                               json={"edits": []}).status_code == 404
