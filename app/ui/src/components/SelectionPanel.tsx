@@ -127,16 +127,20 @@ export function SelectionPanel({
         {/* 1 — the verdict. Two states, both named, neither of them jargon. */}
         <section className="flex flex-col gap-1.5">
           <div className="flex overflow-hidden rounded-lg border border-border bg-raised">
+            {/* Each half only patches when it is *not* already the verdict:
+                pressing the one that is already on is a no-op the user can
+                see, and it must be a no-op the server never hears — it would
+                otherwise stamp a `keep` lock on a line nobody changed. */}
             <Choice
               active={!seg.keep}
-              onClick={() => onPatch({ keep: false })}
+              onClick={() => seg.keep && onPatch({ keep: false })}
               label="Dub it"
               state="dubbed"
             />
             <span className="w-px shrink-0 bg-border" aria-hidden />
             <Choice
               active={seg.keep}
-              onClick={() => onPatch({ keep: true, keep_reason: "manual" })}
+              onClick={() => !seg.keep && onPatch({ keep: true, keep_reason: "manual" })}
               label="Keep original"
               state="kept"
             />
@@ -412,7 +416,12 @@ function VoiceShelf({
   onPatch: (patch: SegmentPatch) => void;
 }) {
   const opts = seg.tts_opts ?? null;
-  const set = (patch: TtsOpts) => onPatch({ tts_opts: { ...(opts ?? {}), ...patch } });
+  /** Same discipline as the text fields: a value that did not move is not a save. */
+  const set = (patch: TtsOpts) => {
+    const next = { ...(opts ?? {}), ...patch };
+    if (JSON.stringify(next) === JSON.stringify(opts ?? {})) return;
+    onPatch({ tts_opts: next });
+  };
 
   return (
     <Disclosure

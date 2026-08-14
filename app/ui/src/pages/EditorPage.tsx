@@ -43,6 +43,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
+  ExternalLink,
   Film,
   FolderOpen,
   HelpCircle,
@@ -71,11 +72,12 @@ import {
 } from "../components/ui";
 import { api } from "../lib/api";
 import { stopClip, toggleClip, useClipPlayback } from "../lib/clipAudio";
-import { isDesktop, revealPath } from "../lib/desktop";
+import { isDesktop, revealRunFile } from "../lib/desktop";
 import { FIXTURE_PROJECT } from "../lib/fixtures";
 import { languageName, timecode } from "../lib/format";
 import { STATE_META, segmentState, totalDuration, type SegmentState } from "../lib/segments";
 import { summarizeStages } from "../lib/stages";
+import { bucketsFor, usePeaks } from "../lib/usePeaks";
 import { activeJob, useProject } from "../lib/useProject";
 import { useTransport } from "../lib/useTransport";
 import type { Job, ProjectDetail, Segment } from "../lib/types";
@@ -109,6 +111,24 @@ export function EditorPage() {
   );
   const transport = useTransport(total);
   const [zoom, setZoom] = useState(4);
+
+  /**
+   * The two lane waveforms.
+   *
+   * Buckets come from the window's width because the strip is full-bleed, and
+   * they are fixed for the session: the picture is an SVG that stretches, so
+   * zooming does not need a new one. The OUTPUT lane re-reads when a job
+   * finishes — a re-voice or a render is exactly when the mix on disk stops
+   * matching what is drawn — while the SOURCE lane never does, because
+   * `source.wav` is written once by the fetch stage.
+   */
+  const [buckets] = useState(() =>
+    bucketsFor(typeof window === "undefined" ? 1400 : window.innerWidth),
+  );
+  const finishedJobs = state.jobs.filter((job) => job.status === "done").length;
+  const sourcePeaks = usePeaks(name, "source", buckets);
+  const dubPeaks = usePeaks(name, "dub", buckets, finishedJobs);
+
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<ScriptFilter>("all");
   const [editing, setEditing] = useState<EditTarget>(null);
@@ -159,6 +179,26 @@ export function EditorPage() {
     [actions, seek, segments],
   );
 
+  /**
+   * Picking a mark on the strip is a question about a *line*: what does it say,
+   * what did it become, what does it sound like. All three answers are in the
+   * script row — its two texts and its A/B buttons — so the click has to put
+   * that row in front of the reviewer, in the middle of the list, rather than
+   * leave them to find a row seven hundred pixels up.
+   *
+   * It is a counter and not just a uid because clicking the same mark twice
+   * must scroll twice: the reviewer has scrolled away in between, which is
+   * exactly why they clicked it again.
+   */
+  const [reveal, setReveal] = useState<{ uid: string; n: number } | null>(null);
+  const selectFromTimeline = useCallback(
+    (uid: string) => {
+      selectAndSeek(uid);
+      setReveal((current) => ({ uid, n: (current?.n ?? 0) + 1 }));
+    },
+    [selectAndSeek],
+  );
+
   /** ↑/↓ walk what is on screen, not what is in the run. */
   const step = useCallback(
     (delta: number) => {
@@ -188,13 +228,24 @@ export function EditorPage() {
     [actions],
   );
 
-  /** A committed edit is a PATCH; an empty one never gets this far (ScriptRow). */
+  /**
+   * A committed edit is a PATCH — unless nothing was edited.
+   *
+   * Every way out of the field goes through here (blur, ⌘↵, the ⋯ menu's
+   * Correct transcript), and closing a field you only opened to *read* must
+   * cost nothing: no request, no lock stamped on the line, and above all no
+   * invalidation — `edit.set_text` drops the clip and the placement, so a
+   * no-op save is a re-voice queued for a line nobody changed. The comparison
+   * is trimmed on both sides because the editor commits a trimmed draft, and
+   * `"a line "` and `"a line"` are not a translation the user rewrote.
+   */
   const commit = useCallback(
     (uid: string, field: "text" | "text_en", value: string) => {
       setEditing(null);
       const seg = segments.find((s) => s.uid === uid);
       if (!seg) return;
-      if (value === (field === "text" ? seg.text : (seg.text_en ?? ""))) return;
+      const current = (field === "text" ? seg.text : (seg.text_en ?? "")).trim();
+      if (value.trim() === current) return;
       void actions.patch(uid, { [field]: value });
     },
     [actions, segments],
@@ -307,6 +358,11 @@ export function EditorPage() {
       <AppHeader
         actions={
           <>
+            {/* The finished file, one click from the run it came out of. It
+                only exists when the file does. */}
+            {project?.outputs.preview ? (
+              <OpenFileButton name={name} path={project.outputs.preview} />
+            ) : null}
             <ConfirmButton
               variant="primary"
               size="sm"
@@ -366,6 +422,7 @@ export function EditorPage() {
               playingUrl={playingUrl}
               query={query}
               filter={filter}
+              reveal={reveal}
               searchRef={searchRef}
               onQuery={setQuery}
               onFilter={setFilter}
@@ -424,8 +481,10 @@ export function EditorPage() {
             selectedUid={selectedUid}
             busyUids={state.busyUids}
             pxPerSecond={zoom}
+            sourcePeaks={sourcePeaks}
+            dubPeaks={dubPeaks}
             splitAt={splitAt}
-            onSelect={selectAndSeek}
+            onSelect={selectFromTimeline}
             onSeek={transport.seek}
             onZoomIn={zoomIn}
             onZoomOut={zoomOut}
@@ -434,6 +493,56 @@ export function EditorPage() {
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * Open a file the run produced.
+ *
+ * Two environments, one intent. In the desktop shell the useful thing is the
+ * file itself — the user wants to play it in QuickTime, drop it into a chat,
+ * put it somewhere — so it is revealed in Finder. In a browser tab there is no
+ * Finder and the server is already serving the run directory, so the URL opens
+ * in a new tab. The shell falls back to the tab if the reveal could not
+ * happen, which covers an older shell with no `workspace` in its handshake.
+ *
+ * It is a function rather than a hook because both callers — the header button
+ * and the run menu's file list — want the same three lines and neither wants
+ * to think about which environment it is in.
+ */
+async function openRunFile(name: string, relPath: string): Promise<void> {
+  if (await revealRunFile(name, relPath)) return;
+  const href = api.mediaUrl(name, relPath);
+  if (href) window.open(href, "_blank", "noopener");
+}
+
+/**
+ * "Where is the file?" as a button.
+ *
+ * The single most-asked question at the end of a run, and until now the answer
+ * was a Finder window and a memory of the run directory's name. Header-sized
+ * and labelled for the environment it is in — "Show in Finder" is a promise a
+ * browser tab cannot keep, and "Open" is a weaker one than the shell can.
+ */
+function OpenFileButton({ name, path }: { name: string; path: string }) {
+  const desktop = isDesktop();
+  return (
+    <Button
+      size="sm"
+      title={
+        desktop
+          ? `Show ${path} in Finder`
+          : `Open ${path} in a new tab`
+      }
+      onClick={() => void openRunFile(name, path)}
+    >
+      {desktop ? (
+        <FolderOpen className="h-3.5 w-3.5" aria-hidden />
+      ) : (
+        <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+      )}
+      {desktop ? "Show in Finder" : "Open preview"}
+    </Button>
   );
 }
 
@@ -621,6 +730,7 @@ function RunMenu({
 }) {
   const gaps = project?.report?.uncovered_audible ?? [];
   const preview = project?.outputs.preview;
+  const srt = project?.outputs.srt;
 
   return (
     <Popover
@@ -655,20 +765,46 @@ function RunMenu({
         ) : null}
       </dl>
 
-      {/* Only inside the desktop shell: in a browser tab there is no Finder to
-          reveal anything in, and a button that silently does nothing is worse
-          than one that is not there. */}
-      {isDesktop() && preview ? (
-        <Button
-          size="sm"
-          className="mt-3 w-full"
-          onClick={() => void revealPath(preview)}
-        >
-          <FolderOpen className="h-3.5 w-3.5" />
-          Show preview.mp4 in Finder
-        </Button>
+      {/*
+        What the run produced, by name, each one a click away.
+        It used to be a single desktop-only "Show preview.mp4 in Finder" button
+        that handed `reveal_path` the manifest's *run-relative* path — which
+        the shell resolves against its own working directory and refuses,
+        because nothing is there. Both rows go through `openRunFile`, which
+        composes the absolute path in the shell and opens the served URL in a
+        browser, so the list is useful in both and the subtitles — the other
+        thing a finished run is for — are no longer unreachable.
+      */}
+      {preview || srt ? (
+        <>
+          <Eyebrow className="mt-3.5 mb-1.5">Files</Eyebrow>
+          <div className="flex flex-col gap-1">
+            {preview ? <FileRow name={name} path={preview} label="Preview video" /> : null}
+            {srt ? <FileRow name={name} path={srt} label="Subtitles (.srt)" /> : null}
+          </div>
+        </>
       ) : null}
     </Popover>
+  );
+}
+
+function FileRow({ name, path, label }: { name: string; path: string; label: string }) {
+  return (
+    <button
+      type="button"
+      data-run-file={path}
+      onClick={() => void openRunFile(name, path)}
+      title={isDesktop() ? `Show ${path} in Finder` : `Open ${path} in a new tab`}
+      className="flex w-full items-center gap-2 rounded-lg border border-border bg-raised px-2 py-1.5 text-left text-[12.5px] text-primary transition-colors hover:border-axis hover:bg-sunken"
+    >
+      {isDesktop() ? (
+        <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted" aria-hidden />
+      ) : (
+        <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted" aria-hidden />
+      )}
+      {label}
+      <span className="ml-auto truncate font-mono text-[11px] text-muted">{path}</span>
+    </button>
   );
 }
 

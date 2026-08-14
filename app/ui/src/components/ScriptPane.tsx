@@ -76,6 +76,7 @@ export function ScriptPane({
   playingUrl,
   query,
   filter,
+  reveal,
   searchRef,
   onQuery,
   onFilter,
@@ -95,6 +96,8 @@ export function ScriptPane({
   playingUrl: string | null;
   query: string;
   filter: ScriptFilter;
+  /** "Put this row in the middle", bumped each time it is asked for. */
+  reveal: { uid: string; n: number } | null;
   searchRef: React.RefObject<HTMLInputElement | null>;
   onQuery: (query: string) => void;
   onFilter: (filter: ScriptFilter) => void;
@@ -161,6 +164,22 @@ export function ScriptPane({
       ?.querySelector<HTMLElement>(`[data-uid="${escapeId(selectedUid)}"]`)
       ?.scrollIntoView({ block: "nearest" });
   }, [selectedUid]);
+
+  /**
+   * A row asked for by name — today, by a click on its mark in the timeline.
+   *
+   * Centred rather than `nearest`, and unconditional rather than only-when-off
+   * screen: this is not the list keeping up with something, it is the list
+   * being *sent* somewhere, and the answer to "which line is that mark" should
+   * land in the middle of the reading area, not scraped against the bottom
+   * edge. Declared after the two effects above so it wins when they disagree.
+   */
+  useEffect(() => {
+    if (!reveal) return;
+    scrollRef.current
+      ?.querySelector<HTMLElement>(`[data-uid="${escapeId(reveal.uid)}"]`)
+      ?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [reveal]);
 
   const tabStopUid = selectedUid ?? visible[0]?.uid ?? null;
 

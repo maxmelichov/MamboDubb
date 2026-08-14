@@ -7,6 +7,15 @@
  * looking for — and a single lane would hide it. Unclaimed time gets no hue at
  * all: it is an absence, so it is a neutral 135° hatch.
  *
+ * Behind the marks, each lane draws its actual audio: `GET …/peaks` returns a
+ * few thousand normalized amplitudes and the lane draws them mirrored about its
+ * centre line. That is not decoration. A mark says a segment claims 12.4s to
+ * 15.1s; the waveform says whether anybody is *talking* in it — so a mark that
+ * has drifted off its speech, a kept span that is actually silent, and a gap
+ * the hatch calls empty but the ear does not are all visible without pressing
+ * play. The picture is scaled by the audio's own `duration`, never by the
+ * timeline's, so it stays time-aligned with the marks on top of it.
+ *
  * It is a 128px strip across the bottom now rather than a third of the screen,
  * and it lost three things in the move. The per-mark hover tooltip is gone: it
  * repeated the two lines of text that the script pane now shows in full, three
@@ -49,7 +58,7 @@ import { cn } from "../lib/classNames";
 import { timecode } from "../lib/format";
 import { Button, ButtonGroup, ConfirmButton, StateIcon } from "./ui";
 import { STATE_META, placedSpan, segmentState, unclaimedSpans } from "../lib/segments";
-import type { Segment } from "../lib/types";
+import type { Peaks, Segment } from "../lib/types";
 
 const TICK_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
 const MIN_MARK_PX = 3;
@@ -63,6 +72,8 @@ export function Timeline({
   selectedUid,
   busyUids,
   pxPerSecond,
+  sourcePeaks,
+  dubPeaks,
   splitAt,
   onSelect,
   onSeek,
@@ -76,6 +87,10 @@ export function Timeline({
   selectedUid: string | null;
   busyUids: string[];
   pxPerSecond: number;
+  /** The original audio's envelope, or null while there is none to draw. */
+  sourcePeaks: Peaks | null;
+  /** The finished mix's envelope — null until the mix stage has run. */
+  dubPeaks: Peaks | null;
   /** The playhead, when it is inside the selected segment — else null. */
   splitAt: number | null;
   onSelect: (uid: string) => void;
@@ -182,6 +197,7 @@ export function Timeline({
           </div>
 
           <Lane>
+            <Waveform peaks={sourcePeaks} lane="source" pxPerSecond={pxPerSecond} />
             {gaps.map((gap) => (
               <div
                 key={`gap-${gap.start}`}
@@ -208,6 +224,7 @@ export function Timeline({
           </Lane>
 
           <Lane last>
+            <Waveform peaks={dubPeaks} lane="dub" pxPerSecond={pxPerSecond} />
             {segments.map((seg) => {
               const span = placedSpan(seg);
               return (
@@ -292,6 +309,72 @@ function Lane({ last, children }: { last?: boolean; children: React.ReactNode })
     <div className={cn("relative min-h-0 flex-1", !last && "border-b border-grid")}>
       {children}
     </div>
+  );
+}
+
+/**
+ * One lane's audio, mirrored about its centre.
+ *
+ * SVG rather than canvas, and stretched rather than sampled per pixel. A lane
+ * at 32px/s over a twenty-minute run is 38,000px wide — past the maximum canvas
+ * dimension on Safari and a lot of memory everywhere else — while a path with a
+ * `viewBox` of `0 0 n 100` and `preserveAspectRatio="none"` draws once and
+ * scales for free at every zoom. The width is `duration * pxPerSecond` because
+ * the audio's length is the thing that maps the buckets onto the time axis; use
+ * the timeline's `total` (which is the max of the audio, the last segment and
+ * the last placement) and the picture slides against the marks.
+ *
+ * `aria-hidden` and `pointer-events-none`: it is a backdrop for the marks,
+ * which stay the clickable thing in the lane.
+ */
+function Waveform({
+  peaks,
+  lane,
+  pxPerSecond,
+}: {
+  peaks: Peaks | null;
+  lane: "source" | "dub";
+  pxPerSecond: number;
+}) {
+  const path = useMemo(() => {
+    if (!peaks || peaks.duration <= 0 || peaks.peaks.length === 0) return null;
+    const n = peaks.peaks.length;
+    const top: string[] = [];
+    const bottom: string[] = [];
+    for (let i = 0; i < n; i += 1) {
+      // A floor of 0.6 units keeps a silent stretch as a hairline rather than
+      // as a hole: the eye reads the continuous line as "audio, quiet here".
+      const amp = Math.max(0.6, Math.min(1, peaks.peaks[i]) * 48);
+      top.push(`${i},${(50 - amp).toFixed(1)}`);
+      bottom.push(`${i},${(50 + amp).toFixed(1)}`);
+    }
+    bottom.reverse();
+    return `M${top.join("L")}L${bottom.join("L")}Z`;
+  }, [peaks]);
+
+  if (!path || !peaks) return null;
+
+  return (
+    <svg
+      aria-hidden
+      data-waveform={lane}
+      viewBox={`0 0 ${peaks.peaks.length} 100`}
+      preserveAspectRatio="none"
+      /*
+       * The height is stated, not inherited. An absolutely-positioned SVG with
+       * a width, a `top`, a `bottom` and `height: auto` is over-constrained, so
+       * the browser drops `bottom` and takes the height from the viewBox ratio
+       * — which at 4px/s happened to land within a pixel of the lane and at
+       * 32px/s was 338px tall, drawing the top eighth of the waveform in this
+       * lane and the rest over the one below.
+       */
+      /* Inset to exactly the marks' box, so the audio reads as being *in* the
+         clip rather than passing behind it. */
+      className="pointer-events-none absolute left-0 top-2 h-[calc(100%-1rem)] text-muted"
+      style={{ width: Math.max(1, peaks.duration * pxPerSecond) }}
+    >
+      <path d={path} fill="currentColor" fillOpacity={0.42} />
+    </svg>
   );
 }
 
