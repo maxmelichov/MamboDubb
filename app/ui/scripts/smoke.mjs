@@ -196,6 +196,17 @@ await new Promise((resolve) => setTimeout(resolve, 600));
 
 const editor = root.textContent;
 check("editor renders", /Render preview/.test(editor));
+
+/*
+ * Nothing is selected when a run is first opened, which is exactly when "what
+ * happened here" is the only question there is. The rail answers it instead of
+ * printing "No line selected" in the middle of two fifths of the screen.
+ */
+check("with nothing selected the rail summarises the run", /This run/.test(editor));
+check("…counting the lines by state", /Dubbed/.test(editor) && /Kept original/.test(editor));
+check("…saying why the kept ones were kept", /Kept because/.test(editor));
+check("…and where speech is uncovered", /Audible, uncovered/.test(editor));
+check("the empty rail is not an apology", !/No line selected/.test(editor));
 check("the script loaded", document.querySelectorAll('[role="option"]').length > 40);
 check("timeline drew marks", document.querySelectorAll('[aria-label^="Segment "]').length > 40);
 
@@ -243,12 +254,47 @@ check(
 check("no composed tooltip on the row", row1.getAttribute("title") == null);
 
 /*
- * A kept line still shows both halves: a reviewer's job includes checking the
- * keep decisions, and a row that hides the translation of a kept line hides the
- * evidence for the judgement it is asking for.
+ * The other half of that claim: two lines are for a *comparison*, and there is
+ * none when the two halves are the same string. A run over a video that already
+ * speaks the target language passes the text through untouched, so `text_en ===
+ * text` on most of it — and the row used to print the identical sentence twice,
+ * at two weights, on every one of them. Nothing in this list may ever do that.
+ */
+check(
+  "no row prints the same sentence twice",
+  rows().every((r) => {
+    const lines = [...r.querySelectorAll("[data-line]")].map((p) => p.textContent.trim());
+    return !(lines.length === 2 && lines[0] === lines[1]);
+  }),
+);
+const echoRow = rows().find((r) => r.getAttribute("data-lines") === "1");
+check("a passthrough line is drawn as one line", echoRow != null);
+check(
+  "…and it is the original that survives, not a copy of it",
+  echoRow.querySelectorAll("[data-line]").length === 1 &&
+    echoRow.querySelector('[data-line="text"]') != null,
+);
+
+/*
+ * A kept line says what will play — once, as a clause on the meta line. It used
+ * to be a paragraph of its own under the two texts, which on an all-kept run is
+ * seventy-three identical sentences down the page.
  */
 const keptRow = rows().find((r) => r.textContent.includes("original audio plays here"));
-check("kept lines say so, and still show both texts", keptRow != null);
+check("kept lines say what plays", keptRow != null);
+const keptMeta = [...keptRow.querySelectorAll("button")].find((b) => /Keep/.test(b.textContent));
+check(
+  "…as a clause on the row's meta line, not a fourth line of its own",
+  keptMeta != null && keptMeta.textContent.includes("original audio plays here"),
+);
+
+/*
+ * The encoding is a drawn shape now. Two of the Unicode glyphs it used to set —
+ * U+25A3 for "kept" above all — are outside the UI font, so the browser fell
+ * back per character and drew a lumpy square on every kept row.
+ */
+check("the state shape is drawn, not set in a font", !editor.includes("▣") && !editor.includes("◆"));
+check("every row carries its state shape", rows().every((r) => r.querySelector("svg") != null));
 
 // The state is a word on every row. Light-mode "kept" is 2.17:1 against the
 // card — under the 3:1 gate — and there is no legend on screen any more.
@@ -257,6 +303,47 @@ check(
   rows().every((r) => /Dub|Keep|Fail|Voice|Text/.test(r.textContent)),
 );
 check("the legend is not permanent chrome", !editor.includes("Unclaimed time"));
+
+/*
+ * The list scrolls to rows — the playhead's, the selection's, ↑/↓'s — and every
+ * one of those landed the row flush under the filter bar, reading as text
+ * sliced off by it. `scroll-padding` is the platform's inset for exactly that,
+ * and the bar above has to be opaque or the row passing under shows through.
+ */
+const scroller = document.querySelector("[data-script-scroll]");
+const scriptHeader = document.querySelector("[data-script-header]");
+check("the list keeps its rows clear of the filter bar", /scroll-pt-3/.test(scroller.className));
+check(
+  "the filter bar is opaque, and hairlined off the list",
+  / bg-sunken |^bg-sunken /.test(` ${scriptHeader.className} `) &&
+    !/bg-sunken\//.test(scriptHeader.className) &&
+    /border-b/.test(scriptHeader.className),
+);
+
+/*
+ * The timeline's track headers live in a gutter beside the lanes, not floating
+ * over the first few seconds of them — which is where every run's first mark
+ * is, and where a reviewer starts reading.
+ */
+const laneLabels = [...document.querySelectorAll("[data-lane-label]")];
+check(
+  "both lanes are labelled",
+  laneLabels.length === 2 &&
+    /Source/i.test(laneLabels[0].textContent) &&
+    /Output/i.test(laneLabels[1].textContent),
+);
+check(
+  "the lane labels sit in a gutter, never over the marks",
+  laneLabels.every(
+    (label) =>
+      label.closest("[data-mark]") == null &&
+      label.parentElement.querySelector("[data-mark]") == null,
+  ),
+);
+check(
+  "the playhead is drawn above both lanes",
+  document.querySelector("[data-playhead]") != null,
+);
 
 // One tab stop, not two hundred.
 check(
@@ -502,6 +589,22 @@ click("Re-voice this line");
 await settle(200);
 check("model action queues and reports", /Re-voicing/.test(root.textContent));
 check("editor still interactive during a job", rows().length > 40);
+
+/*
+ * The strip is one line high, always. With `flex-wrap` a long stage message
+ * wrapped to a second row and moved the whole editor down mid-job — the script
+ * under the cursor jumping while you read it. And the bar and the number are
+ * one value read once: they used to disagree, the bar moving while the
+ * percentage sat on "—".
+ */
+const strip = document.querySelector("[data-job-strip]");
+check("the job strip is one line, always", strip != null && / h-8 /.test(` ${strip.className} `));
+const bar = strip.querySelector('[role="progressbar"]');
+const shown = strip.textContent.match(/(\d+)%/);
+check(
+  "the bar and the percentage are the same number",
+  shown == null ? bar.getAttribute("aria-valuenow") == null : bar.getAttribute("aria-valuenow") === shown[1],
+);
 
 // …and the finished job writes its result back through the event stream —
 // without clobbering anything, because nothing is being typed.
