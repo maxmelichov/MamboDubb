@@ -912,8 +912,11 @@ def test_full_run_argv_matches_the_cli(tmp_path):
 
 
 def test_rebuild_rejects_stages_it_does_not_cover(outputs):
+    """Only the manifest-side stages are rebuildable: everything before translate
+    needs the source media and belongs to a real run. `translate` itself IS
+    rebuildable — the server's provisional version stopped at tts, `dubbing.edit`
+    does not."""
     m = manifest.load(outputs / NAME)
-    with pytest.raises(ops.EditError):
-        ops.rebuild(m, outputs / NAME, from_stage="translate")
-    with pytest.raises(ops.EditError):
-        ops.rebuild(m, outputs / NAME, from_stage="nonsense")
+    for stage in ("fetch", "stems", "transcript", "segments", "nonsense"):
+        with pytest.raises(ops.EditError):
+            ops.rebuild(m, outputs / NAME, from_stage=stage)

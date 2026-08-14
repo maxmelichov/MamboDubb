@@ -52,8 +52,18 @@ STAGE_FIELDS = {
 }
 
 
-class EditError(ValueError):
-    """A structurally impossible edit (overlap, non-adjacent merge, no such uid)."""
+if HAVE_EDIT:
+    # One name for "the app asked for a structurally impossible edit", whichever
+    # side raised it: the routes catch `ops.EditError`, and `dubbing.edit` is the
+    # authority on what is impossible.
+    EditError = _edit.EditError
+    SegmentNotFound = _edit.SegmentNotFound
+else:
+    class EditError(ValueError):
+        """A structurally impossible edit (overlap, non-adjacent merge, no such uid)."""
+
+    class SegmentNotFound(EditError):
+        """No segment with that uid."""
 
 
 # --------------------------------------------------------------------------
