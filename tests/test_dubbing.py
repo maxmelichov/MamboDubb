@@ -776,7 +776,7 @@ def test_uncovered_keep_waits_for_the_previous_speaker_to_stop():
              "keep": False, "keep_reason": None}]
     segments.fill_uncovered_audible(segs, levels, hop, 6.5, is_target_lang=lambda a, b: True,
                                     voice_levels=levels)
-    added = [s for s in segs if s.get("keep_reason") == "uncovered"]
+    added = [s for s in segs if s.get("keep_reason") == "spoken_target"]
     assert added and added[0]["start"] == pytest.approx(2.1, abs=1e-6)   # one frame past the pause edge
 
     # With no pause in reach the gap is left where it was, rather than silently
@@ -785,7 +785,7 @@ def test_uncovered_keep_waits_for_the_previous_speaker_to_stop():
              "keep": False, "keep_reason": None}]
     segments.fill_uncovered_audible(segs, [0.09] * 65, hop, 6.5, is_target_lang=lambda a, b: True,
                                     voice_levels=[0.09] * 65)
-    added = [s for s in segs if s.get("keep_reason") == "uncovered"]
+    added = [s for s in segs if s.get("keep_reason") == "spoken_target"]
     assert added and added[0]["start"] == pytest.approx(1.6, abs=hop)
 
 
@@ -805,11 +805,15 @@ def test_uncovered_fill_judges_the_whole_gap_not_only_its_first_window():
         asked.append((round(a, 1), round(b, 1)))
         return a >= 9.99                      # the English starts 8s into the gap
 
+
+
     segments.fill_uncovered_audible(segs, levels, hop, 20.0, is_target_lang=is_target,
                                     voice_levels=levels, win=4.0)
     added = [s for s in segs if s.get("keep_reason") == "spoken_target"]
     assert len(asked) > 1                     # the whole gap is judged, not its head
-    assert [(s["start"], s["end"]) for s in added] == [(10.0, 20.0)]
+    # The gap opens at 2.1s and is walked in 4s windows; only the target-language
+    # run inside it is kept, and the rest of the gap is left to the mix's floor.
+    assert [(s["start"], s["end"]) for s in added] == [(10.1, 20.0)]
     assert added[0]["keep"] is True
 
     # A gap with no target speech in it anywhere is still left alone — the mix's
