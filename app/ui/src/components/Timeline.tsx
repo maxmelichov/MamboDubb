@@ -209,8 +209,10 @@ function Mark({
       aria-label={`Segment ${seg.id}, ${meta.label}, ${timecode(start)} to ${timecode(end)}`}
       aria-pressed={selected}
       className={cn(
-        "absolute inset-y-2 overflow-hidden rounded-[3px] text-left transition-shadow",
-        "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary",
+        "absolute inset-y-2 overflow-hidden rounded-[3px] text-left transition-all",
+        // Hover is a real affordance here: the marks are 3–40px wide and the
+        // only other cue that they are clickable is the cursor.
+        "hover:inset-y-1.5 hover:ring-2 hover:ring-primary/45",
         selected && "ring-2 ring-primary ring-offset-1 ring-offset-surface",
         busy && "animate-pulse",
         muted && "opacity-40",
@@ -220,7 +222,8 @@ function Mark({
       {showGlyph ? (
         <span
           aria-hidden
-          className="pointer-events-none absolute inset-y-0 left-0.5 flex items-center text-[9px] leading-none text-white drop-shadow-[0_0_1px_rgba(0,0,0,0.6)]"
+          className="pointer-events-none absolute inset-y-0 left-0.5 flex items-center text-[9px] leading-none"
+          style={{ color: meta.onFill }}
         >
           {meta.glyph}
         </span>
@@ -246,9 +249,13 @@ function Tooltip({ seg, x }: { seg: Segment; x: number }) {
           {timecode(seg.start)} – {timecode(seg.end)}
         </span>
       </div>
-      <p className="auto-dir mt-2 line-clamp-2 leading-relaxed text-secondary">{seg.text}</p>
+      <p dir="auto" className="auto-dir mt-2 line-clamp-2 leading-relaxed text-secondary">
+        {seg.text}
+      </p>
       {seg.text_en ? (
-        <p className="mt-1 line-clamp-2 leading-relaxed text-primary">{seg.text_en}</p>
+        <p dir="auto" className="auto-dir mt-1 line-clamp-2 leading-relaxed text-primary">
+          {seg.text_en}
+        </p>
       ) : null}
     </div>
   );
@@ -268,15 +275,24 @@ export function TimelineLegend({ counts }: { counts: Record<SegmentState, number
   entries.push({ key: "unclaimed", ...UNCLAIMED_META });
 
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
+    <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1 py-0.5">
       {entries.map((entry) => (
         <span
           key={entry.key}
-          className="inline-flex items-center gap-1.5 rounded-md border border-border bg-raised px-1.5 py-1 text-[11px] text-secondary"
+          className={cn(
+            "inline-flex items-center gap-1.5 text-[11px] whitespace-nowrap text-secondary",
+            // A state with nothing in it is still named — the legend is the
+            // key to the encoding, not a list of what happens to be present —
+            // but it steps back so the counts that matter read first.
+            entry.count === 0 && "opacity-45",
+          )}
         >
           <span
             aria-hidden
-            className={cn("h-2.5 w-3.5 rounded-[2px]", entry.key === "unclaimed" && "hatch-unclaimed")}
+            className={cn(
+              "h-2.5 w-3.5 rounded-[2px]",
+              entry.key === "unclaimed" && "hatch-unclaimed",
+            )}
             style={{
               backgroundColor: entry.key === "unclaimed" ? "transparent" : entry.token,
               border: entry.key === "unclaimed" ? "1px dashed var(--color-unclaimed)" : undefined,
@@ -287,7 +303,9 @@ export function TimelineLegend({ counts }: { counts: Record<SegmentState, number
           </span>
           {entry.label}
           {entry.count != null ? (
-            <span className="font-mono tabular-nums text-muted">{entry.count}</span>
+            <span className="font-mono font-semibold tabular-nums text-primary">
+              {entry.count}
+            </span>
           ) : null}
         </span>
       ))}

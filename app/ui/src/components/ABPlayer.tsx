@@ -78,9 +78,24 @@ export function ABPlayer({ seg }: { seg: Segment }) {
 
   const sourceDur = seg.end - seg.start;
   const dubbedDur = seg.place ? seg.place.end - seg.place.start : (seg.tts?.dur ?? null);
+  // The number a reviewer is actually after: how much longer the dub runs than
+  // the span it has to fit in. It is what the time-fit had to absorb.
+  const delta = dubbedDur == null ? null : dubbedDur - sourceDur;
 
   return (
     <div className="flex flex-col gap-2">
+      {/* Naming the axis is the whole affordance: without it "A" and "B" are
+          two buttons, with it they are one comparison. */}
+      <p className="flex items-baseline gap-1.5 text-[11px] text-muted">
+        <span>Same span, both ways</span>
+        {delta != null && Math.abs(delta) >= 0.05 ? (
+          <span className="ml-auto font-mono tabular-nums">
+            B is {delta > 0 ? "+" : "−"}
+            {Math.abs(delta).toFixed(2)}s
+          </span>
+        ) : null}
+      </p>
+
       <div className="flex items-stretch gap-1.5">
         <SideButton
           active={side === "a"}
@@ -90,6 +105,8 @@ export function ABPlayer({ seg }: { seg: Segment }) {
           label="Original"
           meta={fmtDuration(sourceDur)}
           hotkey="a"
+          title="The source audio for this span, exactly as recorded"
+          disabledReason="No source audio for this span."
         />
         <SideButton
           active={side === "b"}
@@ -99,19 +116,31 @@ export function ABPlayer({ seg }: { seg: Segment }) {
           label={seg.keep ? "Kept (same audio)" : "Dubbed"}
           meta={dubbedDur != null ? fmtDuration(dubbedDur) : "no clip"}
           hotkey="b"
+          title={
+            seg.keep
+              ? "This segment is kept, so B is the original audio too"
+              : "What actually went into the mix, after time-fitting"
+          }
+          disabledReason="Nothing synthesized yet — re-voice this segment first."
         />
         <button
           type="button"
           onClick={stop}
           disabled={side == null}
-          aria-label="Stop"
+          aria-label="Stop playback"
+          title="Stop playback"
           className="grid w-9 shrink-0 place-items-center rounded-lg border border-border bg-raised text-muted transition-colors hover:border-axis hover:text-primary disabled:pointer-events-none disabled:opacity-40"
         >
           <Square className="h-3 w-3 fill-current" />
         </button>
       </div>
 
-      <div className="h-1 overflow-hidden rounded-full bg-border">
+      <div
+        className="h-1 overflow-hidden rounded-full bg-border"
+        role="progressbar"
+        aria-label="Clip position"
+        aria-valuenow={Math.round(progress * 100)}
+      >
         <div
           className="h-full rounded-full bg-primary transition-[width] duration-100"
           style={{ width: `${progress * 100}%` }}
@@ -141,6 +170,8 @@ function SideButton({
   label,
   meta,
   hotkey,
+  title,
+  disabledReason,
 }: {
   active: boolean;
   disabled: boolean;
@@ -149,18 +180,25 @@ function SideButton({
   label: string;
   meta: string;
   hotkey: string;
+  title: string;
+  /** Why it cannot be played — a dead button that says nothing is a bug. */
+  disabledReason: string;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
+      aria-pressed={active}
+      title={disabled ? disabledReason : title}
       className={cn(
         "flex flex-1 items-center gap-2 rounded-lg border px-2 py-2 text-left transition-all active:scale-[0.99]",
         active
           ? "border-primary bg-primary/[0.06] shadow-card"
           : "border-border bg-raised hover:border-axis",
-        disabled && "pointer-events-none opacity-45",
+        // Not `pointer-events-none`: a disabled control that will not even
+        // show its own tooltip is the reason people think the app is broken.
+        disabled && "cursor-not-allowed opacity-45",
       )}
     >
       <span

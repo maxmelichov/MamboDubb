@@ -253,9 +253,65 @@ export function TextInput({ className, ...props }: ComponentProps<"input">) {
   return <input className={cn(controlBase, "h-9", className)} {...props} />;
 }
 
-export function TextArea({ className, ...props }: ComponentProps<"textarea">) {
+/**
+ * A number field that looks like every other field.
+ *
+ * `<input type=number>` is the one control the platform insists on decorating:
+ * it hangs its own spin buttons off the right edge, drawn at the OS's size in
+ * the OS's colours, which on a themed form reads as damage. The arrows are
+ * suppressed in App.css and the unit goes where they were — a unit is what the
+ * user actually needed there, and ↑/↓ and the scroll wheel still step the
+ * value for anyone who wanted the arrows.
+ */
+export function NumberInput({
+  className,
+  suffix,
+  ...props
+}: ComponentProps<"input"> & { suffix?: string }) {
   return (
-    <textarea className={cn(controlBase, "resize-y py-2 leading-relaxed", className)} {...props} />
+    <span className="relative flex min-w-0 items-center">
+      <input
+        type="number"
+        inputMode="numeric"
+        className={cn(controlBase, "h-9 tabular-nums", suffix && "pr-9", className)}
+        {...props}
+      />
+      {suffix ? (
+        <span className="pointer-events-none absolute right-3 text-[12px] text-muted">
+          {suffix}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+/**
+ * `autoGrow` is for the fields holding a translated line: they are read far
+ * more often than they are typed in, and a line clipped at three rows with the
+ * rest behind a scrollbar is the one thing a review surface must not do.
+ */
+export function TextArea({
+  className,
+  autoGrow,
+  ...props
+}: ComponentProps<"textarea"> & { autoGrow?: boolean }) {
+  const fit = (el: HTMLTextAreaElement | null) => {
+    if (!el || !autoGrow) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight + 2}px`;
+  };
+  return (
+    <textarea
+      ref={fit}
+      onInput={(event) => fit(event.currentTarget)}
+      className={cn(
+        controlBase,
+        "resize-y py-2 leading-relaxed",
+        autoGrow && "overflow-hidden",
+        className,
+      )}
+      {...props}
+    />
   );
 }
 
@@ -454,10 +510,46 @@ export function ErrorBar({ message, onDismiss }: { message: string; onDismiss: (
   );
 }
 
-export function Empty({ children }: { children: ReactNode }) {
+/**
+ * The empty state.
+ *
+ * An empty panel is a bug report the user has to write themselves. Every one
+ * of these answers three things in order: what this space is, why there is
+ * nothing in it, and what to do next — the last being the only part that is
+ * ever optional, and only when there is genuinely nothing to do but wait.
+ */
+export function Empty({
+  icon: Icon,
+  title,
+  action,
+  className,
+  children,
+}: {
+  icon?: typeof TriangleAlert;
+  title?: string;
+  action?: ReactNode;
+  className?: string;
+  children?: ReactNode;
+}) {
   return (
-    <div className="grid h-full place-items-center p-8 text-center text-[13px] leading-relaxed text-muted">
-      <div className="max-w-64">{children}</div>
+    <div
+      className={cn(
+        "grid h-full place-items-center p-8 text-center text-[13px] leading-relaxed text-muted",
+        className,
+      )}
+    >
+      <div className="max-w-72">
+        {Icon ? (
+          <span className="mx-auto mb-3 grid h-9 w-9 place-items-center rounded-xl border border-border bg-sunken text-muted">
+            <Icon className="h-4 w-4" aria-hidden />
+          </span>
+        ) : null}
+        {title ? (
+          <p className="text-[13px] font-semibold text-primary">{title}</p>
+        ) : null}
+        {children ? <div className={cn(title && "mt-1.5")}>{children}</div> : null}
+        {action ? <div className="mt-4 flex justify-center gap-2">{action}</div> : null}
+      </div>
     </div>
   );
 }
