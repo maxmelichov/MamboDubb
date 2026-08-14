@@ -70,7 +70,6 @@ REF_SR = 24000
 REF_TARGET_SEC = 4.5
 MIN_REF_SEC = 2.5    # a clone reference shorter than this yields truncated/garbled clones
 REF_MIN_RMS = 0.018
-REF_MAX_NOISE = 8.0
 REF_JOIN_FADE_SEC = 0.02   # fade at the joins of a concatenated reference
 
 # Voice-outlier rejection for candidate reference windows, thresholds measured on a
@@ -87,6 +86,9 @@ REF_MATCH_MIN = 0.25       # segment window vs canonical ref: same-voice accepta
 
 CLONE_MIN_SEC_PER_WORD = 0.18   # faster than this is chipmunk garble
 CLONE_MAX_SEC_PER_WORD = 0.95   # slower than this is a stall/drawl
+# CJK/hangul speech runs ~5 characters/s; the word constants assume ~3 words/s.
+CLONE_MIN_SEC_PER_CHAR = 0.08   # faster than this is chipmunk garble
+CLONE_MAX_SEC_PER_CHAR = 0.60   # slower than this is a stall/drawl
 CLONE_MIN_OVERLAP = 0.35        # accept
 CLONE_SOFT_OVERLAP = 0.20       # best-effort accept
 MAX_TRIES = 3
@@ -166,11 +168,6 @@ def _speech_units(text: str, lang: str) -> int:
     if script_for(lang) in ("cjk", "hangul"):
         return max(1, sum(1 for ch in text or "" if ch.isalnum()))
     return max(1, len((text or "").split()))
-
-
-# CJK/hangul speech runs ~5 characters/s; the word constants assume ~3 words/s.
-CLONE_MIN_SEC_PER_CHAR = 0.08   # faster than this is chipmunk garble
-CLONE_MAX_SEC_PER_CHAR = 0.60   # slower than this is a stall/drawl
 
 
 def clip_exceeds_slot(clip_sec: float, slot_sec: float) -> bool:
@@ -1092,11 +1089,6 @@ def clear_failed_keeps(segments: list[dict[str, Any]]) -> list[int]:
             seg.pop("tts", None)  # the keep-clip record; this run re-decides
             cleared.append(seg["id"])
     return cleared
-
-
-def has_clip(seg: dict[str, Any], workdir: Path) -> bool:
-    """True when this segment already owns audio on disk."""
-    return bool(seg.get("tts")) and (workdir / seg["tts"]["clip"]).is_file()
 
 
 def pending(segments: list[dict[str, Any]], workdir: Path) -> list[dict[str, Any]]:

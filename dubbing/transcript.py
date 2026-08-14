@@ -486,10 +486,6 @@ def load_target_asr(tgt: str = "en"):
     return load_whisper(str(TARGET_ASR_MODEL), label=f"transcript: {tgt} ASR")
 
 
-def load_en_asr():
-    return load_target_asr("en")
-
-
 def load_vad():
     from silero_vad import load_silero_vad
 

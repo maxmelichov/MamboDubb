@@ -160,6 +160,12 @@ def test_non_hebrew_source_gets_no_military_note():
         assert "מודיעין" not in p
 
 
+def test_hebrew_military_note_carries_the_unit_echelons():
+    p = translate._translate_instruction("המחלקה יצאה", "he", "en")
+    assert "מחלקה platoon" in p
+    assert "גדוד battalion" in p
+
+
 # --------------------------------------------------------------------- tag bump
 
 def test_translate_stage_tag_bumped():

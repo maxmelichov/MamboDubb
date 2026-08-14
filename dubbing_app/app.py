@@ -32,10 +32,6 @@ from .jobs import JobQueue
 from .projects import Projects
 from .runner import SubprocessRunner
 
-# Structural edits renumber `seg["id"]`, which a running stage is iterating over.
-# Field edits are allowed at any time (the contract requires it); these are not.
-STRUCTURAL = ("split", "merge", "bounds")
-
 # The `dubbing.cli` choice lists, restated. They cannot be imported: `dubbing.cli`
 # pulls in every stage, and therefore torch and MLX, which is exactly what keeps
 # the server out of this process (see `dubbing_app.runner`). A test asserts these
@@ -160,6 +156,11 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
             return locks.setdefault(name, threading.Lock())
 
     def guard_structural(name: str) -> None:
+        """Refuse split/merge/bounds while a stage is running on this project.
+
+        They renumber `seg["id"]`, which the running stage is iterating over.
+        Field edits are allowed at any time — the contract requires it.
+        """
         for job in queue.active(name):
             if job.status == "running":
                 raise busy(f"job {job.id} ({job.kind}) is running on {name!r}; "

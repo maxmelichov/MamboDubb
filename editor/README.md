@@ -8,8 +8,8 @@ and who says it.
 ## Run it
 
 ```bash
-uv sync --extra editor
-uv run --extra editor uvicorn editor.app:app --reload --port 8765
+uv sync --extra app
+uv run --extra app uvicorn editor.app:app --reload --port 8765
 # then open http://127.0.0.1:8765
 ```
 
@@ -17,7 +17,7 @@ Runs are read from `outputs/` next to this package. To serve another checkout's 
 (e.g. a worktree serving the main clone's outputs):
 
 ```bash
-DUBBING_OUTPUTS=/path/to/DubbingQwen/outputs uv run --extra editor uvicorn editor.app:app
+DUBBING_OUTPUTS=/path/to/DubbingQwen/outputs uv run --extra app uvicorn editor.app:app
 ```
 
 `ffmpeg` must be on PATH (it already is, for the pipeline) — the editor shells out to
@@ -30,8 +30,8 @@ it to cut per-segment preview slices out of `source.wav`.
    outputs/<slug> …` as a subprocess and streams its log into the job panel. When it
    finishes, the browser jumps to that run's editor.
 2. **Edit** — one card per segment: source text, translation, speaker, spoken language,
-   per-segment target language, free-text TTS instructions, a passthrough checkbox, and
-   ▶ buttons for the original and the dubbed audio of that segment.
+   per-segment target language, a passthrough checkbox, and ▶ buttons for the original
+   and the dubbed audio of that segment.
 3. **Save** — sends only the fields you touched. The response says which stage has to
    re-run for the edits to reach the mix.
 4. **Re-run** — `POST /api/runs/<run>/rerun` runs the pipeline again with
@@ -47,11 +47,16 @@ save forces the earliest stage across all edits:
 |---|---|---|
 | `text` | `translate` | the translator's input changed |
 | `lang` | `translate` | what the span is actually spoken in |
-| `lang_override` | `translate` | this line goes to a different target language |
+| `tgt_lang` | `translate` | this line goes to a different target language |
 | `text_en` | `tts` | the correction *is* the translation — re-running `translate` would overwrite it |
 | `speaker` | `tts` | picks a different voice-clone reference |
-| `tts_instructions` | `tts` | style/emotion hint for synthesis |
 | `passthrough` | `tts` | keep the original audio for this segment |
+
+The static UI may still send `lang_override`; `edits.ALIASES` maps it to `tgt_lang`.
+`tts_instructions` is **rejected with a 400** (`edits.REJECTED`): Qwen3-TTS's clone
+path takes no instruction argument, so storing one would be a knob that silently did
+nothing. Per-segment synthesis control is `tts_opts`, which this editor does not
+expose — the studio app does.
 
 `text_en` deliberately does **not** force `translate`: `translate` is skipped (its
 fingerprint is unchanged), so the hand-written line survives and only synthesis,
@@ -70,9 +75,8 @@ editor/
 
 No pipeline stage is imported by the server, so no model is ever loaded in-process;
 everything that computes happens in a subprocess. The manifest is written through
-`dubbing.manifest.save`, so the `SEGMENT_KEYS` whitelist still applies — the editor's
-fields (`tts_instructions`, `passthrough`, `lang_override`) were added there, and
-`edits.py` asserts at import that they are all whitelisted.
+`dubbing.manifest.save`, so the `SEGMENT_KEYS` whitelist still applies — every field
+in `edits.EDITABLE` is in that whitelist, and `edits.py` asserts it at import.
 
 ## API
 
@@ -89,15 +93,15 @@ fields (`tts_instructions`, `passthrough`, `lang_override`) were added there, an
 
 ## v1 limits
 
-- **`passthrough` is written, not yet honoured.** The pipeline support lands on the
-  parallel `fix/en-en-passthrough` branch; the editor writes the flag with that name.
-- **`tts_instructions` and `lang_override` are stored, not yet read** by `tts` /
-  `translate`. Wiring them up is a pipeline-side change.
+- **`tgt_lang` does not survive a rerun.** The editor forces `translate` for it, but
+  the translate stage reads the run-level target, not `seg["tgt_lang"]` — only the
+  studio app's `/retranslate` honours a per-segment target.
 - Re-running forces a whole stage, not one segment: correcting one line re-synthesises
   every segment in the run.
-- Only `src`/`tgt`/`duration`/`context` are reconstructed for a re-run — flags like
-  `--genre` or `--dub-foreign` aren't recorded in the manifest. Pass them explicitly
-  via `extra_args` on `/rerun` if you need them.
+- A re-run reconstructs whatever the manifest recorded (`runs.OPT_KEYS`: genre,
+  register, transcript, tts_model, device, captions, dub_foreign) plus
+  src/tgt/duration/context. A run the headless CLI made records none of them, so its
+  re-run uses the defaults; pass anything missing via `extra_args` on `/rerun`.
 - Jobs live in server memory: restarting the server loses the log, not the work (the
   pipeline resumes from the manifest).
 - No auth, no concurrency control — a local single-user tool. Two browsers editing one

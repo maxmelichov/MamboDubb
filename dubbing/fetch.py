@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -129,9 +128,3 @@ def run(
         f"{' + captions' if caps else ' (no captions — will use ASR)'}",
         file=sys.stderr,
     )
-
-
-def probe_captions(path: Path) -> int:
-    """Word count in a json3 caption file (used for logging only)."""
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
-    return sum(len(e.get("segs") or []) for e in data.get("events") or [])
