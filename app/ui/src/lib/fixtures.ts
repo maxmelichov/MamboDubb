@@ -233,17 +233,53 @@ export function setup(): Promise<SetupStatus> {
 }
 
 /**
- * The projects list, with three runs in three different states.
+ * The runs that are not the snapshot.
  *
- * Only the first is real — it is the snapshot everything else here serves. The
- * other two exist because the row's whole job is to say *where a run got to*,
- * and a list where every run is finished cannot show that it does: one is
- * stopped mid-pipeline and one failed, which are the two rows a user needs to
- * be able to tell apart at a glance without opening either.
+ * The row's whole job is to say *where a run got to*, and a list where every
+ * run is finished cannot show that it does. One is stopped mid-pipeline and one
+ * fell over on its first stage — and those two are not decoration for the list
+ * any more, because the editor's transport now has three states that depend on
+ * exactly this: a run past `fetch` has `source.wav` to play before the preview
+ * exists, and a run that never got through `fetch` has nothing at all. Opening
+ * either used to show the finished snapshot, which is the sort of kinder-server
+ * divergence these fixtures exist not to have.
  */
+const HOUR = 3600;
+
+/** A row, plus how long ago it last moved — the list wants a clock time. */
+type OtherRun = Omit<ProjectSummary, "mtime"> & { age: number };
+
+const OTHER_RUNS: OtherRun[] = [
+  {
+    name: "doha_panel_v2",
+    title: "Doha panel — full episode",
+    src_lang: "ar",
+    tgt_lang: "en",
+    duration: 1840,
+    stages: {
+      fetch: "done",
+      stems: "done",
+      transcript: "done",
+      segments: "done",
+      translate: "running",
+    },
+    age: 2 * HOUR,
+  },
+  {
+    name: "archive_reel",
+    title: "Archive reel 1994",
+    src_lang: "he",
+    tgt_lang: "en",
+    duration: 415,
+    // The download itself failed — a dead URL, the commonest first-stage
+    // failure there is — so this run has no source.wav and nothing to play.
+    stages: { fetch: "failed" },
+    age: 39 * HOUR,
+  },
+];
+
 export function listProjects(): Promise<ProjectSummary[]> {
   const p = store.project;
-  const hour = 3600;
   const now = Date.now() / 1000;
   return delay([
     {
@@ -255,39 +291,51 @@ export function listProjects(): Promise<ProjectSummary[]> {
       stages: p.stages,
       mtime: now,
     },
-    {
-      name: "doha_panel_v2",
-      title: "Doha panel — full episode",
-      src_lang: "ar",
-      tgt_lang: "en",
-      duration: 1840,
-      stages: {
-        fetch: "done",
-        stems: "done",
-        transcript: "done",
-        segments: "done",
-        translate: "running",
-      },
-      mtime: now - 2 * hour,
-    },
-    {
-      name: "archive_reel",
-      title: "Archive reel 1994",
-      src_lang: "he",
-      tgt_lang: "en",
-      duration: 415,
-      stages: { fetch: "done", stems: "done", transcript: "failed" },
-      mtime: now - 39 * hour,
-    },
+    ...OTHER_RUNS.map(({ age, ...run }) => ({ ...run, mtime: now - age })),
   ]);
 }
 
-export function getProject(_name: string): Promise<ProjectDetail> {
-  return delay(structuredClone(store.project));
+/** The detail for a listed run that is not the snapshot: its row, unpacked. */
+function detailOf(run: OtherRun): ProjectDetail {
+  return {
+    name: run.name,
+    source: {
+      input: `https://example.com/${run.name}`,
+      src_lang: run.src_lang,
+      tgt_lang: run.tgt_lang,
+      duration_limit: null,
+      title: run.title,
+      duration: run.duration,
+      transcript_origin: "asr",
+    },
+    speakers: {},
+    stages: { ...run.stages },
+    // Nothing has been produced: `outputs` is written per file, as each stage
+    // writes one, and neither of these runs has reached one that does.
+    outputs: {},
+    report: null,
+  };
 }
 
-export function getSegments(_name: string): Promise<Segment[]> {
+function projectOf(name: string): ProjectDetail {
+  const other = OTHER_RUNS.find((run) => run.name === name);
+  return other ? detailOf(other) : structuredClone(store.project);
+}
+
+export function getProject(name: string): Promise<ProjectDetail> {
+  return delay(projectOf(name));
+}
+
+/**
+ * The script — and only for a run that has one.
+ *
+ * `segments` is what fills this list, so a run stopped before it has no lines,
+ * not the snapshot's fifty-eight. That is the difference between the editor's
+ * empty state being demoable and being a screen nobody has ever seen.
+ */
+export function getSegments(name: string): Promise<Segment[]> {
   calls.segments += 1;
+  if (projectOf(name).stages.segments !== "done") return delay([]);
   return delay(store.segments.map(enrich));
 }
 
@@ -303,14 +351,16 @@ export function getSegments(_name: string): Promise<Segment[]> {
  * index. Deterministic by construction — no `Math.random`, so two calls draw
  * the same picture and a screenshot diff means something.
  */
-export function peaks(_name: string, file: PeaksFile, n: number): Promise<Peaks> {
+export function peaks(name: string, file: PeaksFile, n: number): Promise<Peaks> {
   calls.peaks += 1;
   const buckets = Math.max(16, Math.min(Math.round(n), 4000));
-  // `dub.wav` is written by the mix stage; before it has run the server 404s
-  // and the lane falls back to marks alone. The fixture has to refuse it in
-  // the same case or that fallback is never exercised anywhere.
-  if (file === "dub" && store.project.stages.mix !== "done") {
-    return Promise.reject(new Error("dub.wav does not exist yet for this run"));
+  // Each lane's file is written by one stage — `source.wav` by fetch, `dub.wav`
+  // by mix — and before that stage has run the server 404s and the lane falls
+  // back to marks alone. The fixture has to refuse in the same cases or that
+  // fallback is never exercised anywhere.
+  const stages = projectOf(name).stages;
+  if (stages[file === "dub" ? "mix" : "fetch"] !== "done") {
+    return Promise.reject(new Error(`${file}.wav does not exist yet for this run`));
   }
 
   const spans = store.segments.map((seg) =>
@@ -647,9 +697,16 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 /**
  * There is no video in fixture mode. Returning "" is honest and lets the player
  * fall back to a virtual transport, so the timeline and playhead stay demoable.
+ *
+ * Audio is a different matter: `source.wav` is what the transport plays before
+ * a run has a preview, and a fixture that answered "" for it would leave the
+ * one mode this file exists to demo untestable. It is a tone, like every other
+ * fixture clip — long enough to hear the playhead move, and capped by
+ * `resolveToneUrl` either way.
  */
 export function mediaUrl(_name: string, path: string): string {
   if (/\.(mp4|mkv|webm|mov)$/i.test(path)) return "";
+  if (path === "source.wav") return toneUrl({ hz: 150, dur: 20, seed: 5 });
   return toneUrl({ hz: 150, dur: 4, seed: path.length });
 }
 
@@ -666,10 +723,10 @@ export function mediaUrl(_name: string, path: string): string {
  * happens, which is exactly the kind of divergence these fixtures exist to not
  * have — a second, kinder server that hides the first one's behaviour.
  */
-function prelude(): StudioEvent[] {
-  const stages = store.project.stages;
+function prelude(name: string): StudioEvent[] {
+  const stages = projectOf(name).stages;
   return [
-    { type: "log", level: "info", message: `watching ${store.project.name}` },
+    { type: "log", level: "info", message: `watching ${name}` },
     ...RUN_STAGES.map((stage) => ({
       type: "stage" as const,
       stage,
@@ -677,7 +734,10 @@ function prelude(): StudioEvent[] {
       ...(stages[stage] === "done" ? { progress: 1 } : {}),
     })),
     ...jobs
-      .filter((job) => job.status !== "done")
+      // This run's unfinished jobs, not the process's: a stream is opened per
+      // project and replaying somebody else's job puts a strip on the wrong
+      // editor. `app.py::project_events` filters the same way.
+      .filter((job) => job.project === name && job.status !== "done")
       .map((job) => ({
         type: "job" as const,
         id: job.id,
@@ -690,14 +750,14 @@ function prelude(): StudioEvent[] {
 }
 
 export function events(
-  _name: string,
+  name: string,
   signal: AbortSignal,
   onMessage: (event: StudioEvent) => void,
   onConnectionChange?: (open: boolean) => void,
 ): Promise<void> {
   listeners.add(onMessage);
   onConnectionChange?.(true);
-  for (const event of prelude()) onMessage(event);
+  for (const event of prelude(name)) onMessage(event);
   const beat = setInterval(() => onMessage({ type: "heartbeat", t: Date.now() }), 15000);
 
   return new Promise((resolve) => {
