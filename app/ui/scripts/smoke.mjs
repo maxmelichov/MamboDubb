@@ -516,8 +516,14 @@ check("re-spacing a line is not an edit", calls().patch === patchesBefore);
  */
 const chip = (label) =>
   [...document.querySelectorAll("button")].find((b) => b.textContent.startsWith(label));
-check("the script has filter chips", ["All", "Failed", "Kept", "Edited"].every((l) => chip(l)));
-check("the Edited chip counts the line just edited", /Edited\s*2/.test(chip("Edited").textContent));
+check(
+  "the script has filter chips",
+  ["All", "Failed", "Unfinished", "Kept", "Edited"].every((l) => chip(l)),
+);
+// Two of the three locked lines are the fixture's own: the one the snapshot
+// carries, and the stranded line, whose `locked:{keep:true}` is what a verdict
+// flip stamps. The third is the one edited by hand a few checks above.
+check("the Edited chip counts the line just edited", /Edited\s*3/.test(chip("Edited").textContent));
 
 clickIt(chip("Failed"));
 await settle(200);
@@ -533,6 +539,42 @@ check(
 clickIt(chip("Failed"));
 await settle(200);
 check("the chip toggles back off", rows().length > 40);
+
+/*
+ * Limbo, and the way out of it.
+ *
+ * `PATCH {keep:false}` invalidates the translate stage, so a "Dub it" that
+ * queued nothing left the line with no translation, no clip and no job coming
+ * — invisible in a list of two hundred rows and unreachable by every other
+ * chip. The fixture carries one of each unfinished shape (no translation, no
+ * voice) and the chip has to find both and offer the one click that fixes them.
+ */
+clickIt(chip("Unfinished"));
+await settle(200);
+const stuck = rows();
+// Two from the fixture — one stranded by a verdict flip, one never voiced —
+// plus the line whose translation was rewritten by hand a few checks above,
+// which dropped the clip that said the old words.
+check("the Unfinished chip finds the stranded lines", stuck.length === 3);
+const stranded = stuck.find((r) => r.textContent.includes("not translated yet"));
+check("…the one a Dub it left with nothing to say", stranded != null);
+check(
+  "…still carrying the keep lock that flip stamped on it",
+  stranded.querySelector('[aria-label^="Hand-edited"]') != null,
+);
+check(
+  "…and the ones that only need a voice",
+  stuck.filter((r) => r !== stranded).every((r) => /Voice/.test(r.textContent)),
+);
+check(
+  "…fixable in one click, not two hundred",
+  [...document.querySelectorAll("button")].some((b) =>
+    /Translate & voice these 3/.test(b.textContent),
+  ),
+);
+clickIt(chip("Unfinished"));
+await settle(200);
+check("the Unfinished chip toggles back off too", rows().length > 40);
 
 /*
  * The selection panel. It holds everything true *about* a line and no text

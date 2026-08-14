@@ -275,6 +275,15 @@ export function EditorPage() {
     [setVerdict],
   );
 
+  /** The script pane's bulk fix, over whatever the filter has selected. */
+  const fixMany = useCallback(
+    (uids: string[]) => {
+      const wanted = new Set(uids);
+      void queueDubWork(segments.filter((seg) => wanted.has(seg.uid)));
+    },
+    [queueDubWork, segments],
+  );
+
   /**
    * A committed edit is a PATCH — unless nothing was edited.
    *
@@ -480,6 +489,7 @@ export function EditorPage() {
               onToggleKeep={toggleKeep}
               onRetranslateMany={(uids) => void actions.retranslate(uids)}
               onResynthesizeMany={(uids) => void actions.resynthesize(uids)}
+              onFixMany={fixMany}
             />
 
             {/*

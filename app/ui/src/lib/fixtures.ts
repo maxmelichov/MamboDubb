@@ -38,19 +38,45 @@ type Store = { project: ProjectDetail; segments: Segment[] };
 const store: Store = structuredClone(data) as unknown as Store;
 
 /**
- * Three fields the snapshot happens not to contain.
+ * States the snapshot happens not to contain.
  *
- * `fixture-data.json` is a faithful dump of a real run, and that run never had
- * a per-segment TTS override or a language tag on it — so two of the
- * inspector's three shelves would demo as permanently empty, which is exactly
- * the state that hides a layout bug. This adds one of each, by position rather
- * than by content, and it is the only place fixture mode invents anything.
+ * `fixture-data.json` is a faithful dump of a run that finished, and a run that
+ * finished has no per-segment TTS override, no language tag, and — the reason
+ * this matters most — no line left unfinished. So two of the inspector's
+ * shelves would demo as permanently empty and the script's Unfinished chip
+ * would demo as permanently zero, which are exactly the states that hide a
+ * bug. This adds one of each, by position rather than by content, and it is the
+ * only place fixture mode invents anything.
+ *
+ * The last two are the shape a user was actually left in: a kept line flipped
+ * to "Dub it" by a UI that sent `PATCH {keep:false}` and queued nothing, so the
+ * server dropped the subtitle and the clip and no job ever replaced them —
+ * `keep:false`, `keep_reason:null`, `locked:{keep:true}`, no `text_en`, no
+ * `tts`. And its sibling, a line that has its translation and never got a
+ * voice. Both are `unfinished`; neither is reachable except through the chip.
  */
 function seedOverrides(): void {
   const withOpts = store.segments.find((seg) => !seg.keep && seg.tts);
   if (withOpts) withOpts.tts_opts = { seed: 4711, greedy: true };
   const withLang = store.segments.find((seg) => seg.src_lang);
   if (withLang) withLang.tgt_lang = "en";
+
+  // From the back of the run, so the low ids the smoke test reads stay as the
+  // snapshot wrote them.
+  const stranded = [...store.segments].reverse().find((seg) => seg.keep);
+  if (stranded) {
+    Object.assign(stranded, {
+      keep: false,
+      keep_reason: null,
+      locked: { keep: true },
+      text_en: null,
+      tts: null,
+      place: null,
+      verify: null,
+    });
+  }
+  const voiceless = [...store.segments].reverse().find((seg) => !seg.keep && seg.place);
+  if (voiceless) Object.assign(voiceless, { tts: null, place: null, verify: null });
 }
 seedOverrides();
 
