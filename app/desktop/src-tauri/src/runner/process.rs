@@ -289,4 +289,53 @@ mod tests {
         };
         assert!(err.contains("failed to spawn the studio server"), "{err}");
     }
+
+    /// A stub standing in for `uv`, so the whole spawn path — pipes, handshake, stderr
+    /// pump, kill — is exercised without a 10 GB venv.
+    #[cfg(unix)]
+    fn stub_uv(tag: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("dubstudio-uv-{tag}-{unique}.sh"));
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_ready_line_yields_a_live_process_on_the_announced_port() {
+        let uv = stub_uv(
+            "ready",
+            "echo 'starting' 1>&2\n\
+             echo '{\"status\":\"ready\",\"port\":54321,\"version\":\"0.1.0\"}'\n\
+             sleep 30",
+        );
+        let mut process = RunnerProcess::spawn(&uv, Path::new(".")).unwrap();
+        assert_eq!(process.base_url(), "http://127.0.0.1:54321");
+        assert_eq!(process.info().version.as_deref(), Some("0.1.0"));
+        assert!(process.is_alive());
+        process.kill();
+        assert!(!process.is_alive(), "kill reaps the child");
+        let _ = std::fs::remove_file(&uv);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_child_that_dies_before_announcing_reports_its_stderr() {
+        let uv = stub_uv(
+            "crash",
+            "echo \"ModuleNotFoundError: No module named 'dubbing_app'\" 1>&2\nexit 1",
+        );
+        let err = match RunnerProcess::spawn(&uv, Path::new(".")) {
+            Ok(_) => panic!("a crashing server should not look ready"),
+            Err(err) => err,
+        };
+        assert!(err.contains("without a ready signal"), "{err}");
+        assert!(err.contains("ModuleNotFoundError"), "the stderr tail is shown: {err}");
+        let _ = std::fs::remove_file(&uv);
+    }
 }
