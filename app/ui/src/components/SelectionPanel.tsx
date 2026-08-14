@@ -66,6 +66,7 @@ export function SelectionPanel({
   busy,
   playhead,
   onPatch,
+  onVerdict,
   onSplit,
   onMerge,
   onRetranslate,
@@ -77,6 +78,8 @@ export function SelectionPanel({
   busy: boolean;
   playhead: number;
   onPatch: (patch: SegmentPatch) => void;
+  /** The verdict is not a patch: flipping to a dub also queues the work. */
+  onVerdict: (keep: boolean) => void;
   onSplit: (at: number) => void;
   onMerge: (uidB: string) => void;
   onRetranslate: () => void;
@@ -127,28 +130,44 @@ export function SelectionPanel({
         {/* 1 — the verdict. Two states, both named, neither of them jargon. */}
         <section className="flex flex-col gap-1.5">
           <div className="flex overflow-hidden rounded-lg border border-border bg-raised">
-            {/* Each half only patches when it is *not* already the verdict:
+            {/* Each half only acts when it is *not* already the verdict:
                 pressing the one that is already on is a no-op the user can
                 see, and it must be a no-op the server never hears — it would
                 otherwise stamp a `keep` lock on a line nobody changed. */}
             <Choice
               active={!seg.keep}
-              onClick={() => seg.keep && onPatch({ keep: false })}
+              onClick={() => seg.keep && onVerdict(false)}
               label="Dub it"
               state="dubbed"
             />
             <span className="w-px shrink-0 bg-border" aria-hidden />
             <Choice
               active={seg.keep}
-              onClick={() => !seg.keep && onPatch({ keep: true, keep_reason: "manual" })}
+              onClick={() => !seg.keep && onVerdict(true)}
               label="Keep original"
               state="kept"
             />
           </div>
+          {/*
+            What the other half of the control will *do*, not just what it will
+            mean. Flipping to a dub is not a free relabelling: `edit.set_keep`
+            drops the subtitle and the clip, so the line has to be translated
+            and voiced again — two jobs, or one when the user's own translation
+            is locked and survives the flip. Saying "synthesized speech
+            replaces the source audio" and then queueing nothing is how two
+            lines ended up dubbed in name only.
+          */}
           <p className="text-[11px] leading-snug text-muted">
-            {seg.keep
-              ? "The source audio plays untouched."
-              : "Synthesized speech replaces the source audio."}
+            {seg.keep ? (
+              <>
+                The source audio plays untouched. “Dub it”{" "}
+                {(seg.text_en ?? "").trim() && seg.locked?.text_en
+                  ? "queues voice for this line — your translation is kept."
+                  : "queues translate + voice for this line."}
+              </>
+            ) : (
+              "Synthesized speech replaces the source audio."
+            )}
             {seg.keep && seg.keep_reason ? (
               <>
                 {" "}

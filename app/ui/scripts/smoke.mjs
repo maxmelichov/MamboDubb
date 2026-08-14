@@ -516,8 +516,14 @@ check("re-spacing a line is not an edit", calls().patch === patchesBefore);
  */
 const chip = (label) =>
   [...document.querySelectorAll("button")].find((b) => b.textContent.startsWith(label));
-check("the script has filter chips", ["All", "Failed", "Kept", "Edited"].every((l) => chip(l)));
-check("the Edited chip counts the line just edited", /Edited\s*2/.test(chip("Edited").textContent));
+check(
+  "the script has filter chips",
+  ["All", "Failed", "Unfinished", "Kept", "Edited"].every((l) => chip(l)),
+);
+// Two of the three locked lines are the fixture's own: the one the snapshot
+// carries, and the stranded line, whose `locked:{keep:true}` is what a verdict
+// flip stamps. The third is the one edited by hand a few checks above.
+check("the Edited chip counts the line just edited", /Edited\s*3/.test(chip("Edited").textContent));
 
 clickIt(chip("Failed"));
 await settle(200);
@@ -533,6 +539,42 @@ check(
 clickIt(chip("Failed"));
 await settle(200);
 check("the chip toggles back off", rows().length > 40);
+
+/*
+ * Limbo, and the way out of it.
+ *
+ * `PATCH {keep:false}` invalidates the translate stage, so a "Dub it" that
+ * queued nothing left the line with no translation, no clip and no job coming
+ * — invisible in a list of two hundred rows and unreachable by every other
+ * chip. The fixture carries one of each unfinished shape (no translation, no
+ * voice) and the chip has to find both and offer the one click that fixes them.
+ */
+clickIt(chip("Unfinished"));
+await settle(200);
+const stuck = rows();
+// Two from the fixture — one stranded by a verdict flip, one never voiced —
+// plus the line whose translation was rewritten by hand a few checks above,
+// which dropped the clip that said the old words.
+check("the Unfinished chip finds the stranded lines", stuck.length === 3);
+const stranded = stuck.find((r) => r.textContent.includes("not translated yet"));
+check("…the one a Dub it left with nothing to say", stranded != null);
+check(
+  "…still carrying the keep lock that flip stamped on it",
+  stranded.querySelector('[aria-label^="Hand-edited"]') != null,
+);
+check(
+  "…and the ones that only need a voice",
+  stuck.filter((r) => r !== stranded).every((r) => /Voice/.test(r.textContent)),
+);
+check(
+  "…fixable in one click, not two hundred",
+  [...document.querySelectorAll("button")].some((b) =>
+    /Translate & voice these 3/.test(b.textContent),
+  ),
+);
+clickIt(chip("Unfinished"));
+await settle(200);
+check("the Unfinished chip toggles back off too", rows().length > 40);
 
 /*
  * The selection panel. It holds everything true *about* a line and no text
@@ -589,20 +631,69 @@ const click = (label) => {
   clickIt(button);
 };
 
-// A no-model edit must apply immediately, without a job.
+/*
+ * The verdict, and what it costs.
+ *
+ * "Keep original" is the direction that needs no work — the original audio is
+ * already on disk — so it applies instantly and queues nothing. "Dub it" is the
+ * direction that needs all of it: `edit.set_keep` invalidates the translate
+ * stage, so the line loses its subtitle and its clip on the way through, and a
+ * flip that sent the PATCH and stopped there left the segment with nothing to
+ * say and nothing coming to fix it. That was the bug. Both claims are counted
+ * rather than watched: a job that was never enqueued looks exactly like a job
+ * that has not started.
+ */
 const keptBefore = rows().filter((r) => r.textContent.includes("original audio plays here")).length;
+const sinceKeep = calls().log.length;
 click("Keep original");
 await settle(250);
 check(
   "keep applies immediately, and the row says what will play",
   rows().filter((r) => r.textContent.includes("original audio plays here")).length > keptBefore,
 );
+check("keeping the original queues nothing", calls().log.slice(sinceKeep).join() === "patch");
+// Segment 2's translation was typed by hand a few checks above, and a kept line
+// with a hand-written translation is the case the row used to render as a dub:
+// an English sentence under a Hebrew one, in the place a spoken line goes.
+check(
+  "a translation on a kept line says it is only a subtitle",
+  rowFor(2).textContent.includes("the edit is a subtitle"),
+);
+
+// …and back. The hand-written line is locked, so it survives the flip and only
+// the voice has to be queued.
 click("Dub it");
-await settle(250);
+await settle(350);
 check(
   "the verdict goes both ways",
   !rowFor(2).textContent.includes("original audio plays here"),
 );
+check(
+  "a dub whose translation survived queues only the voice",
+  calls().log.slice(sinceKeep).join() === "patch,patch,resynthesize",
+);
+
+// The general case: a kept line whose translation the pipeline wrote loses it
+// on the flip, so the translator has to run before the voice does — and the
+// one-job queue is FIFO, so enqueueing in that order *is* running in it.
+const sinceDub = calls().log.length;
+clickIt(rowFor(0).querySelector('[aria-label^="Select segment"]'));
+await settle(200);
+check(
+  "the panel says what Dub it will cost before it is pressed",
+  /queues translate \+ voice for this line/.test(root.textContent),
+);
+click("Dub it");
+await settle(400);
+check(
+  "flipping a kept line to Dub queues the work the flip invalidated",
+  calls().log.slice(sinceDub).join() === "patch,retranslate,resynthesize",
+);
+
+// Let the three jobs those flips queued drain, so the next assertions are about
+// the job they ask for and not about one of these.
+await settle(2000);
+check("the queue drains", document.querySelector("[data-job-strip]") == null);
 
 /*
  * A mark on the strip is a question about a line — what does it say, what did

@@ -9,9 +9,12 @@
  * they glance at. So the text grows and the picture is fixed.
  *
  * Above the rows sit the two things that make two hundred rows navigable: a
- * search box and four filter chips. They are not decoration — "show me the
+ * search box and five filter chips. They are not decoration — "show me the
  * eleven that failed" is the single most common thing a reviewer wants from a
  * run, and it used to require scrolling the whole list looking for a hue.
+ * "Unfinished" is the second most common and used to be unaskable: a line with
+ * no translation or no clip is invisible in a list of two hundred, and it is
+ * exactly what a verdict flip leaves behind.
  *
  * And once a filter has selected a set, fixing that set is one job rather than
  * eleven: `POST /resynthesize` has always taken `{uids:[…]}` and the UI has
@@ -23,12 +26,12 @@
 import { useEffect, useMemo, useRef } from "react";
 import { Languages, ListX, Search, Volume2 } from "lucide-react";
 import { cn } from "../lib/classNames";
-import { hasLocks, segmentState } from "../lib/segments";
+import { hasLocks, segmentState, unfinished } from "../lib/segments";
 import { Button, Empty } from "./ui";
 import { ScriptRow, type EditTarget } from "./ScriptRow";
 import type { Segment } from "../lib/types";
 
-export type ScriptFilter = "all" | "failed" | "kept" | "edited";
+export type ScriptFilter = "all" | "failed" | "unfinished" | "kept" | "edited";
 
 /** Past this many rows the list opts into browser-side render skipping. */
 const VIRTUALIZE_ABOVE = 300;
@@ -55,6 +58,7 @@ export function filterSegments(
   const needle = query.trim().toLowerCase();
   return segments.filter((seg) => {
     if (filter === "failed" && segmentState(seg) !== "failed") return false;
+    if (filter === "unfinished" && !unfinished(seg)) return false;
     if (filter === "kept" && !seg.keep) return false;
     if (filter === "edited" && !hasLocks(seg)) return false;
     if (!needle) return true;
@@ -87,6 +91,7 @@ export function ScriptPane({
   onToggleKeep,
   onRetranslateMany,
   onResynthesizeMany,
+  onFixMany,
 }: {
   segments: Segment[];
   selectedUid: string | null;
@@ -108,6 +113,8 @@ export function ScriptPane({
   onToggleKeep: (seg: Segment) => void;
   onRetranslateMany: (uids: string[]) => void;
   onResynthesizeMany: (uids: string[]) => void;
+  /** Translate whatever has no line, then voice all of them — in that order. */
+  onFixMany: (uids: string[]) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -115,6 +122,7 @@ export function ScriptPane({
     () => ({
       all: segments.length,
       failed: segments.filter((seg) => segmentState(seg) === "failed").length,
+      unfinished: segments.filter(unfinished).length,
       kept: segments.filter((seg) => seg.keep).length,
       edited: segments.filter(hasLocks).length,
     }),
@@ -202,11 +210,21 @@ export function ScriptPane({
     </button>
   );
 
-  // The bulk offer is tied to the Failed chip because that is the set where
-  // "do all of these" is unambiguous: every one of them is a line the pipeline
-  // did not manage to say.
-  const bulkUids = visible.filter((seg) => !seg.keep).map((seg) => seg.uid);
-  const showBulk = filter === "failed" && bulkUids.length > 0;
+  /*
+   * The bulk offer is tied to the two chips where "do all of these" is
+   * unambiguous: Failed, every one of which is a line the pipeline could not
+   * say, and Unfinished, every one of which is a line with nothing to play.
+   *
+   * Unfinished is the one that gets a run's stragglers back — including the
+   * lines a "Dub it" used to strand, which had no translation, no clip and no
+   * job on the way. Its button is one click and at most two jobs: translate
+   * whatever has no line, then voice the lot.
+   */
+  const bulkSegs = visible.filter((seg) => !seg.keep);
+  const bulkUids = bulkSegs.map((seg) => seg.uid);
+  const needText = bulkSegs.filter((seg) => !(seg.text_en ?? "").trim()).length;
+  const showBulk = (filter === "failed" || filter === "unfinished") && bulkUids.length > 0;
+  const lines = `${bulkUids.length} line${bulkUids.length === 1 ? "" : "s"}`;
 
   return (
     <section
@@ -242,24 +260,55 @@ export function ScriptPane({
         </label>
         {chip("all", "All", counts.all)}
         {chip("failed", "Failed", counts.failed)}
+        {chip("unfinished", "Unfinished", counts.unfinished)}
         {chip("kept", "Kept", counts.kept)}
         {chip("edited", "Edited", counts.edited)}
       </div>
 
       {showBulk ? (
-        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-critical/[0.06] px-3 py-1.5">
+        <div
+          className={cn(
+            "flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-1.5",
+            filter === "failed" ? "bg-critical/[0.06]" : "bg-sunken",
+          )}
+        >
           <span className="min-w-0 flex-1 text-[11px] text-secondary">
-            {bulkUids.length} line{bulkUids.length === 1 ? "" : "s"} the pipeline could not say.
-            One job, not {bulkUids.length}.
+            {filter === "failed" ? (
+              <>{lines} the pipeline could not say. One job, not {bulkUids.length}.</>
+            ) : (
+              <>
+                {lines} with nothing to play
+                {needText > 0 ? ` — ${needText} of them have no translation yet` : null}. One
+                click, at most two jobs.
+              </>
+            )}
           </span>
-          <Button size="xs" onClick={() => onResynthesizeMany(bulkUids)}>
-            <Volume2 className="h-3 w-3" />
-            Re-voice these {bulkUids.length}
-          </Button>
-          <Button size="xs" onClick={() => onRetranslateMany(bulkUids)}>
-            <Languages className="h-3 w-3" />
-            Re-translate these {bulkUids.length}
-          </Button>
+          {filter === "unfinished" ? (
+            <Button size="xs" onClick={() => onFixMany(bulkUids)}>
+              {needText > 0 ? (
+                <>
+                  <Languages className="h-3 w-3" />
+                  Translate &amp; voice these {bulkUids.length}
+                </>
+              ) : (
+                <>
+                  <Volume2 className="h-3 w-3" />
+                  Re-voice these {bulkUids.length}
+                </>
+              )}
+            </Button>
+          ) : (
+            <>
+              <Button size="xs" onClick={() => onResynthesizeMany(bulkUids)}>
+                <Volume2 className="h-3 w-3" />
+                Re-voice these {bulkUids.length}
+              </Button>
+              <Button size="xs" onClick={() => onRetranslateMany(bulkUids)}>
+                <Languages className="h-3 w-3" />
+                Re-translate these {bulkUids.length}
+              </Button>
+            </>
+          )}
         </div>
       ) : null}
 

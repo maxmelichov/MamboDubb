@@ -46,6 +46,33 @@ export function hasLocks(seg: Segment): boolean {
 }
 
 /**
+ * A line that is meant to be dubbed and has nothing to play.
+ *
+ * The two unfinished states, together, because they are one situation from the
+ * reviewer's side — "this line will be silent in the mix" — and they have one
+ * fix, which is to translate whatever has no text and then voice the lot. It is
+ * also the shape a segment is left in by a verdict flip that queued no work:
+ * `keep=false`, no `text_en`, no clip, waiting for a job nobody enqueued.
+ */
+export function unfinished(seg: Segment): boolean {
+  const state = segmentState(seg);
+  return state === "untranslated" || state === "unvoiced";
+}
+
+/**
+ * A kept line carrying a translation the user typed.
+ *
+ * `edit.set_text` stores it and does *not* reopen the verdict — a keep the user
+ * or the span decided is not overturned by a subtitle — so the line still plays
+ * its original audio. True on screen, invisible on screen: the row shows an
+ * English sentence under a Hebrew one and nothing says it will never be spoken.
+ */
+export function subtitleOnly(seg: Segment): boolean {
+  const en = (seg.text_en ?? "").trim();
+  return Boolean(seg.keep && seg.locked?.text_en && en && en !== seg.text.trim());
+}
+
+/**
  * Colour is never the only channel: every state carries a shape and a word.
  *
  * The shape used to be a Unicode glyph — `◆ ▣ ✕ ◇ ○` — set in the UI font.
