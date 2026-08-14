@@ -1,9 +1,13 @@
 """Stage 4 — group the word stream into speakable segments.
 
-Everything here is a pure function over the word list except `diarize`, so the
-segmentation rules can be unit-tested without audio. Segments are built from
-word timings only; a segment never spans a speaker change, so later stages can
-treat `segment.speaker` as exact.
+The splitting and merging rules are pure functions over the word list, so they
+unit-test without audio; only `diarize` and `refine_turns` touch a model, and
+`run` the disk. Segments are built from word timings only; a segment never spans
+a speaker change, so later stages can treat `segment.speaker` as exact.
+
+Two parts of the stage live next door and are re-exported below: `dubbing.keep`
+(which segments play their original audio, and the user's passthrough override)
+and `dubbing.interjections` (the lexicon the movie-mode keep rule consults).
 """
 
 from __future__ import annotations

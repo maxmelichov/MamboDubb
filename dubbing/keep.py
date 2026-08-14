@@ -18,6 +18,10 @@ from typing import Any
 from . import PASSTHROUGH_REASON, script
 from .interjections import is_interjection_keep
 
+# The speaker prior: this much of a speaker's transcribed letters being in the
+# target script makes them a target-language speaker, and their segments keep by
+# default. Measured over the whole speaker, so it is a prior and not a verdict —
+# see `mark_keep` for the two per-segment witnesses that can overturn it.
 SPEAKER_EN_RATIO = 0.60
 # ...and how sure the per-segment language witness must be to overturn that prior on
 # one segment. Well above LID_MIN_PROB: every documented mislabel of the classifier

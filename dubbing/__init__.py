@@ -1,6 +1,8 @@
-"""Local video dubbing: captions → translation → voice-cloned TTS → mix.
+"""Local video dubbing: local ASR → translation → voice-cloned TTS → mix.
 
-Stages run in order and are individually resumable; see `dubbing.cli`.
+The word stream comes from Whisper, not from the video's captions — see
+`dubbing.transcript` for why, and for the one thing captions are still trusted
+about. Stages run in order and are individually resumable; see `dubbing.cli`.
 The invariants that keep the output correct are documented in `dubbing.timeline`
 (placement) and `dubbing.tts` (never-silent) — read those before changing either.
 """
