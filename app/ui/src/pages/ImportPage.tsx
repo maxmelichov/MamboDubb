@@ -402,7 +402,7 @@ export function ImportPage() {
               <Field label="Run name" hint="blank = from the title">
                 <TextInput
                   value={form.name ?? ""}
-                  placeholder="kan11_v4"
+                  placeholder="my_first_dub"
                   aria-label="Run name"
                   onChange={(event) => update({ name: event.currentTarget.value || null })}
                 />
