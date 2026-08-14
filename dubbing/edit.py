@@ -579,8 +579,23 @@ def resynthesize(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
             out[seg["uid"]] = record
     finally:
         eng.close()
+    # A new clip is a new length, so its old placement is gone (invalidate drops
+    # it) and `timeline.place` is the only thing allowed to decide the new one.
+    # Re-place before returning: a segment left unplaced is missing from the mix,
+    # which is the never-silent invariant broken by the back door. Rendering the
+    # preview stays an explicit action — this restores the manifest, not the video.
+    _progress(progress, 0.95, "re-placing the timeline")
+    _replace_timeline(m, workdir)
     _progress(progress, 1.0, f"synthesized {len(out)} segment(s)")
     return out
+
+
+def _replace_timeline(m: dict[str, Any], workdir: Path) -> None:
+    """Re-run placement only. No shortening round: that would reload the
+    translator to rewrite lines the user did not ask about."""
+    from . import timeline as timeline_mod
+
+    timeline_mod.run(m, workdir, genre=getattr(_args(m), "genre", "documentary"))
 
 
 def rebuild(m: dict[str, Any], workdir: Path, *, from_stage: str,

@@ -233,11 +233,21 @@ def test_timeline_does_not_shorten_a_locked_line(monkeypatch):
     assert m["segments"][0]["place"]["end"] > m["segments"][1]["place"]["start"] - 100
 
 
-def tmp_workdir():
+def tmp_workdir(clips=()):
+    """A scratch run dir. `clips` are created as real 1s wav files, because
+    re-placement measures every clip it places."""
     import tempfile
     from pathlib import Path
 
-    return Path(tempfile.mkdtemp())
+    import numpy as np
+    import soundfile as sf
+
+    root = Path(tempfile.mkdtemp())
+    if clips:
+        (root / "clips").mkdir(parents=True, exist_ok=True)
+        for name in clips:
+            sf.write(str(root / name), np.zeros(44100, dtype="float32"), 44100)
+    return root
 
 
 # --------------------------------------------------------------- edit: lookup
@@ -595,12 +605,14 @@ def test_resynthesize_records_clips_and_falls_back_to_keep(monkeypatch):
             self.closed = True
 
     monkeypatch.setattr(tts_mod, "Engine", FakeEngine)
-    out = edit.resynthesize(m, tmp_workdir(), [a, b])
+    out = edit.resynthesize(m, tmp_workdir(["clips/new.wav", "clips/keep.wav", "clips/a.wav", "clips/b.wav"]), [a, b])
     # Never silent: the failed dub falls back to its original audio, not to nothing.
     assert m["segments"][0]["keep"] and m["segments"][0]["keep_reason"] == "tts_failed"
     assert out[a]["verify"] == "keep"
     assert out[b]["verify"] == "keep"                 # already a keep: fresh slice
-    assert "place" not in m["segments"][0]            # the placement was for the old clip
+    # The old placement was for the old clip; a new one is made for the new clip,
+    # because an unplaced segment is missing from the mix entirely.
+    assert m["segments"][0]["place"]["clip"] != "clips/old.wav"
 
 
 def test_resynthesize_overrides_a_tts_lock_when_asked_for_that_segment(monkeypatch):
@@ -622,7 +634,7 @@ def test_resynthesize_overrides_a_tts_lock_when_asked_for_that_segment(monkeypat
             pass
 
     monkeypatch.setattr(tts_mod, "Engine", FakeEngine)
-    edit.resynthesize(m, tmp_workdir(), [uid])
+    edit.resynthesize(m, tmp_workdir(["clips/new.wav", "clips/a.wav", "clips/b.wav"]), [uid])
     assert m["segments"][0]["tts"]["clip"] == "clips/new.wav"
     assert not manifest.is_locked(m["segments"][0], "tts")
 

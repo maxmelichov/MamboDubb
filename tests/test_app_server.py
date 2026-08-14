@@ -976,3 +976,31 @@ def test_edit_progress_is_adapted_to_the_pipeline_signature(monkeypatch, call, s
     assert captured["progress"] is not None
     assert seen == [{"type": "stage", "stage": stage, "status": "running",
                      "progress": 0.5, "message": "halfway"}]
+
+
+@pytest.mark.skipif(not ops.HAVE_EDIT, reason="dubbing.edit not present")
+def test_resynthesize_leaves_every_segment_placed(monkeypatch, outputs):
+    """A re-voiced segment must come back placed. Its new clip has a new length,
+    so `invalidate` drops the old placement — and a segment with no placement is
+    absent from the mix, which is never-silent broken by the back door."""
+    from dubbing import edit as real_edit
+    from dubbing import tts as tts_mod
+
+    m = manifest.load(outputs / NAME)
+    uid = next(s["uid"] for s in m["segments"] if not s.get("keep"))
+
+    # The clip a segment already owns, captured before `invalidate` drops it.
+    clips = {s["uid"]: dict(s["tts"]) for s in m["segments"] if s.get("tts")}
+
+    class FakeEngine:
+        def __init__(self, *a, **k): pass
+        def build_speaker_refs(self): pass
+        def close(self): pass
+        def keep_clip(self, seg): return dict(clips[seg["uid"]])
+        def clip_for(self, seg, text): return dict(clips[seg["uid"]])
+
+    monkeypatch.setattr(tts_mod, "Engine", FakeEngine)
+    real_edit.resynthesize(m, outputs / NAME, [uid])
+
+    unplaced = [s["uid"] for s in m["segments"] if not s.get("place")]
+    assert unplaced == [], f"segments left unplaced: {unplaced}"
