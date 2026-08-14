@@ -22,7 +22,9 @@
         "resizable": true,
         "fullscreen": false,
         "acceptFirstMouse": true,
-        "titleBarStyle": "Visible"
+        "titleBarStyle": "Visible",
+        "backgroundColor": "#f7f6f2",
+        "theme": "Light"
       }
     ],
     "security": {
