@@ -132,71 +132,103 @@ export const api = {
     return request<SetupStatus>("/api/setup");
   },
 
+  // The server speaks in envelopes ({"projects": [...]}, {"segment": {...}});
+  // the components speak in values. The unwrapping lives here and only here —
+  // the fixtures return bare values, which is how a mismatch stayed invisible
+  // to every fixture-backed test and black-screened the first real launch.
+
   listProjects(): Promise<ProjectSummary[]> {
     if (USE_FIXTURES) return fixtures.listProjects();
-    return request<ProjectSummary[]>("/api/projects");
+    return request<{ projects: ProjectSummary[] }>("/api/projects").then((r) => r.projects);
   },
 
   createProject(body: CreateProjectRequest): Promise<CreateProjectResponse> {
     if (USE_FIXTURES) return fixtures.createProject(body);
-    return request<CreateProjectResponse>("/api/projects", json(body));
+    return request<{ project: { name: string }; job: Job }>("/api/projects", json(body))
+      .then((r) => ({ name: r.project.name, job: r.job }));
   },
 
   getProject(name: string): Promise<ProjectDetail> {
     if (USE_FIXTURES) return fixtures.getProject(name);
-    return request<ProjectDetail>(`/api/projects/${encodeURIComponent(name)}`);
+    type Wire = {
+      name: string;
+      manifest: { source: ProjectDetail["source"]; speakers: ProjectDetail["speakers"];
+                  outputs: ProjectDetail["outputs"] };
+      stages: ProjectDetail["stages"];
+      report: ProjectDetail["report"];
+    };
+    return request<Wire>(`/api/projects/${encodeURIComponent(name)}`).then((r) => ({
+      name: r.name,
+      source: r.manifest.source,
+      speakers: r.manifest.speakers ?? {},
+      stages: r.stages,
+      outputs: r.manifest.outputs ?? {},
+      report: r.report,
+    }));
   },
 
   getSegments(name: string): Promise<Segment[]> {
     if (USE_FIXTURES) return fixtures.getSegments(name);
-    return request<Segment[]>(`/api/projects/${encodeURIComponent(name)}/segments`);
+    return request<{ segments: Segment[] }>(
+      `/api/projects/${encodeURIComponent(name)}/segments`,
+    ).then((r) => r.segments);
   },
 
   /** Every no-model edit. Must stay responsive while a job runs. */
   patchSegment(name: string, uid: string, patch: SegmentPatch): Promise<Segment> {
     if (USE_FIXTURES) return fixtures.patchSegment(name, uid, patch);
-    return request<Segment>(
+    return request<{ segment: Segment }>(
       `/api/projects/${encodeURIComponent(name)}/segments/${encodeURIComponent(uid)}`,
       { method: "PATCH", body: JSON.stringify(patch) },
-    );
+    ).then((r) => r.segment);
   },
 
-  /** Returns the whole list because `id` renumbers on every structural edit. */
+  /**
+   * Returns the whole list because `id` renumbers on every structural edit.
+   * The server only returns the affected segments, so re-fetch: correctness
+   * over one round trip on an explicit, rare user action.
+   */
   splitSegment(name: string, uid: string, at: number): Promise<Segment[]> {
     if (USE_FIXTURES) return fixtures.splitSegment(name, uid, at);
-    return request<Segment[]>(
+    return request<unknown>(
       `/api/projects/${encodeURIComponent(name)}/segments/${encodeURIComponent(uid)}/split`,
       json({ at }),
-    );
+    ).then(() => api.getSegments(name));
   },
 
   mergeSegments(name: string, uid: string, uidB: string): Promise<Segment[]> {
     if (USE_FIXTURES) return fixtures.mergeSegments(name, uid, uidB);
-    return request<Segment[]>(
+    return request<unknown>(
       `/api/projects/${encodeURIComponent(name)}/segments/${encodeURIComponent(uid)}/merge`,
-      json({ uid_b: uidB }),
-    );
+      json({ uid: uidB }),
+    ).then(() => api.getSegments(name));
   },
 
   retranslate(name: string, uids: string[]): Promise<Job> {
     if (USE_FIXTURES) return fixtures.enqueue(name, "retranslate", uids);
-    return request<Job>(`/api/projects/${encodeURIComponent(name)}/retranslate`, json({ uids }));
+    return request<{ job: Job }>(
+      `/api/projects/${encodeURIComponent(name)}/retranslate`, json({ uids }),
+    ).then((r) => r.job);
   },
 
   resynthesize(name: string, uids: string[]): Promise<Job> {
     if (USE_FIXTURES) return fixtures.enqueue(name, "resynthesize", uids);
-    return request<Job>(`/api/projects/${encodeURIComponent(name)}/resynthesize`, json({ uids }));
+    return request<{ job: Job }>(
+      `/api/projects/${encodeURIComponent(name)}/resynthesize`, json({ uids }),
+    ).then((r) => r.job);
   },
 
   /** timeline → mix → report. A full libx264 re-encode, so never an autosave. */
   render(name: string): Promise<Job> {
     if (USE_FIXTURES) return fixtures.enqueue(name, "render", []);
-    return request<Job>(`/api/projects/${encodeURIComponent(name)}/render`, json({}));
+    return request<{ job: Job }>(
+      `/api/projects/${encodeURIComponent(name)}/render`, json({}),
+    ).then((r) => r.job);
   },
 
   listJobs(): Promise<Job[]> {
     if (USE_FIXTURES) return fixtures.listJobs();
-    return request<Job[]>("/api/jobs");
+    return request<{ jobs: Job[] }>("/api/jobs").then((r) => r.jobs);
   },
 
   cancelJob(id: string): Promise<void> {
