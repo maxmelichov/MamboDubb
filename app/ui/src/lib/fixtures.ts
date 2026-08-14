@@ -23,6 +23,7 @@ import type {
   ProjectSummary,
   Segment,
   SegmentPatch,
+  SetupStatus,
   Stage,
   StudioEvent,
 } from "./types";
@@ -89,6 +90,60 @@ function emit(event: StudioEvent): void {
 
 export function health(): Promise<Health> {
   return delay({ status: "ok", version: "0.1.0-fixtures" } as Health);
+}
+
+/**
+ * `GET /api/setup`, deliberately mixed: a machine with the tools and the big
+ * models in place but no HF token and no Demucs weights. A checklist where
+ * everything passes demos nothing, and the failure rows are where the copy has
+ * to earn its keep — each one says what to do, not just that it is missing.
+ */
+export function setup(): Promise<SetupStatus> {
+  const checks = [
+    { id: "ffmpeg", label: "ffmpeg", ok: true, detail: "7.1.1 — /opt/homebrew/bin/ffmpeg" },
+    { id: "sox", label: "sox", ok: true, detail: "14.4.2 — /opt/homebrew/bin/sox" },
+    {
+      id: "hf_token",
+      label: "Hugging Face token",
+      ok: false,
+      detail:
+        "No HF_TOKEN in .env. Pyannote's diarization models are gated; without a token every " +
+        "segment is attributed to one speaker. Accept the model terms, then put HF_TOKEN=… in .env.",
+    },
+    {
+      id: "model_translate",
+      label: "Translation model — Gemma 3 12B (MLX, 4-bit)",
+      ok: true,
+      detail: "6.9 GB — models/gemma-3-12b-it-qat-4bit",
+    },
+    {
+      id: "model_tts",
+      label: "Speech model — Qwen3-TTS 1.7B",
+      ok: true,
+      detail: "3.4 GB — models/qwen3-tts-1.7b",
+    },
+    {
+      id: "model_asr",
+      label: "Transcription model — faster-whisper large-v3",
+      ok: true,
+      detail: "3.1 GB — models/faster-whisper-large-v3",
+    },
+    {
+      id: "model_stems",
+      label: "Stem separation — Demucs htdemucs",
+      ok: false,
+      detail:
+        "Not in models/demucs. Needed to lift the speech off the music before transcription. " +
+        "Run `uv run python -m dubbing.stems --download` to fetch it (320 MB).",
+    },
+    {
+      id: "disk",
+      label: "Free disk space",
+      ok: true,
+      detail: "184 GB free — a 20-minute run writes about 4 GB under outputs/",
+    },
+  ];
+  return delay({ ok: checks.every((c) => c.ok), checks });
 }
 
 export function listProjects(): Promise<ProjectSummary[]> {

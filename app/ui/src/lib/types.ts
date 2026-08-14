@@ -256,3 +256,21 @@ export type StudioEvent =
   | HeartbeatEvent;
 
 export type Health = { status: "ok"; version: string };
+
+// --- first-run readiness --------------------------------------------------
+
+/**
+ * One row of `GET /api/setup`: a fast filesystem check the server can answer
+ * without loading anything — ffmpeg, sox, the HF token, each model directory,
+ * free disk. `detail` is the sentence shown under the label: a size when the
+ * check passes, what to install when it does not.
+ */
+export type SetupCheck = {
+  id: string;
+  label: string;
+  ok: boolean;
+  detail: string;
+};
+
+/** `ok` is the whole checklist's verdict — false means the app is not usable. */
+export type SetupStatus = { ok: boolean; checks: SetupCheck[] };

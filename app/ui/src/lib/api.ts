@@ -6,6 +6,7 @@
 
 import { readNdjson } from "./ndjson";
 import * as fixtures from "./fixtures";
+import { serverBaseUrl } from "./desktop";
 import { isToneUrl, resolveToneUrl } from "./tone";
 import type {
   ApiErrorBody,
@@ -18,10 +19,39 @@ import type {
   ProjectSummary,
   Segment,
   SegmentPatch,
+  SetupStatus,
   StudioEvent,
 } from "./types";
 
 export const USE_FIXTURES = import.meta.env.VITE_USE_FIXTURES === "1";
+
+// --- where the server is --------------------------------------------------
+
+/**
+ * Every path this file builds goes through `url()`, which is empty-prefixed in
+ * a browser (the server serves the UI, so /api and /media are same-origin) and
+ * prefixed with the sidecar's `http://127.0.0.1:<port>` inside the desktop
+ * shell, whose origin is the Tauri asset protocol instead.
+ *
+ * It is a plain string rather than a promise because `mediaUrl` is called
+ * during render and a `<video src>` cannot await. `initApiBase()` resolves it
+ * once at boot, before anything is rendered.
+ */
+let base = "";
+
+/** Resolve the server's base URL. Call once, before the first render. */
+export async function initApiBase(): Promise<string> {
+  if (USE_FIXTURES) return base;
+  base = (await serverBaseUrl()) ?? "";
+  return base;
+}
+
+/** The prefix in force, for display ("" means same-origin). */
+export function apiBase(): string {
+  return base;
+}
+
+const url = (path: string): string => base + path;
 
 /** The server's uniform error body, as a throwable. */
 export class ApiError extends Error {
@@ -44,7 +74,7 @@ export class ApiError extends Error {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(path, {
+    response = await fetch(url(path), {
       ...init,
       headers: {
         ...(init?.body ? { "content-type": "application/json" } : {}),
@@ -91,6 +121,15 @@ export const api = {
   health(): Promise<Health> {
     if (USE_FIXTURES) return fixtures.health();
     return request<Health>("/health");
+  },
+
+  /**
+   * First-run readiness. Fast filesystem checks only — the server never loads a
+   * model to answer this, so it is cheap enough to call on every boot.
+   */
+  setup(): Promise<SetupStatus> {
+    if (USE_FIXTURES) return fixtures.setup();
+    return request<SetupStatus>("/api/setup");
   },
 
   listProjects(): Promise<ProjectSummary[]> {
@@ -169,16 +208,20 @@ export const api = {
    * Make a URL from `GET /segments` playable. Identity against the real server;
    * in fixture mode it materializes the synthetic clip on first use.
    */
-  audioUrl(url: string | null | undefined): string | null {
-    if (!url) return null;
-    if (isToneUrl(url)) return resolveToneUrl(url);
-    return url;
+  audioUrl(raw: string | null | undefined): string | null {
+    if (!raw) return null;
+    if (isToneUrl(raw)) return resolveToneUrl(raw);
+    // The server calls these "absolute URLs"; a root-relative one still needs
+    // the sidecar's origin in the shell, where the page is not on it.
+    return raw.startsWith("/") ? url(raw) : raw;
   },
 
   /** Range-capable file serving from the run dir. */
   mediaUrl(name: string, path: string): string {
     if (USE_FIXTURES) return fixtures.mediaUrl(name, path);
-    return `/media/${encodeURIComponent(name)}/${path.split("/").map(encodeURIComponent).join("/")}`;
+    return url(
+      `/media/${encodeURIComponent(name)}/${path.split("/").map(encodeURIComponent).join("/")}`,
+    );
   },
 
   /**
@@ -192,7 +235,7 @@ export const api = {
     onConnectionChange?: (open: boolean) => void,
   ): Promise<void> {
     if (USE_FIXTURES) return fixtures.events(name, signal, onMessage, onConnectionChange);
-    return readNdjson<StudioEvent>(`/api/projects/${encodeURIComponent(name)}/events`, signal, {
+    return readNdjson<StudioEvent>(url(`/api/projects/${encodeURIComponent(name)}/events`), signal, {
       onMessage,
       onOpen: () => onConnectionChange?.(true),
       onClose: () => onConnectionChange?.(false),
