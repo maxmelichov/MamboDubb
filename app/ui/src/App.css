@@ -50,28 +50,64 @@
   --color-border: #e5e2d8;
   --color-grid: #e5e2d8;
   --color-axis: #c8c4b6;
-  --color-brand: #2a78d6;
   /* What sits *on* an ink-filled surface — a primary button's own label. */
   --color-on-primary: #f7f6f2;
 
-  /* Segment-state encoding, light. Validated all-pairs against the white card
-     with scripts/validate_palette.js (dataviz skill):
-       #2a78d6, #eda100, #d03b3b — CVD dE 19.8, normal dE 24.1.
-     The pairs separate; the *yellow against the card* does not — it sits at
-     2.17:1, under the 3:1 gate (blue 4.42:1, red 4.80:1). So the relief rule
-     stands: every state also carries a shape and a word, and the segment
-     navigator repeats the state as text. Never colour alone. The dark triple
-     under `.theme-dark` clears 3:1 on all three, and the rule still stands
-     there — one encoding, one set of affordances, both themes. */
+  /*
+   * Segment-state encoding, light. Four hues, and the axis they are picked on
+   * is *what the reviewer still has to do*, not what the pipeline happened to
+   * call the segment:
+   *
+   *   kept     nothing to do — the original plays          resolved  (green)
+   *   dubbed   done, and there is a clip to check          done      (blue)
+   *   pending  waiting on the translator or the voice      awaiting  (amber)
+   *   failed   the pipeline lost the line                  wrong     (red)
+   *
+   * Amber used to be "kept", which is how an already-English video — every
+   * line kept, correctly, nothing wrong anywhere — rendered as seventy-three
+   * rows of warning, an amber gutter and a hundred-mark amber barcode. Warning
+   * colour now means only "this one is waiting on something", which is a set
+   * that is usually empty, and the calm case is calm.
+   *
+   * Measured against the white card (`--color-surface`), WCAG 2.1:
+   *   dubbed   #2a78d6  4.42:1     kept     #306357  6.89:1
+   *   failed   #d03b3b  4.80:1     pending  #b8770b  3.70:1
+   *   unclaimed #7d7a71 4.29:1
+   * All four clear the 3:1 non-text gate here, which the old amber (2.17:1)
+   * never did. Nothing is coloured text: the state *word* on a row is
+   * `--color-secondary`, and these paint icons, 3px stripes and mark edges.
+   *
+   * Colour-vision safety is carried by lightness, because hue is exactly what
+   * a dichromat loses. L*: kept 38.3, failed 48.1, dubbed 50.4, pending 55.5 —
+   * so the two pairs that must never merge separate in greyscale alone:
+   *   kept/failed   dL* 9.8   (dE2000 50.6 normal, 26.1 deutan, 9.7 protan)
+   *   kept/dubbed   dL* 12.2  (dE2000 33.1 normal, 28.6 deutan)
+   * The protan figure for kept/failed is the honest weak spot — a deep green
+   * and a mid red are nearly the same hue to a protanope — and it is why the
+   * relief rule is unconditional: every state also carries a drawn shape and a
+   * word, on every row and in the panel. Never colour alone.
+   *
+   * Chroma is the other half of "calm": kept sits at C* 20 against the old
+   * amber's C* 78. It is a hue you can put on two hundred rows.
+   */
   --color-dubbed: #2a78d6;
-  --color-kept: #eda100;
+  --color-kept: #306357;
   --color-failed: #d03b3b;
+  --color-pending: #b8770b;
   --color-unclaimed: #7d7a71;
 
-  --color-good: #0ca30c;
-  --color-warning: #fab219;
-  --color-serious: #ec835a;
-  --color-critical: #d03b3b;
+  /*
+   * The semantic tones are the state hues under their other names, aliased
+   * rather than re-picked. A setup check that is "good" in a fifth green and a
+   * badge that is "warn" in a second amber is how a palette stops being one
+   * palette — and both themes then have to restate four extra values that
+   * nobody measured. `--color-serious` (a lone orange, used nowhere) is gone
+   * for the same reason.
+   */
+  --color-good: var(--color-kept);
+  --color-warning: var(--color-pending);
+  --color-critical: var(--color-failed);
+  --color-brand: var(--color-dubbed);
 
   /* Elevation. Resolved from CSS vars so dark mode can restate them. */
   --shadow-card: var(--elevation-card);
@@ -117,6 +153,29 @@ html.theme-dark {
   --elevation-card: 0 1px 2px rgb(20 19 15 / 0.04), 0 8px 30px rgb(20 19 15 / 0.045);
   --elevation-lift: 0 1px 2px rgb(20 19 15 / 0.04), 0 18px 50px rgb(28 28 23 / 0.07);
   --elevation-pop: 0 8px 24px rgb(20 19 15 / 0.12), 0 2px 6px rgb(20 19 15 / 0.08);
+
+  /*
+   * How much of its hue a timeline mark's fill actually gets. The hue lives on
+   * the mark's 1px edge — that is what makes a boundary legible — and the fill
+   * is a wash of the same hue, so a hundred adjacent marks read as a hundred
+   * marks instead of one coloured band.
+   *
+   * It is a token rather than a number in Timeline.tsx because the right
+   * amount is a property of the *theme*, not of the component: the light hues
+   * are dark ink on a white lane and a little goes a long way, while the dark
+   * hues are light on near-black and sit over a drawn waveform, so they need
+   * more before the mark reads as a box at all. Both land the unselected marks
+   * between 1.2:1 and 1.6:1 against the lane — present, never loud — and leave
+   * the selected mark and the playhead as the two brightest things on the strip.
+   */
+  --mark-wash: 18%;
+  --mark-wash-selected: 45%;
+
+  /* And the same question for the 3px state rule down a script row's reading
+     edge. On white a wash of a dark hue is already a line; on near-black it
+     has to be most of the hue or the rule is a darker shade of dark and the
+     row's cheapest state channel is spent on nothing. */
+  --state-rule: 60%;
 }
 
 /*
@@ -129,14 +188,26 @@ html.theme-dark {
  * Contrast against the dark card `#171614`, measured, WCAG 2.1:
  *   ink       #f5f4f0  16.4:1     secondary #b5b1a6   8.4:1
  *   muted     #98948b   6.0:1     dubbed    #3987e5   5.0:1
- *   kept      #c98500   5.9:1     failed    #d03b3b   3.8:1
- * All three state hues clear the 3:1 non-text gate here — which light does not
- * manage for amber (2.17:1) — but the shape-and-word rule is unconditional, so
- * nothing about the encoding changes between themes.
+ *   kept      #95cbb8   9.9:1     failed    #e96a6a   5.8:1
+ *   pending   #d99a28   7.4:1     unclaimed #98948b   6.0:1
+ * Every state hue clears the 3:1 non-text gate, and red clears 4.5:1 as well
+ * because `text-critical` is the one place a state hue is set as small text —
+ * the old dark red (#d03b3b, 3.76:1) did not, so an error message was the
+ * least legible sentence in the app.
+ *
+ * The lightness ordering flips with the ground, which is the point: on paper
+ * "resolved" is the darkest hue on the card, on a near-black plane it is the
+ * lightest. L*: dubbed 55.9, failed 60.5, pending 68.0, kept 77.6 — so the two
+ * pairs that must never merge stay apart in greyscale here too:
+ *   kept/failed   dL* 17.1  (dE2000 50.7 normal, 19.5 deutan, 21.4 protan)
+ *   kept/dubbed   dL* 21.7  (dE2000 36.9 normal, 34.5 deutan)
+ * The weak pair in dark is failed/pending (dL* 7.5, deutan dE 12.6) — red and
+ * amber, both of which mean "look at this one", which is the cheapest pair in
+ * the set to confuse. The shape and the word tell them apart.
  *
  * The shape drawn *inside* a timeline mark is the state's own hue, not an ink
- * chosen against the fill: the fill is a 22% wash of that same hue, so the
- * shape reads on it in either theme and there is no third colour to validate.
+ * chosen against the fill: the fill is a wash of that same hue, so the shape
+ * reads on it in either theme and there is no third colour to validate.
  */
 :root.theme-dark {
   --color-plane: #0e0e0d;
@@ -153,16 +224,17 @@ html.theme-dark {
   --color-border: #2b2a27;
   --color-grid: #2b2a27;
   --color-axis: #3b3935;
-  --color-brand: #3987e5;
   --color-on-primary: #0e0e0d;
 
-  /* Segment-state encoding, dark. Validated all-pairs against the dark card:
-     #3987e5, #c98500, #d03b3b — CVD dE 10.2, normal dE 16.9. The blue is
-     lifted and the amber dropped relative to light, because the eye's job here
-     is separating them from each other *and* from a near-black ground. */
+  /* Segment-state encoding, dark — re-picked for a near-black plane, not the
+     light four dimmed. Green and red are both lifted well clear of the ground;
+     the blue is the one hue that survives almost unchanged, because a blue any
+     lighter stops reading as blue. The four aliases below follow from these,
+     so `good`/`warning`/`critical`/`brand` need no dark values of their own. */
   --color-dubbed: #3987e5;
-  --color-kept: #c98500;
-  --color-failed: #d03b3b;
+  --color-kept: #95cbb8;
+  --color-failed: #e96a6a;
+  --color-pending: #d99a28;
   --color-unclaimed: #98948b;
 
   /* A cast shadow is invisible against near-black, so elevation in dark is
@@ -176,6 +248,14 @@ html.theme-dark {
      only other cue. */
   --elevation-pop: inset 0 1px 0 rgb(255 255 255 / 0.08), 0 10px 30px rgb(0 0 0 / 0.7),
     0 2px 6px rgb(0 0 0 / 0.5);
+
+  /* More wash than light, because these marks are drawn over the lane's
+     waveform on a near-black ground: at the light theme's 18% the fill is
+     within a hair of the plane and the mark is an outline with audio showing
+     through it. */
+  --mark-wash: 26%;
+  --mark-wash-selected: 58%;
+  --state-rule: 80%;
 }
 
 body {

@@ -167,7 +167,7 @@ function Row({
         borderInlineStartStyle: "solid",
         borderInlineStartColor: selected
           ? "var(--color-primary)"
-          : `color-mix(in srgb, ${meta.token} 55%, transparent)`,
+          : `color-mix(in srgb, ${meta.token} var(--state-rule), transparent)`,
       }}
     >
       {/* The playhead's tick, painted over the state stripe: short, so it does
@@ -215,9 +215,11 @@ function Row({
           </span>
           <span aria-hidden>·</span>
           <StateIcon state={state} className="h-2.5 w-2.5" />
-          {/* The state as a *word*, on every row. Light-mode "kept" is 2.17:1
-              against the card — under the 3:1 gate — and there is no legend
-              on screen any more, so this is the encoding's only spelling out. */}
+          {/* The state as a *word*, on every row, in ink rather than in the
+              state's hue: at 11px this is small text, and light-mode "pending"
+              is 3.70:1 against the card — fine for a stripe, under the 4.5:1
+              gate for a label. There is no legend on screen any more, so this
+              is the encoding's only spelling out. */}
           <span className="shrink-0 text-secondary">{meta.short}</span>
           {concern !== "none" ? (
             <TriangleAlert

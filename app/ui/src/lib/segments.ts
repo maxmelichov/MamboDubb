@@ -58,6 +58,20 @@ export function hasLocks(seg: Segment): boolean {
  * `filled` is the second, non-colour channel *within* the shapes: the two
  * finished states are solid, the three unfinished ones are outlines. So "not
  * done yet" is legible in greyscale, before any hue is involved.
+ *
+ * The hues are grouped by *what is left to do*, which is the only question the
+ * colour is there to answer (see the palette note in App.css):
+ *
+ *   kept                     resolved — the original plays   green
+ *   dubbed                   done — there is a clip to check  blue
+ *   unvoiced, untranslated   waiting on a model               amber
+ *   failed                   the pipeline lost the line       red
+ *
+ * The two waiting states used to be grey, borrowing "unclaimed time"'s hue —
+ * which is the colour of *nothing here*, and these are lines with something
+ * outstanding. They take the warning hue that "kept" used to wear, and "kept"
+ * takes the resolved green, so a run where every line is correctly kept is a
+ * calm screen instead of two hundred rows of amber.
  */
 export const STATE_META: Record<
   SegmentState,
@@ -89,14 +103,14 @@ export const STATE_META: Record<
     short: "Voice",
     icon: Circle,
     filled: false,
-    token: "var(--color-unclaimed)",
+    token: "var(--color-pending)",
   },
   untranslated: {
     label: "Needs translation",
     short: "Text",
     icon: CircleDashed,
     filled: false,
-    token: "var(--color-unclaimed)",
+    token: "var(--color-pending)",
   },
 };
 

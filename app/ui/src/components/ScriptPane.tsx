@@ -195,6 +195,20 @@ export function ScriptPane({
           ? "border-transparent bg-primary text-on-primary"
           : "border-border bg-raised text-secondary hover:border-axis hover:text-primary",
         count === 0 && filter !== key && "opacity-45",
+        /*
+          One chip is allowed a hue, and it is the one whose count is news.
+          "Failed 3" in the same grey as "All 73" is a number you have to read
+          to notice; in the failed hue it is the thing your eye lands on when
+          the bar comes up. The rest stay ink — a filter bar where every chip
+          is coloured is a filter bar with no emphasis in it — and the hue is
+          the state's own token, so this chip and the rows it selects are the
+          same red. It goes back to ink when it is the active filter, because
+          then the ink pill *is* the emphasis.
+        */
+        key === "failed" &&
+          count > 0 &&
+          filter !== key &&
+          "border-critical/45 bg-critical/[0.07] text-critical hover:border-critical hover:text-critical",
       )}
     >
       {label}
