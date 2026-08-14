@@ -347,13 +347,45 @@ Two screens:
 
 1. **Import** — file picker or URL, source/target language, duration cap, genre/register,
    optional context note. Starts a run and goes to the editor with live progress.
-2. **Editor** — video player top; under it a **timeline** of segments on a time axis
-   (colour-coded: dubbed / kept / failed / unclaimed), and a **segment inspector** for the
-   selected segment: source text, target text, speaker, keep toggle, language tags, TTS
-   options, the verification transcript, buttons to re-translate and re-voice just this
-   segment, and A/B playback of original vs dubbed audio.
+2. **Editor** — script-first, in three regions. A 44px **header** (back to runs, title,
+   `he→en`, Render preview, run health, keyboard help, theme). A **main row** split
+   between the **script** (~58%, and it is the pane that grows) and a fixed **viewer
+   column** (~42%: video, transport, then the selection panel). A 112px **timeline strip**
+   full-width along the bottom.
+
+   The script is the work surface, because reviewing a dub means comparing a translation
+   with its original and that is a comparison between two pieces of text. Every row stacks
+   them — original above (muted), translation below (ink) — both always visible, both
+   complete, never ellipsis-truncated, for kept segments too. The row container is
+   `dir="ltr"` (timecodes and buttons are chrome) while each text line is `dir="auto"` +
+   `.auto-dir`, so a Hebrew original sits right-to-left directly above its left-to-right
+   translation without dragging the layout around. Clicking the translation edits it in
+   place; the draft is seeded on mount and never re-seeded, so a background refetch cannot
+   clobber what is being typed, and an empty commit is refused rather than sent (the server
+   400s on it). The row under the playhead washes and auto-scrolls to centre.
+
+   The **selection panel** holds what is true *about* a line and no copy of the line
+   itself: the dub/keep verdict, the two model actions with their prices, then four shut
+   `Disclosure` shelves — Voice & speaker, Verification, Timing & languages, Advanced
+   (locks, and the `PATCH {locked:{}}` that releases them). The **timeline** stays a map:
+   two lanes (source vs. output — the drift picture), unclaimed hatch, click to seek or
+   select, drag to scrub, zoom and split at its right edge. No dragging clips and no trim
+   handles, ever: `timeline.place()` is the sole authority on where audio goes.
+
+   Search plus four filter chips (All / Failed / Kept / Edited) make 200 rows navigable,
+   and a filtered set is fixed in **one** job — `/retranslate` and `/resynthesize` both
+   take `{uids:[…]}`.
+
+   One keyboard listener with one guard: `space` play/pause, `↑/↓` rows, `↵` edit, `esc`
+   leave, `a`/`b` original/dub, `k` keep, `s` split, `+/−` zoom, `⌘F` search. A/B shares a
+   single `<audio>` element app-wide (`lib/clipAudio.ts`) so only one clip can ever sound.
 
 The editor must be usable while a job runs: no-model edits stay live, model actions queue.
+
+`lib/api.ts` is the only seam that knows a wire shape. Segment audio is `seg.media` —
+`{play, tts, source, source_window}`, exactly as `Projects.enrich` writes it — and
+`lib/fixtures.ts` implements *that* shape, not one of its own. A fixture that invents field
+names is a second, divergent server that hides the first one's bugs.
 
 Design guidance, not contract: lean on `dataviz`-style restraint — this is a work tool, so
 information density over decoration, and never encode meaning in colour alone (keep/dub

@@ -181,160 +181,337 @@ check("re-check re-renders the list", document.querySelectorAll("[data-check]").
 await go("/", 200);
 check("setup does not trap navigation", /New dub/.test(root.textContent));
 
-// Navigate to the editor and let the fixture load.
+const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// --- the editor -----------------------------------------------------------
+//
+// The editor is script-first: two hundred rows, each showing an original and
+// its translation stacked and complete, with the video and the per-line detail
+// in a fixed column beside them. Nearly every assertion below is about that
+// one claim, because it is the claim the whole screen is built on.
+
 dom.window.history.pushState({}, "", "/editor/kan11_v3");
 dom.window.dispatchEvent(new dom.window.PopStateEvent("popstate"));
 await new Promise((resolve) => setTimeout(resolve, 600));
 
 const editor = root.textContent;
 check("editor renders", /Render preview/.test(editor));
-check("segments loaded", document.querySelectorAll('[role="option"]').length > 40);
+check("the script loaded", document.querySelectorAll('[role="option"]').length > 40);
 check("timeline drew marks", document.querySelectorAll('[aria-label^="Segment "]').length > 40);
 
+const rows = () => [...document.querySelectorAll('[role="option"]')];
+const rowFor = (id) => rows().find((r) => r.textContent.includes(`#${id}`));
+
 /*
- * Chrome that is not permanent. The legend and the shortcut list live behind
- * one "?" button now — so the assertion is not "they are on screen", it is
- * "they are one click away and complete when you get there". The run's census
- * stays visible, because that is data and it changes.
+ * The centrepiece. Segment 1 of the fixture is a real Hebrew line with a real
+ * English translation, and the point of the redesign is that a reviewer can see
+ * *both at once*, in one row, without selecting anything — that is what makes
+ * checking a translation possible at all. The previous list showed whichever
+ * one "would play" and hid the other.
  */
-check("the toolbar counts the run", /\d+\s*dubbed/.test(editor));
+const HEBREW = "היא לא מאיימת עלינו ברמה הצבאית.";
+const ENGLISH = "She does not threaten us on a military level.";
+const row1 = rowFor(1);
+if (!row1) throw new Error("smoke: no row for segment 1");
+check("a row shows the original", row1.textContent.includes(HEBREW));
+check("the same row shows the translation", row1.textContent.includes(ENGLISH));
+check(
+  "both lines are separate elements, stacked",
+  row1.querySelector('[data-line="text"]').textContent.includes(HEBREW) &&
+    row1.querySelector('[data-line="text_en"]').textContent.includes(ENGLISH),
+);
+
+/*
+ * Bidi. The row's chrome — timecode, id, buttons — is laid out left-to-right no
+ * matter what language the run is in; each text line takes its direction from
+ * its own content. Getting this wrong drags the whole row around whenever a
+ * Hebrew line is on screen.
+ */
+check("the row container is explicitly LTR", row1.getAttribute("dir") === "ltr");
+check(
+  "each text line carries dir=auto and .auto-dir",
+  [...row1.querySelectorAll("[data-line]")].every(
+    (p) => p.getAttribute("dir") === "auto" && p.classList.contains("auto-dir"),
+  ),
+);
+check(
+  "script text is clamped, never ellipsis-truncated",
+  [...row1.querySelectorAll("[data-line]")].every((p) => !p.className.includes("truncate")),
+);
+// A composed `${speaker} · ${text}` tooltip is one string with two directions
+// and no markup to scope them, which the platform renders scrambled.
+check("no composed tooltip on the row", row1.getAttribute("title") == null);
+
+/*
+ * A kept line still shows both halves: a reviewer's job includes checking the
+ * keep decisions, and a row that hides the translation of a kept line hides the
+ * evidence for the judgement it is asking for.
+ */
+const keptRow = rows().find((r) => r.textContent.includes("original audio plays here"));
+check("kept lines say so, and still show both texts", keptRow != null);
+
+// The state is a word on every row. Light-mode "kept" is 2.17:1 against the
+// card — under the 3:1 gate — and there is no legend on screen any more.
+check(
+  "every row says its state in words",
+  rows().every((r) => /Dub|Keep|Fail|Voice|Text/.test(r.textContent)),
+);
 check("the legend is not permanent chrome", !editor.includes("Unclaimed time"));
-const help = [...document.querySelectorAll("button")].find(
-  (b) => b.getAttribute("aria-label") === "Legend and keyboard shortcuts",
-);
-if (!help) throw new Error("smoke: no legend/shortcuts popover trigger");
-help.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-await new Promise((resolve) => setTimeout(resolve, 120));
-const helpText = root.textContent;
-check(
-  "the popover names every state",
-  ["Dubbed", "Kept original", "Failed", "Unclaimed time"].every((s) => helpText.includes(s)),
-);
-check("the popover lists the shortcuts", /play \/ pause/.test(helpText) && /zoom the timeline/.test(helpText));
-help.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-await new Promise((resolve) => setTimeout(resolve, 120));
-check("the popover closes again", !/play \/ pause/.test(root.textContent));
 
-// No panel in the editor may be blank. With nothing selected the rail is the
-// run's report, and the preview stage says why there is no picture rather than
-// showing an empty rectangle.
-check("the idle rail summarises the run", /This run/.test(editor) && /Coverage/.test(editor));
-check("uncovered speech is surfaced", /Audible, uncovered/.test(editor));
-check("the empty preview explains itself", /there is no video/.test(editor));
-check("the preview shows the pipeline position", /stages done/.test(editor));
-
-// The navigator is one tab stop with a roving tabindex, not fifty-eight, and
-// it is a listbox so `aria-selected` on a row means something.
+// One tab stop, not two hundred.
 check(
-  "the segment navigator is reachable by keyboard",
+  "the script is reachable by keyboard",
   document.querySelector('[role="option"][tabindex="0"]') != null,
 );
 check(
   "only one row is a tab stop",
   document.querySelectorAll('[role="option"][tabindex="0"]').length === 1,
 );
-// The navigator carries the state as a word, which is the relief for the two
-// hues that sit under 3:1 — the legend is behind a popover now, so this is the
-// only place the encoding is spelled out on screen.
-check(
-  "every row says its state in words",
-  [...document.querySelectorAll('[role="option"]')].every((row) =>
-    /Dub|Keep|Fail|Wait/.test(row.textContent),
-  ),
-);
-
-// Select a segment and confirm the inspector fills in.
-const rows = () => [...document.querySelectorAll('[role="option"]')];
-rows()[1].dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-await new Promise((resolve) => setTimeout(resolve, 200));
-const withInspector = root.textContent;
-check("inspector opens on selection", /Translation/.test(withInspector));
-check("inspector has A\\/B playback", /Original/.test(withInspector) && /Kept \(same audio\)|Dubbed/.test(withInspector));
 
 /*
- * The rail's whole premise: the four frequent things are on it and everything
- * else is on a named shelf that starts shut. Both halves are asserted — a
- * redesign that quietly leaves a shelf open by default has not reduced
- * anything.
+ * The regression test for the media contract.
+ *
+ * The server sends `seg.media = {play, tts, source, source_window}`; the UI
+ * used to read `seg.source_clip_url` / `place_clip_url` / `tts_clip_url`, which
+ * only the fixtures ever produced — so A/B playback was dead against the real
+ * server and green in every test. The fixtures now speak the server's shape, so
+ * a button with a URL on it proves the UI read the field the server actually
+ * fills.
  */
+const clip = (row, side) => row.querySelector(`[data-clip="${side}"]`);
+check("every row has A and B", rows().every((r) => clip(r, "A") && clip(r, "B")));
 check(
-  "the frequent controls are on the surface",
-  ["Original", "Translation", "Dub it", "Keep original", "Re-voice this line"].every((s) =>
-    withInspector.includes(s),
-  ),
+  "A plays the original, from the server-shaped media field",
+  clip(row1, "A").getAttribute("data-url").length > 0 && !clip(row1, "A").disabled,
 );
-check("the model actions state their cost", /~1 min · queues/.test(withInspector));
+check(
+  "B plays the dub, from the server-shaped media field",
+  clip(row1, "B").getAttribute("data-url").length > 0 && !clip(row1, "B").disabled,
+);
+check(
+  "a line with nothing synthesized has a dead B, not a broken one",
+  rows().some((r) => clip(r, "B").disabled),
+);
+
+/*
+ * Inline editing. The translation is edited where it is read — that is the
+ * whole point of putting it in the row — and the two hard rules are that a
+ * commit locks the line and an empty commit is refused outright (the server
+ * 400s: "text_en cannot be empty").
+ */
+const setValue = (el, value) => {
+  const setter = Object.getOwnPropertyDescriptor(
+    dom.window.HTMLTextAreaElement.prototype,
+    "value",
+  ).set;
+  setter.call(el, value);
+  el.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+};
+const clickIt = (el) => el.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+
+const target = rowFor(2);
+check("the row is not hand-edited yet", target.querySelector('[aria-label^="Hand-edited"]') == null);
+clickIt(target.querySelector('[data-line="text_en"]'));
+await settle(150);
+const field = () => rowFor(2).querySelector("[data-editing]");
+check("clicking the translation opens a field in place", field() != null);
+check("the field is bidi-aware too", field().getAttribute("dir") === "auto");
+
+// An empty commit must never reach the server.
+setValue(field(), "   ");
+await settle(80);
+check(
+  "an empty line refuses itself before it is sent",
+  rowFor(2).textContent.includes("has to say something"),
+);
+field().blur();
+await settle(200);
+check(
+  "and blurring an empty field changes nothing",
+  rowFor(2).querySelector('[aria-label^="Hand-edited"]') == null &&
+    rowFor(2).textContent.includes("The Qatari threat"),
+);
+
+// A real commit lands, and marks the line as the user's.
+clickIt(rowFor(2).querySelector('[data-line="text_en"]'));
+await settle(150);
+setValue(field(), "Edited by hand.");
+await settle(80);
+field().blur();
+await settle(300);
+check("committing on blur saves the line", rowFor(2).textContent.includes("Edited by hand."));
+check(
+  "a hand-edited line is locked against the pipeline",
+  rowFor(2).querySelector('[aria-label^="Hand-edited"]') != null,
+);
+// Saving the text drops the clip that says the old words — the row must say so
+// rather than keep a "Dubbed" badge and a live B button over stale audio.
+check(
+  "the invalidated clip is modelled locally, not left stale",
+  /Voice/.test(rowFor(2).textContent) && clip(rowFor(2), "B").disabled,
+);
+
+/*
+ * Filters, and the bulk fix behind them. `POST /resynthesize` has always taken
+ * `{uids:[…]}` and the UI has always sent exactly one; one model load beats N.
+ */
+const chip = (label) =>
+  [...document.querySelectorAll("button")].find((b) => b.textContent.startsWith(label));
+check("the script has filter chips", ["All", "Failed", "Kept", "Edited"].every((l) => chip(l)));
+check("the Edited chip counts the line just edited", /Edited\s*2/.test(chip("Edited").textContent));
+
+clickIt(chip("Failed"));
+await settle(200);
+check("the Failed chip narrows the script", rows().length < 40);
+const bulk = [...document.querySelectorAll("button")].find((b) =>
+  /Re-voice these \d+/.test(b.textContent),
+);
+check("a filtered set can be fixed in one job", bulk != null);
+check(
+  "…and re-translated in one job too",
+  [...document.querySelectorAll("button")].some((b) => /Re-translate these \d+/.test(b.textContent)),
+);
+clickIt(chip("Failed"));
+await settle(200);
+check("the chip toggles back off", rows().length > 40);
+
+/*
+ * The selection panel. It holds everything true *about* a line and no text
+ * field for the line itself — the text is in the script, where the comparison
+ * is. Four shelves, all shut, all named for what is on them.
+ */
+// Segment 2 is the one just edited by hand, so its Advanced shelf has locks on
+// it — which is the only state in which "Release locks" exists to be found.
+clickIt(rowFor(2).querySelector('[aria-label^="Select segment"]'));
+await settle(200);
+const panel = root.textContent;
+check("the panel opens on selection", /Dub it/.test(panel) && /Keep original/.test(panel));
+check("the model actions state their cost", /~1 min · queues/.test(panel));
+check("the panel does not restate the script", !/^Translation$/m.test(panel));
 const shelves = [...document.querySelectorAll("aside details")];
-check("the rest is on named shelves", shelves.length === 3);
+check("the rest is on named shelves", shelves.length === 4);
 check(
   "the shelves are named for what is on them",
-  ["Voice & speaker", "Languages", "Advanced"].every((label) =>
+  ["Voice & speaker", "Verification", "Timing & languages", "Advanced"].every((label) =>
     shelves.some((d) => d.querySelector("summary").textContent.includes(label)),
   ),
 );
 check("every shelf starts shut", shelves.every((d) => !d.open));
-check("a shut shelf still summarises itself", /inherit → inherit/.test(withInspector));
-// `<details>` keeps its content in the DOM either way, so "hidden" has to be
-// asked as "which shelf is this on, and is that shelf shut".
+check("a shut shelf still summarises itself", /inherit → inherit/.test(panel));
 const onAShutShelf = (text) => shelves.some((d) => !d.open && d.textContent.includes(text));
 check(
   "the rare controls are shut away, not merely small",
-  ["Reference clip", "Split at playhead", "Translate into", "Correct the transcript"].every(
-    onAShutShelf,
-  ),
+  ["Reference clip", "Split at playhead", "Translate into", "Release locks"].every(onAShutShelf),
 );
+// The style/instruct box is gone for good: Qwen3-TTS has no instruct parameter,
+// so the field was a promise the pipeline cannot keep.
+check("there is no style box anywhere", !/e\.g\. calm, urgent/.test(root.textContent));
 
 const voice = shelves.find((d) => d.querySelector("summary").textContent.includes("Voice"));
-voice.querySelector("summary").dispatchEvent(
-  new dom.window.MouseEvent("click", { bubbles: true }),
-);
-await new Promise((resolve) => setTimeout(resolve, 150));
+clickIt(voice.querySelector("summary"));
+await settle(150);
 check("opening a shelf reveals its controls", voice.open && /Reference clip/.test(voice.textContent));
-check("verification lives with the voice that produced it", /Last take/.test(voice.textContent));
-check("the open state is remembered for the session",
-  dom.window.sessionStorage.getItem("dubbing-studio.open.seg.voice") === "1");
-voice.querySelector("summary").dispatchEvent(
-  new dom.window.MouseEvent("click", { bubbles: true }),
+check(
+  "the open state is remembered for the session",
+  dom.window.sessionStorage.getItem("dubbing-studio.open.seg.voice") === "1",
 );
-await new Promise((resolve) => setTimeout(resolve, 150));
-check("and closing is remembered too",
-  dom.window.sessionStorage.getItem("dubbing-studio.open.seg.voice") === "0");
+clickIt(voice.querySelector("summary"));
+await settle(150);
+check(
+  "and closing is remembered too",
+  dom.window.sessionStorage.getItem("dubbing-studio.open.seg.voice") === "0",
+);
+
 const click = (label) => {
   const button = [...document.querySelectorAll("button")].find((b) =>
     b.textContent.includes(label),
   );
   if (!button) throw new Error(`smoke: no button "${label}"`);
-  button.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  clickIt(button);
 };
-const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // A no-model edit must apply immediately, without a job.
-const keptBefore = (root.textContent.match(/Kept original/g) ?? []).length;
+const keptBefore = rows().filter((r) => r.textContent.includes("original audio plays here")).length;
 click("Keep original");
-await settle(200);
+await settle(250);
 check(
-  "keep toggle applies immediately",
-  (root.textContent.match(/Kept original/g) ?? []).length > keptBefore,
+  "keep applies immediately, and the row says what will play",
+  rows().filter((r) => r.textContent.includes("original audio plays here")).length > keptBefore,
+);
+click("Dub it");
+await settle(250);
+check(
+  "the verdict goes both ways",
+  !rowFor(2).textContent.includes("original audio plays here"),
 );
 
-// Back to dubbed — a kept line shows its *source* in the navigator, because
-// the source is what plays, and the re-translation below has to be visible.
-click("Dub it");
-await settle(200);
-check("the toggle goes both ways", /Dubbed/.test(root.textContent));
+/*
+ * The chrome that is not permanent. The keyboard map lives behind "?", and the
+ * run's health — the uncovered-speech list, which is the highest-value thing
+ * report.json produces — lives behind "⋯". Neither of them changes while you
+ * work through a line, so neither of them rents a row of the screen.
+ */
+const byLabel = (label) =>
+  [...document.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === label);
+const help = byLabel("Keyboard shortcuts");
+if (!help) throw new Error("smoke: no shortcuts popover trigger");
+clickIt(help);
+await settle(120);
+check(
+  "the shortcuts are one click away",
+  /play \/ pause/.test(root.textContent) && /zoom the timeline/.test(root.textContent),
+);
+clickIt(help);
+await settle(120);
+check("the popover closes again", !/play \/ pause/.test(root.textContent));
+
+const menu = byLabel("Run health and files");
+if (!menu) throw new Error("smoke: no run menu trigger");
+clickIt(menu);
+await settle(120);
+check("run health surfaces uncovered speech", /Audible, uncovered/.test(root.textContent));
+check("run health counts the states", /Kept original/.test(root.textContent));
+clickIt(menu);
+await settle(120);
+
+// No panel in the editor may be blank: with no preview file the stage says why
+// there is no picture rather than showing an empty rectangle.
+check("the empty preview explains itself", /there is no video/.test(root.textContent));
+check("the preview shows the pipeline position", /stages done/.test(root.textContent));
+
+/*
+ * Confirmation is themed and local, never `window.confirm` — which is drawn by
+ * the OS, blocks the main thread and stops the playhead.
+ */
+click("Render preview");
+await settle(150);
+check(
+  "a destructive action asks in the app, not in an OS sheet",
+  /full video re-encode/.test(root.textContent),
+);
+check(
+  "the confirming button repeats the verb",
+  [...document.querySelectorAll('[role="dialog"] button')].some((b) => b.textContent === "Render"),
+);
+click("Cancel");
+await settle(150);
+check("cancelling does nothing", !/full video re-encode/.test(root.textContent));
 
 // A model action must queue and report progress instead of blocking the UI.
-click("Re-translate this line");
-await settle(150);
-check("model action queues and reports", /Re-translating/.test(root.textContent));
+click("Re-voice this line");
+await settle(200);
+check("model action queues and reports", /Re-voicing/.test(root.textContent));
 check("editor still interactive during a job", rows().length > 40);
 
-// …and the finished job writes its result back through the event stream.
-await settle(900);
-check("job clears when done", !/Re-translating/.test(root.textContent));
-check("re-translation landed", /\[re-translated]/.test(root.textContent));
+// …and the finished job writes its result back through the event stream —
+// without clobbering anything, because nothing is being typed.
+await settle(1200);
+check("job clears when done", !/Re-voicing/.test(root.textContent));
 
-check("no console errors", errors.filter((e) => !/not implemented|Not implemented/.test(e)).length === 0);
+check(
+  "no console errors",
+  errors.filter((e) => !/not implemented|Not implemented/.test(e)).length === 0,
+);
 
 console.log("smoke: all checks passed");
 process.exit(0);
