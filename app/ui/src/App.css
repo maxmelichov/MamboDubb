@@ -1,12 +1,15 @@
 @import "tailwindcss";
 
-/* Dark mode is opt-in via the OS or the header toggle, which stamps
-   data-theme on <html>. Both scopes carry the dark values so the toggle
-   wins in either direction. */
-@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
-
 /*
  * The design system, lifted from MamboRambo and refitted for this product.
+ *
+ * **This app is black-on-white and nothing else.** There is no dark counterpart
+ * and no theme toggle: `color-scheme: light` is declared on the root and never
+ * varies, `prefers-color-scheme` is not consulted anywhere, and the one
+ * remaining `dark:` hook is a Tailwind variant scoped to `.theme-dark`, a class
+ * nothing in the app sets. Everything the OS would otherwise darken on our
+ * behalf — scrollbars, form controls, the canvas behind the page — is pinned
+ * light below. If a surface ever comes up dark, it is a bug, not a preference.
  *
  * Four things carry the house style, and they are all here rather than
  * scattered through components:
@@ -15,16 +18,19 @@
  *    sit slightly yellow of neutral, which is what makes the white cards read
  *    as paper instead of as chrome.
  * 2. Ink, not colour, is the interaction accent. Primary buttons, the active
- *    nav pill and the selection ring are all `primary` — near-black on light,
- *    near-white on dark. That is MamboRambo's look, and here it also buys
- *    something: it frees the blue to mean one thing only, "dubbed".
- * 3. Elevation is a big soft shadow at very low alpha, never a hard edge. Dark
- *    mode cannot use shadow at all, so there the same tokens resolve to a
- *    deeper spread plus a hairline top highlight.
+ *    nav pill and the selection ring are all `primary` — near-black. That is
+ *    MamboRambo's look, and here it also buys something: it frees the blue to
+ *    mean one thing only, "dubbed".
+ * 3. Elevation is a big soft shadow at very low alpha, never a hard edge.
  * 4. Radii come from the stock Tailwind scale, which is the one MamboRambo
  *    uses: md/6 for chips, lg/8 for buttons and inputs, xl/12 for inner tiles,
  *    2xl/16 for cards.
  */
+
+/* Kept only so a stray `dark:` utility compiles to something unreachable
+   rather than to the OS preference, which is Tailwind's default meaning for
+   it. Nothing sets `.theme-dark`. */
+@custom-variant dark (&:where(.theme-dark, .theme-dark *));
 @theme {
   /* Chrome & ink. */
   --color-plane: #f7f6f2;
@@ -41,15 +47,12 @@
   /* What sits *on* an ink-filled surface — a primary button's own label. */
   --color-on-primary: #f7f6f2;
 
-  /* Segment-state encoding. Validated all-pairs in both modes with
-     scripts/validate_palette.js (dataviz skill):
-       light  #2a78d6,#eda100,#d03b3b  — CVD dE 19.8, normal dE 24.1
-       dark   #3987e5,#c98500,#d03b3b  — CVD dE 10.2, normal dE 16.9
-     The 2026 restyle moved the surfaces under these fills and left the fills
-     themselves untouched, so the pair separations above still hold. On the new
-     white card the light-mode yellow sits at 2.17:1 (was 2.11:1), still below
-     the 3:1 gate — so the relief rule stands unchanged: every state also
-     carries an icon and a label, and the segment table repeats the state as
+  /* Segment-state encoding. One set of fills, validated all-pairs against the
+     white card with scripts/validate_palette.js (dataviz skill):
+       #2a78d6, #eda100, #d03b3b — CVD dE 19.8, normal dE 24.1.
+     The pairs separate; the *yellow against the card* does not — it sits at
+     2.17:1, under the 3:1 gate. So the relief rule stands: every state also
+     carries a glyph and a word, and the segment table repeats the state as
      text. Never colour alone. */
   --color-dubbed: #2a78d6;
   --color-kept: #eda100;
@@ -70,8 +73,23 @@
     "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
+/*
+ * `color-scheme: light` is the load-bearing line in this file. It is what stops
+ * the OS from darkening the things CSS does not own: the canvas behind the
+ * document, the native form widgets, the default scrollbars, and the video
+ * element's own chrome. It is declared on both `html` and `:root` and is never
+ * re-declared, so there is no path by which it becomes `dark`.
+ */
+html {
+  color-scheme: light;
+  background: #f7f6f2;
+}
+
 :root {
   color-scheme: light;
+  /* Native controls (checkbox, number spinners, selection) pick ink, not the
+     platform blue, so nothing on the page is coloured by the OS. */
+  accent-color: #14130f;
   font-family: var(--font-sans);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -81,35 +99,6 @@
   --elevation-card: 0 1px 2px rgb(20 19 15 / 0.04), 0 8px 30px rgb(20 19 15 / 0.045);
   --elevation-lift: 0 1px 2px rgb(20 19 15 / 0.04), 0 18px 50px rgb(28 28 23 / 0.07);
   --elevation-pop: 0 8px 24px rgb(20 19 15 / 0.12), 0 2px 6px rgb(20 19 15 / 0.08);
-}
-
-/* The dark steps are selected for the dark surface, not an automatic flip. */
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --color-plane: #0e0e0d;
-  --color-surface: #171614;
-  --color-raised: #1e1d1b;
-  --color-sunken: #131211;
-  --color-primary: #f5f4f0;
-  --color-secondary: #b5b1a6;
-  --color-muted: #98948b;
-  --color-border: #2b2a27;
-  --color-grid: #2b2a27;
-  --color-axis: #3b3935;
-  --color-brand: #3987e5;
-  --color-on-primary: #0e0e0d;
-
-  --color-dubbed: #3987e5;
-  --color-kept: #c98500;
-  --color-failed: #d03b3b;
-  --color-unclaimed: #98948b;
-
-  /* Shadow is nearly invisible against near-black, so elevation in dark is
-     carried by a hairline highlight on the top edge with the spread behind it
-     doing the rest. */
-  --elevation-card: inset 0 1px 0 rgb(255 255 255 / 0.035), 0 2px 8px rgb(0 0 0 / 0.5);
-  --elevation-lift: inset 0 1px 0 rgb(255 255 255 / 0.045), 0 16px 44px rgb(0 0 0 / 0.55);
-  --elevation-pop: 0 10px 30px rgb(0 0 0 / 0.7), 0 2px 6px rgb(0 0 0 / 0.5);
 }
 
 body {
@@ -133,13 +122,47 @@ body {
     color: inherit;
   }
 
-  /* The focus ring is one recipe everywhere: a soft halo of ink, never a
-     browser default outline that fights the radii. */
-  :where(button, a, input, textarea, select, [tabindex]):focus-visible {
+  /*
+   * The focus ring is one recipe everywhere: a soft halo of ink, never a
+   * browser default outline that fights the radii. The selector list is the
+   * full set of things this app makes focusable — `summary` and `[role=…]`
+   * are in it because the TTS disclosure and the segment table are keyboard
+   * stops too, and they were the two that fell through before.
+   *
+   * `:where()` keeps specificity at zero so a component can still opt out, and
+   * the two-stop shadow means the ring reads on any surface: an inner stop the
+   * colour of the surface, then the ink halo outside it.
+   */
+  :where(
+    button,
+    a[href],
+    input,
+    textarea,
+    select,
+    summary,
+    [tabindex]:not([tabindex="-1"]),
+    [role="button"],
+    [role="row"]
+  ):focus-visible {
     outline: none;
     box-shadow:
       0 0 0 2px var(--color-surface),
       0 0 0 4px color-mix(in srgb, var(--color-primary) 45%, transparent);
+  }
+
+  /* A focused table row cannot take a box-shadow ring reliably (row boxes are
+     not painted like blocks), so it gets an inset ink rule and a wash. */
+  tr:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--color-primary) 55%, transparent);
+  }
+}
+
+/* Windows/Linux forced-colours mode is the one place we hand control back —
+   there the system palette is the accessibility feature, not our problem. */
+@media (forced-colors: active) {
+  .hatch-unclaimed {
+    forced-color-adjust: none;
   }
 }
 
@@ -153,10 +176,14 @@ body {
   );
 }
 
+/* Scrollbars are ours, not the platform's — `color-scheme: light` already
+   keeps the fallback ones light, and these keep them quiet on top of that. */
 ::-webkit-scrollbar {
   width: 9px;
   height: 9px;
+  background: transparent;
 }
+::-webkit-scrollbar-corner,
 ::-webkit-scrollbar-track {
   background: transparent;
 }
@@ -167,9 +194,33 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: color-mix(in srgb, var(--color-muted) 55%, transparent);
 }
+* {
+  scrollbar-color: color-mix(in srgb, var(--color-muted) 40%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+/*
+ * Native number spinners are the one control that will not match anything else
+ * on the screen: they are drawn by the platform, they are a different height
+ * than the field, and they hand the field's right edge to the OS. Every number
+ * input in this app steps with the keyboard and the wheel instead — the arrows
+ * add nothing that the field itself did not already do.
+ */
+input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
+}
 
 /* Right-to-left source text (Hebrew, Arabic) needs the paragraph direction to
-   follow the content, not the UI. */
+   follow the content, not the UI. `unicode-bidi: plaintext` does that for
+   rendered runs; the elements that also take *typing* carry `dir="auto"` in
+   the markup, because a caret has to know which way it is going. */
 .auto-dir {
   unicode-bidi: plaintext;
   text-align: start;

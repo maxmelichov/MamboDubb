@@ -1,30 +1,42 @@
 /**
  * The preview stage.
  *
- * The one place in the app that is deliberately not on the warm neutral ramp:
- * video wants a black surround, and the transport that hangs off it inherits
- * that rather than the theme. Everything else — radii, type sizes, the Kbd
- * chip — is the house style, so it still reads as the same product.
+ * This used to be the app's one dark island — a black surround with white
+ * transport controls, on the reasoning that video wants black around it. On a
+ * black-on-white app that reasoning does not survive contact: the stage sat in
+ * the top-left of every editor screen as a slab, and the "no preview yet"
+ * state was a black rectangle, which is the single worst thing a screen can
+ * show a user who is waiting for something.
+ *
+ * So the surround is the app's own sunken tone and the transport is the house
+ * style. The picture keeps its own edges — `object-contain` on a neutral
+ * ground, with a hairline frame — which is all the separation a video actually
+ * needs; the letterbox bars are the stage, not the video.
  */
 
 import { Pause, Play, SkipBack, SkipForward } from "lucide-react";
 import { cn } from "../lib/classNames";
 import { timecode } from "../lib/format";
+import { Kbd } from "./ui";
 import type { Transport } from "../lib/useTransport";
+import type { ReactNode } from "react";
 
 export function VideoPlayer({
   src,
   transport,
   duration,
   title,
+  placeholder,
 }: {
   src: string | null;
   transport: Transport;
   duration: number;
   title: string;
+  /** What to show instead of the picture when there is no preview file yet. */
+  placeholder?: ReactNode;
 }) {
   return (
-    <div className="flex h-full flex-col bg-[#0a0a0a]">
+    <div className="flex h-full flex-col bg-sunken">
       <div className="relative min-h-0 flex-1">
         {src ? (
           <video
@@ -34,22 +46,11 @@ export function VideoPlayer({
             preload="metadata"
           />
         ) : (
-          <div className="grid h-full place-items-center px-6 text-center text-[12px] leading-relaxed text-white/50">
-            <div className="max-w-md">
-              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/70">
-                No preview yet
-              </p>
-              <p className="mt-2">
-                <code className="font-mono text-white/70">preview.mp4</code> appears after{" "}
-                <code className="font-mono text-white/70">mix</code> runs. The transport below is
-                a virtual clock, so the timeline still scrubs.
-              </p>
-            </div>
-          </div>
+          placeholder ?? <NoPreview />
         )}
       </div>
 
-      <div className="flex shrink-0 items-center gap-1.5 border-t border-white/10 bg-black px-3 py-2 text-white">
+      <div className="flex shrink-0 items-center gap-1.5 border-t border-border bg-surface px-3 py-2">
         <TransportButton onClick={() => transport.nudge(-5)} label="Back 5 seconds">
           <SkipBack className="h-3.5 w-3.5" />
         </TransportButton>
@@ -68,17 +69,35 @@ export function VideoPlayer({
           <SkipForward className="h-3.5 w-3.5" />
         </TransportButton>
 
-        <span className="ml-2 font-mono text-[12px] tabular-nums text-white/75">
+        <span className="ml-2 font-mono text-[12px] tabular-nums text-primary">
           {timecode(transport.currentTime)}
-          <span className="text-white/35"> / {timecode(duration, 0)}</span>
+          <span className="text-muted"> / {timecode(duration, 0)}</span>
         </span>
 
-        <span className="ml-auto flex min-w-0 items-center gap-2 text-[11px] text-white/45">
-          <span className="inline-flex h-4 min-w-4 items-center justify-center rounded border border-white/20 px-1 text-[10px] font-semibold text-white/60">
-            space
+        <span className="ml-auto flex min-w-0 items-center gap-2 text-[11px] text-muted">
+          <Kbd>space</Kbd>
+          <span className="truncate" title={title}>
+            {title}
           </span>
-          <span className="truncate">{title}</span>
         </span>
+      </div>
+    </div>
+  );
+}
+
+/** The fallback when the editor did not hand us a run-aware placeholder. */
+function NoPreview() {
+  return (
+    <div className="grid h-full place-items-center px-6 text-center text-[12px] leading-relaxed text-muted">
+      <div className="max-w-md">
+        <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-secondary">
+          No preview yet
+        </p>
+        <p className="mt-2">
+          <code className="font-mono text-secondary">preview.mp4</code> appears after{" "}
+          <code className="font-mono text-secondary">mix</code> runs. The transport below is a
+          virtual clock, so the timeline still scrubs.
+        </p>
       </div>
     </div>
   );
@@ -100,11 +119,12 @@ function TransportButton({
       type="button"
       onClick={onClick}
       aria-label={label}
+      title={label}
       className={cn(
-        "inline-flex items-center justify-center rounded-full transition-colors active:scale-[0.96]",
+        "inline-flex h-8 w-8 items-center justify-center rounded-full transition-colors active:scale-[0.96]",
         primary
-          ? "h-8 w-8 bg-white text-black hover:bg-white/85"
-          : "h-8 w-8 text-white/70 hover:bg-white/10 hover:text-white",
+          ? "bg-primary text-on-primary hover:opacity-90"
+          : "text-secondary hover:bg-border/60 hover:text-primary",
       )}
     >
       {children}

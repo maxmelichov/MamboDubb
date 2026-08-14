@@ -8,13 +8,13 @@
  * `AppHeader` is the workspace bar: 56px, bordered, dense, and it never grows,
  * because the editor's job is to give every remaining pixel to the timeline.
  *
- * Both carry the same right-hand tools (fixtures badge, Setup, theme), so the
- * app never loses its chrome when the layout changes underneath it.
+ * Both carry the same right-hand tools (fixtures badge, Setup), so the app
+ * never loses its chrome when the layout changes underneath it.
  */
 
-import { useEffect, useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { Moon, SlidersHorizontal, Sun } from "lucide-react";
+import { SlidersHorizontal } from "lucide-react";
 import { USE_FIXTURES } from "../lib/api";
 import { cn } from "../lib/classNames";
 import { Badge, Brand } from "./ui";
@@ -89,7 +89,13 @@ export function AppHeader({
   );
 }
 
-/** Fixtures badge, the Setup link and the theme toggle — the permanent tools. */
+/**
+ * The fixtures badge and the Setup link — the permanent tools.
+ *
+ * There is no theme control here and there is not meant to be one: the app is
+ * black-on-white, the OS preference is not consulted, and a toggle for a
+ * setting with one value is a lie about what the product does.
+ */
 function HeaderTools() {
   const onSetup = useLocation().pathname === "/setup";
   return (
@@ -111,35 +117,6 @@ function HeaderTools() {
         <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden />
         Setup
       </Link>
-      <ThemeToggle />
     </div>
-  );
-}
-
-/**
- * Stamps data-theme on <html>. The CSS declares the dark steps under that
- * scope as well as prefers-color-scheme, so the toggle wins in both directions.
- */
-function ThemeToggle() {
-  const [theme, setTheme] = useState<"light" | "dark">(() => {
-    const saved = localStorage.getItem("theme");
-    if (saved === "light" || saved === "dark") return saved;
-    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-  });
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    localStorage.setItem("theme", theme);
-  }, [theme]);
-
-  return (
-    <button
-      type="button"
-      aria-label={theme === "dark" ? "Switch to light" : "Switch to dark"}
-      onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-      className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-raised text-muted transition-colors hover:border-axis hover:text-primary"
-    >
-      {theme === "dark" ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
-    </button>
   );
 }

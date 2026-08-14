@@ -63,8 +63,28 @@ const check = (label, ok) => {
   console.log(`  ok  ${label}`);
 };
 
+/*
+ * The theme lock. This app is black-on-white and has no other state, which is
+ * a promise about the *built* artifact, not about the source — so these read
+ * the bundle. A `prefers-color-scheme` block or a `color-scheme: dark` in the
+ * shipped CSS is exactly the regression that puts a dark app back on a user's
+ * screen without anyone editing a component.
+ */
+const cssFile = readdirSync(assetDir).find((f) => f.endsWith(".css"));
+const css = readFileSync(new URL(cssFile, assetDir), "utf8");
+const html = readFileSync(new URL("../dist/index.html", import.meta.url), "utf8");
+check("no dark colour-scheme ships", !/color-scheme:\s*dark/.test(css));
+check("the OS preference is never consulted", !/prefers-color-scheme/.test(css));
+check("the light colour-scheme is declared", /color-scheme:\s*light/.test(css));
+check("the page declares a light theme-color", /theme-color[^>]*#f7f6f2/.test(html));
+check("the pre-paint canvas is light", /background:\s*#f7f6f2/.test(html));
+
 const root = document.getElementById("root");
 check("import screen renders", /New dub/.test(root.textContent));
+check("no theme toggle", ![...document.querySelectorAll("button")].some((b) =>
+  /Switch to (light|dark)/.test(b.getAttribute("aria-label") ?? ""),
+));
+check("nothing stamps a theme on <html>", !document.documentElement.hasAttribute("data-theme"));
 check("context field is present", /Context/.test(root.textContent));
 check("setup is reachable from the header", /Setup/.test(root.textContent));
 
