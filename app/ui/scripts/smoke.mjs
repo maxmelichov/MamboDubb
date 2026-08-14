@@ -76,7 +76,7 @@ const html = readFileSync(new URL("../dist/index.html", import.meta.url), "utf8"
 check("the OS preference is never consulted", !/prefers-color-scheme/.test(css + html));
 check("both colour-schemes ship", /color-scheme:\s*light/.test(css) && /color-scheme:\s*dark/.test(css));
 check("the dark theme is a class, not a media query", /\.theme-dark/.test(css));
-check("the pre-paint canvas covers both themes", /theme-dark[^}]*#0e0e0d/.test(html) && /#f7f6f2/.test(html));
+check("the pre-paint canvas covers both themes", /theme-dark[^}]*#110e16/.test(html) && /#f7f6f2/.test(html));
 check("native number spinners are suppressed", /-webkit-inner-spin-button/.test(css));
 
 /*
@@ -140,6 +140,56 @@ check("the kept hue is not the warn hue", hue("kept") !== hue("warning"));
 check("the mark wash is a theme token, per theme", /--mark-wash:/.test(css) && /--mark-wash:/.test(darkBlock));
 
 /*
+ * The interaction accent.
+ *
+ * "The dark mode is too dim — the colours are dead" was a theme in which the
+ * only saturated pixels on screen were the state hues, and the thing to press
+ * was a near-white rectangle. The fix is one token, and the three things that
+ * hold about it are structural rather than a hex:
+ *
+ * 1. It ships in both themes. A `--color-accent` declared only in `@theme`
+ *    would make dark's primary button near-white again the moment somebody
+ *    edits the light value, silently.
+ * 2. In light it *is* ink. That is not a placeholder — it is the promise that
+ *    naming the accent changed nothing about the theme nobody complained
+ *    about — and it is why every `bg-accent` below is safe to have replaced a
+ *    `bg-primary`.
+ * 3. In dark it is not ink. A dark accent that resolves back to the near-white
+ *    is the bug this whole pass exists to fix, and it would pass every other
+ *    check in this file.
+ */
+check("the accent ships in both themes", hue("accent") != null && hue("accent", darkBlock) != null);
+check("light's accent is ink, so light is unchanged", hue("accent") === "var(--color-primary)");
+check("…and its label is ink's label", hue("on-accent") === "var(--color-on-primary)");
+check(
+  "dark picks a colour for the accent rather than inheriting the near-white ink",
+  /^#[0-9a-f]{6}$/i.test(hue("accent", darkBlock) ?? "") &&
+    hue("accent", darkBlock) !== hue("primary", darkBlock),
+);
+check("…with a label of its own to sit on it", hue("on-accent", darkBlock) != null);
+/* The accent is a fill, a ring and a rule, and it is measured against the 3:1
+   non-text gate only. There is no assertion here that it is never set as text,
+   because writing one puts the class name in a file Tailwind scans and mints
+   the utility it was checking for — the check would fail on itself. */
+
+/*
+ * The desktop shell paints its window before the webview exists, so its
+ * `backgroundColor` has to be the dark plane exactly — any drift is a flash of
+ * the wrong near-black on every launch. Three copies of that value ship (the
+ * CSS token, the pre-paint canvas in index.html, the Tauri config) and this is
+ * the one seam a class cannot cover, so it is checked rather than trusted.
+ */
+const darkPlane = hue("plane", darkBlock);
+const tauri = JSON.parse(
+  readFileSync(new URL("../../desktop/src-tauri/tauri.conf.json", import.meta.url), "utf8"),
+);
+check(
+  "the shell's window colour is the dark plane",
+  tauri.app.windows[0].backgroundColor.toLowerCase() === darkPlane,
+);
+check("…and so is the canvas painted before the bundle parses", html.includes(darkPlane));
+
+/*
  * And the palette stays in one file. A literal `#3b7f5c` in a component is a
  * colour that no theme can restate and no measurement covers — it is how the
  * dark theme grows a light-mode hue nobody notices until a screenshot. The one
@@ -194,7 +244,7 @@ injected.textContent = canvasRules;
 document.head.append(injected);
 
 const canvas = () => dom.window.getComputedStyle(document.documentElement).backgroundColor;
-check("dark paints its own canvas", canvas() === "rgb(14, 14, 13)");
+check("dark paints its own canvas", canvas() === "rgb(17, 14, 22)");
 
 themeButton("light").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
 await new Promise((resolve) => setTimeout(resolve, 120));

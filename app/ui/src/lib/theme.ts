@@ -27,7 +27,7 @@ export const DARK_CLASS = "theme-dark";
 /** The plane colour of each theme, for the pre-paint canvas and `theme-color`. */
 export const THEME_PLANE: Record<Theme, string> = {
   light: "#f7f6f2",
-  dark: "#0e0e0d",
+  dark: "#110e16",
 };
 
 /** What the user last chose, or `null` if they never have. */

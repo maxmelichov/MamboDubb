@@ -83,6 +83,11 @@ export function LogoMark({ className }: { className?: string }) {
  * `bg-primary`/`text-on-primary` gives a light chip with dark lettering there
  * without inventing a colour that no theme owns. `mix-blend-multiply` is what
  * makes the last hairline of the PNG's own white disappear into the pill.
+ *
+ * In dark the chip's hairline takes a wash of the accent (`/25`, deliberately —
+ * a saturated 1px outline reads as a focus ring, and focus rings are this same
+ * violet). The artwork already carries the brand's colour; the border just
+ * agrees with it.
  */
 export function BrandChip({ className }: { className?: string }) {
   return (
@@ -90,7 +95,7 @@ export function BrandChip({ className }: { className?: string }) {
       data-brand
       className={cn(
         "inline-flex h-11 items-center gap-2.5 whitespace-nowrap rounded-full border px-3.5 shadow-card",
-        "border-border bg-surface dark:border-transparent dark:bg-primary",
+        "border-border bg-surface dark:border-accent/25 dark:bg-primary",
         className,
       )}
     >
@@ -201,7 +206,10 @@ export function Button({
         "inline-flex shrink-0 items-center justify-center font-semibold transition-all",
         "active:scale-[0.98] disabled:pointer-events-none disabled:opacity-45",
         buttonSize[size],
-        variant === "primary" && "bg-primary text-on-primary shadow-card hover:opacity-90",
+        // The one saturated control in the app. `accent` is ink in light — the
+        // near-black button that shipped — and the brand's violet in dark, where
+        // a near-white button was the whole reason the theme read as dead.
+        variant === "primary" && "bg-accent text-on-accent shadow-card hover:opacity-90",
         variant === "secondary" &&
           "border border-border bg-raised text-primary shadow-card hover:border-axis",
         variant === "outline" &&
@@ -362,7 +370,7 @@ export function Field({
 const controlBase =
   "w-full rounded-lg border border-border bg-raised px-3 text-[13px] text-primary outline-none " +
   "transition-colors placeholder:text-muted/70 hover:border-axis " +
-  "focus:border-primary disabled:opacity-50";
+  "focus:border-accent disabled:opacity-50";
 
 export function TextInput({ className, ...props }: ComponentProps<"input">) {
   return <input className={cn(controlBase, "h-9", className)} {...props} />;
@@ -464,7 +472,7 @@ export function Checkbox({ className, ...props }: ComponentProps<"input">) {
   return (
     <input
       type="checkbox"
-      className={cn("h-3.5 w-3.5 shrink-0 accent-[var(--color-primary)]", className)}
+      className={cn("h-3.5 w-3.5 shrink-0 accent-[var(--color-accent)]", className)}
       {...props}
     />
   );

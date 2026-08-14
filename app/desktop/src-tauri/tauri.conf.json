@@ -23,7 +23,7 @@
         "fullscreen": false,
         "acceptFirstMouse": true,
         "titleBarStyle": "Visible",
-        "backgroundColor": "#0e0e0d"
+        "backgroundColor": "#110e16"
       }
     ],
     "security": {
