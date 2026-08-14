@@ -16,7 +16,9 @@
  * Commands, as the desktop shell (`app/desktop`, branch desk/tauri-shell)
  * exposes them:
  *
- *   get_server_url()            -> string   "http://127.0.0.1:<port>"
+ *   get_server_url()            -> ServerInfo { base_url, port, version, workspace }
+ *                                  (never starts a server; null-ish when none runs)
+ *   start_server()              -> ServerInfo — idempotent, blocks on the ready line
  *   pick_video_file()           -> string | null   native open dialog
  *   reveal_path({ path })       -> void     show the file in Finder
  *   get_workspace()             -> string
@@ -103,13 +105,28 @@ let baseUrlPromise: Promise<string | null> | null = null;
  *
  * Cached: the sidecar's port does not change while the app is open.
  */
+/** The shell answers with `ServerInfo { base_url, port, ... }`; older sketches
+ *  of the contract said a bare string. Accept both — the seam exists precisely
+ *  so a shape drift lands here and nowhere else. */
+function baseUrlOf(info: unknown): string | null {
+  if (typeof info === "string") return info.replace(/\/+$/, "") || null;
+  if (info && typeof info === "object" && "base_url" in info) {
+    const url = (info as { base_url?: unknown }).base_url;
+    if (typeof url === "string" && url) return url.replace(/\/+$/, "");
+  }
+  return null;
+}
+
 export function serverBaseUrl(): Promise<string | null> {
   if (!baseUrlPromise) {
     baseUrlPromise = (async () => {
       if (!isDesktop()) return null;
-      const url = await call<string | null>("get_server_url", undefined, null);
-      if (!url || typeof url !== "string") return null;
-      return url.replace(/\/+$/, "");
+      // `get_server_url` never starts a server (that is its contract); on a
+      // fresh launch there is nothing running yet, so fall through to
+      // `start_server`, which is idempotent and blocks on the ready line.
+      const running = baseUrlOf(await call<unknown>("get_server_url", undefined, null));
+      if (running) return running;
+      return baseUrlOf(await call<unknown>("start_server", undefined, null));
     })();
   }
   return baseUrlPromise;
