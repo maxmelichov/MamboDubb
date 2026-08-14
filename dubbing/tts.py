@@ -1081,8 +1081,12 @@ def clear_failed_keeps(segments: list[dict[str, Any]]) -> list[int]:
     without this a resumed run would treat the failure as settled forever.
     Returns the ids that were cleared.
     """
+    from . import manifest
+
     cleared: list[int] = []
     for seg in segments:
+        if manifest.is_locked(seg, "tts"):
+            continue          # the user settled this one; a rerun does not re-decide it
         if seg.get("keep_reason") == "tts_failed":
             seg["keep"], seg["keep_reason"] = False, None
             seg.pop("tts", None)  # the keep-clip record; this run re-decides
@@ -1090,13 +1094,32 @@ def clear_failed_keeps(segments: list[dict[str, Any]]) -> list[int]:
     return cleared
 
 
+def has_clip(seg: dict[str, Any], workdir: Path) -> bool:
+    """True when this segment already owns audio on disk."""
+    return bool(seg.get("tts")) and (workdir / seg["tts"]["clip"]).is_file()
+
+
+def pending(segments: list[dict[str, Any]], workdir: Path) -> list[dict[str, Any]]:
+    """The dubbed segments this stage must synthesize.
+
+    A segment with a usable clip is done — that is the resume mechanism, and the
+    editor's per-segment redo is the same deletion (`edit.invalidate`).
+
+    That is also where a `locked` clip is safe: nothing but the user's own edit
+    deletes a locked record (`manifest.reset_stage`, `clear_failed_keeps` and
+    `edit.invalidate` all skip it), so a locked clip is by definition still on disk
+    and never lands here. A lock whose clip is *gone* is unhonorable — never-silent
+    outranks it and that segment is synthesized again.
+    """
+    return [s for s in segments if not s.get("keep") and needs_synthesis(s, workdir)]
+
+
 def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = None,
         model: str = DEFAULT_TTS_MODEL) -> Engine:
     engine = Engine(m, workdir, device=device, model=model)
     clear_failed_keeps(m["segments"])
     engine.build_speaker_refs()
-    dub = [s for s in m["segments"] if not s["keep"]]
-    todo = [s for s in dub if needs_synthesis(s, workdir)]
+    todo = pending(m["segments"], workdir)
 
     # Generation runs on the GPU, verification (Whisper) on the CPU. Generate each
     # first-attempt clip in order and hand its verify to a single worker thread, so
@@ -1106,7 +1129,7 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
     # to clip_for, which resumes at attempt 1 straight from the cache.
     import concurrent.futures as cf
 
-    pending: dict[int, tuple] = {}
+    verifying: dict[int, tuple] = {}
     retry: list[dict[str, Any]] = []
     done = 0
     with cf.ThreadPoolExecutor(max_workers=1) as vpool:
@@ -1127,11 +1150,11 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
                 else:
                     retry.append(seg)
                 continue
-            pending[seg["id"]] = (vpool.submit(engine._verify, clip, speak),
-                                  clip, meta, speak, opts)
+            verifying[seg["id"]] = (vpool.submit(engine._verify, clip, speak),
+                                    clip, meta, speak, opts)
 
         for seg in todo:
-            item = pending.get(seg["id"])
+            item = verifying.get(seg["id"])
             if item is None:
                 continue
             fut, clip, meta, speak, opts = item

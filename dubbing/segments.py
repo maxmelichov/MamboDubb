@@ -1165,6 +1165,12 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
     fill_uncovered_audible(segs, src_levels, 0.1, total or len(src_levels) * 0.1,
                            is_target_lang=is_target, voice_levels=levels,
                            win=transcript.LID_WINDOW)
+    # Identity is minted once, here, after every split/splice/fill has settled —
+    # `id` is positional and renumbered above, so nothing outside the pipeline can
+    # key on it. See `manifest.mint_uid`.
+    from . import manifest
+
+    manifest.ensure_uids(segs)
     m["segments"] = segs
     m["speakers"] = {
         spk: {"dur": round(sum(s["end"] - s["start"] for s in segs if s["speaker"] == spk), 2)}

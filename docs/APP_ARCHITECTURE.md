@@ -64,9 +64,18 @@ truth. The server holds no database; it reads and writes the manifest through
 ### Stable segment identity — new
 
 `seg["id"]` is positional and is renumbered whenever segmentation changes, so the UI cannot
-use it as a key across a re-run. Add `uid` to `SEGMENT_KEYS`: an opaque string minted once
+use it as a key across a re-run. `uid` is in `SEGMENT_KEYS`: an opaque string minted once
 when a segment is created and preserved across edits. Every API below keys on `uid`.
 `id` stays as-is for ordering and for existing tests.
+
+**Shipped** (`manifest.mint_uid` / `ensure_uids`): the uid is `"s" + sha1(start|end|text)[:11]`,
+minted at the end of the segments stage once every split, splice and fill has settled, and
+carried unchanged through every later edit. Content-derived rather than random so that a run
+directory written before `uid` existed is back-filled *on load* with exactly the uid a fresh
+re-segmentation would mint — identity survives both the migration and a re-run that
+reproduces the segment. `manifest.save` back-fills too, so no segment ever reaches the UI
+without one. A copied segment dict (`splice_foreign_spans` makes trimmed pieces that way) is
+re-minted from its own span, so uids stay unique.
 
 ### New per-segment keys (all must be added to `SEGMENT_KEYS`)
 
@@ -79,7 +88,24 @@ when a segment is created and preserved across edits. Every API below keys on `u
 | `locked` | dict? | `{field: true}` — fields the user edited by hand that a re-run must not overwrite |
 
 `locked` is what makes the editor safe: a re-translate of the whole run must skip a line
-the user corrected. Honour it in `translate.run`/`tts.run` when present.
+the user corrected. Honoured, as shipped, in:
+
+* `manifest.reset_stage` — the main one. A stage reset (`--force`, a changed fingerprint,
+  `rebuild`) drops `text_en` / `tts` / `place` for every segment; a locked field survives,
+  and a locked `keep` is not re-decided.
+* `translate.run` — `needs_translation(seg)` is False for a locked line, in the main loop,
+  the keep-subtitle pass and (crucially) the run-global revision pass, which otherwise
+  rewrites every dubbed line whenever anything at all was retranslated.
+* `tts` — `clear_failed_keeps` leaves a locked segment's verdict and clip alone. `pending`
+  needs no lock check: nothing but the user's own edit deletes a locked clip record, so a
+  locked clip is still on disk and already counts as done. A lock whose clip has gone is
+  unhonorable and never-silent wins — that segment is synthesized again.
+* `timeline.run` — the shortening round skips a segment with a locked `text_en` or `tts`
+  instead of re-translating and re-voicing it. It drifts; `place` still asserts non-overlap.
+
+Lock fields (`manifest.LOCK_FIELDS`): `text`, `text_en`, `tts`, `place`, `keep`, `speaker`,
+`bounds`. The setters below set them; a targeted `retranslate`/`resynthesize` of specific
+uids clears the one it replaces.
 
 ### `tts_opts` — per-segment synthesis controls
 
@@ -125,24 +151,65 @@ loaded manifest `m` and the run dir, mutates `m` in place, and leaves saving to 
 Model-loading functions are the slow ones and are the only ones that need a job slot.
 
 ```python
-find(m, uid) -> dict | None          # segment by stable uid
+find(m, uid) -> dict | None                       # segment by stable uid, or None
+index_of(m, uid) -> int                           # its position; raises SegmentNotFound
 
 # --- no models, instant -------------------------------------------------
-set_text(m, uid, *, text=None, text_en=None)      # edit source or target text
-set_keep(m, uid, keep: bool, reason: str = "manual")
-set_speaker(m, uid, speaker: str)
-set_bounds(m, uid, start: float, end: float)      # asserts no overlap with neighbours
-set_langs(m, uid, *, src_lang=None, tgt_lang=None)
-set_tts_opts(m, uid, **opts)
-split(m, uid, at: float) -> tuple[str, str]       # -> two uids
-merge(m, uid_a, uid_b) -> str                     # adjacent, same speaker
-invalidate(m, uid, *, stages: set[str])           # drop text_en / tts / place for one segment
+set_text(m, uid, *, text=None, text_en=None, lock=True) -> dict
+set_keep(m, uid, keep: bool, reason: str = "manual") -> dict
+set_speaker(m, uid, speaker: str) -> dict
+set_bounds(m, uid, start: float, end: float) -> dict   # raises on overlap with neighbours
+set_langs(m, uid, *, src_lang=None, tgt_lang=None) -> dict
+set_tts_opts(m, uid, **opts) -> dict              # None removes an option
+split(m, uid, at: float) -> tuple[str, str]       # -> two new uids
+merge(m, uid_a, uid_b) -> str                     # adjacent, same speaker -> new uid
+invalidate(m, uid, *, stages: set[str]) -> set[str]    # {"translate","tts","timeline"}
+enrich(m, workdir, uids=None) -> list[dict]       # segments + the clip's verify verdict
 
 # --- models, needs the job slot -----------------------------------------
-retranslate(m, workdir, uids, *, progress=None) -> dict[str, str]
-resynthesize(m, workdir, uids, *, progress=None) -> dict[str, dict]
-rebuild(m, workdir, *, from_stage: str, progress=None)   # re-run stages forward
+retranslate(m, workdir, uids, *, progress=None, register="narration",
+            genre="documentary", respect_locked=False) -> dict[str, str]
+resynthesize(m, workdir, uids, *, progress=None, device=None, model=None)
+            -> dict[str, dict]
+rebuild(m, workdir, *, from_stage: str, progress=None, save=None, **overrides) -> list[str]
 ```
+
+Everything invalid raises `edit.EditError` (`SegmentNotFound` is a subclass) — map those to
+`invalid_request` / `not_found`. `progress(fraction: float, message: str)`.
+
+Rules the setters all follow, so the server does not have to think about them:
+
+* **A hand edit locks the field it wrote**, so no rerun overwrites it. `set_text(lock=False)`
+  is the escape hatch for a programmatic edit a rerun may still improve on.
+* **Changing what is spoken invalidates what was built from it**, downstream included:
+  a new line drops the clip and the placement, a new speaker or span drops the clip. Where
+  the edit provably contradicts an approved artifact (a new line, a new voice, a new span,
+  new `tts_opts`) the setter clears the `tts` lock rather than keeping a clip that says
+  something else.
+* **`split`/`merge` mint new uids.** The halves of a split are not the segment the old uid
+  named; a UI holding it must be told, not shown different audio. Every word survives
+  (`split` cuts at the word boundary nearest the time and refuses a one-word segment),
+  the list stays sorted and non-overlapping, and `id` is renumbered.
+* **Targeted beats locked, global does not.** `retranslate(uids)` / `resynthesize(uids)` is
+  the user pointing at *this* segment, so it replaces a locked value and leaves it unlocked
+  (machine work again). `respect_locked=True` for a bulk redo; `rebuild` always respects.
+
+Deviations from the signatures above as first drafted, all additive: optional keyword
+arguments (`lock`, `register`/`genre`, `respect_locked`, `device`/`model`, `save`,
+`**overrides`) so the server can pass a project's settings without the module inventing
+them; setters return the segment; `invalidate` returns the fields it dropped and expands
+`stages` downstream itself (dropping a translation while keeping the clip made from it is
+never right). `rebuild` accepts only `translate`/`tts`/`timeline`/`mix`/`report` — anything
+earlier needs the source media and belongs to a real `python -m dubbing` run — and re-marks
+each stage with the fingerprint `cli.stage_params` would compute, so a later CLI run sees
+the work as done. `enrich` is new: it keeps knowledge of the clip-cache layout inside
+`dubbing/`, where `GET /segments` needs the verification verdict.
+
+`rebuild` reads the run's settings from `m["source"]` (`src_lang`, `tgt_lang`,
+`duration_limit`, `context`, and optionally `register`, `genre`, `tts_model`, `transcript`,
+`dub_foreign`, `device`), falling back to the CLI defaults. **The server should write
+`genre`/`register`/`tts_model` into `m["source"]` when it creates a project** — top-level
+`source` is not whitelisted, so anything may live there — or pass them as `**overrides`.
 
 Implementation notes, from the pipeline audit:
 
@@ -155,10 +222,10 @@ Implementation notes, from the pipeline audit:
   get overwritten. Respect `locked`.
 * `mix` is all-or-nothing with a full libx264 re-encode, so it is the interactive
   bottleneck. Treat "render preview" as an explicit user action, not an autosave.
-* `--force <stage>` does **not** invalidate downstream stages (the fingerprint is unchanged
-  and the downstream `outputs` lists are empty, so `stage_done` returns True). `rebuild`
-  must call `manifest.clear_stage` for each downstream stage itself. Fixing the CLI to match
-  its docstring belongs to the segment-ops workstream.
+* `--force <stage>` did **not** invalidate downstream stages (the fingerprint is unchanged
+  and the downstream `outputs` lists are empty, so `stage_done` returned True). Fixed:
+  `manifest.clear_downstream` drops and resets every later stage, `cli.apply_force` calls it,
+  and `rebuild` does the same for the range it re-runs.
 
 ## HTTP API
 

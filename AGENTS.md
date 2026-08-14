@@ -66,6 +66,10 @@ true, not working around them.
    fix the general rule.
 8. **The manifest stays small.** `manifest.SEGMENT_KEYS` is a whitelist enforced on save.
    If a stage needs a new field, add it there deliberately.
+9. **The user's edits outrank the pipeline.** A segment's identity is `uid` (`id` is
+   positional and renumbered on every re-segmentation), and a field the user edited by hand
+   is flagged in `locked` — no stage rerun regenerates one. Edits go through `dubbing/edit.py`,
+   never by poking the manifest.
 
 ## Working on this
 

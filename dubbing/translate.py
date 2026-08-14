@@ -1309,6 +1309,21 @@ def revise_run(tokenizer, model, lines: list[str], *, target: str,
     return revised
 
 
+def needs_translation(seg: dict[str, Any]) -> bool:
+    """True when this stage should produce `text_en` for `seg`.
+
+    Empty means "not translated yet" — that is the per-segment resume mechanism,
+    and the editor's per-segment redo (`edit.invalidate`) is the same deletion. A
+    `locked` line is the user's own text and is never regenerated, however it got
+    invalidated.
+    """
+    from . import manifest
+
+    if manifest.is_locked(seg, "text_en"):
+        return False
+    return not (seg.get("text_en") or "").strip()
+
+
 def needs_subtitle_translation(seg: dict[str, Any]) -> bool:
     """True when a keep segment's subtitle must be a translation, not its own text.
 
@@ -1320,7 +1335,7 @@ def needs_subtitle_translation(seg: dict[str, Any]) -> bool:
         return False
     if (seg.get("text") or "").strip() in ("", "…"):
         return False
-    if (seg.get("text_en") or "").strip():
+    if not needs_translation(seg):
         return False
     if seg.get("keep_reason") == "interjection":
         return True
@@ -1338,7 +1353,7 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
     # as before.
     subs = [s for s in segments if needs_subtitle_translation(s)]
     for seg in segments:
-        if seg["keep"] and seg not in subs and not (seg.get("text_en") or "").strip():
+        if seg["keep"] and seg not in subs and needs_translation(seg):
             # A third-language keep whose text never got a target rendering (an
             # "und" verdict, or the translation below fails) must not put a
             # foreign-script line in the subtitles — the placeholder is honest.
@@ -1348,7 +1363,7 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
                 seg["text_en"] = seg["text"]
 
     dub = [s for s in segments if not s["keep"]]
-    todo = [s for s in dub if not (s.get("text_en") or "").strip()]
+    todo = [s for s in dub if needs_translation(s)]
     if not todo and not subs:
         return
     context = m["source"].get("context") or ""
@@ -1365,7 +1380,7 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
     processor, model, device = load()
     try:
         for n, seg in enumerate(dub, 1):
-            if (seg.get("text_en") or "").strip():
+            if not needs_translation(seg):
                 continue
             # Translate each segment on its own — standalone output is deterministic
             # and faithful, which matters more for a dub than resolving a pronoun; a
@@ -1498,8 +1513,12 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
         # occurrences, so a name the run spelled three ways converges on its
         # best-attested form. Runs only when this call translated something:
         # a resumed no-op run must not re-revise an already-revised script.
+        # A hand-corrected line is excluded outright: this pass rewrites the whole
+        # script whenever anything was translated, which is exactly the path that
+        # would silently undo a user's correction.
         rev = [s for s in segments
-               if not s.get("keep") and (s.get("text_en") or "").strip()]
+               if not s.get("keep") and (s.get("text_en") or "").strip()
+               and not manifest.is_locked(s, "text_en")]
         if todo and rev:
             table = canonical_names(
                 [n for s in rev for n in _name_occurrences(s["text_en"], target)])
