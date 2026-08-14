@@ -19,6 +19,21 @@
  * lines; the selected row shows everything. Truncating the text is truncating
  * the only thing on the screen the user came for.
  *
+ * ## When the two lines are one line
+ *
+ * "Both visible, always" is a rule about a *comparison*, and there is no
+ * comparison when the two halves are the same string. A run over a video that
+ * already speaks the target language keeps every line and passes the text
+ * through untouched, so `text_en === text` on all seventy-three of them — and
+ * the row printed the identical sentence twice, at two weights, seventy-three
+ * times. That does not read as "kept", it reads as a broken renderer.
+ *
+ * So: identical text is one line, and a kept line with no subtitle of its own
+ * is one line. Two lines are drawn only when they actually differ, and on a
+ * kept row the second one is dimmed, because a subtitle on a kept line is not
+ * what will be spoken. Which state the row is in is said in words on the meta
+ * line either way, where it always was.
+ *
  * ## Direction
  *
  * The row container is explicitly `dir="ltr"` and the two text lines are
@@ -44,7 +59,7 @@ import { Lock, MoreHorizontal, Pause, Play, TriangleAlert } from "lucide-react";
 import { cn } from "../lib/classNames";
 import { speakerLabel, timecode } from "../lib/format";
 import { STATE_META, hasLocks, segmentState, verifyConcern } from "../lib/segments";
-import { TextArea } from "./ui";
+import { StateIcon, TextArea } from "./ui";
 import type { Segment } from "../lib/types";
 
 export type EditTarget = { uid: string; field: "text" | "text_en" } | null;
@@ -91,6 +106,16 @@ function Row({
   const dubUrl = seg.media?.play ?? seg.media?.tts ?? null;
 
   const translation = seg.text_en ?? "";
+  // An echo is a translation that is character-for-character the original —
+  // what a passthrough keep produces. There is nothing to compare, so there is
+  // one line. A kept line with no subtitle at all is one line for the same
+  // reason: "no subtitle line for this span" is not news on a row that already
+  // says the original audio plays.
+  const echo = translation.trim() !== "" && translation.trim() === seg.text.trim();
+  // …but ↵ still opens the field on a collapsed row: the line the reviewer
+  // wants to write is precisely the one that is not there yet.
+  const showTranslation =
+    editing === "text_en" || (!echo && !(seg.keep && translation.trim() === ""));
 
   return (
     <div
@@ -101,6 +126,8 @@ function Row({
       role="option"
       dir="ltr"
       data-uid={seg.uid}
+      data-lines={showTranslation ? 2 : 1}
+      data-now={now ? "" : undefined}
       aria-selected={selected}
       // Roving tabindex: the list is one tab stop, not two hundred.
       tabIndex={tabStop ? 0 : -1}
@@ -111,22 +138,48 @@ function Row({
           onEdit({ uid: seg.uid, field: "text_en" });
         }
       }}
+      /*
+       * Three states, three strengths, and they have to be told apart at a
+       * glance because two of them are usually the same row: selecting a line
+       * seeks to it, so the selection *is* the playhead until playback moves
+       * on. Before, both were a faint ink wash over an inline-start rule that
+       * changed hue between them, which is a difference nobody can see.
+       *
+       *   selected     ink wash + inset ring + the rule goes accent (strongest)
+       *   now playing  fainter wash + a short accent tick on the rule (medium)
+       *   hover        the sunken tone, and nothing else (faintest)
+       *
+       * The rule itself is the state's hue at every other time — a quiet stripe
+       * down the reading edge that says dub/keep/fail without a second glance.
+       */
       className={cn(
         "group/row relative flex gap-2 border-b border-grid px-2 py-1.5",
         "transition-colors",
         selected
-          ? "bg-primary/[0.07] ring-1 ring-inset ring-primary/20"
+          ? "bg-primary/[0.07] ring-1 ring-inset ring-primary/25"
           : now
-            ? "bg-primary/[0.035]"
+            ? "bg-primary/[0.045]"
             : "hover:bg-sunken",
         busy && "animate-pulse",
       )}
       style={{
         borderInlineStartWidth: 3,
         borderInlineStartStyle: "solid",
-        borderInlineStartColor: now && !selected ? "var(--color-primary)" : meta.token,
+        borderInlineStartColor: selected
+          ? "var(--color-primary)"
+          : `color-mix(in srgb, ${meta.token} 55%, transparent)`,
       }}
     >
+      {/* The playhead's tick, painted over the state stripe: short, so it does
+          not read as the selection's full-height rule. */}
+      {now && !selected ? (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute top-1/2 h-6 w-[3px] -translate-y-1/2 rounded-e-sm bg-primary"
+          style={{ insetInlineStart: -3 }}
+        />
+      ) : null}
+
       {/* --- gutter: where this line is, and whether a hand has been on it --- */}
       <button
         type="button"
@@ -155,24 +208,43 @@ function Row({
         <button
           type="button"
           onClick={() => onSelect(seg.uid)}
-          className="flex items-center gap-1.5 text-left text-[11px] text-muted"
+          className="flex min-w-0 items-center gap-1.5 text-left text-[11px] text-muted"
         >
-          <span className="font-semibold uppercase tracking-[0.08em]">
+          <span className="shrink-0 font-semibold uppercase tracking-[0.08em]">
             {speakerLabel(seg.speaker)}
           </span>
           <span aria-hidden>·</span>
-          <span aria-hidden style={{ color: meta.token }}>
-            {meta.glyph}
-          </span>
+          <StateIcon state={state} className="h-2.5 w-2.5" />
           {/* The state as a *word*, on every row. Light-mode "kept" is 2.17:1
               against the card — under the 3:1 gate — and there is no legend
               on screen any more, so this is the encoding's only spelling out. */}
-          <span className="text-secondary">{meta.short}</span>
+          <span className="shrink-0 text-secondary">{meta.short}</span>
           {concern !== "none" ? (
             <TriangleAlert
-              className={cn("h-3 w-3", concern === "bad" ? "text-critical" : "text-muted")}
+              className={cn("h-3 w-3 shrink-0", concern === "bad" ? "text-critical" : "text-muted")}
               aria-label={concern === "bad" ? "Verification failed" : "Verification is low"}
             />
+          ) : null}
+          {/*
+            What a kept row does instead of a fourth line. It used to be a
+            paragraph of its own under the two texts — on all seventy-three
+            rows of an all-kept run, which is not information, it is a
+            drumbeat. Now it is a clause on the meta line, and it fades in on
+            the row under the cursor or under the selection: the *state* is on
+            every row, in a word and a shape, and the sentence spelling out
+            what that state means is worth reading once, for the row you are
+            actually looking at. It stays in the DOM either way, so it is
+            always there for a screen reader and for find-in-page.
+          */}
+          {seg.keep ? (
+            <span
+              className={cn(
+                "min-w-0 truncate transition-opacity",
+                selected ? "opacity-100" : "opacity-0 group-hover/row:opacity-100",
+              )}
+            >
+              — original audio plays here
+            </span>
           ) : null}
         </button>
 
@@ -182,7 +254,13 @@ function Row({
           value={seg.text}
           editing={editing === "text"}
           placeholder="no transcript for this span"
-          className="text-[12.5px] text-muted"
+          /* When it is the only line it is also the line that plays, so it
+             takes the reading size; under a translation it is the reference. */
+          className={
+            showTranslation
+              ? "text-[12.5px] text-muted"
+              : "text-[14px] leading-snug text-secondary"
+          }
           onEdit={onEdit}
           onCommit={onCommit}
           selected={selected}
@@ -192,35 +270,28 @@ function Row({
           readOnly
         />
 
-        <Line
-          seg={seg}
-          field="text_en"
-          value={translation}
-          editing={editing === "text_en"}
-          placeholder={seg.keep ? "no subtitle line for this span" : "not translated yet"}
-          className={cn(
-            "text-[14px] leading-snug",
-            seg.keep ? "text-muted" : "font-medium text-primary",
-          )}
-          onEdit={onEdit}
-          onCommit={onCommit}
-          selected={selected}
-        />
-
         {/*
-          A kept line still shows both halves — a reviewer's job includes
-          checking the *keep decisions*, and a row that hides the translation of
-          a kept line hides the evidence for the one it is being asked to
-          judge. What it does not do is let the dimmed subtitle read as the
-          thing that will be spoken.
+          A kept line that has a subtitle of its own still shows it — a
+          reviewer's job includes checking the keep decisions, and hiding the
+          translation of a kept line hides the evidence for the judgement it is
+          asking for. It is drawn dimmer than the original above it, because it
+          is not what will be spoken.
         */}
-        {seg.keep ? (
-          <p className="text-[11px] text-muted">
-            <span aria-hidden style={{ color: STATE_META.kept.token }}>
-              ▣{" "}
-            </span>
-            original audio plays here
-          </p>
+        {showTranslation ? (
+          <Line
+            seg={seg}
+            field="text_en"
+            value={translation}
+            editing={editing === "text_en"}
+            placeholder="not translated yet"
+            className={cn(
+              "text-[14px] leading-snug",
+              seg.keep ? "text-muted opacity-70" : "font-medium text-primary",
+            )}
+            onEdit={onEdit}
+            onCommit={onCommit}
+            selected={selected}
+          />
         ) : null}
       </div>
 

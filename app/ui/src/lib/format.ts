@@ -17,6 +17,20 @@ export function percent(value: number | null | undefined): string {
   return `${Math.round(value * 100)}%`;
 }
 
+/**
+ * `he` → `Hebrew`, for the one or two places a sentence has to name a language
+ * rather than tag it. The platform ships the table; a hand-written map would be
+ * eleven languages long and wrong on the twelfth.
+ */
+export function languageName(code: string | null | undefined): string {
+  if (!code) return "the source language";
+  try {
+    return new Intl.DisplayNames(["en"], { type: "language" }).of(code) ?? code.toUpperCase();
+  } catch {
+    return code.toUpperCase();
+  }
+}
+
 /** A speaker id is `SPEAKER_04`; the label that reads is `S4`. */
 export function speakerLabel(speaker: string): string {
   const match = /^SPEAKER_(\d+)$/.exec(speaker);

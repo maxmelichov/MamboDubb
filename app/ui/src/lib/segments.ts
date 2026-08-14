@@ -4,6 +4,7 @@
  * "failed" means.
  */
 
+import { Circle, CircleDashed, Diamond, Square, X } from "lucide-react";
 import type { Segment } from "./types";
 
 export type SegmentState = "dubbed" | "kept" | "failed" | "unvoiced" | "untranslated";
@@ -45,63 +46,62 @@ export function hasLocks(seg: Segment): boolean {
 }
 
 /**
- * Colour is never the only channel: every state carries a glyph and a word.
+ * Colour is never the only channel: every state carries a shape and a word.
  *
- * `onFill` is which ink the glyph takes when it is drawn *inside* the fill, on
- * a timeline mark. It is not decoration: white on the amber keep-fill is
- * 2.1:1, which is the glyph — the accessible channel — being illegible on the
- * one state where it matters most.
+ * The shape used to be a Unicode glyph — `◆ ▣ ✕ ◇ ○` — set in the UI font.
+ * Two of those (U+25A3 especially) are outside Inter's coverage, so the browser
+ * fell back per-character and drew "Keep" with a lumpy filled square that read,
+ * seventy-three rows in a row, as a rendering fault. A drawn icon has no
+ * coverage question: it is a path, it is `currentColor`, and it is the same
+ * shape at 10px and at 14px in both themes.
  *
- * These are literals rather than tokens because they are chosen against the
- * *fill*, not against the page, and both themes' fills are close enough in
- * lightness that one choice serves both: on the dark triple white sits at
- * 3.6:1 over the blue and 4.8:1 over the red, and near-black at 6.1:1 over the
- * amber. If a state hue ever moves, re-check these three, not the tokens.
+ * `filled` is the second, non-colour channel *within* the shapes: the two
+ * finished states are solid, the three unfinished ones are outlines. So "not
+ * done yet" is legible in greyscale, before any hue is involved.
  */
 export const STATE_META: Record<
   SegmentState,
-  { label: string; short: string; glyph: string; token: string; onFill: string }
+  { label: string; short: string; icon: typeof Square; filled: boolean; token: string }
 > = {
   dubbed: {
     label: "Dubbed",
     short: "Dub",
-    glyph: "◆",
+    icon: Diamond,
+    filled: true,
     token: "var(--color-dubbed)",
-    onFill: "#ffffff",
   },
   kept: {
     label: "Kept original",
     short: "Keep",
-    glyph: "▣",
+    icon: Square,
+    filled: true,
     token: "var(--color-kept)",
-    onFill: "#14130f",
   },
   failed: {
     label: "Failed",
     short: "Fail",
-    glyph: "✕",
+    icon: X,
+    filled: false,
     token: "var(--color-failed)",
-    onFill: "#ffffff",
   },
   unvoiced: {
     label: "Needs voice",
     short: "Voice",
-    glyph: "◇",
+    icon: Circle,
+    filled: false,
     token: "var(--color-unclaimed)",
-    onFill: "#ffffff",
   },
   untranslated: {
     label: "Needs translation",
     short: "Text",
-    glyph: "○",
+    icon: CircleDashed,
+    filled: false,
     token: "var(--color-unclaimed)",
-    onFill: "#ffffff",
   },
 };
 
 export const UNCLAIMED_META = {
   label: "Unclaimed time",
-  glyph: "╱",
   token: "var(--color-unclaimed)",
 };
 
