@@ -21,15 +21,46 @@ export function segmentState(seg: Segment): SegmentState {
   return seg.text_en ? "pending" : "pending";
 }
 
-/** Colour is never the only channel: every state carries a glyph and a word. */
+/**
+ * Colour is never the only channel: every state carries a glyph and a word.
+ *
+ * `onFill` is which ink the glyph takes when it is drawn *inside* the fill, on
+ * a timeline mark. It is not decoration: white on the amber keep-fill is
+ * 2.1:1, which is the glyph — the accessible channel — being illegible on the
+ * one state where it matters most.
+ */
 export const STATE_META: Record<
   SegmentState,
-  { label: string; short: string; glyph: string; token: string }
+  { label: string; short: string; glyph: string; token: string; onFill: string }
 > = {
-  dubbed: { label: "Dubbed", short: "Dub", glyph: "◆", token: "var(--color-dubbed)" },
-  kept: { label: "Kept original", short: "Keep", glyph: "▣", token: "var(--color-kept)" },
-  failed: { label: "Failed", short: "Fail", glyph: "✕", token: "var(--color-failed)" },
-  pending: { label: "Not yet dubbed", short: "Wait", glyph: "◇", token: "var(--color-unclaimed)" },
+  dubbed: {
+    label: "Dubbed",
+    short: "Dub",
+    glyph: "◆",
+    token: "var(--color-dubbed)",
+    onFill: "#ffffff",
+  },
+  kept: {
+    label: "Kept original",
+    short: "Keep",
+    glyph: "▣",
+    token: "var(--color-kept)",
+    onFill: "#14130f",
+  },
+  failed: {
+    label: "Failed",
+    short: "Fail",
+    glyph: "✕",
+    token: "var(--color-failed)",
+    onFill: "#ffffff",
+  },
+  pending: {
+    label: "Not yet dubbed",
+    short: "Wait",
+    glyph: "◇",
+    token: "var(--color-unclaimed)",
+    onFill: "#ffffff",
+  },
 };
 
 export const UNCLAIMED_META = {

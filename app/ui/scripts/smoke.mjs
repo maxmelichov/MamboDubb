@@ -63,8 +63,37 @@ const check = (label, ok) => {
   console.log(`  ok  ${label}`);
 };
 
+/*
+ * The theme lock. This app is black-on-white and has no other state, which is
+ * a promise about the *built* artifact, not about the source — so these read
+ * the bundle. A `prefers-color-scheme` block or a `color-scheme: dark` in the
+ * shipped CSS is exactly the regression that puts a dark app back on a user's
+ * screen without anyone editing a component.
+ */
+const cssFile = readdirSync(assetDir).find((f) => f.endsWith(".css"));
+const css = readFileSync(new URL(cssFile, assetDir), "utf8");
+const html = readFileSync(new URL("../dist/index.html", import.meta.url), "utf8");
+check("no dark colour-scheme ships", !/color-scheme:\s*dark/.test(css));
+check("the OS preference is never consulted", !/prefers-color-scheme/.test(css));
+check("the light colour-scheme is declared", /color-scheme:\s*light/.test(css));
+check("the page declares a light theme-color", /theme-color[^>]*#f7f6f2/.test(html));
+check("the pre-paint canvas is light", /background:\s*#f7f6f2/.test(html));
+check("native number spinners are suppressed", /-webkit-inner-spin-button/.test(css));
+
 const root = document.getElementById("root");
 check("import screen renders", /New dub/.test(root.textContent));
+check("no theme toggle", ![...document.querySelectorAll("button")].some((b) =>
+  /Switch to (light|dark)/.test(b.getAttribute("aria-label") ?? ""),
+));
+check("nothing stamps a theme on <html>", !document.documentElement.hasAttribute("data-theme"));
+
+// An existing run's row has to answer "where did this get to" without being
+// opened — the whole point of listing it.
+await new Promise((resolve) => setTimeout(resolve, 200));
+const runs = root.textContent;
+check("runs say how far they got", /Complete/.test(runs) && /Running translate/.test(runs));
+check("a failed run names the stage", /Failed at transcript/.test(runs));
+check("runs say when they last moved", /just now|hours? ago|days? ago/.test(runs));
 check("context field is present", /Context/.test(root.textContent));
 check("setup is reachable from the header", /Setup/.test(root.textContent));
 
@@ -86,6 +115,9 @@ check("state is never colour alone", [...document.querySelectorAll("[data-check]
   /Ready|Missing/.test(row.textContent),
 ));
 check("failing checks explain themselves", /HF_TOKEN/.test(setup) && /htdemucs|Demucs/.test(setup));
+// The detail lines mark the parts meant to be typed with backticks; rendering
+// them literally puts punctuation in the middle of a command to be copied.
+check("commands render as code, not backticks", !setup.includes("`"));
 check("model sizes are shown", /GB/.test(setup));
 check("a mixed result is counted", /2 of 8 need attention/.test(setup));
 check("no continue while something is missing", ![...document.querySelectorAll("button")].some((b) =>
@@ -115,6 +147,19 @@ check("editor renders", /Render preview/.test(editor));
 check("legend names every state", ["Dubbed", "Kept original", "Failed", "Unclaimed time"].every((s) => editor.includes(s)));
 check("segments loaded", document.querySelectorAll("tbody tr").length > 40);
 check("timeline drew marks", document.querySelectorAll('[aria-label^="Segment "]').length > 40);
+
+// No panel in the editor may be blank. With nothing selected the rail is the
+// run's report, and the preview stage says why there is no picture rather than
+// showing an empty rectangle.
+check("the idle rail summarises the run", /This run/.test(editor) && /Coverage/.test(editor));
+check("uncovered speech is surfaced", /Audible, uncovered/.test(editor));
+check("the empty preview explains itself", /there is no video/.test(editor));
+check("the preview shows the pipeline position", /stages done/.test(editor));
+
+// The table is one tab stop with a roving tabindex, not fifty-eight, and it is
+// a grid so `aria-selected` on a row means something.
+check("the segment table is reachable by keyboard", document.querySelector('tbody tr[tabindex="0"]') != null);
+check("only one row is a tab stop", document.querySelectorAll('tbody tr[tabindex="0"]').length === 1);
 
 // Select a segment and confirm the inspector fills in.
 document.querySelectorAll("tbody tr")[1].dispatchEvent(

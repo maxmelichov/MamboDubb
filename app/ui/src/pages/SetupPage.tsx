@@ -34,6 +34,7 @@ import {
   Progress,
 } from "../components/ui";
 import { api } from "../lib/api";
+import { cn } from "../lib/classNames";
 import { isDesktop } from "../lib/desktop";
 import type { SetupCheck, SetupStatus } from "../lib/types";
 
@@ -184,7 +185,17 @@ export function SetupPage() {
 function CheckRow({ check }: { check: SetupCheck }) {
   const Glyph = check.ok ? Check : X;
   return (
-    <li className="flex items-start gap-3.5 px-6 py-4 sm:px-7" data-check={check.id}>
+    <li
+      className={cn(
+        "flex items-start gap-3.5 px-6 py-4 sm:px-7",
+        // Eight rows that look identical make the reader scan all eight to
+        // find the two that need them. The failing ones get a wash and a rule
+        // so the eye lands on them first — reinforcing the word and the glyph
+        // that already say it, never replacing them.
+        !check.ok && "bg-critical/[0.04] shadow-[inset_3px_0_0_var(--color-critical)]",
+      )}
+      data-check={check.id}
+    >
       <span
         aria-hidden
         className="mt-px grid h-6 w-6 shrink-0 place-items-center rounded-md border"
@@ -207,10 +218,38 @@ function CheckRow({ check }: { check: SetupCheck }) {
         </div>
         {check.detail ? (
           <p className="mt-1 max-w-2xl text-[12px] leading-relaxed text-secondary">
-            {check.detail}
+            <Detail text={check.detail} />
           </p>
         ) : null}
       </div>
     </li>
+  );
+}
+
+/**
+ * The detail sentence, with its backticked spans set as code.
+ *
+ * The server writes these to be read by a human and marks the parts that are
+ * meant to be typed — a path, a variable, a command — the way every other tool
+ * on that machine does, with backticks. Rendering them literally put stray
+ * punctuation in the middle of the one line on the screen whose whole job is
+ * to be copied correctly.
+ */
+function Detail({ text }: { text: string }) {
+  return (
+    <>
+      {text.split(/`([^`]+)`/g).map((part, i) =>
+        i % 2 === 1 ? (
+          <code
+            key={i}
+            className="rounded bg-sunken px-1 py-0.5 font-mono text-[11.5px] text-primary"
+          >
+            {part}
+          </code>
+        ) : (
+          <span key={i}>{part}</span>
+        ),
+      )}
+    </>
   );
 }

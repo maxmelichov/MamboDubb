@@ -16,6 +16,7 @@
 import { useEffect, useState } from "react";
 import {
   AudioLines,
+  ChevronDown,
   Languages,
   ListTree,
   Lock,
@@ -35,6 +36,7 @@ import {
   Divider,
   Field,
   Kbd,
+  NumberInput,
   SectionLabel,
   Select,
   StatePill,
@@ -180,7 +182,17 @@ export function SegmentInspector({
               ) : null
             }
           >
+            {/*
+              `dir="auto"` and not just the `.auto-dir` class: the class sets
+              `unicode-bidi: plaintext`, which is enough to *render* a Hebrew
+              line right-to-left, but a textarea also has a caret, a selection
+              and a home/end key, and those follow the element's direction. A
+              Hebrew line typed into an LTR box puts the cursor in the wrong
+              place on every keystroke.
+            */}
             <TextArea
+              dir="auto"
+              autoGrow
               className="auto-dir min-h-20"
               value={source}
               onChange={(event) => setSource(event.currentTarget.value)}
@@ -198,6 +210,8 @@ export function SegmentInspector({
             }
           >
             <TextArea
+              dir="auto"
+              autoGrow
               className="auto-dir min-h-20"
               value={target}
               placeholder="not translated yet"
@@ -216,7 +230,7 @@ export function SegmentInspector({
         <section className="flex flex-col gap-2.5">
           <SectionLabel icon={Languages}>Language overrides</SectionLabel>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Spoken" hint="overrides the run's source language">
+            <Field label="Spoken">
               <Select
                 value={seg.src_lang ?? ""}
                 onChange={(event) => onPatch({ src_lang: event.currentTarget.value || null })}
@@ -228,7 +242,7 @@ export function SegmentInspector({
                 ))}
               </Select>
             </Field>
-            <Field label="Translate into" hint="overrides the run's target language">
+            <Field label="Translate into">
               <Select
                 value={seg.tgt_lang ?? ""}
                 onChange={(event) => onPatch({ tgt_lang: event.currentTarget.value || null })}
@@ -241,6 +255,12 @@ export function SegmentInspector({
               </Select>
             </Field>
           </div>
+          {/* One hint under the pair, not the same sentence twice — the two
+              fields differ by one word and the labels already carry it. */}
+          <p className="text-[11px] leading-snug text-muted">
+            <em>inherit</em> uses the run's languages. Set these when one segment is spoken in
+            a different language than the rest.
+          </p>
         </section>
 
         <Divider />
@@ -254,7 +274,11 @@ export function SegmentInspector({
         <Divider />
 
         <section className="flex flex-col gap-2.5">
-          <SectionLabel icon={Sparkles}>Model actions — these queue</SectionLabel>
+          <SectionLabel icon={Sparkles}>Model actions</SectionLabel>
+          <p className="-mt-1 text-[11px] leading-relaxed text-muted">
+            These load a model, so they queue behind whatever is running. Everything above
+            saves immediately.
+          </p>
           <div className="flex flex-wrap gap-2">
             <Button
               onClick={() => {
@@ -388,6 +412,17 @@ function Toggle({
   );
 }
 
+/** What the collapsed disclosure says it is hiding. */
+function summarizeOpts(opts: TtsOpts | null): string {
+  const set = [
+    opts?.seed != null ? `seed ${opts.seed}` : null,
+    opts?.style ? opts.style : null,
+    opts?.ref ? "custom reference" : null,
+    opts?.greedy ? "greedy" : null,
+  ].filter(Boolean);
+  return set.length ? set.join(" · ") : "seed, style, reference clip — all inherited";
+}
+
 /** Per-segment synthesis overrides; empty fields inherit the run's defaults. */
 function TtsOptions({
   opts,
@@ -399,18 +434,24 @@ function TtsOptions({
   const set = (patch: TtsOpts) => onChange({ ...(opts ?? {}), ...patch });
   return (
     <details className="group" open={Boolean(opts)}>
-      <summary className="flex cursor-pointer list-none items-center gap-2 [&::-webkit-details-marker]:hidden">
-        <SectionLabel icon={Settings2} className="flex-1">
+      {/* The summary is the only control in the rail that is not obviously a
+          control, so it gets the hover wash, a real chevron and — when it is
+          shut — a line saying what is inside it. */}
+      <summary className="-mx-1.5 flex cursor-pointer list-none items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-sunken [&::-webkit-details-marker]:hidden">
+        <SectionLabel icon={Settings2} className="shrink-0">
           TTS options
         </SectionLabel>
-        <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-muted transition-transform group-open:rotate-180">
-          ▾
+        <span className="min-w-0 flex-1 truncate text-[11px] text-muted group-open:hidden">
+          {summarizeOpts(opts)}
         </span>
+        <ChevronDown
+          aria-hidden
+          className="h-3.5 w-3.5 shrink-0 text-muted transition-transform group-open:rotate-180"
+        />
       </summary>
       <div className="mt-3 grid grid-cols-2 gap-3">
         <Field label="Seed" hint="blank = the run's default">
-          <TextInput
-            type="number"
+          <NumberInput
             value={opts?.seed ?? ""}
             onChange={(event) =>
               set({
@@ -504,7 +545,10 @@ function Verification({
       ) : null}
 
       {heard ? (
-        <p className="auto-dir rounded-lg border border-border bg-raised p-2.5 text-[12px] leading-relaxed text-secondary">
+        <p
+          dir="auto"
+          className="auto-dir rounded-lg border border-border bg-raised p-2.5 text-[12px] leading-relaxed text-secondary"
+        >
           <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-muted">
             heard{" "}
           </span>

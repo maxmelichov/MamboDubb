@@ -5,7 +5,23 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Dubbing Studio</title>
 
-
+    <!--
+      The app is black-on-white and never anything else. These three lines are
+      the part of that promise that has to hold *before* the stylesheet lands:
+      `color-scheme` stops the browser painting a dark canvas under a page whose
+      colours it has not read yet, `theme-color` is what the shell's title bar
+      and the mobile browser chrome sample, and the inline background removes
+      the one frame of default white-then-flash on a slow first paint.
+    -->
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#f7f6f2" />
+    <style>
+      html,
+      body {
+        background: #f7f6f2;
+        color-scheme: light;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
