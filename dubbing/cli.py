@@ -62,6 +62,70 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+# Files a stage must have left on disk to count as done. Empty for the stages whose
+# whole result lives in the manifest — which is why forcing one has to invalidate
+# the rest explicitly; see `apply_force`.
+STAGE_OUTPUTS: dict[str, list[str]] = {
+    "fetch": ["source.wav"],
+    "stems": ["stems/vocals.wav", "stems/background.wav"],
+    "transcript": ["words.json"],
+    "segments": [],
+    "translate": [],
+    "tts": [],
+    "timeline": [],
+    "mix": ["dub.wav", "preview.mp4"],
+    "report": ["report.json"],
+}
+
+
+def stage_params(args: argparse.Namespace, m: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Everything that, when changed, must invalidate a stage's cached result.
+
+    Shared with `dubbing.edit.rebuild`, so the app re-runs a stage under exactly the
+    fingerprint the CLI would compute for it.
+    """
+    return {
+        "fetch": {"source": args.source, "captions": str(args.captions or ""),
+                  "duration": args.duration, "src": args.src},
+        "stems": {},
+        "transcript": {"src": args.src, "tgt": args.tgt, "prefer": args.transcript},
+        # segments reads tgt_lang from the manifest, so the pair must be in its
+        # fingerprint — with params={} changing --tgt never invalidated it.
+        "segments": {"src": args.src, "tgt": args.tgt, "dub_foreign": args.dub_foreign,
+                     "genre": args.genre},
+        "translate": {"src": args.src, "tgt": args.tgt,
+                      "context": m["source"].get("context") or "",
+                      "register": args.register, "genre": args.genre},
+        "tts": {"model": args.tts_model, "tgt": args.tgt},
+        "timeline": {"genre": args.genre},
+        "mix": {},
+        "report": {},
+    }
+
+
+def apply_force(m: dict[str, Any], force: str | None) -> list[str]:
+    """Honour `--force <stage>`: re-run that stage AND everything after it.
+
+    Downstream does not fall out of the fingerprint chain here. Forcing re-runs a
+    stage with the same tag, the same params and the same upstream fingerprint, so
+    every downstream fingerprint recomputes identical — and translate/tts/timeline
+    declare no output files, so `stage_done`'s `all([])` is True and they print "up
+    to date" and skip. The re-run really does discard what they were built on, so
+    their records are dropped explicitly.
+
+    Returns the stages invalidated, forced stage first.
+    """
+    if not force:
+        return []
+    if force == "all":
+        m["stages"], m["progress"] = {}, {}
+        return list(STAGES)
+    if force not in STAGES:
+        raise SystemExit(f"unknown stage {force!r}; choose from {', '.join(STAGES)}")
+    manifest.clear_stage(m, force)
+    return [force] + manifest.clear_downstream(m, force)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
@@ -83,12 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.context is not None:
         m["source"]["context"] = args.context
 
-    if args.force == "all":
-        m["stages"], m["progress"] = {}, {}
-    elif args.force:
-        if args.force not in STAGES:
-            raise SystemExit(f"unknown stage {args.force!r}; choose from {', '.join(STAGES)}")
-        manifest.clear_stage(m, args.force)
+    apply_force(m, args.force)
 
     selected = set(args.stages.split(",")) if args.stages else set(STAGES)
     unknown = selected - set(STAGES)
@@ -98,34 +157,8 @@ def main(argv: list[str] | None = None) -> int:
     def save() -> None:
         manifest.save(workdir, m)
 
-    params: dict[str, dict[str, Any]] = {
-        "fetch": {"source": args.source, "captions": str(args.captions or ""),
-                  "duration": args.duration, "src": args.src},
-        "stems": {},
-        "transcript": {"src": args.src, "tgt": args.tgt, "prefer": args.transcript},
-        # segments reads tgt_lang from the manifest, so the pair must be in its
-        # fingerprint — with params={} changing --tgt never invalidated it.
-        "segments": {"src": args.src, "tgt": args.tgt, "dub_foreign": args.dub_foreign,
-                     "genre": args.genre},
-        "translate": {"src": args.src, "tgt": args.tgt,
-                      "context": m["source"].get("context") or "",
-                      "register": args.register, "genre": args.genre},
-        "tts": {"model": args.tts_model, "tgt": args.tgt},
-        "timeline": {"genre": args.genre},
-        "mix": {},
-        "report": {},
-    }
-    outputs: dict[str, list[str]] = {
-        "fetch": ["source.wav"],
-        "stems": ["stems/vocals.wav", "stems/background.wav"],
-        "transcript": ["words.json"],
-        "segments": [],
-        "translate": [],
-        "tts": [],
-        "timeline": [],
-        "mix": ["dub.wav", "preview.mp4"],
-        "report": ["report.json"],
-    }
+    params = stage_params(args, m)
+    outputs = STAGE_OUTPUTS
 
     engine: tts_mod.Engine | None = None
     words: list[dict[str, Any]] | None = None

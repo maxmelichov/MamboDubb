@@ -43,7 +43,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import audio
+from . import audio, manifest
 
 MIN_GAP = 0.10        # silence between two placed clips that the source separated
 MIN_SEAM = 0.005      # …and between two that ran together: inaudible, but enough
@@ -366,6 +366,13 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
         for idx in sorted(late, key=lambda i: -places[i]["drift"]):
             j = _worst_overrunner(items, places, idx)
             if j is None or items[j]["id"] in requests:
+                continue
+            seg_j = by_id[items[j]["id"]]
+            if manifest.is_locked(seg_j, "text_en") or manifest.is_locked(seg_j, "tts"):
+                # Shortening rewrites the line and re-voices it. A hand-corrected
+                # line or an approved clip is not this stage's to replace; it drifts
+                # instead, which `place` still keeps non-overlapping.
+                items[j]["shortened"] = True
                 continue
             slot = items[j + 1]["source_start"] - places[j]["start"]
             budget = max(0.5, slot) * rates.rate_pref

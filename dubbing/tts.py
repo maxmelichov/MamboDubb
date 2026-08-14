@@ -911,13 +911,38 @@ def clear_failed_keeps(segments: list[dict[str, Any]]) -> list[int]:
     without this a resumed run would treat the failure as settled forever.
     Returns the ids that were cleared.
     """
+    from . import manifest
+
     cleared: list[int] = []
     for seg in segments:
+        if manifest.is_locked(seg, "tts"):
+            continue          # the user settled this one; a rerun does not re-decide it
         if seg.get("keep_reason") == "tts_failed":
             seg["keep"], seg["keep_reason"] = False, None
             seg.pop("tts", None)  # the keep-clip record; this run re-decides
             cleared.append(seg["id"])
     return cleared
+
+
+def has_clip(seg: dict[str, Any], workdir: Path) -> bool:
+    """True when this segment already owns audio on disk."""
+    return bool(seg.get("tts")) and (workdir / seg["tts"]["clip"]).is_file()
+
+
+def pending(segments: list[dict[str, Any]], workdir: Path) -> list[dict[str, Any]]:
+    """The dubbed segments this stage must synthesize.
+
+    A segment with a usable clip is done — that is the resume mechanism, and the
+    editor's per-segment redo is the same deletion (`edit.invalidate`). A clip the
+    user locked is never re-synthesized on top of, even if the line changed under
+    it: the human's approval outranks the pipeline. A lock whose clip is gone is
+    unhonorable, and never-silent wins — that segment is synthesized again.
+    """
+    from . import manifest
+
+    return [s for s in segments
+            if not s.get("keep") and not has_clip(s, workdir)
+            and not (manifest.is_locked(s, "tts") and s.get("tts"))]
 
 
 def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = None,
@@ -926,7 +951,7 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
     clear_failed_keeps(m["segments"])
     engine.build_speaker_refs()
     dub = [s for s in m["segments"] if not s["keep"]]
-    todo = [s for s in dub if not (s.get("tts") and (workdir / s["tts"]["clip"]).is_file())]
+    todo = pending(m["segments"], workdir)
 
     # Generation runs on the GPU, verification (Whisper) on the CPU. Generate each
     # first-attempt clip in order and hand its verify to a single worker thread, so

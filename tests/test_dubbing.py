@@ -1141,4 +1141,5 @@ def test_save_drops_unknown_segment_keys(tmp_path):
                       "internal_state": {"a": 1}}]
     manifest.save(tmp_path, m)
     loaded = manifest.load(tmp_path)
-    assert set(loaded["segments"][0]) == {"id", "start", "end", "text"}
+    # `uid` is minted on save for anything that lacks one, so it is always there.
+    assert set(loaded["segments"][0]) == {"id", "uid", "start", "end", "text"}
