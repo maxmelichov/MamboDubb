@@ -98,6 +98,28 @@ TURN_GAP_SPLIT = 0.8   # silence between two diarization turns that forces a spl
                        # gives both turns the same label, while Whisper's word timings
                        # smear across it and would bridge two characters' lines
 
+# A diarization turn shorter than this is not a speaker turn. Pyannote sprinkles
+# sub-half-second turns of a second label through one person's speech (a breath, a
+# louder syllable, a bar of music under the voice), and every one of them used to
+# cut two segment boundaries into the middle of a sentence — the fragments then
+# carried the wrong speaker, never re-merged (a stub only merges into a
+# same-speaker neighbour) and were voiced by a different clone. Nothing this short
+# is dubbable on its own either (MIN_SEG_SEC is 0.9), so a real interjection of
+# this length is better off spoken in the surrounding voice than stranded.
+MIN_TURN_SEC = 0.40
+# ...and how much silence may sit on either side of such a blip for it to still
+# count as *inside* the surrounding speech. Kept under TURN_GAP_SPLIT so absorbing
+# a blip can never hide a pause that would itself have forced a split.
+ISLAND_GAP_MAX = 0.60
+
+# How far a segment's start may move back to meet the diarization onset of its own
+# speaker at a handoff. Whisper's first word timestamp after a speaker change lands
+# late (the new voice's onset is inside the previous speaker's decaying tail, and
+# the decoder anchors on the first clean frame), which delays the dub — and for a
+# kept segment delays the original audio against the picture. Pyannote's turn start
+# is the better estimate of when the voice actually began.
+HANDOFF_SNAP = 0.30
+
 DIARIZATION_MODEL = "pyannote/speaker-diarization-community-1"
 
 # Post-diarization refinement: pyannote's clustering sometimes files two
@@ -113,6 +135,20 @@ REFINE_SPLIT_DIST = 0.80   # dendrogram cut on cosine distance. Measured on the
                            # courtroom run: same-voice average linkage reaches 0.77
                            # (a short turn), cross-voice linkage sits at 0.88 —
                            # 0.80 clears the first with margin and refuses the second
+REFINE_MAX_TURNS = 12      # a longer same-label run is one person holding the floor
+                           # (a news read, a lecture) with pauses in it, not two
+                           # people pyannote failed to tell apart. Cutting such a run
+                           # in two renames half of the dominant speaker's turns for
+                           # the rest of the video — the worst possible outcome, since
+                           # every downstream stage then hears two speakers where the
+                           # viewer sees one. Two voices genuinely fused by clustering
+                           # show up as a short alternating exchange, so the evidence
+                           # this rule needs is always present within a dozen turns.
+REFINE_MARGIN = 1.10       # the cross-cluster linkage must also beat the widest
+                           # within-cluster merge by this factor: an absolute cut
+                           # alone splits one voice recorded two ways (studio vs
+                           # phone line) as readily as two voices. Measured
+                           # courtroom: 0.88 against 0.77 * 1.10 = 0.85 — still splits.
 
 
 def text_bucket(text: str, src: str = "he", tgt: str = "en") -> str | None:
@@ -180,13 +216,90 @@ def speech_gap(prev: dict[str, Any], cur: dict[str, Any]) -> float:
     return max(0.0, cur["t"] - end)
 
 
+def _speaker_blocks(turns: list[dict[str, Any]]) -> list[tuple[int, int]]:
+    """Index ranges of maximal runs of consecutive same-speaker turns."""
+    blocks: list[tuple[int, int]] = []
+    i = 0
+    while i < len(turns):
+        j = i + 1
+        while j < len(turns) and turns[j]["speaker"] == turns[i]["speaker"]:
+            j += 1
+        blocks.append((i, j))
+        i = j
+    return blocks
+
+
+def smooth_turns(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Absorb sub-MIN_TURN_SEC speaker islands into the speech around them. Pure.
+
+    A majority vote with a minimum-duration constraint, in its simplest honest
+    form: a block of turns labelled X that holds less than MIN_TURN_SEC of speech,
+    sits between two blocks that are both Y and both longer than it, at least one
+    of which is a real turn, and is separated from them by no more than
+    ISLAND_GAP_MAX of silence on either side, is relabelled Y. The shortest island
+    goes first, so a *flutter* — measured: 0.54/0.02/0.02/0.02/0.34s alternating
+    between two labels inside one sentence — collapses from the inside out into a
+    single turn instead of surviving as six. Nothing that short is a speaker turn;
+    it is a clustering blip, and left alone it cuts the sentence around it into
+    three segments, the middle one attributed — and later voiced — as somebody
+    else. Timings are never touched, so the audio each word belongs to does not
+    move; only the label does. A genuine short interruption from a field reporter
+    or an interviewee runs seconds, not milliseconds, and is left exactly as
+    diarized. Returns a new list; the caller's dicts are not mutated.
+    """
+    out = [dict(t) for t in sorted(turns, key=lambda t: (t["start"], t["end"]))]
+    if len(out) < 3:
+        return out
+
+    def spoken(a: int, b: int) -> float:
+        return sum(t["end"] - t["start"] for t in out[a:b])
+
+    while True:
+        best = None
+        blocks = _speaker_blocks(out)
+        for k in range(1, len(blocks) - 1):
+            (pa, pb), (ia, ib), (na, nb) = blocks[k - 1], blocks[k], blocks[k + 1]
+            host = out[pa]["speaker"]
+            if out[na]["speaker"] != host:
+                continue
+            island, prev, nxt = spoken(ia, ib), spoken(pa, pb), spoken(na, nb)
+            if island >= MIN_TURN_SEC:
+                continue
+            if min(prev, nxt) < island or max(prev, nxt) < MIN_TURN_SEC:
+                continue
+            before = out[ia]["start"] - out[pb - 1]["end"]
+            after = out[na]["start"] - out[ib - 1]["end"]
+            if max(before, after) > ISLAND_GAP_MAX:
+                continue
+            if best is None or island < best[0]:
+                best = (island, ia, ib, host)
+        if best is None:
+            return out
+        _island, ia, ib, host = best
+        for t in out[ia:ib]:
+            t["speaker"] = host
+
+
+def real_turns(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The turns long enough to be treated as speaker turns.
+
+    Word labelling and boundary cutting must read the same view of diarization,
+    or a turn too short to justify a cut still steals the label of the words
+    inside it and splits the segment anyway (through the word-level speaker-change
+    rule). If every turn is short — a very quiet file, a degenerate diarization —
+    the filter would leave nothing to attribute to, so the full list stands.
+    """
+    kept = [t for t in turns if t["end"] - t["start"] >= MIN_TURN_SEC]
+    return kept or list(turns)
+
+
 def assign_word_speakers(words: list[dict[str, Any]], turns: list[dict[str, Any]]) -> None:
     """Tag each word with the diarization turn covering it (in place)."""
     if not turns:
         for w in words:
             w["spk"] = "SPEAKER_00"
         return
-    turns = sorted(turns, key=lambda t: t["start"])
+    turns = sorted(real_turns(turns), key=lambda t: t["start"])
     ends = word_ends(words)
     idx = 0
     prev = turns[0]["speaker"]
@@ -257,15 +370,23 @@ def _turn_boundaries(turns: list[dict[str, Any]]) -> list[tuple[float, bool]]:
     same-speaker rule would quietly glue the halves back together. A protected
     cut plants a `brk` marker (the caption speaker-change mechanism) on the
     split point, which `_merge_stubs` never crosses.
+
+    Handover cuts come from the turns long enough to be speaker turns
+    (`real_turns`): a sub-MIN_TURN_SEC blip would otherwise cut twice, stranding
+    a word or two of somebody's sentence as a separate, differently-voiced
+    segment. Silence cuts still read *every* turn as diarized, so removing a blip
+    from the handover view can never turn its speech into an apparent pause.
     """
     turns = sorted(turns, key=lambda t: t["start"])
     bounds: list[tuple[float, bool]] = []
     for a, b in zip(turns, turns[1:]):
-        if a["speaker"] != b["speaker"]:
-            bounds.append((b["start"], False))
         gap = b["start"] - a["end"]
         if gap >= TURN_GAP_SPLIT:
             bounds.append((round(a["end"] + gap / 2, 3), True))
+    real = real_turns(turns)
+    for a, b in zip(real, real[1:]):
+        if a["speaker"] != b["speaker"]:
+            bounds.append((b["start"], False))
     return bounds
 
 
@@ -453,6 +574,45 @@ def words_to_segments(words: list[dict[str, Any]], src: str = "he",
     return out
 
 
+def snap_speaker_handoffs(segs: list[dict[str, Any]],
+                          turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Pull a segment's start back to its speaker's diarization onset. Pure-ish.
+
+    At a handoff the incoming voice starts inside the outgoing one's decaying
+    tail, and Whisper times its first word from the first frame it hears cleanly —
+    consistently late, by up to a few hundred milliseconds. That lateness is the
+    dub's lateness: the clip is placed at `source_start`, so the new speaker
+    starts talking after they visibly started, and a *kept* segment plays its
+    original audio late against the picture.
+
+    Diarization's own onset is the better estimate, so where a real turn of this
+    segment's speaker begins shortly before it (within HANDOFF_SNAP) the start
+    moves back to meet it. Only ever earlier, and never past the previous
+    segment's end: a start that moved later would strand the speech in front of
+    it, and placements must stay ordered and non-overlapping. Segments are
+    modified in place and returned.
+    """
+    if not turns or not segs:
+        return segs
+    real = sorted(real_turns(turns), key=lambda t: t["start"])
+    prev_end = 0.0
+    prev_spk = None
+    for seg in segs:
+        start = seg["start"]
+        if seg["speaker"] != prev_spk:
+            floor = max(prev_end, start - HANDOFF_SNAP)
+            best = None
+            for t in real:
+                if t["speaker"] != seg["speaker"] or t["end"] <= start:
+                    continue
+                if floor <= t["start"] < start - 0.02:
+                    best = t["start"] if best is None else max(best, t["start"])
+            if best is not None:
+                seg["start"] = round(best, 3)
+        prev_end, prev_spk = seg["end"], seg["speaker"]
+    return segs
+
+
 def _residues(seg: dict[str, Any],
               spans: list[dict[str, Any]]) -> list[tuple[float, float]]:
     """The stretches of a segment that no span covers, in order.
@@ -500,6 +660,7 @@ def splice_foreign_spans(segs: list[dict[str, Any]], spans: list[dict[str, Any]]
         return segs
 
     ends = word_ends(words) if words else []
+    trimmed: set[int] = set()      # id() of the pieces a span trim left behind
     kept: list[dict[str, Any]] = []
     for seg in segs:
         pieces = _residues(seg, spans)
@@ -528,8 +689,10 @@ def splice_foreign_spans(segs: list[dict[str, Any]], spans: list[dict[str, Any]]
                 if not said:
                     continue
                 piece["text"] = " ".join(said)
+            trimmed.add(id(piece))
             kept.append(piece)
 
+    made_all: list[dict[str, Any]] = []
     for s in spans:
         words = [{"t": w["t"], "text": w["text"], "brk": False, "spk": w.get("spk", "SPEAKER_00")}
                  for w in s.get("words") or []]
@@ -551,8 +714,66 @@ def splice_foreign_spans(segs: list[dict[str, Any]], spans: list[dict[str, Any]]
         if s.get("lang") and s["lang"] != tgt:
             for x in made:
                 x["lang"] = s["lang"]
-        kept.extend(x for x in made if x["end"] > x["start"])
-    return sorted(kept, key=lambda x: x["start"])
+        made_all.extend(x for x in made if x["end"] > x["start"])
+    kept.extend(made_all)
+    out = sorted(kept, key=lambda x: x["start"])
+    return _absorb_trim_remnants(out, trimmed, {id(x) for x in made_all}, src, tgt)
+
+
+def _absorb_trim_remnants(segs: list[dict[str, Any]], trimmed: set[int],
+                          from_span: set[int], src: str = "he",
+                          tgt: str = "en") -> list[dict[str, Any]]:
+    """Fold a stranded trim remnant back into the span segment it touches.
+
+    A span edge lands where the *voice* stopped, but Whisper's last word before it
+    smears seconds past that point, so subtracting the span leaves a remnant of one
+    or two words butting straight up against the span's own segment — the same
+    person, mid-phrase ("The National Rabbinical Court against" | "the"). Left
+    alone that remnant is a separate line: separately translated out of context,
+    separately voiced, and separated on the timeline by a placement gap that the
+    original speech never had.
+
+    It rejoins only when rejoining cannot change what is played: the two are
+    contiguous, share a speaker, the span is target-language (nothing else may
+    play its own audio outside its own span), and the remnant's own script says
+    target too — so the merged span is one speaker saying one thing in one
+    language. A same-script pair, where the script test proves nothing, never
+    merges. `_merge_stubs` cannot do this job: it runs before the splice exists,
+    and these two pieces come from different sources.
+    """
+    out = list(segs)
+    i = 0
+    while i < len(out):
+        seg = out[i]
+        if id(seg) not in trimmed:
+            i += 1
+            continue
+        short = (seg["end"] - seg["start"] < MIN_LEN
+                 or len((seg.get("text") or "").split()) < MIN_WORDS)
+        if not short or text_bucket(seg.get("text", ""), src, tgt) != "target":
+            i += 1
+            continue
+        host_i = None
+        for j in (i - 1, i + 1):
+            if not 0 <= j < len(out) or id(out[j]) not in from_span:
+                continue
+            host = out[j]
+            if host.get("lang") or host.get("speaker") != seg.get("speaker"):
+                continue      # a third-language span, or somebody else's line
+            gap = seg["start"] - host["end"] if j < i else host["start"] - seg["end"]
+            if abs(gap) <= 0.05:
+                host_i = j
+                break
+        if host_i is None:
+            i += 1
+            continue
+        host = out[host_i]
+        first, second = (host, seg) if host_i < i else (seg, host)
+        host["start"] = min(host["start"], seg["start"])
+        host["end"] = max(host["end"], seg["end"])
+        host["text"] = " ".join(t for t in (first.get("text"), second.get("text")) if t)
+        del out[i]
+    return out
 
 
 def unsegmented_words(words: list[dict[str, Any]], segs: list[dict[str, Any]],
@@ -779,13 +1000,15 @@ def _split_embedding_clusters(sims: Any) -> list[int] | None:
 
     dist = 1.0 - np.asarray(sims, dtype=float)
     n = len(dist)
-    if n < REFINE_MIN_TURNS:
-        return None
+    if not REFINE_MIN_TURNS <= n <= REFINE_MAX_TURNS:
+        return None                # too few turns to alternate, or too many to be
+                                   # a fused two-person exchange at all
     clusters: list[list[int]] = [[i] for i in range(n)]
 
     def linkage(a: list[int], b: list[int]) -> float:
         return float(np.mean([dist[i, j] for i in a for j in b]))
 
+    within = 0.0
     while len(clusters) > 2:
         best = min(
             ((linkage(clusters[x], clusters[y]), x, y)
@@ -794,10 +1017,14 @@ def _split_embedding_clusters(sims: Any) -> list[int] | None:
         d, x, y = best
         if d > REFINE_SPLIT_DIST:
             return None            # the cut leaves more than two clusters
+        within = max(within, d)
         clusters[x] += clusters[y]
         del clusters[y]
-    if linkage(clusters[0], clusters[1]) <= REFINE_SPLIT_DIST:
-        return None                # the cut leaves a single cluster
+    cross = linkage(clusters[0], clusters[1])
+    if cross <= max(REFINE_SPLIT_DIST, within * REFINE_MARGIN):
+        # Either the cut leaves a single cluster, or the two "clusters" are no
+        # further apart than one of them is wide — one voice, two recordings.
+        return None
     if min(len(c) for c in clusters) < 2:
         return None                # a lone outlier turn is not a second voice
     second = clusters[1] if 0 in clusters[0] else clusters[0]
@@ -880,7 +1107,10 @@ def refine_turns(turns: list[dict[str, Any]], vocals: Path) -> list[dict[str, An
         # they are skipped for embedding and inherit a neighbour's verdict.
         long_enough = [t for t in run
                        if t["end"] - t["start"] >= REFINE_MIN_TURN_SEC]
-        if len(long_enough) >= REFINE_MIN_TURNS:
+        # A run longer than REFINE_MAX_TURNS is somebody holding the floor, not a
+        # fused exchange (see the constant): skipped here so the embeddings are
+        # never even computed for a news read's hundred turns.
+        if REFINE_MIN_TURNS <= len(long_enough) <= REFINE_MAX_TURNS:
             runs.append((i, j + 1))
         i = j + 1
     if not runs:
@@ -1030,9 +1260,21 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
     src_lang = m["source"].get("src_lang") or "he"
     tgt_lang = m["source"].get("tgt_lang") or "en"
     turns = diarize(workdir / m["files"]["vocals"])
-    turns = refine_turns(turns, workdir / m["files"]["vocals"])
+    # Smooth before refining: the blips absorbed here are what chop one speaker's
+    # long run into short ones, and every later decision (word labels, boundary
+    # cuts, embedding runs) must read the same, smoothed view of the turns.
+    smoothed = smooth_turns(turns)
+    moved = sum(1 for a, b in zip(sorted(turns, key=lambda t: (t["start"], t["end"])),
+                                  smoothed) if a["speaker"] != b["speaker"])
+    if moved:
+        print(f"  segments: absorbed {moved} sub-{MIN_TURN_SEC}s speaker blip(s)",
+              file=sys.stderr)
+    turns = refine_turns(smoothed, workdir / m["files"]["vocals"])
     assign_word_speakers(words, turns)
     segs = words_to_segments(words, src_lang, tgt_lang, turns=turns)
+    # Word timestamps run late after a handoff; diarization knows better where the
+    # incoming voice started (see snap_speaker_handoffs).
+    snap_speaker_handoffs(segs, turns)
     if spans:
         span_words = [w for s in spans for w in (s.get("words") or [])]
         assign_word_speakers(span_words, turns)

@@ -645,6 +645,168 @@ def test_speaker_assignment_by_overlap_and_fallback():
     assert {w["spk"] for w in words} == {"SPEAKER_00"}
 
 
+# ------------------------------------------- diarization smoothing and handoff timing
+#
+# The "news" shape: one speaker holds the floor, with occasional short clips from
+# somebody else. Pyannote sprinkles sub-half-second turns of a second label through
+# the dominant voice, and each one used to cut a sentence into three segments whose
+# middle carried the wrong speaker and was voiced by a different clone.
+
+def mkturns(spec):
+    return [{"speaker": s, "start": a, "end": b} for a, b, s in spec]
+
+
+def test_sub_minimum_speaker_blip_is_absorbed_by_its_host():
+    turns = mkturns([(0.0, 10.0, "A"), (10.0, 10.25, "B"), (10.25, 20.0, "A")])
+    assert [t["speaker"] for t in segments.smooth_turns(turns)] == ["A", "A", "A"]
+    # Timings are never touched, and the caller's dicts are not mutated.
+    assert [(t["start"], t["end"]) for t in segments.smooth_turns(turns)] == \
+        [(t["start"], t["end"]) for t in turns]
+    assert turns[1]["speaker"] == "B"
+
+
+def test_a_flutter_of_labels_collapses_into_one_turn():
+    # Measured (news_videos clip 3, 29.0-30.0s): pyannote flickers between two
+    # labels six times inside one second of one person's sentence. Absorbing the
+    # shortest island first collapses the flicker from the inside out; what is
+    # left is a single sub-second turn, not six alternating ones.
+    turns = mkturns([(20.500, 29.039, "S1"), (29.039, 29.579, "S0"),
+                     (29.579, 29.596, "S1"), (29.596, 29.613, "S0"),
+                     (29.613, 29.630, "S1"), (29.630, 29.967, "S0"),
+                     (29.967, 37.510, "S1")])
+    out = segments.smooth_turns(turns)
+    assert [t["speaker"] for t in out] == ["S1", "S0", "S0", "S0", "S0", "S0", "S1"]
+
+
+def test_a_real_short_interruption_survives_smoothing():
+    # A field reporter's clip runs seconds, not milliseconds: it is a speaker turn
+    # and must keep its own label (and therefore its own voice).
+    turns = mkturns([(0.0, 10.0, "A"), (10.2, 12.7, "B"), (12.9, 20.0, "A")])
+    assert [t["speaker"] for t in segments.smooth_turns(turns)] == ["A", "B", "A"]
+    # Neither does a blip that is not surrounded by one voice, nor one sitting
+    # across a real pause rather than inside somebody's speech.
+    edges = mkturns([(0.0, 10.0, "A"), (10.0, 10.2, "B"), (10.2, 20.0, "C")])
+    assert [t["speaker"] for t in segments.smooth_turns(edges)] == ["A", "B", "C"]
+    apart = mkturns([(0.0, 10.0, "A"), (11.0, 11.2, "B"), (12.2, 20.0, "A")])
+    assert [t["speaker"] for t in segments.smooth_turns(apart)] == ["A", "B", "A"]
+
+
+def test_a_blip_no_longer_shatters_a_sentence():
+    spec = [(0.0, "aa"), (0.4, "bb"), (0.8, "cc"), (1.2, "dd"),
+            (1.6, "ee"), (2.0, "ff"), (2.4, "gg")]
+    blip = mkturns([(0.0, 1.3, "A"), (1.3, 1.55, "B"), (1.55, 3.0, "A")])
+    # Word labels and boundary cuts read the same view: a turn too short to be a
+    # speaker turn neither renames a word nor cuts the segment.
+    words = mkwords(spec)
+    segments.assign_word_speakers(words, blip)
+    assert {w["spk"] for w in words} == {"A"}
+    segs = segments.words_to_segments(words, turns=blip)
+    assert len(segs) == 1 and segs[0]["speaker"] == "A"
+    # ...while a real turn of the same shape still takes its words and cuts the
+    # sentence into the three lines the two voices actually spoke.
+    real = mkturns([(0.0, 1.3, "A"), (1.3, 2.2, "B"), (2.2, 3.0, "A")])
+    other = mkwords(spec)
+    segments.assign_word_speakers(other, real)
+    assert [s["speaker"] for s in segments.words_to_segments(other, turns=real)] == \
+        ["A", "B", "A"]
+
+
+def test_a_blip_never_hides_the_pause_around_it():
+    # Silence cuts still read every turn as diarized: dropping a blip from the
+    # handover view must not make its speech look like a gap in the audio.
+    turns = mkturns([(0.0, 0.9, "A"), (0.9, 1.1, "B"), (1.1, 2.0, "A")])
+    assert segments._turn_boundaries(turns) == []
+    # The same blip with a second of silence on either side: both pauses still cut
+    # (protected, at their midpoints), and neither cut is a speaker handover.
+    quiet = mkturns([(0.0, 0.5, "A"), (1.5, 1.7, "B"), (2.7, 3.5, "A")])
+    assert segments._turn_boundaries(quiet) == [(1.0, True), (2.2, True)]
+
+
+def test_handoff_start_snaps_back_to_the_diarization_onset():
+    # Whisper times the incoming voice's first word late; pyannote heard it start
+    # 0.25s earlier, and the dub (or the kept original audio) belongs there.
+    segs = [{"start": 5.0, "end": 8.0, "speaker": "A", "text": "aa"},
+            {"start": 8.5, "end": 10.0, "speaker": "B", "text": "bb"}]
+    turns = mkturns([(4.9, 8.1, "A"), (8.25, 10.1, "B")])
+    segments.snap_speaker_handoffs(segs, turns)
+    assert segs[1]["start"] == pytest.approx(8.25)
+    assert segs[0]["start"] == pytest.approx(4.9)   # the first line is a handoff too
+    # A same-speaker continuation is left alone: its onset is not a handoff, and
+    # the pause before it is the source's own.
+    same = [{"start": 5.0, "end": 8.0, "speaker": "A", "text": "aa"},
+            {"start": 9.0, "end": 10.0, "speaker": "A", "text": "bb"}]
+    segments.snap_speaker_handoffs(same, mkturns([(4.9, 8.1, "A"), (8.8, 10.1, "A")]))
+    assert same[1]["start"] == 9.0
+
+
+def test_handoff_snap_never_overlaps_or_moves_a_start_later():
+    # An onset behind the previous segment's end is unreachable (placements must
+    # stay ordered), one further than HANDOFF_SNAP is not evidence about this
+    # segment, and an onset *after* the first word would strand the speech.
+    def snapped(seg_start, turn_start, prev_end=8.0):
+        segs = [{"start": 5.0, "end": prev_end, "speaker": "A", "text": "aa"},
+                {"start": seg_start, "end": 12.0, "speaker": "B", "text": "bb"}]
+        segments.snap_speaker_handoffs(segs, mkturns([(4.9, prev_end + 0.1, "A"),
+                                                      (turn_start, 12.1, "B")]))
+        return segs[1]["start"]
+
+    assert snapped(8.1, 7.9) == 8.1                 # onset inside the previous segment
+    assert snapped(8.5, 7.5) == 8.5                 # 1.0s away — beyond HANDOFF_SNAP
+    assert snapped(8.5, 8.7) == 8.5                 # never later than the first word
+    assert snapped(8.5, 8.49) == 8.5                # a rounding-level move is refused
+
+
+def test_a_long_monologue_run_is_never_split_into_two_voices():
+    # One person holding the floor with pauses is not two people pyannote fused:
+    # splitting such a run renames half the dominant speaker's turns for good.
+    n = 2 * segments.REFINE_MAX_TURNS
+    alternating = [[1.0 if i == j else (0.9 if i % 2 == j % 2 else 0.05)
+                    for j in range(n)] for i in range(n)]
+    assert segments._split_embedding_clusters(alternating) is None
+    assert segments._split_embedding_clusters([r[:6] for r in alternating[:6]]) is not None
+
+
+def test_two_clusters_no_wider_apart_than_one_of_them_is_wide(monkeypatch):
+    # One voice recorded two ways clears the absolute cut as easily as two voices
+    # do; the split needs the gap between the clusters to beat the widest merge
+    # inside them as well.
+    sims = [[1.0 if i == j else (0.21 if i % 2 == j % 2 else 0.15) for j in range(6)]
+            for i in range(6)]
+    assert segments._split_embedding_clusters(sims) is None
+    monkeypatch.setattr(segments, "REFINE_MARGIN", 1.0)
+    assert segments._split_embedding_clusters(sims) == [0, 1, 0, 1, 0, 1]
+
+
+def test_trim_remnant_rejoins_the_span_it_was_cut_from():
+    # Measured (news_wa4, 11.8-14.6s): the span ends where the voice stopped, but
+    # Whisper's last word smears a second past it, leaving "the" as a one-word
+    # segment of its own — separately translated, separately voiced, and pushed
+    # off the seam on the timeline.
+    said = [(11.8, 12.01, "The"), (12.01, 12.35, "national"), (12.35, 12.93, "rabbinical"),
+            (12.93, 13.19, "court"), (13.19, 13.49, "against"), (13.49, 14.85, "the")]
+    words = [{"t": t, "end": e, "text": w, "spk": "S0"} for t, e, w in said]
+    asr = [{"id": 0, "start": 11.8, "end": 14.85, "speaker": "S0",
+            "text": " ".join(w["text"] for w in words)}]
+    spans = [{"start": 11.8, "end": 13.57, "lang": "en",
+              "text": "The national rabbinical court against",
+              "words": [{"t": t, "text": w, "spk": "S0"} for t, _e, w in said[:5]]}]
+    out = segments.splice_foreign_spans(asr, spans, words)
+    assert [s["text"] for s in out] == ["The national rabbinical court against the"]
+    assert (out[0]["start"], out[0]["end"]) == (11.8, 14.85)
+
+
+def test_a_remnant_that_is_not_the_span_s_language_stays_its_own_segment():
+    # The remnant is source-language speech: it has to be dubbed, so it can never
+    # be absorbed into a span that plays its original audio.
+    words = [{"t": 11.8, "end": 13.4, "text": "English", "spk": "S0"},
+             {"t": 13.5, "end": 14.6, "text": "עברית", "spk": "S0"}]
+    asr = [{"id": 0, "start": 11.8, "end": 14.6, "speaker": "S0", "text": "English עברית"}]
+    spans = [{"start": 11.8, "end": 13.45, "lang": "en", "text": "English",
+              "words": [{"t": 11.8, "text": "English", "spk": "S0"}]}]
+    out = segments.splice_foreign_spans(asr, spans, words)
+    assert [s["text"] for s in out] == ["English", "עברית"]
+
+
 def test_foreign_spans_become_their_own_segments():
     # ASR either mangles or skips target-language speech, so those seconds must
     # come from the captions or they would have no audio at all.
