@@ -18,8 +18,13 @@ Two rules shape this module:
 
 Report shape::
 
-    {"ok": bool, "checks": [{"id", "label", "ok", "detail",
-                             "required": bool, "path"?, "bytes"?}, ...]}
+    {"ok": bool, "checks": [{"id", "label", "ok", "detail", "required": bool,
+                             "installable": bool, "path"?, "bytes"?}, ...]}
+
+`installable` is the server's answer to "can the app fix this for me?" — true for
+exactly the ids `dubbing_app.install` has an argv for. The UI needs it as a flag
+rather than a list of its own, or the two sides drift and a button appears on a
+row whose `POST /api/setup/install` is a 400.
 
 `ok` is the conjunction of the **required** checks only. Everything else is
 informational: Demucs and Pyannote download themselves on demand, a missing
@@ -114,10 +119,37 @@ def dir_size(path: Path) -> int:
     return total
 
 
+# The command-line tools, in one table so a single one can be re-checked after
+# an install without re-running (and re-`stat`ing) the whole model report.
+TOOLS: dict[str, tuple[str, str, str]] = {
+    "ffmpeg": ("ffmpeg", "ffmpeg", "every stage shells out to it for audio and video"),
+    "sox": ("SoX", "sox", "Qwen3-TTS text normalization needs it"),
+}
+
+
 def tool(id_: str, label: str, exe: str, why: str, *, required: bool = True) -> dict[str, Any]:
     found = shutil.which(exe)
     return check(id_, label, bool(found), found or f"{exe} not on PATH — {why}",
                  required=required, path=found)
+
+
+def probe(id_: str) -> dict[str, Any] | None:
+    """One check, by id — or None if it is not one this can answer alone.
+
+    Only the tools are here, and that is the whole point: a check that needs the
+    outputs root (`disk`) or a pipeline import (the models) is not a thing the
+    app installs, so nothing ever asks for it here. `dubbing_app.install` calls
+    this when its subprocess exits, so the row the UI redraws is a fresh
+    `shutil.which` and not the package manager's opinion of itself.
+    """
+    from .install import INSTALLERS
+
+    spec = TOOLS.get(id_)
+    if spec is None:
+        return None
+    # Same row `report` would produce, `installable` included: a client that
+    # drops this straight into its list must not get a shape one key short.
+    return {**tool(id_, *spec), "installable": id_ in INSTALLERS}
 
 
 def model(id_: str, label: str, path: Path, *, required: bool = True,
@@ -242,16 +274,19 @@ def demucs_check() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def report(outputs: Path) -> dict[str, Any]:
-    checks: list[dict[str, Any]] = [
-        tool("ffmpeg", "ffmpeg", "ffmpeg", "every stage shells out to it for audio and video"),
-        tool("sox", "SoX", "sox", "Qwen3-TTS text normalization needs it"),
-        hf_token_check(),
-    ]
+    # Imported here, not at module scope: `install` imports this module back for
+    # its re-probe, and the one-directional import is what keeps that honest.
+    from .install import INSTALLERS
+
+    checks: list[dict[str, Any]] = [tool(id_, *spec) for id_, spec in TOOLS.items()]
+    checks.append(hf_token_check())
     checks += model_checks()
     checks.append(demucs_check())
     checks.append(disk_check(Path(outputs)))
+    for c in checks:
+        c["installable"] = c["id"] in INSTALLERS
     ok = all(c["ok"] for c in checks if c["required"])
     return {"ok": ok, "checks": checks}
 
 
-__all__ = ["report", "git_commit", "human_bytes", "dir_size"]
+__all__ = ["report", "probe", "git_commit", "human_bytes", "dir_size", "TOOLS"]

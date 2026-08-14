@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from dubbing import STAGES, manifest
 
-from . import errors, events, media, ops, peaks, setup, ui
+from . import errors, events, install, media, ops, peaks, setup, ui
 from .errors import ApiError, busy, invalid, not_found
 from .events import EventBus
 from .jobs import JobQueue
@@ -110,6 +110,17 @@ class RenderBody(Strict):
     pass
 
 
+class InstallBody(Strict):
+    """One field, and it is a *key*, never a command.
+
+    `id` is looked up in `install.INSTALLERS`; a miss is a 400. Strict-extra is
+    what keeps a hopeful `{"id": "ffmpeg", "argv": [...]}` from ever being read,
+    let alone run.
+    """
+
+    id: str
+
+
 # ---------------------------------------------------------------------------
 # app
 # ---------------------------------------------------------------------------
@@ -126,6 +137,10 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
     projects.root.mkdir(parents=True, exist_ok=True)
     bus = EventBus()
     queue = JobQueue(runner or SubprocessRunner(), bus)
+    # Deliberately not the JobQueue: a `brew install` loads no model, and making
+    # it wait behind a render would mean waiting an hour to fix the thing that
+    # is blocking the render. Its own one-at-a-time slot, in this process.
+    installer = install.Installer(setup.probe)
     # One writer at a time per project: two PATCHes arriving together would
     # otherwise both load, both edit and the second would drop the first's change.
     locks: dict[str, threading.Lock] = {}
@@ -144,6 +159,7 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
     app.state.projects = projects
     app.state.bus = bus
     app.state.jobs = queue
+    app.state.installer = installer
     app.state.version = version
     errors.install(app)
     # The Vite dev server is a different origin; the server only ever binds
@@ -188,6 +204,23 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
         """Can this machine run the pipeline? Filesystem and env only — no model
         is loaded, so the desktop shell may call it before anything else."""
         return setup.report(projects.root)
+
+    @app.post("/api/setup/install", status_code=202)
+    def start_install(body: InstallBody) -> dict[str, Any]:
+        """Install one missing tool. `id` is a key into a hardcoded argv table —
+        nothing from the body is ever executed. 400 for anything not in it, 409
+        while another install is running."""
+        return installer.start(body.id)
+
+    @app.get("/api/setup/install")
+    def install_status() -> dict[str, Any]:
+        """The running install, if any, and the last lines of its output.
+
+        Polled rather than streamed: setup has no project, so it has no event
+        stream, and an install measured in minutes is served fine by a 2 s poll.
+        Carries a freshly probed check row once the process has exited.
+        """
+        return installer.status()
 
     # -- projects ----------------------------------------------------------
 
