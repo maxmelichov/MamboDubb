@@ -1,6 +1,6 @@
 """FastAPI app: a small editor over the pipeline's run directories.
 
-    uv run --extra editor uvicorn editor.app:app --reload
+    uv run --extra app uvicorn editor.app:app --reload
 
 The server never loads a model. It reads and patches `outputs/<run>/manifest.json`
 through `dubbing.manifest`, serves the run's media, and shells out to
