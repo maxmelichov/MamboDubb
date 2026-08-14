@@ -9,10 +9,9 @@
 
 import { Loader2, WifiOff } from "lucide-react";
 import { Button, Progress } from "./ui";
-import { STAGES } from "../lib/types";
-import type { Job, Stage } from "../lib/types";
+import { StageTrack } from "./StageTrack";
+import type { Job } from "../lib/types";
 import type { StageProgress } from "../lib/useProject";
-import { cn } from "../lib/classNames";
 
 const KIND_LABEL: Record<Job["kind"], string> = {
   run: "Dubbing",
@@ -27,21 +26,35 @@ export function JobBar({
   stage,
   connected,
   onCancel,
+  onReload,
 }: {
   job: Job | null;
   queued: number;
   stage: StageProgress | null;
   connected: boolean;
   onCancel: (id: string) => void;
+  onReload?: () => void;
 }) {
   if (!job && connected) return null;
 
   return (
-    <div className="flex shrink-0 items-center gap-3 border-b border-border bg-sunken px-4 py-2 text-[12px]">
+    <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border bg-sunken px-4 py-2 text-[12px]">
+      {/*
+        A dropped stream is not a dead app — every edit still goes over plain
+        HTTP and still saves. The only thing that stops is progress arriving on
+        its own, so the strip says exactly that and offers the manual version
+        of what the stream would have done.
+      */}
       {!connected ? (
         <span className="inline-flex items-center gap-1.5 font-medium text-secondary">
-          <WifiOff className="h-3.5 w-3.5" aria-hidden />
-          Progress stream disconnected — reconnecting
+          <WifiOff className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          Progress stream disconnected — retrying. Edits still save; progress will not
+          update on its own.
+          {onReload ? (
+            <Button variant="ghost" size="xs" onClick={onReload}>
+              Refresh now
+            </Button>
+          ) : null}
         </span>
       ) : null}
 
@@ -52,6 +65,7 @@ export function JobBar({
             {KIND_LABEL[job.kind]}
           </span>
           {stage ? <StageTrack current={stage.stage} /> : null}
+
           <span className="min-w-0 flex-1 truncate text-secondary">
             {stage?.message ?? job.message ?? ""}
           </span>
@@ -68,32 +82,5 @@ export function JobBar({
         </>
       ) : null}
     </div>
-  );
-}
-
-/** Stage position, as a row of dots — the pipeline is fixed and ordered. */
-function StageTrack({ current }: { current: Stage }) {
-  const index = STAGES.indexOf(current);
-  return (
-    <span
-      className="flex shrink-0 items-center gap-1 rounded-md border border-border bg-raised px-2 py-1"
-      title={`stage ${current}`}
-    >
-      {STAGES.map((stage, i) => (
-        <span
-          key={stage}
-          aria-hidden
-          className={cn(
-            "h-1.5 w-1.5 rounded-full transition-colors",
-            i < index
-              ? "bg-primary"
-              : i === index
-                ? "bg-primary ring-2 ring-primary/25"
-                : "bg-border",
-          )}
-        />
-      ))}
-      <span className="ml-1 text-[11px] font-semibold text-secondary">{current}</span>
-    </span>
   );
 }

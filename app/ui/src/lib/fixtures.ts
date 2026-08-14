@@ -146,8 +146,19 @@ export function setup(): Promise<SetupStatus> {
   return delay({ ok: checks.every((c) => c.ok), checks });
 }
 
+/**
+ * The projects list, with three runs in three different states.
+ *
+ * Only the first is real — it is the snapshot everything else here serves. The
+ * other two exist because the row's whole job is to say *where a run got to*,
+ * and a list where every run is finished cannot show that it does: one is
+ * stopped mid-pipeline and one failed, which are the two rows a user needs to
+ * be able to tell apart at a glance without opening either.
+ */
 export function listProjects(): Promise<ProjectSummary[]> {
   const p = store.project;
+  const hour = 3600;
+  const now = Date.now() / 1000;
   return delay([
     {
       name: p.name,
@@ -156,7 +167,31 @@ export function listProjects(): Promise<ProjectSummary[]> {
       tgt_lang: p.source.tgt_lang,
       duration: p.source.duration,
       stages: p.stages,
-      mtime: Date.now() / 1000,
+      mtime: now,
+    },
+    {
+      name: "doha_panel_v2",
+      title: "Doha panel — full episode",
+      src_lang: "ar",
+      tgt_lang: "en",
+      duration: 1840,
+      stages: {
+        fetch: "done",
+        stems: "done",
+        transcript: "done",
+        segments: "done",
+        translate: "running",
+      },
+      mtime: now - 2 * hour,
+    },
+    {
+      name: "archive_reel",
+      title: "Archive reel 1994",
+      src_lang: "he",
+      tgt_lang: "en",
+      duration: 415,
+      stages: { fetch: "done", stems: "done", transcript: "failed" },
+      mtime: now - 39 * hour,
     },
   ]);
 }

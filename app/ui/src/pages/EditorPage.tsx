@@ -20,16 +20,30 @@ import { useParams } from "react-router-dom";
 import { Film, Loader2, Minus, Plus, RefreshCw } from "lucide-react";
 import { AppHeader } from "../components/AppShell";
 import { JobBar } from "../components/JobBar";
+import { RunSummary } from "../components/RunSummary";
 import { SegmentInspector } from "../components/SegmentInspector";
 import { SegmentList } from "../components/SegmentList";
+import { StageTrack } from "../components/StageTrack";
 import { Timeline, TimelineLegend } from "../components/Timeline";
 import { VideoPlayer } from "../components/VideoPlayer";
-import { Badge, Button, ButtonGroup, Empty, ErrorBar, Eyebrow, Kbd } from "../components/ui";
+import {
+  Badge,
+  Button,
+  ButtonGroup,
+  Empty,
+  ErrorBar,
+  Eyebrow,
+  Kbd,
+  Progress,
+} from "../components/ui";
 import { api } from "../lib/api";
 import { FIXTURE_PROJECT } from "../lib/fixtures";
 import { segmentState, totalDuration, type SegmentState } from "../lib/segments";
+import { summarizeStages } from "../lib/stages";
 import { activeJob, useProject } from "../lib/useProject";
 import { useTransport } from "../lib/useTransport";
+import type { Job, ProjectDetail } from "../lib/types";
+import type { StageProgress } from "../lib/useProject";
 
 const ZOOM_STEPS = [0.5, 1, 2, 4, 8, 16, 32];
 
@@ -151,7 +165,12 @@ export function EditorPage() {
       <AppHeader
         actions={
           <>
-            <Button onClick={() => void actions.reload()} aria-label="Reload" size="sm">
+            <Button
+              onClick={() => void actions.reload()}
+              aria-label="Reload this run from disk"
+              title="Reload this run from disk"
+              size="sm"
+            >
               <RefreshCw className="h-3.5 w-3.5" />
             </Button>
             <Button
@@ -192,12 +211,13 @@ export function EditorPage() {
         stage={state.stage}
         connected={state.connected}
         onCancel={(id) => void actions.cancel(id)}
+        onReload={() => void actions.reload()}
       />
       {state.error ? <ErrorBar message={state.error} onDismiss={actions.dismissError} /> : null}
 
       {state.loading ? (
-        <Empty>
-          <Loader2 className="mx-auto h-5 w-5 animate-spin" aria-label="Loading" />
+        <Empty title="Opening the run">
+          <Loader2 className="mx-auto mt-2 h-5 w-5 animate-spin" aria-label="Loading" />
         </Empty>
       ) : (
         <div className="flex min-h-0 flex-1">
@@ -208,6 +228,14 @@ export function EditorPage() {
                 transport={transport}
                 duration={total}
                 title={project?.source.title ?? name}
+                placeholder={
+                  <PreviewPlaceholder
+                    project={project}
+                    job={job}
+                    stage={state.stage}
+                    onRender={() => void actions.render()}
+                  />
+                }
               />
             </div>
 
@@ -215,7 +243,8 @@ export function EditorPage() {
               {/* The legend wraps inside its own cell rather than pushing the
                   zoom control onto a second row of its own. */}
               <div className="flex items-start gap-3 border-b border-border bg-sunken px-3 py-2">
-                <Eyebrow className="mt-1.5 shrink-0">Timeline</Eyebrow>
+                {/* The legend is the key to the encoding, so it gets the row's
+                    width; the lanes below already say "timeline". */}
                 <div className="min-w-0 flex-1">
                   <TimelineLegend counts={counts} />
                 </div>
@@ -279,17 +308,81 @@ export function EditorPage() {
                 onResynthesize={() => void actions.resynthesize([selected.uid])}
               />
             ) : (
-              <Empty>
-                Pick a segment in the timeline or the list.
-                <br />
-                <span className="mt-2 inline-flex items-center gap-1.5 text-[12px]">
-                  <Kbd>←</Kbd> <Kbd>→</Kbd> step through them.
-                </span>
-              </Empty>
+              <RunSummary
+                project={project}
+                counts={counts}
+                total={total}
+                onSeek={transport.seek}
+              />
             )}
           </aside>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * The preview stage when there is no `preview.mp4` to show.
+ *
+ * This is the screen a user stares at for the entire length of a run, so it
+ * has to be the run's status board rather than an apology. Which of the three
+ * things it says depends on why the file is missing, and they are genuinely
+ * different situations: the run is still working (wait, here is how far), the
+ * run finished but never muxed a video (press the button), or nothing has run
+ * at all (the editor still works on the segments).
+ */
+function PreviewPlaceholder({
+  project,
+  job,
+  stage,
+  onRender,
+}: {
+  project: ProjectDetail | null;
+  job: Job | null;
+  stage: StageProgress | null;
+  onRender: () => void;
+}) {
+  const summary = summarizeStages(project?.stages);
+  const working = job != null && (job.status === "running" || job.status === "queued");
+  const progress = stage?.progress ?? job?.progress ?? null;
+
+  return (
+    <div className="grid h-full place-items-center px-6 py-5">
+      <div className="w-full max-w-md text-center">
+        <Eyebrow>{working ? "Working" : summary.complete ? "No preview file" : "Preview"}</Eyebrow>
+
+        <p className="mt-2 text-[15px] font-semibold text-primary">
+          {working
+            ? `Running ${stage?.stage ?? summary.current ?? "the pipeline"}`
+            : summary.failed
+              ? `The run stopped at ${summary.failed}`
+              : summary.complete
+                ? "The run finished, but there is no video"
+                : summary.started
+                  ? `Stopped after ${summary.done} of ${summary.total} stages`
+                  : "Nothing has run yet"}
+        </p>
+
+        <p className="mt-1.5 text-[12px] leading-relaxed text-muted">
+          {working
+            ? (stage?.message ?? "preview.mp4 is written by the mix stage, at the end.")
+            : summary.complete
+              ? "Render preview re-runs timeline, mix and report and writes preview.mp4."
+              : "preview.mp4 is written by the mix stage. Until then the transport below is a virtual clock, so the timeline and the segment list still work."}
+        </p>
+
+        <div className="mt-4 flex flex-col items-center gap-2.5">
+          <StageTrack stages={project?.stages} current={stage?.stage ?? null} />
+          {working ? <Progress value={progress} className="w-56" /> : null}
+          {!working && (summary.complete || summary.started) ? (
+            <Button size="sm" onClick={onRender}>
+              <Film className="h-3.5 w-3.5" />
+              Render preview
+            </Button>
+          ) : null}
+        </div>
+      </div>
     </div>
   );
 }

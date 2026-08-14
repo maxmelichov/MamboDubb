@@ -23,17 +23,22 @@ import {
   Languages,
   Loader2,
   PencilLine,
+  PlugZap,
 } from "lucide-react";
 import { PageShell } from "../components/AppShell";
+import { StageTrack } from "../components/StageTrack";
 import {
+  Badge,
   Button,
   Card,
   CardSection,
   Divider,
+  Empty,
   ErrorBlock,
   Eyebrow,
   Field,
   LogoMark,
+  NumberInput,
   SectionLabel,
   Select,
   TextArea,
@@ -42,6 +47,7 @@ import {
 import { api } from "../lib/api";
 import { isDesktop, pickVideoFile } from "../lib/desktop";
 import { timecode } from "../lib/format";
+import { ago, stageTone, summarizeStages } from "../lib/stages";
 import type { CreateProjectRequest, ProjectSummary } from "../lib/types";
 
 const LANGS = [
@@ -73,21 +79,35 @@ export function ImportPage() {
   });
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
+  // Distinct from "no projects": one means the form worked and there is
+  // nothing to open, the other means the server never answered, and telling a
+  // user the first when it was the second is how they end up re-running a
+  // dub they already have.
+  const [listError, setListError] = useState<string | null>(null);
 
   const update = (patch: Partial<CreateProjectRequest>) =>
     setForm((current) => ({ ...current, ...patch }));
 
+  const [reloads, setReloads] = useState(0);
   useEffect(() => {
     let cancelled = false;
     void api
       .listProjects()
-      .then((list) => !cancelled && setProjects(list))
-      .catch(() => undefined);
+      .then((list) => {
+        if (cancelled) return;
+        setProjects(list);
+        setListError(null);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setProjects([]);
+        setListError(String(err instanceof Error ? err.message : err));
+      });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [reloads]);
 
   /**
    * In the shell, a native dialog gives back the absolute path the pipeline
@@ -201,12 +221,14 @@ export function ImportPage() {
                 ))}
               </Select>
             </Field>
-            <Field label="Duration cap" hint="seconds, blank for the whole video">
-              <TextInput
-                type="number"
+            <Field label="Duration cap" hint="blank = the whole video">
+              <NumberInput
                 min={0}
+                step={10}
+                suffix="sec"
                 value={form.duration ?? ""}
                 placeholder="320"
+                aria-label="Duration cap in seconds"
                 onChange={(event) =>
                   update({
                     duration:
@@ -302,52 +324,107 @@ export function ImportPage() {
         <div className="flex items-baseline justify-between gap-3 px-1">
           <Eyebrow>Existing runs</Eyebrow>
           <span className="text-[11px] tabular-nums text-muted">
-            {projects.length === 0
-              ? ""
-              : `${projects.length} ${projects.length === 1 ? "run" : "runs"} in outputs/`}
+            {projects && projects.length > 0
+              ? `${projects.length} ${projects.length === 1 ? "run" : "runs"} in outputs/`
+              : ""}
           </span>
         </div>
 
         <Card className="overflow-hidden p-0">
-          {projects.length === 0 ? (
+          {projects == null ? (
             <div className="flex items-center gap-3 px-6 py-7 text-[13px] text-muted">
-              <Clapperboard className="h-4 w-4 shrink-0" aria-hidden />
-              Nothing under outputs/ yet. Your first run will show up here.
+              <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
+              Reading outputs/…
             </div>
+          ) : listError ? (
+            <Empty
+              className="py-9"
+              icon={PlugZap}
+              title="Can't reach the studio server"
+              action={
+                <Button size="sm" onClick={() => setReloads((n) => n + 1)}>
+                  Try again
+                </Button>
+              }
+            >
+              Existing runs live on the server, and it did not answer:{" "}
+              <span className="text-secondary">{listError}</span>. Start it with{" "}
+              <code className="font-mono text-secondary">
+                uv run python -m dubbing_app.server
+              </code>
+              , then try again.
+            </Empty>
+          ) : projects.length === 0 ? (
+            <Empty className="py-9" icon={Clapperboard} title="No runs yet">
+              Every dub you start lands here, resumable. Fill in the form above and press{" "}
+              <em>Start dubbing</em> to make the first one.
+            </Empty>
           ) : (
             <ul className="divide-y divide-border">
               {projects.map((project) => (
-                <li key={project.name}>
-                  <button
-                    type="button"
-                    onClick={() => navigate(`/editor/${encodeURIComponent(project.name)}`)}
-                    className="group flex w-full items-center gap-4 px-5 py-3.5 text-left transition-colors hover:bg-sunken"
-                  >
-                    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-border bg-sunken text-muted transition-colors group-hover:border-axis group-hover:text-primary">
-                      <LogoMark className="h-4 w-4" />
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[13px] font-semibold text-primary">
-                        {project.title}
-                      </span>
-                      <span className="mt-0.5 block truncate font-mono text-[11px] text-muted">
-                        {project.name}
-                      </span>
-                    </span>
-                    <span className="hidden shrink-0 text-[10px] font-bold uppercase tracking-[0.14em] text-muted sm:block">
-                      {project.src_lang} → {project.tgt_lang}
-                    </span>
-                    <span className="w-12 shrink-0 text-right text-[11px] tabular-nums text-muted">
-                      {project.duration ? timecode(project.duration, 0) : "—"}
-                    </span>
-                    <ChevronRight className="h-4 w-4 shrink-0 text-muted opacity-0 transition-opacity group-hover:opacity-100" />
-                  </button>
-                </li>
+                <ProjectRow
+                  key={project.name}
+                  project={project}
+                  onOpen={() => navigate(`/editor/${encodeURIComponent(project.name)}`)}
+                />
               ))}
             </ul>
           )}
         </Card>
       </section>
     </PageShell>
+  );
+}
+
+/**
+ * One existing run.
+ *
+ * The row used to say the title, the run name, the language pair and the
+ * duration — everything except the thing you actually came to find out, which
+ * is *where this run got to*. A half-finished run and a finished one looked
+ * identical, so the only way to tell them apart was to open both. Now the row
+ * carries the pipeline position (nine dots, the shared track), a word for it,
+ * and when it last moved.
+ */
+function ProjectRow({ project, onOpen }: { project: ProjectSummary; onOpen: () => void }) {
+  const summary = summarizeStages(project.stages);
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onOpen}
+        className="group flex w-full items-center gap-4 px-5 py-3.5 text-left transition-colors hover:bg-sunken"
+      >
+        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-border bg-sunken text-muted transition-colors group-hover:border-axis group-hover:text-primary">
+          <LogoMark className="h-4 w-4" />
+        </span>
+
+        <span className="min-w-0 flex-1">
+          <span className="flex min-w-0 items-center gap-2">
+            <span className="truncate text-[13px] font-semibold text-primary">{project.title}</span>
+            <Badge tone={stageTone(summary)}>{summary.label}</Badge>
+          </span>
+          <span className="mt-0.5 flex min-w-0 items-center gap-2 text-[11px] text-muted">
+            <span className="truncate font-mono">{project.name}</span>
+            <span aria-hidden>·</span>
+            <span className="shrink-0 whitespace-nowrap">{ago(project.mtime)}</span>
+          </span>
+        </span>
+
+        <StageTrack
+          stages={project.stages}
+          showLabel={false}
+          className="hidden shrink-0 md:inline-flex"
+        />
+
+        <span className="hidden shrink-0 text-[10px] font-bold uppercase tracking-[0.14em] text-muted sm:block">
+          {project.src_lang} → {project.tgt_lang}
+        </span>
+        <span className="w-12 shrink-0 text-right text-[11px] tabular-nums text-muted">
+          {project.duration ? timecode(project.duration, 0) : "—"}
+        </span>
+        <ChevronRight className="h-4 w-4 shrink-0 text-muted transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
+      </button>
+    </li>
   );
 }
