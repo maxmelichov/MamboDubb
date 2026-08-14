@@ -5,8 +5,8 @@
  * column of cards on the plane. Import and Setup use it, because both are
  * "arrive, read, decide" screens where breathing room *is* the affordance.
  *
- * `AppHeader` is the workspace bar: 56px, bordered, dense, and it never grows,
- * because the editor's job is to give every remaining pixel to the timeline.
+ * `AppHeader` is the workspace bar: 44px, bordered, dense, and it never grows,
+ * because the editor's job is to give every remaining pixel to the script.
  *
  * Both carry the same right-hand tools (theme toggle, fixtures badge, Setup),
  * so the app never loses its chrome when the layout changes underneath it.
@@ -14,7 +14,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { Moon, SlidersHorizontal, Sun } from "lucide-react";
+import { ChevronLeft, Moon, SlidersHorizontal, Sun } from "lucide-react";
 import { USE_FIXTURES } from "../lib/api";
 import { cn } from "../lib/classNames";
 import { currentTheme, onThemeChange, setTheme, type Theme } from "../lib/theme";
@@ -63,6 +63,12 @@ export function PageShell({
   );
 }
 
+/**
+ * The workspace bar. 44px, and the brand tile is a back link rather than a
+ * logo: on the editor the one navigation a user wants from the top-left is
+ * "out of this run", and a wordmark that happens to be clickable does not say
+ * so. It says "Runs", with the arrow, because that is where it goes.
+ */
 export function AppHeader({
   children,
   actions,
@@ -73,18 +79,22 @@ export function AppHeader({
   actions?: ReactNode;
 }) {
   return (
-    <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-surface px-4">
+    <header className="flex h-11 shrink-0 items-center gap-2.5 border-b border-border bg-surface px-3">
       <Link
         to="/"
-        className="rounded-md text-primary transition-opacity hover:opacity-70"
-        aria-label="Dubbing Studio — projects"
+        className={cn(
+          "inline-flex h-7 shrink-0 items-center gap-1 rounded-md pr-1.5 text-[12.5px] font-semibold",
+          "text-secondary transition-colors hover:text-primary",
+        )}
+        title="Back to every run in the workspace"
       >
-        <Brand compact />
+        <ChevronLeft className="h-3.5 w-3.5" aria-hidden />
+        Runs
       </Link>
-      <span className="h-5 w-px shrink-0 bg-border" aria-hidden />
-      <div className="flex min-w-0 flex-1 items-center gap-3">{children}</div>
-      {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
-      <span className="h-5 w-px shrink-0 bg-border" aria-hidden />
+      <span className="h-4 w-px shrink-0 bg-border" aria-hidden />
+      <div className="flex min-w-0 flex-1 items-center gap-2.5">{children}</div>
+      {actions ? <div className="flex shrink-0 items-center gap-1.5">{actions}</div> : null}
+      <span className="h-4 w-px shrink-0 bg-border" aria-hidden />
       <HeaderTools />
     </header>
   );

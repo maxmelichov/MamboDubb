@@ -1,28 +1,34 @@
 /**
- * The segment timeline.
+ * The segment timeline — a map, not an edit surface.
  *
  * Two lanes on one shared time axis: SOURCE is where the speech is in the
  * original, OUTPUT is where the dubbed audio actually landed. They are drawn
  * separately because the gap between them *is* drift — the thing a reviewer is
- * looking for — and a single lane would hide it.
+ * looking for — and a single lane would hide it. Unclaimed time gets no hue at
+ * all: it is an absence, so it is a neutral 135° hatch.
  *
- * Encoding discipline (dataviz): four states, each with a validated hue, a
- * glyph and a word. Colour never carries meaning alone; the hue is the fast
- * channel and the glyph is the correct one. Unclaimed time gets no hue at all —
- * it is an absence, so it is a neutral 135° hatch.
+ * It is a 112px strip across the bottom now rather than a third of the screen,
+ * and it lost three things in the move. The per-mark hover tooltip is gone: it
+ * repeated the two lines of text that the script pane now shows in full, three
+ * inches away, permanently. The legend is gone: four states, each already
+ * carrying its word on every script row. And the "Timeline" eyebrow is gone —
+ * a strip of clips on a time axis at the bottom of a video editor does not need
+ * to be captioned.
+ *
+ * What it gained is its own controls (zoom, split at the playhead) at the right
+ * edge, where they belong, and drag-to-scrub across the whole strip. What it
+ * still refuses to do is move anything: `timeline.place()` is the sole authority
+ * on where audio goes, so there is no dragging a clip and no trim handle. This
+ * is a picture of the placement, and the way to change it is to change what is
+ * placed.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
+import { Minus, Plus, Scissors } from "lucide-react";
 import { cn } from "../lib/classNames";
 import { timecode } from "../lib/format";
-import {
-  STATE_META,
-  UNCLAIMED_META,
-  placedSpan,
-  segmentState,
-  unclaimedSpans,
-  type SegmentState,
-} from "../lib/segments";
+import { Button, ButtonGroup, ConfirmButton } from "./ui";
+import { STATE_META, placedSpan, segmentState, unclaimedSpans } from "../lib/segments";
 import type { Segment } from "../lib/types";
 
 const TICK_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
@@ -35,8 +41,12 @@ export function Timeline({
   selectedUid,
   busyUids,
   pxPerSecond,
+  splitAt,
   onSelect,
   onSeek,
+  onZoomIn,
+  onZoomOut,
+  onSplit,
 }: {
   segments: Segment[];
   total: number;
@@ -44,11 +54,16 @@ export function Timeline({
   selectedUid: string | null;
   busyUids: string[];
   pxPerSecond: number;
+  /** The playhead, when it is inside the selected segment — else null. */
+  splitAt: number | null;
   onSelect: (uid: string) => void;
   onSeek: (time: number) => void;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onSplit: (at: number) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [hover, setHover] = useState<{ seg: Segment; x: number } | null>(null);
+  const laneRef = useRef<HTMLDivElement>(null);
 
   const width = Math.max(320, total * pxPerSecond);
   const gaps = useMemo(() => unclaimedSpans(segments, total), [segments, total]);
@@ -70,24 +85,51 @@ export function Timeline({
     }
   }, [currentTime, pxPerSecond]);
 
-  const seekFromEvent = (event: React.MouseEvent<HTMLDivElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
-    onSeek(Math.max(0, (event.clientX - rect.left) / pxPerSecond));
+  const seekFromClientX = useCallback(
+    (clientX: number) => {
+      const rect = laneRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      onSeek(Math.max(0, (clientX - rect.left) / pxPerSecond));
+    },
+    [onSeek, pxPerSecond],
+  );
+
+  /**
+   * Drag-to-scrub. Pointer capture rather than window listeners so a drag that
+   * leaves the strip — which is most of them, the strip is 112px tall — keeps
+   * scrubbing instead of stopping at the edge.
+   *
+   * A press that starts on a mark is that mark's click: selecting a segment is
+   * the more common gesture and it must not be swallowed by the scrubber.
+   */
+  const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    if ((event.target as HTMLElement).closest("[data-mark]")) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    seekFromClientX(event.clientX);
   };
 
   return (
-    <div className="relative flex min-h-0 flex-col">
-      <div ref={scrollRef} className="overflow-x-auto overflow-y-hidden">
-        <div className="relative select-none" style={{ width }}>
+    <section className="relative flex h-28 shrink-0 flex-col border-t border-border bg-surface">
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden">
+        <div
+          ref={laneRef}
+          className="relative h-full cursor-col-resize select-none"
+          style={{ width }}
+          onPointerDown={onPointerDown}
+          onPointerMove={(event) => {
+            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+              seekFromClientX(event.clientX);
+            }
+          }}
+          onPointerUp={(event) => event.currentTarget.releasePointerCapture(event.pointerId)}
+        >
           {/* Axis. Recessive: hairline ticks, muted labels, tabular figures. */}
-          <div
-            className="relative h-5 cursor-pointer border-b border-grid bg-sunken"
-            onClick={seekFromEvent}
-          >
+          <div className="relative h-4 border-b border-grid bg-sunken">
             {ticks(total, tickStep).map((t) => (
               <div key={t} className="absolute top-0 h-full" style={{ left: t * pxPerSecond }}>
-                <div className="h-2 w-px bg-axis" />
-                <span className="absolute left-1 top-0.5 font-mono text-[9px] tabular-nums text-muted">
+                <div className="h-1.5 w-px bg-axis" />
+                <span className="absolute left-1 top-0 font-mono text-[9px] tabular-nums text-muted">
                   {timecode(t, 0)}
                 </span>
               </div>
@@ -104,7 +146,6 @@ export function Timeline({
                   width: Math.max(MIN_MARK_PX, (gap.end - gap.start) * pxPerSecond - 2),
                   borderColor: "color-mix(in srgb, var(--color-unclaimed) 45%, transparent)",
                 }}
-                title={`Unclaimed ${timecode(gap.start)} – ${timecode(gap.end)}`}
               />
             ))}
             {segments.map((seg) => (
@@ -117,7 +158,6 @@ export function Timeline({
                 selected={seg.uid === selectedUid}
                 busy={busyUids.includes(seg.uid)}
                 onSelect={onSelect}
-                onHover={setHover}
               />
             ))}
           </Lane>
@@ -136,7 +176,6 @@ export function Timeline({
                   selected={seg.uid === selectedUid}
                   busy={busyUids.includes(seg.uid)}
                   onSelect={onSelect}
-                  onHover={setHover}
                 />
               );
             })}
@@ -152,17 +191,56 @@ export function Timeline({
         </div>
       </div>
 
-      {hover ? <Tooltip seg={hover.seg} x={hover.x} /> : null}
-    </div>
+      {/*
+        The strip's own controls, floated over its right edge rather than given
+        a toolbar row of their own — 112px is the whole budget and a header
+        would take a quarter of it. They stop the scrub because they sit above
+        the lane, which is correct: nobody means "seek" by "zoom".
+      */}
+      <div className="pointer-events-none absolute inset-y-0 right-0 z-30 flex items-center gap-1.5 bg-gradient-to-l from-surface via-surface/95 to-transparent pl-8 pr-2">
+        <div className="pointer-events-auto flex items-center gap-1.5">
+          <ConfirmButton
+            size="xs"
+            disabled={splitAt == null}
+            title={
+              splitAt == null
+                ? "Select a segment and put the playhead inside it to split"
+                : `Split at ${timecode(splitAt)}`
+            }
+            confirmLabel="Split"
+            message={
+              splitAt == null
+                ? ""
+                : `Split at ${timecode(splitAt)}. Both halves lose their translation and their clip — the line was written for the whole span.`
+            }
+            onConfirm={() => splitAt != null && onSplit(splitAt)}
+          >
+            <Scissors className="h-3 w-3" />
+            Split
+          </ConfirmButton>
+          <ButtonGroup className="h-6">
+            <Button variant="ghost" size="xs" onClick={onZoomOut} aria-label="Zoom out">
+              <Minus className="h-3 w-3" />
+            </Button>
+            <span className="flex w-11 items-center justify-center bg-raised font-mono text-[11px] tabular-nums text-muted">
+              {pxPerSecond}px/s
+            </span>
+            <Button variant="ghost" size="xs" onClick={onZoomIn} aria-label="Zoom in">
+              <Plus className="h-3 w-3" />
+            </Button>
+          </ButtonGroup>
+        </div>
+      </div>
+    </section>
   );
 }
 
 function Lane({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="relative h-10 border-b border-grid last:border-b-0">
+    <div className="relative h-[calc(50%-0.5rem)] border-b border-grid last:border-b-0">
       {/* The label rides the scroll container, so it needs its own backing to
           stay legible when a mark passes underneath it. */}
-      <span className="pointer-events-none absolute left-1 top-1 z-10 rounded bg-surface/85 px-1 py-px text-[9px] font-bold uppercase tracking-[0.16em] text-muted">
+      <span className="pointer-events-none absolute left-1 top-0.5 z-10 rounded bg-surface/85 px-1 text-[9px] font-bold uppercase tracking-[0.16em] text-muted">
         {label}
       </span>
       {children}
@@ -179,7 +257,6 @@ function Mark({
   busy,
   muted,
   onSelect,
-  onHover,
 }: {
   seg: Segment;
   start: number;
@@ -189,7 +266,6 @@ function Mark({
   busy: boolean;
   muted?: boolean;
   onSelect: (uid: string) => void;
-  onHover: (value: { seg: Segment; x: number } | null) => void;
 }) {
   const state = segmentState(seg);
   const meta = STATE_META[state];
@@ -201,18 +277,15 @@ function Mark({
   return (
     <button
       type="button"
+      data-mark
       onClick={() => onSelect(seg.uid)}
-      onMouseEnter={(event) =>
-        onHover({ seg, x: event.currentTarget.getBoundingClientRect().left })
-      }
-      onMouseLeave={() => onHover(null)}
       aria-label={`Segment ${seg.id}, ${meta.label}, ${timecode(start)} to ${timecode(end)}`}
       aria-pressed={selected}
       className={cn(
-        "absolute inset-y-2 overflow-hidden rounded-[3px] text-left transition-all",
+        "absolute inset-y-1.5 overflow-hidden rounded-[3px] text-left transition-all",
         // Hover is a real affordance here: the marks are 3–40px wide and the
         // only other cue that they are clickable is the cursor.
-        "hover:inset-y-1.5 hover:ring-2 hover:ring-primary/45",
+        "hover:inset-y-1 hover:ring-2 hover:ring-primary/45",
         selected && "ring-2 ring-primary ring-offset-1 ring-offset-surface",
         busy && "animate-pulse",
         muted && "opacity-40",
@@ -229,87 +302,6 @@ function Mark({
         </span>
       ) : null}
     </button>
-  );
-}
-
-function Tooltip({ seg, x }: { seg: Segment; x: number }) {
-  const meta = STATE_META[segmentState(seg)];
-  return (
-    <div
-      className="pointer-events-none fixed z-30 max-w-[22rem] rounded-xl border border-border bg-raised p-3 text-[12px] shadow-pop"
-      style={{ left: Math.min(x, window.innerWidth - 360), top: undefined, bottom: 12 }}
-    >
-      <div className="flex items-center gap-2 text-muted">
-        <span aria-hidden style={{ color: meta.token }}>
-          {meta.glyph}
-        </span>
-        <span className="font-mono font-semibold text-primary">#{seg.id}</span>
-        <span className="text-[10px] font-bold uppercase tracking-[0.12em]">{meta.label}</span>
-        <span className="ml-auto font-mono tabular-nums">
-          {timecode(seg.start)} – {timecode(seg.end)}
-        </span>
-      </div>
-      <p dir="auto" className="auto-dir mt-2 line-clamp-2 leading-relaxed text-secondary">
-        {seg.text}
-      </p>
-      {seg.text_en ? (
-        <p dir="auto" className="auto-dir mt-1 line-clamp-2 leading-relaxed text-primary">
-          {seg.text_en}
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
-/** Identity is never colour-alone: the legend is always present. */
-export function TimelineLegend({ counts }: { counts: Record<SegmentState, number> }) {
-  const entries: { key: string; token: string; glyph: string; label: string; count?: number }[] = (
-    Object.keys(STATE_META) as SegmentState[]
-  ).map((state) => ({
-    key: state,
-    token: STATE_META[state].token,
-    glyph: STATE_META[state].glyph,
-    label: STATE_META[state].label,
-    count: counts[state],
-  }));
-  entries.push({ key: "unclaimed", ...UNCLAIMED_META });
-
-  return (
-    <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1 py-0.5">
-      {entries.map((entry) => (
-        <span
-          key={entry.key}
-          className={cn(
-            "inline-flex items-center gap-1.5 text-[11px] whitespace-nowrap text-secondary",
-            // A state with nothing in it is still named — the legend is the
-            // key to the encoding, not a list of what happens to be present —
-            // but it steps back so the counts that matter read first.
-            entry.count === 0 && "opacity-45",
-          )}
-        >
-          <span
-            aria-hidden
-            className={cn(
-              "h-2.5 w-3.5 rounded-[2px]",
-              entry.key === "unclaimed" && "hatch-unclaimed",
-            )}
-            style={{
-              backgroundColor: entry.key === "unclaimed" ? "transparent" : entry.token,
-              border: entry.key === "unclaimed" ? "1px dashed var(--color-unclaimed)" : undefined,
-            }}
-          />
-          <span aria-hidden style={{ color: entry.token }}>
-            {entry.glyph}
-          </span>
-          {entry.label}
-          {entry.count != null ? (
-            <span className="font-mono font-semibold tabular-nums text-primary">
-              {entry.count}
-            </span>
-          ) : null}
-        </span>
-      ))}
-    </div>
   );
 }
 
