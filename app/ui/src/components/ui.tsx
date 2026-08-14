@@ -30,6 +30,7 @@ import {
 } from "react";
 import { ChevronDown, TriangleAlert } from "lucide-react";
 import { cn } from "../lib/classNames";
+import { STATE_META, type SegmentState } from "../lib/segments";
 
 /* ------------------------------------------------------------------ brand */
 
@@ -664,6 +665,30 @@ export function Badge({
         className,
       )}
       {...props}
+    />
+  );
+}
+
+/**
+ * A segment state's shape, in its hue.
+ *
+ * One component for all five places the encoding appears — the script row's
+ * meta line, the timeline mark, the dub/keep control and the run summary — so
+ * the shape a reviewer learns on a row is the same shape they meet on the
+ * strip. It draws at the size the caller asks for; below about 10px the two
+ * outline states stop separating, so 10 is the floor.
+ */
+export function StateIcon({ state, className }: { state: SegmentState; className?: string }) {
+  const meta = STATE_META[state];
+  const Icon = meta.icon;
+  return (
+    // Always decoration: every place it appears — the row, the mark, the
+    // control, the tally — already carries the state as a word or an
+    // `aria-label`, so a second announcement of it is noise.
+    <Icon
+      aria-hidden
+      className={cn("shrink-0", meta.filled && "fill-current", className ?? "h-3 w-3")}
+      style={{ color: meta.token }}
     />
   );
 }

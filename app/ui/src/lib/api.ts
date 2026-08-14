@@ -15,6 +15,8 @@ import type {
   ErrorCode,
   Health,
   Job,
+  Peaks,
+  PeaksFile,
   ProjectDetail,
   ProjectSummary,
   Segment,
@@ -263,6 +265,30 @@ export const api = {
     return request<{ job: Job }>(
       `/api/projects/${encodeURIComponent(name)}/render`, json({}),
     ).then((r) => r.job);
+  },
+
+  /**
+   * The waveform behind a timeline lane.
+   *
+   * `null` rather than a throw when the file is not there yet: `dub.wav` does
+   * not exist until the mix stage has run, and a lane with no waveform is a
+   * *state* of a young run, not a failure — the same reasoning that keeps the
+   * event stream from rejecting on a dropped connection. Everything else still
+   * throws, because a 500 here is a bug and should not be silently drawn as
+   * silence.
+   *
+   * `n` is buckets, clamped server-side to [16, 4000].
+   */
+  async peaks(name: string, file: PeaksFile, n: number): Promise<Peaks | null> {
+    if (USE_FIXTURES) return fixtures.peaks(name, file, n);
+    try {
+      return await request<Peaks>(
+        `/api/projects/${encodeURIComponent(name)}/peaks?file=${file}&n=${Math.round(n)}`,
+      );
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) return null;
+      throw error;
+    }
   },
 
   listJobs(): Promise<Job[]> {

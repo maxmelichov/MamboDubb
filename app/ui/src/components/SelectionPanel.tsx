@@ -42,17 +42,18 @@ import {
   Field,
   NumberInput,
   Select,
+  StateIcon,
   TextInput,
 } from "./ui";
 import { cn } from "../lib/classNames";
 import { duration as fmtDuration, percent, speakerLabel, timecode } from "../lib/format";
 import {
-  STATE_META,
   lockedFields,
   neighbours,
   placementConcern,
   segmentState,
   verifyConcern,
+  type SegmentState,
 } from "../lib/segments";
 import type { Segment, SegmentPatch, TtsOpts } from "../lib/types";
 
@@ -126,20 +127,22 @@ export function SelectionPanel({
         {/* 1 — the verdict. Two states, both named, neither of them jargon. */}
         <section className="flex flex-col gap-1.5">
           <div className="flex overflow-hidden rounded-lg border border-border bg-raised">
+            {/* Each half only patches when it is *not* already the verdict:
+                pressing the one that is already on is a no-op the user can
+                see, and it must be a no-op the server never hears — it would
+                otherwise stamp a `keep` lock on a line nobody changed. */}
             <Choice
               active={!seg.keep}
-              onClick={() => onPatch({ keep: false })}
+              onClick={() => seg.keep && onPatch({ keep: false })}
               label="Dub it"
-              glyph={STATE_META.dubbed.glyph}
-              token={STATE_META.dubbed.token}
+              state="dubbed"
             />
             <span className="w-px shrink-0 bg-border" aria-hidden />
             <Choice
               active={seg.keep}
-              onClick={() => onPatch({ keep: true, keep_reason: "manual" })}
+              onClick={() => !seg.keep && onPatch({ keep: true, keep_reason: "manual" })}
               label="Keep original"
-              glyph={STATE_META.kept.glyph}
-              token={STATE_META.kept.token}
+              state="kept"
             />
           </div>
           <p className="text-[11px] leading-snug text-muted">
@@ -413,7 +416,12 @@ function VoiceShelf({
   onPatch: (patch: SegmentPatch) => void;
 }) {
   const opts = seg.tts_opts ?? null;
-  const set = (patch: TtsOpts) => onPatch({ tts_opts: { ...(opts ?? {}), ...patch } });
+  /** Same discipline as the text fields: a value that did not move is not a save. */
+  const set = (patch: TtsOpts) => {
+    const next = { ...(opts ?? {}), ...patch };
+    if (JSON.stringify(next) === JSON.stringify(opts ?? {})) return;
+    onPatch({ tts_opts: next });
+  };
 
   return (
     <Disclosure
@@ -556,14 +564,12 @@ function Choice({
   active,
   onClick,
   label,
-  glyph,
-  token,
+  state,
 }: {
   active: boolean;
   onClick: () => void;
   label: string;
-  glyph: string;
-  token: string;
+  state: SegmentState;
 }) {
   return (
     <button
@@ -575,9 +581,7 @@ function Choice({
         active ? "bg-primary/[0.09] font-semibold text-primary" : "text-secondary hover:bg-border/50",
       )}
     >
-      <span aria-hidden style={{ color: token }}>
-        {glyph}
-      </span>
+      <StateIcon state={state} className="h-2.5 w-2.5" />
       {label}
     </button>
   );

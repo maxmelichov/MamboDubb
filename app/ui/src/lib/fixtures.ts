@@ -12,6 +12,7 @@
  */
 
 import data from "./fixture-data.json";
+import { placedSpan } from "./segments";
 import { toneUrl } from "./tone";
 import type {
   CreateProjectRequest,
@@ -19,6 +20,8 @@ import type {
   Health,
   Job,
   JobKind,
+  Peaks,
+  PeaksFile,
   ProjectDetail,
   ProjectSummary,
   Segment,
@@ -55,6 +58,19 @@ const jobs: Job[] = [];
 const listeners = new Set<(event: StudioEvent) => void>();
 let jobSeq = 0;
 let running = false;
+
+/**
+ * How many round trips the editor has made, by kind.
+ *
+ * Fixture mode is the only mode the smoke test runs in and it never touches
+ * `fetch`, so "did that interaction hit the server" has to be counted here or
+ * it cannot be asserted at all. It exists for one claim in particular — that
+ * closing an editor without changing the text saves nothing — which is
+ * invisible to a DOM assertion because a no-op PATCH looks exactly like no
+ * PATCH from the outside.
+ */
+export const calls = { patch: 0, segments: 0, peaks: 0 };
+(globalThis as { __DUBBING_FIXTURE_CALLS__?: typeof calls }).__DUBBING_FIXTURE_CALLS__ = calls;
 
 // --- enrichment -----------------------------------------------------------
 
@@ -231,12 +247,71 @@ export function getProject(_name: string): Promise<ProjectDetail> {
 }
 
 export function getSegments(_name: string): Promise<Segment[]> {
+  calls.segments += 1;
   return delay(store.segments.map(enrich));
+}
+
+/**
+ * A waveform that agrees with the marks.
+ *
+ * The point of a fixture waveform is not that it looks like this particular
+ * video — it is that the picture and the segment list tell the same story, so
+ * a lane drawn against the wrong time base, or a SOURCE envelope accidentally
+ * fed the OUTPUT spans, is visible rather than plausible. So the envelope is
+ * built *from the segments*: speech inside a span, near-silence between them,
+ * a syllable-rate wobble on top and a per-bucket jitter from a hash of the
+ * index. Deterministic by construction — no `Math.random`, so two calls draw
+ * the same picture and a screenshot diff means something.
+ */
+export function peaks(_name: string, file: PeaksFile, n: number): Promise<Peaks> {
+  calls.peaks += 1;
+  const buckets = Math.max(16, Math.min(Math.round(n), 4000));
+  // `dub.wav` is written by the mix stage; before it has run the server 404s
+  // and the lane falls back to marks alone. The fixture has to refuse it in
+  // the same case or that fallback is never exercised anywhere.
+  if (file === "dub" && store.project.stages.mix !== "done") {
+    return Promise.reject(new Error("dub.wav does not exist yet for this run"));
+  }
+
+  const spans = store.segments.map((seg) =>
+    file === "dub" ? placedSpan(seg) : { start: seg.start, end: seg.end },
+  );
+  const duration = Math.max(
+    store.project.source.duration ?? 0,
+    ...spans.map((s) => s.end),
+    1,
+  );
+
+  const values = new Array<number>(buckets);
+  for (let i = 0; i < buckets; i += 1) {
+    const t = ((i + 0.5) * duration) / buckets;
+    const span = spans.find((s) => t >= s.start && t < s.end);
+    if (!span) {
+      values[i] = 0.012;
+      continue;
+    }
+    // Fast attack, long sustain, soft release across the span…
+    const u = (t - span.start) / Math.max(0.05, span.end - span.start);
+    const shape = Math.sin(Math.PI * Math.min(1, Math.max(0, u))) ** 0.7;
+    // …syllables, with real troughs between them (a `|sin|` floor of 0.6 draws
+    // a sausage, and speech is not a sausage)…
+    const syllables = 0.3 + 0.7 * Math.abs(Math.sin(t * 8.5)) ** 1.4;
+    // …and grain, so no two buckets are identical.
+    const grain = 0.72 + 0.28 * hash01(i);
+    values[i] = Number(Math.min(1, shape * syllables * grain).toFixed(4));
+  }
+  return delay({ file, duration, peaks: values });
+}
+
+/** A stable [0, 1) from an integer. Knuth's multiplicative hash, 32-bit. */
+function hash01(i: number): number {
+  return ((Math.imul(i + 1, 2654435761) >>> 0) % 10007) / 10007;
 }
 
 // --- no-model edits: instant, allowed while a job runs ---------------------
 
 export function patchSegment(_name: string, uid: string, patch: SegmentPatch): Promise<Segment> {
+  calls.patch += 1;
   const seg = find(uid);
 
   // `dubbing/edit.py` refuses both of these outright, with a 400. The editor

@@ -59,7 +59,7 @@
        #2a78d6, #eda100, #d03b3b — CVD dE 19.8, normal dE 24.1.
      The pairs separate; the *yellow against the card* does not — it sits at
      2.17:1, under the 3:1 gate (blue 4.42:1, red 4.80:1). So the relief rule
-     stands: every state also carries a glyph and a word, and the segment
+     stands: every state also carries a shape and a word, and the segment
      navigator repeats the state as text. Never colour alone. The dark triple
      under `.theme-dark` clears 3:1 on all three, and the rule still stands
      there — one encoding, one set of affordances, both themes. */
@@ -131,11 +131,12 @@ html.theme-dark {
  *   muted     #98948b   6.0:1     dubbed    #3987e5   5.0:1
  *   kept      #c98500   5.9:1     failed    #d03b3b   3.8:1
  * All three state hues clear the 3:1 non-text gate here — which light does not
- * manage for amber (2.17:1) — but the glyph-and-word rule is unconditional, so
+ * manage for amber (2.17:1) — but the shape-and-word rule is unconditional, so
  * nothing about the encoding changes between themes.
  *
- * The glyph drawn *inside* a mark keeps its light-mode ink: white on the dark
- * blue is 3.6:1 and on the red 4.8:1, and near-black on the amber is 6.1:1.
+ * The shape drawn *inside* a timeline mark is the state's own hue, not an ink
+ * chosen against the fill: the fill is a 22% wash of that same hue, so the
+ * shape reads on it in either theme and there is no third colour to validate.
  */
 :root.theme-dark {
   --color-plane: #0e0e0d;

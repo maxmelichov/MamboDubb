@@ -44,7 +44,17 @@ export function JobBar({
   const progress = stage?.progress ?? job?.progress ?? null;
 
   return (
-    <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border bg-sunken px-4 py-1.5 text-[12.5px]">
+    /*
+      One line, always: `flex-wrap` let a long stage message or a dropped
+      stream wrap to a second row, which moved the whole editor down by 28px
+      mid-job — the script under the cursor jumping while you read it. Both
+      variable-length parts truncate instead, and the strip has a fixed height
+      so its appearance is the only layout change it can cause.
+    */
+    <div
+      data-job-strip
+      className="flex h-8 shrink-0 items-center gap-3 border-b border-border bg-sunken px-4 text-[12.5px]"
+    >
       {/*
         A dropped stream is not a dead app — every edit still goes over plain
         HTTP and still saves. The only thing that stops is progress arriving on
@@ -53,10 +63,12 @@ export function JobBar({
         stream reconnects by itself and any edit re-reads the run anyway.
       */}
       {!connected ? (
-        <span className="inline-flex items-center gap-1.5 font-medium text-secondary">
+        <span className="flex min-w-0 flex-1 items-center gap-1.5 font-medium text-secondary">
           <WifiOff className="h-3.5 w-3.5 shrink-0" aria-hidden />
-          Progress stream disconnected — retrying. Edits still save; progress will not
-          update on its own.
+          <span className="min-w-0 truncate">
+            Progress stream disconnected — retrying. Edits still save; progress will not
+            update on its own.
+          </span>
         </span>
       ) : null}
 
