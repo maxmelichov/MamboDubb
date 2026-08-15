@@ -190,13 +190,13 @@ export function SelectionPanel({
               // cannot happen is the same failure as staying silent about one
               // that can.
               <>
-                The source audio plays untouched. Switching to Keep leaves your translation
-                in place, as a subtitle.
+                The dubbed voice replaces the source audio. Switching to “Keep original”
+                leaves your translation in place, as a subtitle.
               </>
             ) : (
               <>
-                The source audio plays untouched. Switching to Keep discards this line’s
-                translation — a later re-run makes a new one.
+                The dubbed voice replaces the source audio. Switching to “Keep original”
+                discards this line’s translation — a later re-run makes a new one.
               </>
             )}
             {/* The reason in words. `keep_reason` is a manifest token — and

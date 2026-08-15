@@ -295,8 +295,10 @@ export function ImportPage() {
             */}
             <SectionLabel icon={PencilLine}>Optional — Context</SectionLabel>
             <TextArea
+              autoGrow
+              rows={3}
               className={cn(
-                "mt-2 min-h-40 flex-1 resize-none border-transparent bg-transparent px-0 text-[13.5px]",
+                "mt-2 min-h-20 resize-none border-transparent bg-transparent px-0 text-[13.5px]",
                 "hover:border-transparent focus:border-transparent",
               )}
               aria-label="Context"

@@ -1888,7 +1888,14 @@ clickIt(rowFor(1).querySelector('[aria-label^="Select segment"]'));
 await settle(250);
 check(
   "the panel says what Keep will cost before it is pressed",
-  /Switching to Keep discards this line’s translation/.test(root.textContent),
+  /Switching to “Keep original” discards this line’s translation/.test(root.textContent),
+);
+// The lead sentence describes the CURRENT verdict. A dubbed line that opened
+// with "the source audio plays untouched" read as the opposite of the button
+// that was lit — the exact inversion the user kept reporting.
+check(
+  "a dubbed line's panel says the dub replaces the source audio",
+  /The dubbed voice replaces the source audio/.test(root.textContent),
 );
 
 const keptBefore = rows().filter((r) => r.textContent.includes("you chose this")).length;
@@ -1900,7 +1907,7 @@ await settle(250);
 // can.
 check(
   "…and does not claim a loss a locked line cannot suffer",
-  /Switching to Keep leaves your translation in place/.test(root.textContent),
+  /Switching to “Keep original” leaves your translation in place/.test(root.textContent),
 );
 
 const sinceKeep = calls().log.length;
