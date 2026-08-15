@@ -22,14 +22,21 @@
  * read `stage?.progress ?? job.progress` while the number read only
  * `stage?.progress`, so a job reporting job-level progress showed a bar that
  * moved next to a percentage stuck on "—". One value, read once.
+ *
+ * Two things it does that it did not. A whole-run job names the stage it is in
+ * and where that stage sits in the nine ("transcript — stage 3 of 9"), because
+ * the one percentage this strip has is the *stage's* and was being read as the
+ * run's. And a job that ends holds the strip for six seconds in a still, quiet
+ * version of itself rather than vanishing on the frame it finished: the strip
+ * disappearing was the only report a successful job ever made.
  */
 
-import { useRef, useState } from "react";
-import { ChevronUp, Loader2, WifiOff } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Check, ChevronUp, Loader2, WifiOff } from "lucide-react";
 import { Button, Eyebrow, Progress, useDismissable } from "./ui";
 import { cn } from "../lib/classNames";
 import { lines } from "../lib/format";
-import { isPending, type Job, type LogEvent } from "../lib/types";
+import { STAGES, isPending, type Job, type LogEvent } from "../lib/types";
 import type { StageProgress } from "../lib/useProject";
 
 const KIND_LABEL: Record<Job["kind"], string> = {
@@ -43,14 +50,39 @@ const KIND_LABEL: Record<Job["kind"], string> = {
 const LOG_TAIL = 15;
 
 /**
+ * How long a finished job's strip stays up.
+ *
+ * The strip used to vanish on the frame the job ended, which meant the *only*
+ * report a successful job ever made was its own disappearance — a reviewer who
+ * looked away for five seconds came back to a screen that had never mentioned
+ * the twenty-seven lines it had just re-voiced. Long enough to read one
+ * sentence, and matched to the undo strip's six seconds because they are the
+ * same promise: this is over, here is what it was.
+ */
+const DONE_MS = 6000;
+
+/**
  * What a job is, in words, including its size.
  *
  * A whole-run job names no lines (`uids` is `[]` for `run` and `render`), and
  * "Rendering preview 0 lines" would be worse than saying nothing.
+ *
+ * Exported because the editor's live region announces the same events this
+ * strip draws, and two spellings of "Re-voicing 27 lines" is how the spoken app
+ * and the drawn one start describing different things.
  */
-function describe(job: Job): string {
+export function describeJob(job: Job): string {
   const label = KIND_LABEL[job.kind];
   return job.uids.length > 0 ? `${label} ${lines(job.uids.length)}` : label;
+}
+
+/** How a finished job reads once it has stopped moving. */
+function describeEnd(job: Job): string {
+  const verb =
+    job.status === "failed" ? "failed" : job.status === "cancelled" ? "cancelled" : "finished";
+  return job.uids.length > 0
+    ? `${KIND_LABEL[job.kind]} ${verb} — ${lines(job.uids.length)}`
+    : `${KIND_LABEL[job.kind]} ${verb}`;
 }
 
 export function JobBar({
@@ -59,6 +91,7 @@ export function JobBar({
   connected,
   log,
   onCancel,
+  onAnnounce,
 }: {
   jobs: Job[];
   stage: StageProgress | null;
@@ -66,6 +99,8 @@ export function JobBar({
   log: LogEvent[];
   /** `batch` stops every job the same gesture queued, not just this one. */
   onCancel: (id: string, batch: boolean) => void;
+  /** Said in the editor's one live region — see EditorPage's `say`. */
+  onAnnounce?: (message: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
@@ -76,9 +111,66 @@ export function JobBar({
   const job = pending.find((j) => j.status === "running") ?? pending[0] ?? null;
   const waiting = pending.filter((j) => j.id !== job?.id);
 
-  if (!job && connected) return null;
+  /*
+   * The job that just ended, held for a beat.
+   *
+   * It is set by a *transition* and not by "the newest terminal job in the
+   * list": on mount the list is full of jobs that finished hours ago, and
+   * announcing one of those as news would be a strip that appears every time a
+   * run is opened. `seen` is the id the strip was showing last frame; when that
+   * id leaves the pending set, whatever it became is the thing to say.
+   */
+  const [ended, setEnded] = useState<Job | null>(null);
+  const seen = useRef<string | null>(null);
+  const activeId = job?.id ?? null;
+  useEffect(() => {
+    const previous = seen.current;
+    seen.current = activeId;
+    if (!previous || previous === activeId) return;
+    const done = jobs.find((j) => j.id === previous && !isPending(j));
+    if (done) setEnded(done);
+  }, [activeId, jobs]);
+
+  /*
+   * …and let go of it. The countdown is paused while the queue panel is open,
+   * because the panel is hung off this strip: unmounting under a user who is
+   * reading the log would close the thing they opened. It restarts when they
+   * close it.
+   */
+  useEffect(() => {
+    if (!ended || open) return;
+    const timer = window.setTimeout(() => setEnded(null), DONE_MS);
+    return () => window.clearTimeout(timer);
+  }, [ended, open]);
+
+  /* Start and end, spoken once each. The deps are the ids, so a progress frame
+     four times a second does not re-announce anything. */
+  useEffect(() => {
+    if (job && onAnnounce) onAnnounce(`${describeJob(job)} started`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job?.id]);
+  useEffect(() => {
+    if (ended && onAnnounce) onAnnounce(describeEnd(ended));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ended?.id]);
+
+  if (!job && !ended && connected) return null;
 
   const progress = stage?.progress ?? job?.progress ?? null;
+  /*
+   * Where a whole-run job is, in the pipeline's own numbering.
+   *
+   * A `run` job's progress bar is the *stage's* fraction — the only one the
+   * pipeline reports — so "62%" on a nine-stage run meant "62% through
+   * transcript", and it read as "62% through the dub". It names the stage and
+   * its position, which is the fact the percentage was being mistaken for. Only
+   * for `run`: an edit job is one stage by construction, and "tts — stage 6 of
+   * 9" over a re-voice would be inventing a pipeline it is not in.
+   */
+  const runStage = job?.kind === "run" ? (stage?.stage ?? null) : null;
+  const stageAt = runStage ? STAGES.indexOf(runStage) : -1;
+  const stageNote =
+    runStage && stageAt >= 0 ? `${runStage} — stage ${stageAt + 1} of ${STAGES.length}` : null;
   /*
    * "4 of 27" is the fraction restated over the work the user asked for. The
    * stage frames report a 0..1 fraction and the job knows how many lines it was
@@ -103,6 +195,7 @@ export function JobBar({
     */
     <div
       data-job-strip
+      data-job-state={job ? "running" : ended ? "done" : "offline"}
       ref={wrap}
       className="relative flex h-8 shrink-0 items-center gap-3 border-b border-border bg-sunken px-4 text-[12.5px]"
     >
@@ -144,7 +237,7 @@ export function JobBar({
             )}
           >
             <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
-            {describe(job)}
+            {describeJob(job)}
             <ChevronUp
               className={cn("h-3 w-3 transition-transform", !open && "rotate-180")}
               aria-hidden
@@ -154,6 +247,11 @@ export function JobBar({
           {done ? (
             <span className="shrink-0 font-mono text-[11px] tabular-nums text-secondary">
               {done}
+            </span>
+          ) : null}
+          {stageNote ? (
+            <span data-job-stage className="shrink-0 text-[11px] text-secondary">
+              {stageNote}
             </span>
           ) : null}
 
@@ -172,12 +270,46 @@ export function JobBar({
           */}
           {waiting.length > 0 ? (
             <span data-queue-tail className="shrink-0 truncate text-[11px] text-muted">
-              then {describe(waiting[0])}
+              then {describeJob(waiting[0])}
               {waiting.length > 1 ? ` +${waiting.length - 1} more` : ""}
             </span>
           ) : null}
 
           <CancelControl job={job} jobs={jobs} onCancel={onCancel} />
+        </>
+      ) : null}
+
+      {/*
+        The same strip, standing still.
+        Same height, same ground, same trigger — so the queue is still one click
+        away for the six seconds a user has to ask "what did that just do", and
+        the layout does not move on the way out. It is deliberately quiet: a
+        tick rather than a spinner, no bar, no percentage, and the tail is gone
+        because there is nothing behind it.
+      */}
+      {!job && ended ? (
+        <>
+          <button
+            ref={trigger}
+            type="button"
+            data-queue-trigger
+            aria-expanded={open}
+            aria-label="Show the queue"
+            onClick={() => setOpen((v) => !v)}
+            className={cn(
+              "inline-flex shrink-0 items-center gap-1.5 rounded text-[11px] font-bold",
+              "uppercase tracking-[0.14em] hover:opacity-80",
+              ended.status === "failed" ? "text-critical" : "text-secondary",
+            )}
+          >
+            <Check className="h-3 w-3" aria-hidden />
+            {describeEnd(ended)}
+            <ChevronUp
+              className={cn("h-3 w-3 transition-transform", !open && "rotate-180")}
+              aria-hidden
+            />
+          </button>
+          <span className="min-w-0 flex-1 truncate text-muted">{ended.error ?? ""}</span>
         </>
       ) : null}
 
@@ -259,7 +391,7 @@ function CancelControl({
             Cancel just this, or the whole batch ({lines(batchLines)})?
           </p>
           <p className="mt-1.5 text-[11px] leading-relaxed text-muted">
-            {describe(mates[0])} is waiting, from the same request. Stopping only
+            {describeJob(mates[0])} is waiting, from the same request. Stopping only
             this one leaves it to run.
           </p>
           <div className="mt-3 flex justify-end gap-2">
@@ -324,7 +456,7 @@ function QueuePanel({
             className="flex items-center gap-2 rounded-md border border-border bg-sunken px-2 py-1.5"
           >
             <span className="min-w-0 flex-1 truncate text-[12.5px] text-primary">
-              {describe(job)}
+              {describeJob(job)}
             </span>
             <span className="shrink-0 text-[11px] text-muted">
               {job.status === "running" ? "running" : "queued"}
@@ -344,7 +476,7 @@ function QueuePanel({
             last.status === "failed" ? "text-critical" : "text-muted",
           )}
         >
-          Last: {describe(last)} — {last.status}
+          Last: {describeJob(last)} — {last.status}
           {last.error ? `. ${last.error}` : ""}
         </p>
       ) : null}

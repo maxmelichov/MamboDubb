@@ -1486,7 +1486,23 @@ clickIt(chip("Kept"));
 await settle(200);
 check("the Kept chip toggles back off as well", rows().length > 40);
 await settle(2400);
-check("the two jobs it queued drain", document.querySelector("[data-job-strip]") == null);
+/*
+ * The strip used to vanish on the frame the last job ended, which made a
+ * successful job's only report its own disappearance. It holds for six seconds
+ * in a still, quiet version of itself — same height, same trigger, so the queue
+ * is still reachable for as long as the question "what did that just do" is
+ * live — and then goes.
+ */
+check(
+  "the two jobs it queued drain",
+  document.querySelector("[data-job-strip]")?.getAttribute("data-job-state") === "done",
+);
+check(
+  "…and the strip says what finished rather than just leaving",
+  /Re-voicing finished/.test(document.querySelector("[data-job-strip]").textContent),
+);
+await settle(6400);
+check("…then it goes on its own", document.querySelector("[data-job-strip]") == null);
 
 /*
  * Cancelling the gesture, not the step — the audit's disaster, made unreachable.
@@ -1534,7 +1550,11 @@ clickIt(dialogButton("The whole batch"));
 await settle(600);
 check(
   "…and the whole batch stops: nothing is left to voice untranslated lines",
-  document.querySelector("[data-job-strip]") == null,
+  document.querySelector("[data-job-strip]")?.getAttribute("data-job-state") === "done",
+);
+check(
+  "…and the strip says it was cancelled rather than silently emptying",
+  /cancelled/.test(document.querySelector("[data-job-strip]").textContent),
 );
 /* The proof the disaster is gone: the re-voice never ran, so no line was
    synthesised from a translation that had just been abandoned. */
@@ -1762,10 +1782,16 @@ check(
 );
 check("…and the strip goes when it is used", document.querySelector("[data-undo-toast]") == null);
 
-// Let the jobs those flips queued drain, so the next assertions are about the
-// job they ask for and not about one of these.
+// Let the jobs those flips queued drain — and then let the finished strip time
+// itself out, so the next assertions are about the job they ask for and not
+// about the tail of one of these.
 await settle(3500);
-check("the queue drains", document.querySelector("[data-job-strip]") == null);
+check(
+  "the queue drains",
+  document.querySelector("[data-job-strip]")?.getAttribute("data-job-state") === "done",
+);
+await settle(6400);
+check("…and the finished strip lets go", document.querySelector("[data-job-strip]") == null);
 
 /*
  * A mark on the strip is a question about a line — what does it say, what did
@@ -2035,6 +2061,12 @@ check(
 // …and the finished job writes its result back through the event stream —
 // without clobbering anything, because nothing is being typed.
 await settle(1200);
+check("job stops running when done", !/Re-voicing 1 line · /.test(root.textContent));
+check(
+  "…and reports it, for six seconds, before clearing",
+  /Re-voicing finished/.test(root.textContent),
+);
+await settle(6400);
 check("job clears when done", !/Re-voicing/.test(root.textContent));
 
 /*
@@ -2076,7 +2108,10 @@ check(
 const readsBeforeCancel = calls().segments;
 click("Cancel");
 await settle(500);
-check("…and it is the same job, cancellable from here", !/Rendering preview/.test(root.textContent));
+check(
+  "…and it is the same job, cancellable from here",
+  /Rendering preview cancelled/.test(root.textContent),
+);
 check("a cancel is terminal — the partial work is read back", calls().segments > readsBeforeCancel);
 
 /*
@@ -2229,6 +2264,22 @@ check("…exactly one of them", calls().log.length === logBefore + 1);
 check(
   "…and the strip picks it up, so the dead end is now a running run",
   document.querySelector("[data-job-strip]") != null,
+);
+/*
+ * …naming the stage, and where it sits in the nine.
+ *
+ * A whole-run job's progress bar is the *stage's* fraction — the only one the
+ * pipeline reports — so "62%" over a nine-stage run meant "62% through
+ * transcript" and read as "62% through the dub". It says which stage and which
+ * of nine, so the percentage is understood as the thing it is. Edit jobs keep
+ * their naming: one is one stage by construction.
+ */
+await settle(700);
+check(
+  "a whole-run job says which stage it is on, and which of nine",
+  /^\w+ — stage [1-9] of 9$/.test(
+    document.querySelector("[data-job-stage]")?.textContent?.trim() ?? "",
+  ),
 );
 
 /*
