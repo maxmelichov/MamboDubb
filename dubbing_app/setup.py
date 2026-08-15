@@ -153,15 +153,22 @@ def probe(id_: str) -> dict[str, Any] | None:
 
 
 def model(id_: str, label: str, path: Path, *, required: bool = True,
-          note: str = "") -> dict[str, Any]:
+          note: str = "", hub: str = "") -> dict[str, Any]:
     """A model directory's presence and size. `path` always comes from the
-    pipeline module that loads it, so this cannot describe a stale location."""
+    pipeline module that loads it, so this cannot describe a stale location.
+
+    A missing row's whole job is to be actionable: when the hub repo is known,
+    the detail carries the exact download command, backticked so the UI sets it
+    as code. "Missing" without the command is a scavenger hunt.
+    """
     present = path.is_dir() and any(path.iterdir()) if path.is_dir() else False
     size = dir_size(path) if present else 0
     if present:
         detail = f"{human_bytes(size)} in {path}"
     else:
         detail = f"missing: {path}" + (f" — {note}" if note else "")
+        if hub:
+            detail += f". Fetch it: `uv run hf download {hub} --local-dir {path}`"
     return check(id_, label, present, detail, required=required, path=str(path), bytes=size)
 
 
@@ -240,14 +247,18 @@ def model_checks() -> list[dict[str, Any]]:
                          note=f"downloads from {spec['hub']} on first use"))
     out += [
         model("model.asr.he", "Source ASR — Hebrew (ivrit-ai)", transcript.WHISPER_MODEL,
-              required=False, note="only for Hebrew sources without captions"),
+              required=False, note="only for Hebrew sources without captions",
+              hub=transcript.WHISPER_HUB),
         model("model.asr.src", "Source ASR — multilingual", transcript.SRC_ASR_MODEL,
-              required=False, note="only for non-Hebrew sources without captions"),
+              required=False, note="only for non-Hebrew sources without captions",
+              hub=transcript.SRC_ASR_HUB),
         model("model.asr.en", "Target ASR — English (clip verification)",
               transcript.EN_ASR_MODEL,
-              note="without it generated clips are never verified"),
+              note="without it generated clips are never verified",
+              hub="Systran/faster-whisper-base.en"),
         model("model.asr.tgt", "Target ASR — multilingual", transcript.TARGET_ASR_MODEL,
-              required=False, note="only for non-English targets"),
+              required=False, note="only for non-English targets",
+              hub="Systran/faster-whisper-base"),
         model("model.lid", "Language ID (VoxLingua107)", transcript.LID_MODEL,
               required=False, note="without it foreign-speech detection is skipped"),
         # Hebrew is a dub TARGET only with both of these. Not required — every other
