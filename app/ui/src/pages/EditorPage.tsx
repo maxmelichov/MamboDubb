@@ -75,7 +75,15 @@ import { stopClip, toggleClip, useClipPlayback } from "../lib/clipAudio";
 import { isDesktop, revealRunFile } from "../lib/desktop";
 import { FIXTURE_PROJECT } from "../lib/fixtures";
 import { languageName, timecode } from "../lib/format";
-import { STATE_META, segmentState, totalDuration, type SegmentState } from "../lib/segments";
+import {
+  STATE_META,
+  keepReason,
+  keptAsTargetLanguage,
+  needsModelWork,
+  segmentState,
+  totalDuration,
+  type SegmentState,
+} from "../lib/segments";
 import { summarizeStages } from "../lib/stages";
 import { bucketsFor, usePeaks } from "../lib/usePeaks";
 import { activeJob, useProject } from "../lib/useProject";
@@ -154,6 +162,7 @@ export function EditorPage() {
       dubbed: 0,
       kept: 0,
       failed: 0,
+      unplaced: 0,
       unvoiced: 0,
       untranslated: 0,
     };
@@ -232,9 +241,13 @@ export function EditorPage() {
    */
   const queueDubWork = useCallback(
     async (segs: Segment[]) => {
-      const uids = segs.map((seg) => seg.uid);
+      // A line that has its clip and only lacks a placement is not model work:
+      // re-voicing it costs a model load to produce the clip it already has,
+      // and leaves it exactly as unplaced as before. Render is its button.
+      const work = segs.filter(needsModelWork);
+      const uids = work.map((seg) => seg.uid);
       if (uids.length === 0) return;
-      const untranslated = segs.filter((seg) => !(seg.text_en ?? "").trim());
+      const untranslated = work.filter((seg) => !(seg.text_en ?? "").trim());
       if (untranslated.length > 0) await actions.retranslate(untranslated.map((seg) => seg.uid));
       await actions.resynthesize(uids);
     },
@@ -370,7 +383,9 @@ export function EditorPage() {
         case "a":
           if (selected) {
             event.preventDefault();
-            toggleClip(selected.media?.source ?? null);
+            // The source side is a window of the whole track — same contract
+            // as the row's A button, and the same reason.
+            toggleClip(selected.media?.source ?? null, selected.media?.source_window ?? null);
           }
           break;
         case "b":
@@ -490,6 +505,7 @@ export function EditorPage() {
               onRetranslateMany={(uids) => void actions.retranslate(uids)}
               onResynthesizeMany={(uids) => void actions.resynthesize(uids)}
               onFixMany={fixMany}
+              onRender={() => void actions.render()}
             />
 
             {/*
@@ -633,26 +649,31 @@ function RunSummary({
   const total = segments.length;
   const gaps = project?.report?.uncovered_audible ?? [];
 
-  // Why the kept lines were kept, most common first. The reasons come from the
-  // pipeline (`latin`, `speaker_en`, `uncovered`, `manual`, …) and are shown as
-  // it wrote them: inventing friendlier names here would be inventing a
-  // vocabulary the run's own report does not use.
+  /*
+   * Why the kept lines were kept, most common first.
+   *
+   * The reasons arrive as the pipeline's own tokens (`latin`, `speaker_en`,
+   * `user`, `tts_failed`, …) and were printed raw, which put "Kept because
+   * user" on the screen of the user who pressed the button. `keepReason` is the
+   * one mapping, shared with the selection panel; a token it has never seen
+   * still falls through to itself rather than being given an invented meaning.
+   */
   const reasons = useMemo(() => {
     const tally = new Map<string, number>();
     for (const seg of segments) {
       if (!seg.keep) continue;
-      const reason = seg.keep_reason ?? "unstated";
+      const reason = keepReason(seg.keep_reason);
       tally.set(reason, (tally.get(reason) ?? 0) + 1);
     }
     return [...tally.entries()].sort((a, b) => b[1] - a[1]);
   }, [segments]);
 
   // "Already in the target language" is a claim about *why*, so it is only made
-  // when the reasons say so — a run kept for `uncovered` or by hand is a
-  // different story with the same count.
-  const passthrough = reasons
-    .filter(([reason]) => reason === "latin" || reason === "speaker_en")
-    .reduce((sum, [, n]) => sum + n, 0);
+  // when the reasons say so — a run kept by hand or by a failure is a different
+  // story with the same count.
+  const passthrough = segments.filter(
+    (seg) => seg.keep && keptAsTargetLanguage(seg.keep_reason),
+  ).length;
   const mostlyKept = total > 0 && counts.kept / total >= 0.6;
 
   const lead =
@@ -681,7 +702,7 @@ function RunSummary({
             {reasons.map(([reason, n], i) => (
               <span key={reason}>
                 {i > 0 ? " · " : null}
-                <code className="font-mono text-secondary">{reason}</code> {n}
+                <span className="text-secondary">{reason}</span> {n}
               </span>
             ))}
           </p>

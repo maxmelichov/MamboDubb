@@ -24,9 +24,9 @@
  */
 
 import { useEffect, useMemo, useRef } from "react";
-import { Languages, ListX, Search, Volume2 } from "lucide-react";
+import { Film, Languages, ListX, Search, Volume2 } from "lucide-react";
 import { cn } from "../lib/classNames";
-import { hasLocks, segmentState, unfinished } from "../lib/segments";
+import { hasLocks, needsModelWork, segmentState, unfinished } from "../lib/segments";
 import { Button, Empty } from "./ui";
 import { ScriptRow, type EditTarget } from "./ScriptRow";
 import type { Segment } from "../lib/types";
@@ -92,6 +92,7 @@ export function ScriptPane({
   onRetranslateMany,
   onResynthesizeMany,
   onFixMany,
+  onRender,
 }: {
   segments: Segment[];
   selectedUid: string | null;
@@ -115,6 +116,8 @@ export function ScriptPane({
   onResynthesizeMany: (uids: string[]) => void;
   /** Translate whatever has no line, then voice all of them — in that order. */
   onFixMany: (uids: string[]) => void;
+  /** timeline → mix → report, for the lines that only lack a placement. */
+  onRender: () => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -233,11 +236,23 @@ export function ScriptPane({
    * lines a "Dub it" used to strand, which had no translation, no clip and no
    * job on the way. Its button is one click and at most two jobs: translate
    * whatever has no line, then voice the lot.
+   *
+   * The work set is not "everything on screen that is not a keep", though, and
+   * it was wrong in both directions. A line the *pipeline* gave up on is stored
+   * as a keep (`keep_reason` tts_failed / mt_failed) with the original audio
+   * attached — so excluding keeps excluded every member of the Failed filter,
+   * and its two buttons enqueued jobs for nobody. And a line that has a clip
+   * but no placement needs a render, not a model: re-voicing it is a minute of
+   * GPU to arrive back exactly where it started.
    */
-  const bulkSegs = visible.filter((seg) => !seg.keep);
+  const bulkSegs = visible.filter(
+    (seg) => needsModelWork(seg) && (!seg.keep || segmentState(seg) === "failed"),
+  );
   const bulkUids = bulkSegs.map((seg) => seg.uid);
+  const renderUids = visible.filter((seg) => segmentState(seg) === "unplaced").map((s) => s.uid);
   const needText = bulkSegs.filter((seg) => !(seg.text_en ?? "").trim()).length;
-  const showBulk = (filter === "failed" || filter === "unfinished") && bulkUids.length > 0;
+  const showBulk =
+    (filter === "failed" || filter === "unfinished") && bulkUids.length + renderUids.length > 0;
   const lines = `${bulkUids.length} line${bulkUids.length === 1 ? "" : "s"}`;
 
   return (
@@ -292,12 +307,24 @@ export function ScriptPane({
             ) : (
               <>
                 {lines} with nothing to play
-                {needText > 0 ? ` — ${needText} of them have no translation yet` : null}. One
-                click, at most two jobs.
+                {needText > 0 ? ` — ${needText} of them have no translation yet` : null}
+                {renderUids.length > 0
+                  ? `${bulkUids.length > 0 ? ", and " : ""}${renderUids.length} already voiced and waiting for a render`
+                  : null}
+                . One click, at most two jobs.
               </>
             )}
           </span>
-          {filter === "unfinished" ? (
+          {/* A voiced-but-unplaced line's button is Render, and it is a
+              different button on purpose: the model has already done its work
+              on this line, and only `timeline.place` can finish it. */}
+          {renderUids.length > 0 && filter === "unfinished" ? (
+            <Button size="xs" onClick={onRender}>
+              <Film className="h-3 w-3" />
+              Render {renderUids.length}
+            </Button>
+          ) : null}
+          {bulkUids.length === 0 ? null : filter === "unfinished" ? (
             <Button size="xs" onClick={() => onFixMany(bulkUids)}>
               {needText > 0 ? (
                 <>

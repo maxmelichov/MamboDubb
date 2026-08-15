@@ -48,8 +48,10 @@ import {
 import { cn } from "../lib/classNames";
 import { duration as fmtDuration, percent, speakerLabel, timecode } from "../lib/format";
 import {
+  keepReason,
   lockedFields,
   neighbours,
+  pipelineFailed,
   placementConcern,
   segmentState,
   verifyConcern,
@@ -118,11 +120,20 @@ export function SelectionPanel({
               className="mt-0.5 h-3.5 w-3.5 shrink-0"
               style={{ color: "var(--color-critical)" }}
             />
+            {/* Two different failures with two different fixes: the translator
+                could not produce the target language (re-translate, then the
+                voice), or the voice could not say it (re-voice). Both are
+                stored as a keep with the original audio attached, which is why
+                the row's badge alone cannot be trusted to say so. */}
             <span>
-              {state === "failed"
-                ? "Synthesis failed for this line — the dub falls back to the original audio."
-                : `The clone said ${percent(seg.verify?.overlap ?? seg.tts?.overlap)} of it.`}{" "}
-              Re-voice it, or keep the original.
+              {seg.keep_reason === "mt_failed"
+                ? "Translation failed for this line — the dub falls back to the original audio. " +
+                  "Re-translate it, then re-voice it."
+                : state === "failed"
+                  ? "Synthesis failed for this line — the dub falls back to the original audio. " +
+                    "Re-voice it, or keep the original."
+                  : `The clone said ${percent(seg.verify?.overlap ?? seg.tts?.overlap)} of it. ` +
+                    "Re-voice it, or keep the original."}
             </span>
           </p>
         ) : null}
@@ -168,12 +179,11 @@ export function SelectionPanel({
             ) : (
               "Synthesized speech replaces the source audio."
             )}
-            {seg.keep && seg.keep_reason ? (
-              <>
-                {" "}
-                Kept because <code className="font-mono">{seg.keep_reason}</code>.
-              </>
-            ) : null}
+            {/* The reason in words. `keep_reason` is a manifest token — and
+                the user's own verdict comes back from a headless re-run spelled
+                `user`, so the panel used to tell someone "Kept because user"
+                about a button they had pressed themselves. */}
+            {seg.keep && seg.keep_reason ? <> Kept because {keepReason(seg.keep_reason)}.</> : null}
           </p>
         </section>
 
@@ -206,11 +216,18 @@ export function SelectionPanel({
               onClick={onRetranslate}
             />
           )}
+          {/*
+            A keep has nothing to voice — except the keeps the pipeline made
+            because the voice failed. `edit.resynthesize` reopens those on the
+            way in (`invalidate` undoes a `tts_failed` verdict), so asking for
+            the voice is exactly the right button and disabling it left the
+            failure with no way out but flipping the verdict by hand.
+          */}
           <ModelAction
             icon={Volume2}
             label="Re-voice this line"
             cost="~1 min · queues behind the running job"
-            disabled={busy || seg.keep}
+            disabled={busy || (seg.keep && !pipelineFailed(seg))}
             disabledReason={
               seg.keep
                 ? "This segment keeps its original audio, so there is nothing to voice. Switch it to “Dub it” first."
@@ -240,10 +257,17 @@ export function SelectionPanel({
           <Bounds key={seg.uid} seg={seg} onPatch={onPatch} />
 
           <div className="grid grid-cols-2 gap-3">
+            {/*
+              "inherit" is the empty string, and the empty string is what
+              *clears* the override — `edit.set_langs` pops the key on a blank
+              value, while `null` is "not supplied, leave it alone" for every
+              field in the patch body (`app.py::PatchSegment`). Sending null was
+              a control that looked like it worked and could never undo itself.
+            */}
             <Field label="Spoken">
               <Select
                 value={seg.src_lang ?? ""}
-                onChange={(event) => onPatch({ src_lang: event.currentTarget.value || null })}
+                onChange={(event) => onPatch({ src_lang: event.currentTarget.value })}
               >
                 {LANGS.map((lang) => (
                   <option key={lang || "inherit"} value={lang}>
@@ -255,7 +279,7 @@ export function SelectionPanel({
             <Field label="Translate into">
               <Select
                 value={seg.tgt_lang ?? ""}
-                onChange={(event) => onPatch({ tgt_lang: event.currentTarget.value || null })}
+                onChange={(event) => onPatch({ tgt_lang: event.currentTarget.value })}
               >
                 {LANGS.map((lang) => (
                   <option key={lang || "inherit"} value={lang}>
@@ -519,7 +543,11 @@ function VerificationShelf({ seg, concern }: { seg: Segment; concern: "none" | "
       label="Verification"
       tone={concern === "bad" ? "warn" : "neutral"}
       summary={
-        seg.keep ? "not synthesized" : overlap == null ? "no clip yet" : `heard ${percent(overlap)}`
+        seg.keep && !pipelineFailed(seg)
+          ? "not synthesized"
+          : overlap == null
+            ? "no clip yet"
+            : `heard ${percent(overlap)}`
       }
     >
       <div className="flex items-center gap-2">
