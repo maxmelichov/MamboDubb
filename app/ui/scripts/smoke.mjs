@@ -749,6 +749,40 @@ check(
 );
 check("…and where speech is uncovered", /Audible, uncovered/.test(editor));
 check("the empty rail is not an apology", !/No line selected/.test(editor));
+
+/*
+ * …and the ⋯ menu does not say it a second time.
+ *
+ * The menu's first half is the run's health — the same tally and the same gap
+ * list the rail is showing right now, permanently, three inches to the left. So
+ * with nothing selected the menu drops that half and keeps the half the rail has
+ * never carried. Select a line and the rail becomes that line's, and the menu
+ * carries the lot again (checked further down, where a line is selected).
+ */
+const runMenuTrigger = () =>
+  [...document.querySelectorAll("button")].find((b) =>
+    /^Run (health and files|files and options)$/.test(b.getAttribute("aria-label") ?? ""),
+  );
+check(
+  "with the rail already summarising the run, the menu is not a second copy",
+  runMenuTrigger()?.getAttribute("aria-label") === "Run files and options",
+);
+runMenuTrigger().dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+await new Promise((resolve) => setTimeout(resolve, 150));
+check("…so it opens without a run-health section", document.querySelector("[data-run-health]") == null);
+check(
+  "…and keeps the files, the metadata and the run options",
+  /run dir/.test(root.textContent) && /Run options/.test(root.textContent),
+);
+/* …without saying its own name twice: with the health half gone, the panel's
+   title *is* "This run", so the section label under it would be the same two
+   words four pixels lower. */
+check(
+  "…and heads that metadata once, not twice",
+  (document.querySelector('[role="dialog"]').textContent.match(/This run/g) ?? []).length === 1,
+);
+runMenuTrigger().dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+await new Promise((resolve) => setTimeout(resolve, 150));
 check("the script loaded", document.querySelectorAll('[role="option"]').length > 40);
 check("timeline drew marks", document.querySelectorAll('[aria-label^="Segment "]').length > 40);
 

@@ -849,7 +849,16 @@ export function EditorPage() {
               project={project}
               name={name}
               counts={counts}
+              /*
+                The rail behind this menu is *already* the run summary whenever
+                nothing is selected — same tally, same gap list, permanently on
+                screen, three inches to the left. So the menu drops that half of
+                itself exactly then, and keeps the half the rail has never
+                carried: the files, the metadata and the run options.
+              */
+              showHealth={selected != null}
               onSeek={transport.seek}
+              onHighlightGap={setHighlightGap}
               onSaveOptions={saveOptions}
             />
             <ShortcutHelp />
@@ -1352,23 +1361,35 @@ function GapList({
  * highest-value readout the report produces, so every gap is a button that
  * seeks to it.
  *
- * It shares its tally and its gap list with the rail's own summary above —
- * same three answers, one for the reviewer who has a line open and one for the
- * reviewer who does not. What neither of them brought back from the 194-line
- * original are the coverage bars and the drift and speed stats: those were a
- * report rendered twice, once here and once in `report.json`.
+ * It shares its tally and its gap list with the rail's own summary — same
+ * answers, one for the reviewer who has a line open and one for the reviewer
+ * who does not — and that sharing is why it now *drops* them when nothing is
+ * selected. The rail is showing the run summary at exactly that moment, three
+ * inches to the left and permanently, so the menu was a second copy of a panel
+ * already on screen: opening it moved nothing forward. When a line is selected
+ * the rail belongs to that line, and the menu is the only way back to the run,
+ * so it carries the lot.
+ *
+ * What neither of them brought back from the 194-line original are the coverage
+ * bars and the drift and speed stats: those were a report rendered twice, once
+ * here and once in `report.json`.
  */
 function RunMenu({
   project,
   name,
   counts,
+  showHealth,
   onSeek,
+  onHighlightGap,
   onSaveOptions,
 }: {
   project: ProjectDetail | null;
   name: string;
   counts: Record<SegmentState, number>;
+  /** False when the rail is already showing the run summary. */
+  showHealth: boolean;
   onSeek: (time: number) => void;
+  onHighlightGap?: (span: Span | null) => void;
   onSaveOptions: (patch: ProjectOptionsPatch) => Promise<void>;
 }) {
   const gaps = project?.report?.uncovered_audible ?? [];
@@ -1377,16 +1398,27 @@ function RunMenu({
 
   return (
     <Popover
-      label="Run health and files"
-      title="Run health"
+      label={showHealth ? "Run health and files" : "Run files and options"}
+      title={showHealth ? "Run health" : "This run"}
       trigger={<MoreHorizontal className="h-3.5 w-3.5" />}
       className="w-[21rem]"
     >
-      <StateTally counts={counts} />
+      {showHealth ? (
+        <div data-run-health>
+          <StateTally counts={counts} />
+          <GapList
+            gaps={gaps}
+            onSeek={onSeek}
+            onHighlight={onHighlightGap}
+            stale={project?.report?.stale}
+            className="mt-3.5"
+          />
+        </div>
+      ) : null}
 
-      <GapList gaps={gaps} onSeek={onSeek} stale={project?.report?.stale} className="mt-3.5" />
-
-      <Eyebrow className="mt-3.5 mb-1.5">This run</Eyebrow>
+      {/* The panel's own title is "This run" when the health half is gone, so
+          the section label would be the same words twice, four pixels apart. */}
+      {showHealth ? <Eyebrow className="mt-3.5 mb-1.5">This run</Eyebrow> : null}
       <dl className="flex flex-col gap-0.5 text-[11px] text-muted">
         <div className="flex gap-2">
           <dt className="shrink-0">languages</dt>
