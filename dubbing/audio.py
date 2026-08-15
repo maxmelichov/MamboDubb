@@ -9,13 +9,20 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
+from . import tools
+
 SR = 44100  # working rate for everything that ends up in the mix
 
 
 def require_tools() -> None:
+    # `shutil.which` and not a bare exec: it honours PATHEXT, so this finds
+    # `ffmpeg.exe` on Windows, and the message names the command *this* platform
+    # installs it with rather than a Mac's.
     for tool in ("ffmpeg", "ffprobe"):
         if shutil.which(tool) is None:
-            raise SystemExit(f"{tool} not found on PATH (brew install ffmpeg)")
+            hint = tools.command("ffmpeg")
+            raise SystemExit(f"{tool} not found on PATH"
+                             + (f" ({hint})" if hint else ""))
 
 
 def run(cmd: list[str]) -> None:

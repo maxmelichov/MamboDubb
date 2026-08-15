@@ -166,9 +166,22 @@ TOOLS: dict[str, tuple[str, str, str]] = {
 
 def tool(id_: str, label: str, exe: str, why: str, *,
          severity: str = BLOCKING) -> dict[str, Any]:
+    """One tool row. `shutil.which` is the whole probe — it honours PATHEXT, so
+    `ffmpeg.exe` on Windows answers to the same lookup as `ffmpeg` elsewhere.
+
+    A missing row carries **this platform's** install command, because that is
+    the only actionable half of "not on PATH" and the row is where a user with
+    no button looks for it (`dubbing.tools`; the Setup screen's button exists
+    only where that command can run unattended)."""
+    from dubbing import tools as tool_recipes
+
     found = shutil.which(exe)
-    return check(id_, label, bool(found), found or f"{exe} not on PATH {why}",
-                 severity=severity, path=found)
+    detail = found or f"{exe} not on PATH {why}"
+    if not found:
+        command = tool_recipes.command(id_)
+        if command:
+            detail += f". Install it: `{command}`"
+    return check(id_, label, bool(found), detail, severity=severity, path=found)
 
 
 def probe(id_: str) -> dict[str, Any] | None:

@@ -21,7 +21,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from dubbing import manifest
+from dubbing import manifest, tools
 
 from . import ops
 
@@ -168,6 +168,10 @@ def execute(spec: dict[str, Any]) -> Any:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Before the first read or emit: the spec on stdin and the NDJSON on stdout
+    # are UTF-8 whatever this console thinks (the parent sets PYTHONIOENCODING
+    # too; a worker started by hand on Windows gets it from here).
+    tools.utf8_stdio((sys.stdin, sys.stdout, sys.stderr))
     raw = (argv[0] if argv else None) or sys.stdin.readline()
     try:
         spec = json.loads(raw)

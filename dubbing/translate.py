@@ -157,6 +157,10 @@ class WorkerHandle:
     def __init__(self, cmd: list[str], ready_timeout: float = 3600.0,
                  env: dict[str, str] | None = None, own_gpu: bool = False):
         self.own_gpu = own_gpu
+        # Both ends of the pipe must agree on UTF-8, and only this end can be set
+        # from here: a Windows child defaults its stdio to the ANSI code page,
+        # which cannot write a Hebrew translation at all.
+        env = {**(env if env is not None else os.environ), "PYTHONIOENCODING": "utf-8"}
         self._proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                       stderr=subprocess.PIPE, text=True, encoding="utf-8",
                                       env=env)
