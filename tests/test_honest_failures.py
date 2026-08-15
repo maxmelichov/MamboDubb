@@ -338,6 +338,64 @@ def test_records_written_before_the_fingerprint_existed_are_left_alone(tmp_path)
     assert not tts_mod.needs_synthesis(s, tmp_path)
 
 
+# ------------------------------------- the job says what it did (S-F3/F4)
+
+class FallbackEngine:
+    """Every synthesis fails; keeps get their slice. Same surface as tts.Engine."""
+
+    def __init__(self, *a, **kw):
+        pass
+
+    def build_speaker_refs(self):
+        pass
+
+    def clip_for(self, seg, text):
+        return None
+
+    def keep_clip(self, seg):
+        return {"clip": "clips/keep.wav", "dur": round(seg["end"] - seg["start"], 3),
+                "tries": 0, "overlap": 1.0, "verify": "keep"}
+
+    def close(self):
+        pass
+
+
+def test_resynthesize_does_not_call_a_keep_fallback_a_synthesis(monkeypatch, tmp_path):
+    # "synthesized 1 segment(s)" for a segment that was NOT synthesized — it fell
+    # back to its original audio — and no word about the placement that never ran.
+    monkeypatch.setattr(tts_mod, "Engine", FallbackEngine)
+    m = mk(seg(start=0.0, end=2.0, text_en="Hello there"),
+           seg(id=1, start=2.0, end=4.0, text_en="still being edited"))
+    msgs: list[tuple[float, str]] = []
+    out = edit.resynthesize(m, tmp_path, [m["segments"][0]["uid"]],
+                            progress=lambda f, msg: msgs.append((f, msg)))
+    assert out.summary == {"synthesized": 0, "fell_back": 1, "kept": 0,
+                           "deferred_placement": True}
+    last = msgs[-1][1]
+    assert "synthesized 0" in last
+    assert "fell back to the original audio" in last
+    assert "placement deferred" in last
+    # The mapping every existing caller reads is unchanged.
+    assert out[m["segments"][0]["uid"]]["verify"] == "keep"
+
+
+def test_resynthesize_says_placement_ran_when_it_did(monkeypatch, tmp_path):
+    monkeypatch.setattr(edit, "_replace_timeline", lambda m, wd: True)
+
+    class Engine(FallbackEngine):
+        def clip_for(self, seg, text):
+            return {"clip": "clips/new.wav", "dur": 1.0, "verify": "ok"}
+
+    monkeypatch.setattr(tts_mod, "Engine", Engine)
+    m = mk(seg(text_en="Hello there"))
+    msgs: list[tuple[float, str]] = []
+    out = edit.resynthesize(m, tmp_path, [m["segments"][0]["uid"]],
+                            progress=lambda f, msg: msgs.append((f, msg)))
+    assert out.summary == {"synthesized": 1, "fell_back": 0, "kept": 0,
+                           "deferred_placement": False}
+    assert msgs[-1][1] == "synthesized 1"
+
+
 def test_report_names_a_locked_clip_that_speaks_the_old_line(tmp_path, monkeypatch):
     m = report_segments()
     s = m["segments"][0]

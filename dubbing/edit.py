@@ -610,22 +610,55 @@ def retranslate(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
     return out
 
 
+class ResynthResult(dict):
+    """`{uid: tts record}` — plus `summary`, how each one actually got there.
+
+    A dict subclass so every existing caller (and the job result the app relays,
+    which is JSON) sees exactly the mapping it always did. The breakdown rides
+    alongside because "synthesized 4 segment(s)" was a lie in two directions: a
+    segment that fell back to its original audio was counted as synthesized, and
+    a placement that could not run was not mentioned at all.
+    """
+
+    def __init__(self, records: dict[str, dict[str, Any]], summary: dict[str, Any]):
+        super().__init__(records)
+        self.summary = dict(summary)
+
+
+def _resynth_message(summary: dict[str, Any]) -> str:
+    """The one line the user reads about the job. Says what happened, not what was asked."""
+    parts = [f"synthesized {summary['synthesized']}"]
+    if summary["fell_back"]:
+        parts.append(f"{summary['fell_back']} fell back to the original audio")
+    if summary["kept"]:
+        parts.append(f"{summary['kept']} re-sliced from the original")
+    line = ", ".join(parts)
+    if summary["deferred_placement"]:
+        line += "; placement deferred to the next tts run"
+    return line
+
+
 def resynthesize(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
                  progress: Progress | None = None, device: str | None = None,
-                 model: str | None = None) -> dict[str, dict[str, Any]]:
-    """Re-voice exactly these segments. Returns {uid: tts record}.
+                 model: str | None = None) -> ResynthResult:
+    """Re-voice exactly these segments. Returns {uid: tts record} + a breakdown.
 
     Never silent, as in the stage itself: a segment whose clip cannot be verified
     falls back to its original audio (`keep_reason="tts_failed"`) rather than to
     nothing, and a segment that is already a keep gets a fresh slice of the original.
     Asking for a segment overrides its tts lock; the new clip is unlocked, being the
     machine's work again.
+
+    Both of those are *failures to synthesize*, and so is a re-placement that could
+    not run (`_replace_timeline`), so all three are counted and stated in the final
+    message rather than rolled into a success total the user has no way to check.
     """
     from . import tts as tts_mod
 
+    counts = {"synthesized": 0, "fell_back": 0, "kept": 0}
     segs = [_require(m, uid) for uid in uids]
     if not segs:
-        return {}
+        return ResynthResult({}, {**counts, "deferred_placement": False})
     out: dict[str, dict[str, Any]] = {}
     _progress(progress, 0.0, f"loading synthesiser for {len(segs)} segment(s)")
     eng = tts_mod.Engine(m, workdir, device=device,
@@ -638,13 +671,17 @@ def resynthesize(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
             invalidate(m, seg["uid"], stages={"tts"})
             if seg.get("keep"):
                 record = eng.keep_clip(seg)
+                counts["kept"] += 1
             else:
                 record = eng.clip_for(seg, seg.get("text_en") or "")
                 if record is None:
                     seg["keep"], seg["keep_reason"] = True, "tts_failed"
                     record = eng.keep_clip(seg)
+                    counts["fell_back"] += 1
                     print(f"  edit: seg {seg['id']} unusable → keep original",
                           file=sys.stderr)
+                else:
+                    counts["synthesized"] += 1
             seg["tts"] = record
             out[seg["uid"]] = record
     finally:
@@ -655,9 +692,9 @@ def resynthesize(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
     # which is the never-silent invariant broken by the back door. Rendering the
     # preview stays an explicit action — this restores the manifest, not the video.
     _progress(progress, 0.95, "re-placing the timeline")
-    _replace_timeline(m, workdir)
-    _progress(progress, 1.0, f"synthesized {len(out)} segment(s)")
-    return out
+    summary = {**counts, "deferred_placement": not _replace_timeline(m, workdir)}
+    _progress(progress, 1.0, _resynth_message(summary))
+    return ResynthResult(out, summary)
 
 
 def _replace_timeline(m: dict[str, Any], workdir: Path) -> bool:
