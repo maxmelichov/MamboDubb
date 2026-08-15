@@ -26,6 +26,22 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MODEL = REPO_ROOT / "models" / "gemma-4-12b-it-cuda"
 
 
+def utf8_stdio() -> None:
+    """The protocol is UTF-8 JSON lines; a Windows console's stdio is not.
+
+    Spelled out here rather than imported from `dubbing.tools`: this file runs in
+    its own venv, which does not have the pipeline package installed. The parent
+    also sets PYTHONIOENCODING, so this is the belt to that suspenders — it costs
+    nothing and it means a worker launched by hand behaves the same way.
+    """
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                pass
+
+
 def log(msg: str) -> None:
     print(f"  worker: {msg}", file=sys.stderr, flush=True)
 
@@ -74,6 +90,7 @@ def generate(tokenizer, model, device: str, user_text: str, max_new_tokens: int)
 
 
 def main() -> None:
+    utf8_stdio()
     path = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("TRANSLATOR_MODEL_PATH",
                                                                 str(DEFAULT_MODEL))
     tokenizer, model, device = load(path)

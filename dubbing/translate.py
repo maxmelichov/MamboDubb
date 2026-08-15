@@ -43,6 +43,7 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import queue
 import re
 import subprocess
 import sys
@@ -155,10 +156,15 @@ class WorkerHandle:
     def __init__(self, cmd: list[str], ready_timeout: float = 3600.0,
                  env: dict[str, str] | None = None, own_gpu: bool = False):
         self.own_gpu = own_gpu
+        # Both ends of the pipe must agree on UTF-8, and only this end can be set
+        # from here: a Windows child defaults its stdio to the ANSI code page,
+        # which cannot write a Hebrew translation at all.
+        env = {**(env if env is not None else os.environ), "PYTHONIOENCODING": "utf-8"}
         self._proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                       stderr=subprocess.PIPE, text=True, encoding="utf-8",
                                       env=env)
         self._stderr_tail: deque[str] = deque(maxlen=40)
+        self._stdout_q: queue.Queue[str | None] | None = None
         self._next_id = 0
         threading.Thread(target=self._pump_stderr, daemon=True).start()
         line = self._read_line(ready_timeout)
@@ -181,7 +187,50 @@ class WorkerHandle:
         tail = "".join(self._stderr_tail).strip()
         return f"; recent worker stderr:\n{tail}" if tail else ""
 
+    def _pump_stdout(self) -> None:
+        """Windows-only: a pipe cannot be `select`ed, so a thread reads it."""
+        q = self._stdout_q
+        assert q is not None
+        try:
+            for line in self._proc.stdout:
+                q.put(line)
+        finally:
+            q.put(None)                     # EOF: the worker's stdout is closed
+
+    def _read_line_queued(self, timeout: float) -> str:
+        """`_read_line` on Windows, where `select` only speaks sockets.
+
+        Same contract as the POSIX branch — a line, a timeout, or "the worker
+        died" — reached through a reader thread instead of a readiness poll. A
+        blocking `readline()` alone would have no timeout at all, and a model
+        load that never finishes would hang the whole run silently.
+        """
+        if self._stdout_q is None:
+            self._stdout_q = queue.Queue()
+            threading.Thread(target=self._pump_stdout, daemon=True).start()
+        deadline = time.monotonic() + timeout
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise RuntimeError(f"translator worker: no response within {timeout:.0f}s"
+                                   f"{self._stderr_note()}")
+            try:
+                line = self._stdout_q.get(timeout=min(left, 1.0))
+            except queue.Empty:
+                if self._proc.poll() is not None:
+                    raise RuntimeError(f"translator worker died "
+                                       f"(exit {self._proc.returncode})"
+                                       f"{self._stderr_note()}") from None
+                continue
+            if line:
+                return line
+            self._proc.poll()
+            raise RuntimeError(f"translator worker died (exit {self._proc.returncode})"
+                               f"{self._stderr_note()}")
+
     def _read_line(self, timeout: float) -> str:
+        if sys.platform == "win32":
+            return self._read_line_queued(timeout)
         import select
 
         deadline = time.monotonic() + timeout

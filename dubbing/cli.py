@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Any
 
 from . import (
-    STAGES, fetch, hebrew, manifest, mix, report, segments, stems, timeline, transcript,
-    translate,
+    STAGES, fetch, hebrew, manifest, mix, report, segments, stems, timeline, tools,
+    transcript, translate,
 )
 from . import tts as tts_mod
 
@@ -247,6 +247,7 @@ def apply_force(m: dict[str, Any], force: str | None) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    tools.utf8_stdio()          # a Windows console is not UTF-8; every stage prints Hebrew
     args = parse_args(argv)
     args.src, args.tgt = normalize_lang(args.src), normalize_lang(args.tgt)
     try:
