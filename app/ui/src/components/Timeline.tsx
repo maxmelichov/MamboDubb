@@ -50,12 +50,20 @@
  *    of it, rather than as one warning-coloured barcode with the exceptions
  *    hidden inside it.
  *
- * What it gained is its own controls (zoom, split at the playhead) at the right
- * edge, where they belong, and drag-to-scrub across the whole strip. What it
- * still refuses to do is move anything: `timeline.place()` is the sole authority
- * on where audio goes, so there is no dragging a clip and no trim handle. This
- * is a picture of the placement, and the way to change it is to change what is
- * placed.
+ * What it gained is its own controls (zoom, Fit, split at the playhead) at the
+ * right edge, where they belong, and drag-to-scrub across the whole strip. What
+ * it still refuses to do is move anything: `timeline.place()` is the sole
+ * authority on where audio goes, so there is no dragging a clip and no trim
+ * handle. This is a picture of the placement, and the way to change it is to
+ * change what is placed.
+ *
+ * Two later additions, both of which make the strip answer a question that was
+ * being asked somewhere else. Zoom has a floor — the scale at which the run is
+ * exactly as wide as the strip — and a Fit button that goes straight to it,
+ * because an unbounded zoom-out ends in an empty strip with no way back but
+ * counting presses. And while a search is running, the marks outside the result
+ * set drop to 35%: this is the only view that shows all two hundred lines at
+ * once, so it is the only one that can say *where* the eleven matches are.
  */
 
 import { useCallback, useEffect, useMemo, useRef } from "react";
@@ -63,13 +71,32 @@ import { Minus, Plus, Scissors } from "lucide-react";
 import { cn } from "../lib/classNames";
 import { timecode } from "../lib/format";
 import { Button, ButtonGroup, ConfirmButton, StateIcon } from "./ui";
-import { STATE_META, placedSpan, segmentState, unclaimedSpans } from "../lib/segments";
+import {
+  STATE_META,
+  placedSpan,
+  segmentState,
+  unclaimedSpans,
+  type Span,
+} from "../lib/segments";
 import type { Peaks, Segment } from "../lib/types";
 
 const TICK_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
 const MIN_MARK_PX = 3;
 /** The lane-label gutter — wide enough for "OUTPUT" at the tracked-out size. */
 const GUTTER = "w-16";
+
+/**
+ * The zoom readout, at both ends of the range.
+ *
+ * "Fit" lands on `containerWidth / total`, which is a fraction — and `3.4523px/s`
+ * in an eleven-pixel monospace cell is not a number anybody reads. One decimal
+ * below ten, whole numbers above, and never a trailing `.0`.
+ */
+function zoomLabel(pxPerSecond: number): string {
+  if (pxPerSecond >= 10) return String(Math.round(pxPerSecond));
+  const one = Math.round(pxPerSecond * 10) / 10;
+  return Number.isInteger(one) ? String(one) : one.toFixed(1);
+}
 
 export function Timeline({
   segments,
@@ -78,14 +105,19 @@ export function Timeline({
   selectedUid,
   busyUids,
   pxPerSecond,
+  fitPxPerSecond,
+  matchedUids,
+  highlightGap,
   sourcePeaks,
   dubPeaks,
   stale = false,
   splitAt,
   onSelect,
   onSeek,
+  onViewport,
   onZoomIn,
   onZoomOut,
+  onFit,
   onSplit,
 }: {
   segments: Segment[];
@@ -94,6 +126,26 @@ export function Timeline({
   selectedUid: string | null;
   busyUids: string[];
   pxPerSecond: number;
+  /**
+   * The zoom at which the whole run is exactly as wide as the strip.
+   *
+   * It is the *floor*: below it the run stops filling the window and the strip
+   * is empty space with a run drawn in the left of it, which is the one zoom
+   * level that answers no question at all. Null until the strip has been
+   * measured (the first frame, and any run with no length).
+   */
+  fitPxPerSecond: number | null;
+  /**
+   * The uids the search matches, or null when nothing is being searched for.
+   *
+   * The strip is the one view of a run that shows every line at once, so it is
+   * where "which of these two hundred is my search talking about" is actually
+   * answerable — the marks outside the set drop back rather than disappearing,
+   * because where the matches are *relative to the rest* is the answer.
+   */
+  matchedUids: Set<string> | null;
+  /** A gap the reviewer is pointing at in the rail, drawn brighter here. */
+  highlightGap: Span | null;
   /** The original audio's envelope, or null while there is none to draw. */
   sourcePeaks: Peaks | null;
   /** The finished mix's envelope — null until the mix stage has run. */
@@ -110,8 +162,11 @@ export function Timeline({
   splitAt: number | null;
   onSelect: (uid: string) => void;
   onSeek: (time: number) => void;
+  /** How wide the scrolling area is, so the page can work out the fit zoom. */
+  onViewport: (width: number) => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
+  onFit: () => void;
   onSplit: (at: number) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -123,10 +178,34 @@ export function Timeline({
   // scroll range at all and the last marks are permanently covered.
   const width = Math.max(320, total * pxPerSecond) + 208;
   const gaps = useMemo(() => unclaimedSpans(segments, total), [segments, total]);
+  // A hair of tolerance: `fit` is a float and the state it was written into is
+  // the same float, but a resize can move it by a fraction of a pixel and a −
+  // that greys itself out one pixel early reads as broken.
+  const atFloor = fitPxPerSecond != null && pxPerSecond <= fitPxPerSecond + 1e-6;
   const tickStep = useMemo(
     () => TICK_STEPS.find((step) => step * pxPerSecond >= 64) ?? TICK_STEPS[TICK_STEPS.length - 1],
     [pxPerSecond],
   );
+
+  /*
+   * The strip's own width, reported upward.
+   *
+   * "Fit" and the zoom-out floor are both `containerWidth / total`, and the
+   * container is this component's — but the zoom itself belongs to the page,
+   * which owns the keyboard's `+`/`−` as well as these buttons. So the
+   * measurement travels up rather than the zoom coming down. A ResizeObserver
+   * and not one read on mount: the window is resizable and the fit zoom is a
+   * fact about the window.
+   */
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    onViewport(el.clientWidth);
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => onViewport(el.clientWidth));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [onViewport]);
 
   // The timeline follows playback: keep the playhead on screen without
   // fighting a user who is scrolling somewhere else.
@@ -236,17 +315,51 @@ export function Timeline({
 
           <Lane>
             <Waveform peaks={sourcePeaks} lane="source" pxPerSecond={pxPerSecond} />
-            {gaps.map((gap) => (
-              <div
-                key={`gap-${gap.start}`}
-                className="hatch-unclaimed absolute inset-y-2 rounded-[3px] border border-dashed"
-                style={{
-                  left: gap.start * pxPerSecond + 1,
-                  width: Math.max(MIN_MARK_PX, (gap.end - gap.start) * pxPerSecond - 2),
-                  borderColor: "color-mix(in srgb, var(--color-unclaimed) 45%, transparent)",
-                }}
-              />
-            ))}
+            {gaps.map((gap) => {
+              /*
+               * The hatch, named.
+               *
+               * It was the one mark on the strip with no explanation anywhere:
+               * a 135° hatch means "unclaimed" to whoever wrote it and nothing
+               * at all to the reviewer looking at it, who has no legend, no
+               * tooltip and no row in the script to click. It says what it is
+               * and which seconds it covers, in the same sentence a mark's
+               * `aria-label` uses, and the shortcuts popover carries the
+               * one-line version of the same fact.
+               */
+              const lit =
+                highlightGap != null &&
+                gap.start < highlightGap.end &&
+                gap.end > highlightGap.start;
+              const label = `Unclaimed — no segment covers ${timecode(gap.start, 0)}–${timecode(
+                gap.end,
+                0,
+              )}`;
+              return (
+                <div
+                  key={`gap-${gap.start}`}
+                  role="img"
+                  data-hatch={lit ? "lit" : ""}
+                  aria-label={label}
+                  title={label}
+                  className={cn(
+                    "hatch-unclaimed absolute inset-y-2 rounded-[3px] border border-dashed",
+                    "transition-all",
+                    // Pointing at a gap in the rail's list lights the one it is
+                    // about: the list is timecodes, and a timecode is only an
+                    // answer once you can see where in the run it lands.
+                    lit && "inset-y-1 ring-2 ring-accent",
+                  )}
+                  style={{
+                    left: gap.start * pxPerSecond + 1,
+                    width: Math.max(MIN_MARK_PX, (gap.end - gap.start) * pxPerSecond - 2),
+                    borderColor: `color-mix(in srgb, var(--color-unclaimed) ${
+                      lit ? "100%" : "45%"
+                    }, transparent)`,
+                  }}
+                />
+              );
+            })}
             {segments.map((seg) => (
               <Mark
                 key={seg.uid}
@@ -256,6 +369,7 @@ export function Timeline({
                 pxPerSecond={pxPerSecond}
                 selected={seg.uid === selectedUid}
                 busy={busyUids.includes(seg.uid)}
+                dim={matchedUids != null && !matchedUids.has(seg.uid)}
                 onSelect={onSelect}
               />
             ))}
@@ -275,6 +389,7 @@ export function Timeline({
                   pxPerSecond={pxPerSecond}
                   selected={seg.uid === selectedUid}
                   busy={busyUids.includes(seg.uid)}
+                  dim={matchedUids != null && !matchedUids.has(seg.uid)}
                   onSelect={onSelect}
                 />
               );
@@ -321,12 +436,40 @@ export function Timeline({
             <Scissors className="h-3 w-3" />
             Split
           </ConfirmButton>
+          {/*
+            Zoom out had no floor. Every press divided the scale again, so a
+            twelve-minute run went to a two-inch smear against the left edge of
+            a strip that was otherwise empty — and nothing in the cluster could
+            get back to a useful scale except pressing + the same number of
+            times and counting. The floor is the zoom at which the run is
+            exactly as wide as the strip, and Fit is the one press that goes
+            there: between − and the readout, because that is the direction it
+            travels.
+          */}
           <ButtonGroup className="h-6">
-            <Button variant="ghost" size="xs" onClick={onZoomOut} aria-label="Zoom out">
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={onZoomOut}
+              disabled={atFloor}
+              title={atFloor ? "The whole run already fits the strip" : "Zoom out"}
+              aria-label="Zoom out"
+            >
               <Minus className="h-3 w-3" />
             </Button>
-            <span className="flex w-11 items-center justify-center bg-raised font-mono text-[11px] tabular-nums text-muted">
-              {pxPerSecond}px/s
+            <Button
+              variant="ghost"
+              size="xs"
+              data-zoom-fit
+              onClick={onFit}
+              disabled={fitPxPerSecond == null}
+              title="Zoom so the whole run fits the strip"
+              className="px-2 text-[10px] font-bold uppercase tracking-[0.12em]"
+            >
+              Fit
+            </Button>
+            <span className="flex w-12 items-center justify-center bg-raised font-mono text-[11px] tabular-nums text-muted">
+              {zoomLabel(pxPerSecond)}px/s
             </span>
             <Button variant="ghost" size="xs" onClick={onZoomIn} aria-label="Zoom in">
               <Plus className="h-3 w-3" />
@@ -428,6 +571,7 @@ function Mark({
   selected,
   busy,
   muted,
+  dim,
   onSelect,
 }: {
   seg: Segment;
@@ -437,6 +581,8 @@ function Mark({
   selected: boolean;
   busy: boolean;
   muted?: boolean;
+  /** A search is running and this line is not in it. */
+  dim?: boolean;
   onSelect: (uid: string) => void;
 }) {
   const state = segmentState(seg);
@@ -465,7 +611,11 @@ function Mark({
         // A mark in the OUTPUT lane with nothing placed under it is a
         // *prediction*, not a placement, so it is drawn as one.
         muted && "border-dashed opacity-55",
+        // Last, so it wins over `muted`: while a search is running, "is this
+        // one of my results" outranks every other thing a mark is saying.
+        dim && "opacity-35",
       )}
+      data-dim={dim ? "" : undefined}
       style={{
         left: start * pxPerSecond + 1,
         width,

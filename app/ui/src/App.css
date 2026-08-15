@@ -225,6 +225,12 @@ html.theme-dark {
      shade of dark and the row's cheapest state channel is spent on nothing
      (3.59:1–6.55:1 at 80%). */
   --state-rule: 60%;
+
+  /* How much accent a search hit's wash gets. Same shape as `--mark-wash`, and
+     the same reason: on white a fifth of the ink already reads as a highlight;
+     on near-black a violet has to be nearer half strength before the marked
+     word separates from the sentence around it. */
+  --search-hit: 20%;
 }
 
 /*
@@ -377,6 +383,7 @@ html.theme-dark {
   --mark-wash: 26%;
   --mark-wash-selected: 58%;
   --state-rule: 80%;
+  --search-hit: 42%;
 }
 
 body {
@@ -398,6 +405,27 @@ body {
   select {
     font: inherit;
     color: inherit;
+  }
+
+  /*
+   * A search hit, inside the line it is in.
+   *
+   * The platform's default `<mark>` is a flat yellow with black ink on it,
+   * which is off this palette in both themes and unreadable in one of them. A
+   * wash of the accent instead — the same hue that already means "this is the
+   * thing you asked for" on a selected row — and `color: inherit`, so the
+   * marked word keeps the weight and colour of the sentence it belongs to and
+   * only its ground changes. Nothing about the text's own contrast moves.
+   *
+   * In `base` for the reason the rule above it is: an unlayered element
+   * selector beats every utility, and a `<mark>` inside a `text-muted` line
+   * would then be the one word on the row that ignored it.
+   */
+  mark {
+    background: color-mix(in srgb, var(--color-accent) var(--search-hit), transparent);
+    color: inherit;
+    border-radius: 2px;
+    padding: 0 1px;
   }
 
   /*

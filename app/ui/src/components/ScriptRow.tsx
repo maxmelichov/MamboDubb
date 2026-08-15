@@ -53,7 +53,7 @@
  * was duplicating text that is now permanently on screen anyway.
  */
 
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Lock, MoreHorizontal, Pause, Play, TriangleAlert } from "lucide-react";
 import { cn } from "../lib/classNames";
@@ -82,8 +82,10 @@ export type ScriptRowProps = {
   tabStop: boolean;
   /** which field of this row is open for editing, if any */
   editing: "text" | "text_en" | null;
-  /** the clip URL currently sounding, so A/B can show which side is playing */
+  /** the clip URL currently sounding, so Orig/Dub can show which side is playing */
   playingUrl: string | null;
+  /** what the search box holds, lower-cased, so the hits can be marked */
+  query: string;
   onSelect: (uid: string) => void;
   onEdit: (target: EditTarget) => void;
   onCommit: (uid: string, field: "text" | "text_en", value: string) => void;
@@ -100,6 +102,7 @@ function Row({
   tabStop,
   editing,
   playingUrl,
+  query,
   onSelect,
   onEdit,
   onCommit,
@@ -299,6 +302,7 @@ function Row({
           seg={seg}
           field="text"
           value={seg.text}
+          query={query}
           editing={editing === "text"}
           placeholder="no transcript for this span"
           /* When it is the only line it is also the line that plays, so it
@@ -329,6 +333,7 @@ function Row({
             seg={seg}
             field="text_en"
             value={translation}
+            query={query}
             editing={editing === "text_en"}
             placeholder="not translated yet"
             className={cn(
@@ -451,10 +456,42 @@ export const ScriptRow = memo(Row);
  * border merely transparent: a click that shifts the text by three pixels
  * makes the user re-find the word they were aiming at.
  */
+/**
+ * The search's hits, wrapped where they are.
+ *
+ * Two rules, and the second is the whole reason this is a function rather than
+ * a `dangerouslySetInnerHTML`. The `<mark>`s go *inside* the `dir="auto"`
+ * paragraph, never around it and never splitting it into fragments with their
+ * own direction: the paragraph is the bidi context, and a Hebrew line chopped
+ * into three siblings is three lines each laid out from its own first strong
+ * character — which reorders the sentence on screen. And the match is found on
+ * a lower-cased copy while the slices come from the original, so "Moza" typed
+ * as "moza" still shows the capital it actually has.
+ */
+function marked(value: string, needle: string): ReactNode {
+  if (!needle) return value;
+  const hay = value.toLowerCase();
+  const out: ReactNode[] = [];
+  let cursor = 0;
+  for (let at = hay.indexOf(needle); at !== -1; at = hay.indexOf(needle, cursor)) {
+    if (at > cursor) out.push(value.slice(cursor, at));
+    out.push(
+      <mark key={at} data-hit>
+        {value.slice(at, at + needle.length)}
+      </mark>,
+    );
+    cursor = at + needle.length;
+  }
+  if (cursor === 0) return value;
+  if (cursor < value.length) out.push(value.slice(cursor));
+  return out;
+}
+
 function Line({
   seg,
   field,
   value,
+  query,
   editing,
   placeholder,
   className,
@@ -467,6 +504,8 @@ function Line({
   seg: Segment;
   field: "text" | "text_en";
   value: string;
+  /** The search, lower-cased. Its hits are marked in this line. */
+  query: string;
   editing: boolean;
   placeholder: string;
   className?: string;
@@ -505,7 +544,7 @@ function Line({
         className,
       )}
     >
-      {value || placeholder}
+      {value ? marked(value, query) : placeholder}
     </p>
   );
 }

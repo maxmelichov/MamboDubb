@@ -88,6 +88,7 @@ import {
   segmentState,
   totalDuration,
   type SegmentState,
+  type Span,
 } from "../lib/segments";
 import { summarizeStages } from "../lib/stages";
 import { bucketsFor, usePeaks } from "../lib/usePeaks";
@@ -186,6 +187,24 @@ export function EditorPage() {
   const visible = useMemo(
     () => filterSegments(segments, query, filter),
     [filter, query, segments],
+  );
+
+  /**
+   * Which lines the search matches, for the strip.
+   *
+   * The *search* only, never the chips: a filter already empties the list it
+   * governs, and dimming the timeline for it as well would leave a strip with
+   * eleven marks on it and no picture of the run they came out of. Null when
+   * nothing is being searched for, which is how the timeline knows to draw
+   * every mark at full strength rather than being handed a set that happens to
+   * contain all of them.
+   */
+  const matchedUids = useMemo(
+    () =>
+      query.trim()
+        ? new Set(filterSegments(segments, query, "all").map((seg) => seg.uid))
+        : null,
+    [query, segments],
   );
 
   /**
@@ -303,14 +322,58 @@ export function EditorPage() {
     [selectAndSeek, selectedUid, visible],
   );
 
-  const zoomOut = useCallback(
-    () => setZoom((z) => ZOOM_STEPS[Math.max(0, ZOOM_STEPS.indexOf(z) - 1)] ?? z),
-    [],
+  /**
+   * Zoom, with a floor, and one press that goes to it.
+   *
+   * The steps are the ladder; the floor is a measurement. `fit` is the scale at
+   * which the run is exactly as wide as the strip — below it the marks are a
+   * smear against the left edge of an otherwise empty lane, which is the one
+   * zoom level that cannot answer a question, and there was no way back to a
+   * useful scale except pressing + and counting. So zoom-out lands on the next
+   * step down *or* on the fit scale, whichever is larger, and Fit goes straight
+   * there. Zoom-in walks the ladder from wherever it is, which is what lets it
+   * climb off a fractional fit value.
+   *
+   * The measurement comes up from the timeline (it owns the container) and is
+   * kept in a ref as well as in state: the ref is what the zoom callbacks read,
+   * so they stay stable and the one keyboard listener that closes over them is
+   * not rebuilt on every resize.
+   */
+  const [fitZoom, setFitZoom] = useState<number | null>(null);
+  const fitRef = useRef<number | null>(null);
+  fitRef.current = fitZoom;
+  const onViewport = useCallback(
+    (width: number) => {
+      setFitZoom(width > 0 && total > 0 ? width / total : null);
+    },
+    [total],
   );
-  const zoomIn = useCallback(
-    () => setZoom((z) => ZOOM_STEPS[Math.min(ZOOM_STEPS.length - 1, ZOOM_STEPS.indexOf(z) + 1)] ?? z),
-    [],
-  );
+
+  const zoomOut = useCallback(() => {
+    setZoom((z) => {
+      const step = [...ZOOM_STEPS].reverse().find((s) => s < z - 1e-6) ?? z;
+      const floor = fitRef.current;
+      return floor != null ? Math.max(step, Math.min(z, floor)) : step;
+    });
+  }, []);
+  const zoomIn = useCallback(() => {
+    setZoom((z) => ZOOM_STEPS.find((s) => s > z + 1e-6) ?? z);
+  }, []);
+  const zoomFit = useCallback(() => {
+    const floor = fitRef.current;
+    if (floor != null) setZoom(floor);
+  }, []);
+
+  /**
+   * The gap the reviewer is pointing at, lit on the strip.
+   *
+   * The run summary lists audible speech nothing covers as a column of
+   * timecodes, and a timecode is only half an answer: "0:52" does not say
+   * whether that is early, late, next to a run of failures, or in the middle of
+   * the one stretch that is already fine. Pointing at a row lights the matching
+   * hatch, so the list and the map are one thing.
+   */
+  const [highlightGap, setHighlightGap] = useState<Span | null>(null);
 
   /**
    * Make these lines playable: translate the ones with nothing to say, then
@@ -947,6 +1010,7 @@ export function EditorPage() {
                   project={project}
                   counts={counts}
                   onSeek={transport.seek}
+                  onHighlightGap={setHighlightGap}
                 />
               )}
             </aside>
@@ -959,14 +1023,19 @@ export function EditorPage() {
             selectedUid={selectedUid}
             busyUids={state.pendingUids}
             pxPerSecond={zoom}
+            fitPxPerSecond={fitZoom}
+            matchedUids={matchedUids}
+            highlightGap={highlightGap}
             sourcePeaks={sourcePeaks}
             dubPeaks={dubPeaks}
             stale={stale && render.at != null}
             splitAt={splitAt}
             onSelect={selectFromTimeline}
             onSeek={transport.seek}
+            onViewport={onViewport}
             onZoomIn={zoomIn}
             onZoomOut={zoomOut}
+            onFit={zoomFit}
             onSplit={(at) => selected && void actions.split(selected.uid, at)}
           />
         </>
@@ -1098,11 +1167,13 @@ function RunSummary({
   project,
   counts,
   onSeek,
+  onHighlightGap,
 }: {
   segments: Segment[];
   project: ProjectDetail | null;
   counts: Record<SegmentState, number>;
   onSeek: (time: number) => void;
+  onHighlightGap?: (span: Span | null) => void;
 }) {
   const total = segments.length;
   const gaps = project?.report?.uncovered_audible ?? [];
@@ -1167,7 +1238,12 @@ function RunSummary({
         </div>
       ) : null}
 
-      <GapList gaps={gaps} onSeek={onSeek} stale={project?.report?.stale} />
+      <GapList
+        gaps={gaps}
+        onSeek={onSeek}
+        onHighlight={onHighlightGap}
+        stale={project?.report?.stale}
+      />
 
       <p className="mt-auto pt-2 text-[11px] leading-relaxed text-muted">
         Pick a line in the script — everything that is true about it, and cannot fit on a row,
@@ -1205,11 +1281,22 @@ function StateTally({ counts }: { counts: Record<SegmentState, number> }) {
 function GapList({
   gaps,
   onSeek,
+  onHighlight,
   stale = false,
   className,
 }: {
   gaps: { start: number; end: number; duration: number }[];
   onSeek: (time: number) => void;
+  /**
+   * Point at one and the timeline lights the hatch it is inside.
+   *
+   * Hover *and* focus, because half the reason this list exists is that it is
+   * reachable — a keyboard user tabbing down it gets the same map the mouse
+   * does. The bounds here are the report's, and the hatch's are derived from
+   * the segments on screen, so the timeline matches them by overlap rather than
+   * by equality; they are two measurements of the same silence.
+   */
+  onHighlight?: (span: Span | null) => void;
   /** These spans were found by the last report, not by the script on screen. */
   stale?: boolean;
   className?: string;
@@ -1236,7 +1323,12 @@ function GapList({
           <li key={`${gap.start}-${gap.end}`}>
             <button
               type="button"
+              data-gap={gap.start}
               onClick={() => onSeek(gap.start)}
+              onMouseEnter={() => onHighlight?.({ start: gap.start, end: gap.end })}
+              onMouseLeave={() => onHighlight?.(null)}
+              onFocus={() => onHighlight?.({ start: gap.start, end: gap.end })}
+              onBlur={() => onHighlight?.(null)}
               className="flex w-full items-center gap-2 rounded-lg border border-border bg-raised px-2 py-1 text-left text-[12.5px] transition-colors hover:border-axis hover:bg-sunken"
             >
               <TriangleAlert className="h-3 w-3 shrink-0 text-muted" aria-hidden />
@@ -1562,6 +1654,13 @@ function FileRow({ name, path, label }: { name: string; path: string; label: str
  * script row now carries its state as a word, which is the same information in
  * the place it is needed, and a key to an encoding that is already spelled out
  * is a key to nothing.
+ *
+ * One mark did not get that treatment and could not: the timeline's diagonal
+ * hatch has no row, no word and no chip anywhere in the app, so a reviewer who
+ * wonders what the striped blocks are has nothing to read. The spans themselves
+ * now carry the sentence as a tooltip; this is the same sentence in the place
+ * somebody goes when they are looking for an explanation rather than pointing at
+ * the thing they want explained.
  */
 function ShortcutHelp() {
   return (
@@ -1583,6 +1682,18 @@ function ShortcutHelp() {
           </div>
         ))}
       </dl>
+      <p
+        data-hatch-note
+        className="mt-3 border-t border-border pt-2.5 text-[11px] leading-relaxed text-muted"
+      >
+        <span
+          aria-hidden
+          className="hatch-unclaimed mr-1.5 inline-block h-2.5 w-5 -mb-0.5 rounded-[2px] border border-dashed"
+          style={{ borderColor: "color-mix(in srgb, var(--color-unclaimed) 45%, transparent)" }}
+        />
+        The hatched blocks on the timeline are <span className="text-secondary">unclaimed
+        time</span> — no segment covers them, so the dub plays the original there.
+      </p>
     </Popover>
   );
 }

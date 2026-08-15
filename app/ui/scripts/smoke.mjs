@@ -958,6 +958,66 @@ check(
     waves.every((w) => w.getAttribute("aria-hidden") === "true"),
 );
 
+/*
+ * The hatch, named.
+ *
+ * It is the one mark on this strip with no row, no chip and no word anywhere in
+ * the app — a 135° hatch that means "unclaimed" to whoever drew it and nothing
+ * to the reviewer looking at it. Every span carries the sentence, and the
+ * shortcuts popover carries the same sentence for the reader who goes looking
+ * rather than pointing.
+ */
+const hatches = [...document.querySelectorAll("[data-hatch]")];
+check("the timeline draws unclaimed time", hatches.length > 0);
+check(
+  "…and every hatch says what it is and which seconds it covers",
+  hatches.every((h) => /^Unclaimed — no segment covers \d+:\d\d–\d+:\d\d$/.test(h.getAttribute("aria-label") ?? "")),
+);
+check(
+  "…in a tooltip as well, for the mouse",
+  hatches.every((h) => h.getAttribute("title") === h.getAttribute("aria-label")),
+);
+/*
+ * …and the rail's list of them points at the map.
+ *
+ * "Audible, uncovered — 0:52" is half an answer: a timecode does not say whether
+ * that is early, late, or in the middle of the one stretch that is already fine.
+ * Pointing at a row lights the hatch it is inside — by focus as well as hover,
+ * because a keyboard user gets the same map. The report's bounds and the strip's
+ * are two measurements of the same silence, so they are matched by overlap.
+ */
+const litHatch = () => document.querySelector('[data-hatch="lit"]');
+const gapRow = document.querySelector("[data-gap]");
+check("the rail lists the uncovered spans", gapRow != null);
+check("nothing is lit before anyone points at it", litHatch() == null);
+gapRow.focus();
+await new Promise((resolve) => setTimeout(resolve, 120));
+check("…and focusing one lights the hatch it is inside", litHatch() != null);
+check(
+  "…the one that actually covers it",
+  Number(gapRow.getAttribute("data-gap")) >= 0 &&
+    /Unclaimed — no segment covers/.test(litHatch().getAttribute("aria-label")),
+);
+gapRow.blur();
+await new Promise((resolve) => setTimeout(resolve, 120));
+check("…and it goes out again", litHatch() == null);
+
+/*
+ * Zoom has a floor and a way back to it.
+ *
+ * Every − used to halve the scale again with nothing stopping it, so a run went
+ * to a smear against the left edge of an empty strip and the only route back was
+ * pressing + and counting. Fit is that route, and it sits between the − it
+ * rescues and the readout it changes.
+ */
+const zoomFit = document.querySelector("[data-zoom-fit]");
+check("the timeline offers Fit", zoomFit != null && /Fit/.test(zoomFit.textContent));
+check(
+  "…between the zoom-out and the readout",
+  zoomFit.previousElementSibling?.getAttribute("aria-label") === "Zoom out" &&
+    /px\/s/.test(zoomFit.nextElementSibling?.textContent ?? ""),
+);
+
 // One tab stop, not two hundred.
 check(
   "the script is reachable by keyboard",
@@ -1441,6 +1501,34 @@ setInput(searchBox, "Qatari");
 await settle(200);
 check("a search narrows the kept set too", rows().length === 2);
 check("…and the button counts the rows on screen", /Dub these 2/.test(dubTrigger().textContent));
+
+/*
+ * The search says what it found, in three places.
+ *
+ * It used to say nothing at all: you typed, rows disappeared, and the only way
+ * to learn whether the word matched eleven lines or none was to scroll and
+ * count — with the All chip two inches away still confidently reading 73. The
+ * chip counts the hits against the run, every hit is marked inside its own line,
+ * and the timeline drops the marks that are not in the set.
+ */
+const allChip = () => document.querySelector('[data-chip="all"]').textContent;
+check("the All chip counts what the search found, out of the run", /^All\d+ \/ \d+$/.test(allChip()));
+const hits = [...document.querySelectorAll("[data-line] mark[data-hit]")];
+check("every hit is marked where it stands", hits.length > 0);
+check("…with the text's own case, not the query's", hits.every((m) => /qatari/i.test(m.textContent)));
+/* The mark goes *inside* the `dir="auto"` paragraph. Wrapping or splitting the
+   line instead would give each fragment its own bidi context, which reorders a
+   Hebrew sentence on screen. */
+check(
+  "…inside the bidi context, never splitting it",
+  hits.every((m) => m.closest("[data-line]")?.getAttribute("dir") === "auto"),
+);
+const dimmed = document.querySelectorAll("[data-mark][data-dim]");
+check("the timeline drops the marks the search is not about", dimmed.length > 0);
+check(
+  "…and leaves the matches at full strength",
+  document.querySelectorAll("[data-mark]").length > dimmed.length,
+);
 check(
   "…saying out loud that it is the search's set, not the run's",
   /not every kept line in the run/.test(bulkBar().textContent),
@@ -1922,6 +2010,20 @@ check(
   "the shortcuts are one click away",
   /play \/ pause/.test(root.textContent) && /zoom the timeline/.test(root.textContent),
 );
+/* One vocabulary: the buttons say Orig and Dub, so the help says Orig and Dub
+   about the keys that press them. */
+check(
+  "…naming the buttons a and b press",
+  /play Orig/.test(root.textContent) && /play Dub/.test(root.textContent),
+);
+/* And the one mark on the timeline that has no row, chip or word anywhere else
+   gets its sentence here, where somebody goes to look things up. */
+check(
+  "…and the hatch is explained where explanations live",
+  /no segment covers them, so the dub plays the original there/.test(
+    document.querySelector("[data-hatch-note]")?.textContent ?? "",
+  ),
+);
 clickIt(help);
 await settle(120);
 check("the popover closes again", !/play \/ pause/.test(root.textContent));
@@ -1959,6 +2061,14 @@ check("the subtitles are reachable at last", /Subtitles \(\.srt\)/.test(root.tex
 check(
   "each file says what the click will do",
   fileRows.every((b) => /Open .* in a new tab/.test(b.getAttribute("title") ?? "")),
+);
+/* The keys stayed A and B; the buttons say what the sides are. "A" and "B" on
+   a row a reviewer is meeting for the first time is a convention they have to
+   be told, and nothing on the screen was telling them. */
+check(
+  "…labelled Orig and Dub, not A and B",
+  clip(rowFor(9), "A").textContent.includes("Orig") &&
+    clip(rowFor(9), "B").textContent.includes("Dub"),
 );
 
 /*

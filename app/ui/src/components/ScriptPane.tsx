@@ -25,6 +25,12 @@
  * Kept is the third chip with a bulk offer and the only one whose button
  * changes a *verdict* rather than re-running a stage, which is why it is the
  * only one that asks first.
+ *
+ * The search says what it found, in three places, because a search that only
+ * removes rows is a search you have to audit by scrolling: the All chip counts
+ * the hits against the run ("11 / 73"), every hit is marked inside its own line,
+ * and the timeline's marks for everything else drop back. Between them they
+ * answer how many, which words, and where.
  */
 
 import { useEffect, useMemo, useRef } from "react";
@@ -209,10 +215,27 @@ export function ScriptPane({
 
   const tabStopUid = selectedUid ?? visible[0]?.uid ?? null;
 
-  const chip = (key: ScriptFilter, label: string, count: number) => (
+  const needle = query.trim().toLowerCase();
+
+  /*
+   * How many lines the search found, out of how many there are.
+   *
+   * The search box gave no feedback at all: you typed, rows disappeared, and
+   * the only way to learn whether "moza" matched eleven lines or none was to
+   * scroll to the bottom and count — with the All chip, two inches away, still
+   * confidently reading 73. It is the chip that means "no filter", so it is the
+   * one that owes an answer about the *other* filter that is running.
+   */
+  const found = useMemo(
+    () => (needle ? filterSegments(segments, query, "all").length : null),
+    [needle, query, segments],
+  );
+
+  const chip = (key: ScriptFilter, label: string, count: number, text?: string) => (
     <button
       key={key}
       type="button"
+      data-chip={key}
       aria-pressed={filter === key}
       onClick={() => onFilter(filter === key ? "all" : key)}
       className={cn(
@@ -239,7 +262,7 @@ export function ScriptPane({
       )}
     >
       {label}
-      <span className="font-mono tabular-nums">{count}</span>
+      <span className="font-mono tabular-nums">{text ?? count}</span>
     </button>
   );
 
@@ -368,7 +391,7 @@ export function ScriptPane({
             className="h-7 w-full rounded-md border border-border bg-raised pl-7 pr-2 text-[12.5px] text-primary outline-none transition-colors placeholder:text-muted/70 hover:border-axis focus:border-accent"
           />
         </label>
-        {chip("all", "All", counts.all)}
+        {chip("all", "All", counts.all, found != null ? `${found} / ${counts.all}` : undefined)}
         {chip("failed", "Failed", counts.failed)}
         {chip("unfinished", "Unfinished", counts.unfinished)}
         {chip("kept", "Kept", counts.kept)}
@@ -568,6 +591,7 @@ export function ScriptPane({
               tabStop={seg.uid === tabStopUid}
               editing={editing?.uid === seg.uid ? editing.field : null}
               playingUrl={playingUrl}
+              query={needle}
               onSelect={onSelect}
               onEdit={onEdit}
               onCommit={onCommit}
