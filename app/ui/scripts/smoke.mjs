@@ -1187,8 +1187,28 @@ const clickIt = (el) => el.dispatchEvent(new dom.window.MouseEvent("click", { bu
 
 const target = rowFor(2);
 check("the row is not hand-edited yet", target.querySelector('[aria-label^="Hand-edited"]') == null);
+/*
+ * Opening a field brings the row to the middle.
+ *
+ * Selection scrolls with `block: "nearest"`, which is right for selecting and
+ * wrong for editing: a row at the bottom of the list is already "nearest" where
+ * it is, so ↵ on it opened a textarea in the last thirty pixels of the pane and
+ * the field then grew down under the timeline strip with the caret in the
+ * covered part. jsdom has no layout, so what is checked is the instruction.
+ */
+const editScrolls = [];
+const priorScrollIntoView = dom.window.Element.prototype.scrollIntoView;
+dom.window.Element.prototype.scrollIntoView = function scrollIntoView(options) {
+  editScrolls.push({ uid: this.getAttribute?.("data-uid") ?? null, options });
+};
 clickIt(target.querySelector('[data-line="text_en"]'));
 await settle(150);
+const centredOnEdit = editScrolls.filter((s) => s.options?.block === "center").pop();
+check(
+  "opening a field centres its row",
+  centredOnEdit != null && centredOnEdit.uid === target.getAttribute("data-uid"),
+);
+dom.window.Element.prototype.scrollIntoView = priorScrollIntoView;
 const field = () => rowFor(2).querySelector("[data-editing]");
 check("clicking the translation opens a field in place", field() != null);
 check("the field is bidi-aware too", field().getAttribute("dir") === "auto");
@@ -2027,6 +2047,14 @@ check(
   rowFor(9).querySelector('[data-clip="A"]') != null &&
     rowFor(9).querySelector('[data-clip="B"]') != null,
 );
+/* The keys stayed A and B; the buttons say what the sides are. "A" and "B" on
+   a row a reviewer is meeting for the first time is a convention they have to
+   be told, and nothing on the screen was telling them. */
+check(
+  "…labelled Orig and Dub, not A and B",
+  clip(rowFor(9), "A").textContent.includes("Orig") &&
+    clip(rowFor(9), "B").textContent.includes("Dub"),
+);
 
 /*
  * The chrome that is not permanent. The keyboard map lives behind "?", and the
@@ -2095,14 +2123,6 @@ check("the subtitles are reachable at last", /Subtitles \(\.srt\)/.test(root.tex
 check(
   "each file says what the click will do",
   fileRows.every((b) => /Open .* in a new tab/.test(b.getAttribute("title") ?? "")),
-);
-/* The keys stayed A and B; the buttons say what the sides are. "A" and "B" on
-   a row a reviewer is meeting for the first time is a convention they have to
-   be told, and nothing on the screen was telling them. */
-check(
-  "…labelled Orig and Dub, not A and B",
-  clip(rowFor(9), "A").textContent.includes("Orig") &&
-    clip(rowFor(9), "B").textContent.includes("Dub"),
 );
 
 /*

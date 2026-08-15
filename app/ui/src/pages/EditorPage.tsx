@@ -303,12 +303,35 @@ export function EditorPage() {
    * exactly why they clicked it again.
    */
   const [reveal, setReveal] = useState<{ uid: string; n: number } | null>(null);
+  const revealRow = useCallback((uid: string) => {
+    setReveal((current) => ({ uid, n: (current?.n ?? 0) + 1 }));
+  }, []);
   const selectFromTimeline = useCallback(
     (uid: string) => {
       selectAndSeek(uid);
-      setReveal((current) => ({ uid, n: (current?.n ?? 0) + 1 }));
+      revealRow(uid);
     },
-    [selectAndSeek],
+    [revealRow, selectAndSeek],
+  );
+
+  /**
+   * Opening a field is asking for the row, so the row comes to the middle.
+   *
+   * Selection scrolls with `block: "nearest"`, which is right for selecting: it
+   * moves the list as little as it can. It is wrong for *editing*. A row at the
+   * bottom of the list is "nearest" where it already is, so pressing ↵ on it
+   * opened a textarea in the last thirty pixels of the pane — and the field then
+   * grew downward, under the timeline strip, with the caret in the part that was
+   * covered. Every route into a field goes through here (↵, a click on a
+   * translation, the row menu's Correct transcript) and every one of them means
+   * the same thing, so the centring is at the seam rather than at three of them.
+   */
+  const startEditing = useCallback(
+    (target: EditTarget) => {
+      setEditing(target);
+      if (target) revealRow(target.uid);
+    },
+    [revealRow],
   );
 
   /** ↑/↓ walk what is on screen, not what is in the run. */
@@ -683,7 +706,7 @@ export function EditorPage() {
         case "Enter":
           if (selected) {
             event.preventDefault();
-            setEditing({ uid: selected.uid, field: "text_en" });
+            startEditing({ uid: selected.uid, field: "text_en" });
           }
           break;
         case "Escape":
@@ -729,7 +752,18 @@ export function EditorPage() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [actions, selected, splitAt, step, toggleKeep, transport, transportMode, zoomIn, zoomOut]);
+  }, [
+    actions,
+    playable,
+    selected,
+    splitAt,
+    startEditing,
+    step,
+    toggleKeep,
+    transport,
+    zoomIn,
+    zoomOut,
+  ]);
 
   const job = activeJob(state.jobs);
 
@@ -920,7 +954,7 @@ export function EditorPage() {
               onQuery={setQuery}
               onFilter={setFilter}
               onSelect={selectAndSeek}
-              onEdit={setEditing}
+              onEdit={startEditing}
               onCommit={commit}
               onPlay={toggleClip}
               onToggleKeep={toggleKeep}
