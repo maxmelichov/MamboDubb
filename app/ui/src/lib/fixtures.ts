@@ -12,6 +12,8 @@
  */
 
 import data from "./fixture-data.json";
+import { ApiError } from "./apiError";
+import { applyPatch } from "./patch";
 import { placedSpan } from "./segments";
 import { toneUrl } from "./tone";
 import type {
@@ -50,12 +52,13 @@ const store: Store = structuredClone(data) as unknown as Store;
  * bug. This adds one of each, by position rather than by content, and it is the
  * only place fixture mode invents anything.
  *
- * The last two are the shape a user was actually left in: a kept line flipped
- * to "Dub it" by a UI that sent `PATCH {keep:false}` and queued nothing, so the
- * server dropped the subtitle and the clip and no job ever replaced them —
- * `keep:false`, `keep_reason:null`, `locked:{keep:true}`, no `text_en`, no
- * `tts`. And its sibling, a line that has its translation and never got a
- * voice. Both are `unfinished`; neither is reachable except through the chip.
+ * The rest are shapes a user was actually left in, and every one of them was a
+ * state the UI got wrong: a kept line flipped to "Dub it" by a UI that sent
+ * `PATCH {keep:false}` and queued nothing, so the server dropped the subtitle
+ * and the clip and no job ever replaced them; a line that has its translation
+ * and never got a voice; a line that has its voice and never got placed; and
+ * the two keeps the pipeline decides against itself when the voice or the
+ * translator fails. None of them is reachable except through a chip.
  */
 function seedOverrides(): void {
   const withOpts = store.segments.find((seg) => !seg.keep && seg.tts);
@@ -79,6 +82,64 @@ function seedOverrides(): void {
   }
   const voiceless = [...store.segments].reverse().find((seg) => !seg.keep && seg.place);
   if (voiceless) Object.assign(voiceless, { tts: null, place: null, verify: null });
+
+  /*
+   * A line that has its clip and no placement — the ordinary state of a studio
+   * segment between a re-voice and the render that lays it down. It is here
+   * because it is the state that was *mislabelled*: with no distinct state for
+   * it the row said "Needs voice", and the Unfinished chip's one-click fix
+   * queued a minute of synthesis to reproduce a clip that already existed.
+   */
+  const unplaced = [...store.segments]
+    .reverse()
+    .find((seg) => !seg.keep && seg.place && seg.tts && seg !== voiceless);
+  if (unplaced) Object.assign(unplaced, { place: null });
+
+  /*
+   * And a real failure, in the shape the pipeline actually writes.
+   *
+   * The snapshot carried `tts.verify = "failed"`, which `dubbing/tts.py` never
+   * writes — the record's verdict is "ok", "soft" or "keep" and nothing else.
+   * That invented value was the *only* thing the Failed chip counted, so the UI
+   * had a failure state that could only be reached by a fixture. What a failed
+   * synthesis really leaves behind is a keep the pipeline decided against
+   * itself: `keep_reason="tts_failed"`, with a slice of the original audio
+   * attached (`Engine.keep_clip`) so the mix is never silent.
+   */
+  const failed = store.segments.find(
+    (seg) => seg.keep_reason === "tts_failed" || seg.tts?.verify === "failed",
+  );
+  if (failed) Object.assign(failed, keptByFailure(failed, "tts_failed"));
+
+  // Its sibling, and the other half of the Failed filter's offer: a line the
+  // *translator* could not put into the target language (`translate.run` →
+  // `keep_reason="mt_failed"`, with the source line copied into `text_en`).
+  // Its fix is the re-translate button, not the re-voice one.
+  const untranslatable = [...store.segments]
+    .reverse()
+    .find((seg) => !seg.keep && seg.place && seg !== unplaced && seg !== voiceless);
+  if (untranslatable) {
+    Object.assign(untranslatable, keptByFailure(untranslatable, "mt_failed"), {
+      text_en: untranslatable.text,
+    });
+  }
+}
+
+/**
+ * The record a pipeline failure leaves behind: a keep it decided against
+ * itself, with a slice of the original audio attached so the mix is never
+ * silent (`tts.Engine.keep_clip`). `verify` stays as it was — the low overlap
+ * from the attempt that failed is the evidence for the verdict.
+ */
+function keptByFailure(seg: Segment, reason: "tts_failed" | "mt_failed"): Partial<Segment> {
+  const clip = `clips/${seg.uid}_keep.wav`;
+  return {
+    keep: true,
+    keep_reason: reason,
+    tts: { clip, dur: Number((seg.end - seg.start).toFixed(2)), tries: 3, overlap: 1,
+           verify: "keep" },
+    place: { start: seg.start, end: seg.end, rate: 1, drift: 0, clip },
+  };
 }
 seedOverrides();
 
@@ -177,9 +238,19 @@ function enrich(seg: Segment): Segment {
 const delay = <T>(value: T): Promise<T> =>
   new Promise((resolve) => setTimeout(() => resolve(value), LATENCY_MS));
 
+/**
+ * Every failure here is an `ApiError`, never a bare `Error`.
+ *
+ * The server speaks one error envelope — `{"error":{code,message}}` — and the
+ * app branches on it: a 404 from `peaks` is "no dub.wav yet" and resolves to
+ * null, a 409 is the one-job rule refusing an edit. A fixture that rejects with
+ * a plain `Error` has no code and no status, so every one of those branches is
+ * untested in the only mode the smoke test runs in, and one of them (`peaks`)
+ * was wrong in exactly that way.
+ */
 function find(uid: string): Segment {
   const seg = store.segments.find((s) => s.uid === uid);
-  if (!seg) throw new Error(`no such segment: ${uid}`);
+  if (!seg) throw new ApiError("not_found", `no segment '${uid}'`, 404);
   return seg;
 }
 
@@ -482,6 +553,7 @@ export function getSegments(name: string): Promise<Segment[]> {
 export function peaks(name: string, file: PeaksFile, n: number): Promise<Peaks> {
   calls.peaks += 1;
   const buckets = Math.max(16, Math.min(Math.round(n), 4000));
+<<<<<<< HEAD
   // Each lane's file is written by one stage — `source.wav` by fetch, `dub.wav`
   // by mix — and before that stage has run the server 404s and the lane falls
   // back to marks alone. The fixture has to refuse in the same cases or that
@@ -489,6 +561,15 @@ export function peaks(name: string, file: PeaksFile, n: number): Promise<Peaks> 
   const stages = projectOf(name).stages;
   if (stages[file === "dub" ? "mix" : "fetch"] !== "done") {
     return Promise.reject(new Error(`${file}.wav does not exist yet for this run`));
+=======
+  // `dub.wav` is written by the mix stage; before it has run the server 404s
+  // and the lane falls back to marks alone. The fixture has to refuse it in
+  // the same case or that fallback is never exercised anywhere.
+  if (file === "dub" && store.project.stages.mix !== "done") {
+    return Promise.reject(
+      new ApiError("not_found", "dub.wav does not exist yet for this run", 404),
+    );
+>>>>>>> fix/ui-seams
   }
 
   const spans = store.segments.map((seg) =>
@@ -539,55 +620,33 @@ export function patchSegment(_name: string, uid: string, patch: SegmentPatch): P
   // test runs in.
   if ("text_en" in patch && !patch.text_en?.trim()) {
     return Promise.reject(
-      new Error("text_en cannot be empty — a dubbed segment must say something"),
+      new ApiError(
+        "invalid_request",
+        "text_en cannot be empty — a dubbed segment must say something",
+        400,
+      ),
     );
   }
   if ("text" in patch && !patch.text?.trim()) {
-    return Promise.reject(new Error("text cannot be empty"));
+    return Promise.reject(new ApiError("invalid_request", "text cannot be empty", 400));
   }
 
-  Object.assign(seg, patch);
-
-  // Editing the line invalidates everything made *from* the line: the clip
-  // provably says the old words. `edit.set_text` calls `invalidate(translate)`
-  // for exactly this, and a fixture that quietly kept a stale clip would make
-  // the editor's optimistic merge look correct when it is not.
-  if ("text_en" in patch || "text" in patch) {
-    seg.tts = null;
-    seg.place = null;
-    seg.verify = null;
-  }
-
-  // A verdict flip invalidates the translate stage in *both* directions —
-  // `edit.set_keep` ends in `invalidate(stages={"translate"})`, which takes
-  // `text_en` and everything built on it. A keep's line is a subtitle and a
-  // dub's line is what the voice says, so neither is fit to survive the flip;
-  // a line the user wrote is locked and does survive. This is precisely why
-  // flipping to "Dub it" has to queue work: without it the segment is left
-  // with no translation, no clip, and nothing on its way to fix that.
-  if ("keep" in patch) {
-    if (!seg.locked?.text_en) seg.text_en = null;
-    seg.tts = null;
-    seg.place = null;
-    seg.verify = null;
-  }
-
-  // The user's edits outrank the pipeline: a hand-edited field is locked so a
-  // re-run cannot overwrite it (docs/APP_ARCHITECTURE.md, non-negotiables).
-  const locked = { ...(seg.locked ?? {}) };
-  for (const field of ["text", "text_en", "speaker"] as const) {
-    if (field in patch) locked[field] = true;
-  }
-  if ("keep" in patch) {
-    locked.keep = true;
-    seg.keep_reason = patch.keep ? (patch.keep_reason ?? "manual") : null;
-  }
-  // `locked` in the patch is the user's final word, applied last, and it is a
-  // replace rather than a merge — `{}` is how "hand this line back to the
-  // pipeline" is expressed (edit.set_locked).
-  const final = patch.locked ? { ...patch.locked } : locked;
-  const on = Object.fromEntries(Object.entries(final).filter(([, v]) => v));
-  seg.locked = Object.keys(on).length ? on : null;
+  /*
+   * The patch's effects come from `applyPatch` — the same table the editor
+   * predicts with, which is the same table `dubbing/edit.py` implements.
+   *
+   * What was here was a third copy: it spread the patch over the segment and
+   * then invalidated for `text`, `text_en` and `keep`. Everything else went
+   * through untouched — a speaker change kept the clip in the old voice, a
+   * moved span kept a clip cut from the old one, and a language override was
+   * written on as a value with nothing dropped. Three implementations of one
+   * contract is how a fixture stops being a stand-in for the server and starts
+   * being a second, kinder one that hides the first one's behaviour.
+   */
+  Object.assign(seg, applyPatch(seg, patch));
+  // `media` is server-side enrichment, not manifest state: `enrich` below is
+  // the only thing allowed to write it, exactly as `Projects.enrich` is.
+  delete seg.media;
 
   return delay(enrich(seg));
 }
@@ -792,6 +851,20 @@ async function runJob(job: Job): Promise<void> {
 function applyModelResult(kind: JobKind, uid: string): void {
   const seg = store.segments.find((s) => s.uid === uid);
   if (!seg) return;
+  /*
+   * Asking for the work undoes the verdict the failure of that work caused.
+   *
+   * `edit.retranslate`/`resynthesize` both start with `invalidate`, whose undo
+   * table reopens a `mt_failed` keep on a translate and a `tts_failed` keep on
+   * either — the segment gets another go rather than being stuck on a verdict
+   * about a clip that no longer exists. It is what makes the Failed filter's
+   * two buttons the right two buttons, so the fixture has to do it too.
+   */
+  const undo = kind === "retranslate" ? ["mt_failed", "tts_failed"] : ["tts_failed"];
+  if (!seg.locked?.keep && undo.includes(seg.keep_reason ?? "")) {
+    seg.keep = false;
+    seg.keep_reason = null;
+  }
   if (kind === "retranslate") {
     // Locked fields are never overwritten by a re-run.
     if (seg.locked?.text_en) return;

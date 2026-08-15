@@ -11,6 +11,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, api } from "./api";
+import { applyPatch } from "./patch";
 import type {
   Job,
   LogEvent,
@@ -157,7 +158,17 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
                     } satisfies Job,
                   ];
             });
-            if (event.status === "done" || event.status === "failed") {
+            /*
+             * Cancelled is terminal, and it is terminal in the way that
+             * matters most: the worker saves the partial work it did before it
+             * stopped (`jobs`' journal), so a cancelled resynthesis leaves real
+             * new clips on disk. Treating only done|failed as the end left the
+             * spinners turning on every uid in the job and never re-read the
+             * segments — the results were there and the screen never showed
+             * them until the run was re-opened.
+             */
+            if (event.status === "done" || event.status === "failed" ||
+                event.status === "cancelled") {
               setStage(null);
               setBusyUids([]);
               scheduleRefresh();
@@ -182,10 +193,18 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
 
   const patch = useCallback(
     async (uid: string, body: SegmentPatch): Promise<Segment | null> => {
-      // Optimistic: the point of a no-model edit is that it is instant.
+      /*
+       * Optimistic: the point of a no-model edit is that it is instant.
+       *
+       * `applyPatch` is `dubbing/edit.py`'s table, shared with the fixture
+       * backend so there is one model of what a PATCH does and not three. The
+       * server's answer overwrites this a moment later; this is only what the
+       * row shows in between — and what it showed before was a ◆ Dubbed badge
+       * over audio of a sentence the user had just replaced.
+       */
       const before = segments;
       setSegments((current) =>
-        current.map((seg) => (seg.uid === uid ? predict(seg, body) : seg)),
+        current.map((seg) => (seg.uid === uid ? applyPatch(seg, body) : seg)),
       );
       try {
         const updated = await api.patchSegment(name, uid, body);
@@ -244,12 +263,20 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
       retranslate: (uids) => submit(uids, () => api.retranslate(name, uids)),
       resynthesize: (uids) => submit(uids, () => api.resynthesize(name, uids)),
       render: () => submit([], () => api.render(name)),
+      // Optimistic in the same shape the event handler is: a cancel ends the
+      // job, so the stage strip and the per-segment spinners end with it, and
+      // whatever the worker saved on its way out is re-read. The `cancelled`
+      // frame will say the same thing a moment later; this is for the moment
+      // before it arrives, and for a stream that has dropped.
       cancel: async (id) => {
         try {
           await api.cancelJob(id);
           setJobs((current) =>
             current.map((job) => (job.id === id ? { ...job, status: "cancelled" } : job)),
           );
+          setStage(null);
+          setBusyUids([]);
+          void load();
         } catch (err) {
           setError(describe(err));
         }
@@ -277,68 +304,22 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
   return [state, actions];
 }
 
-/**
- * What the segment will look like once the server has answered.
- *
- * A spread of the patch over the segment is not the optimistic result, it is
- * half of it: saving a translation *also* drops the clip that says the old
- * words, unsets the placement, voids the verification and locks the field
- * (`dubbing/edit.set_text` → `invalidate(translate)`). Applying only the half
- * we sent meant the row kept a ◆ Dubbed badge and a live ▶B button pointing at
- * audio of the sentence the user had just replaced — until a refetch happened
- * to land, which on a quiet run is never.
- *
- * The PATCH response is the truth and it overwrites this a moment later; this
- * is only what the row shows in between. It deliberately models the *known*
- * side effects and nothing speculative.
- */
-function predict(seg: Segment, body: SegmentPatch): Segment {
-  const next: Segment = { ...seg, ...body };
-  const locked = { ...(seg.locked ?? {}) };
-
-  if (body.text != null || body.text_en != null) {
-    next.tts = null;
-    next.place = null;
-    next.verify = null;
-    next.media = { ...(seg.media ?? { source: null, source_window: null, play: null, tts: null }),
-                   play: null, tts: null };
-    if (body.text != null) locked.text = true;
-    if (body.text_en != null) locked.text_en = true;
-  }
-  if (body.speaker != null) locked.speaker = true;
-  if (body.keep != null) {
-    locked.keep = true;
-    next.keep_reason = body.keep ? (body.keep_reason ?? "manual") : null;
-    // A verdict flip invalidates the translate stage in both directions
-    // (`edit.set_keep` → `invalidate(translate)`): a keep's `text_en` is a
-    // subtitle and a dub's is what the voice says, so neither survives the
-    // other — except a line the user wrote, which is locked and is theirs. The
-    // clip goes either way, because the kind of clip is what changed.
-    if (!seg.locked?.text_en) next.text_en = null;
-    next.tts = null;
-    next.place = null;
-    next.verify = null;
-    next.media = { ...(seg.media ?? { source: null, source_window: null, play: null, tts: null }),
-                   play: null, tts: null };
-  }
-  // An explicit `locked` in the patch is the user's final word — a replace, not
-  // a merge, exactly as `edit.set_locked` treats it.
-  const final = body.locked ?? locked;
-  const on = Object.fromEntries(Object.entries(final).filter(([, v]) => v));
-  next.locked = Object.keys(on).length ? on : null;
-
-  return next;
-}
-
 export function activeJob(jobs: Job[]): Job | null {
   return jobs.find((job) => job.status === "running") ?? jobs.find((job) => job.status === "queued") ?? null;
 }
 
+/**
+ * The server's own words, never ours.
+ *
+ * A `busy` used to be rewritten as "A job is already running — this one is
+ * queued behind it.", which is a sentence about something that never happened:
+ * the model actions *do* queue and answer 202, and 409/busy is raised only for
+ * the edits the server refuses outright while a job runs (a split, a merge, a
+ * bounds change, a second install). Telling a user their split is queued when
+ * it was rejected is worse than saying nothing — and the server's message
+ * already names which edit and why.
+ */
 function describe(error: unknown): string {
-  if (error instanceof ApiError) {
-    return error.isBusy
-      ? "A job is already running — this one is queued behind it."
-      : error.message;
-  }
+  if (error instanceof ApiError) return error.message;
   return String(error);
 }

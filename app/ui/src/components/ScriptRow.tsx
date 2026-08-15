@@ -79,7 +79,8 @@ export type ScriptRowProps = {
   onSelect: (uid: string) => void;
   onEdit: (target: EditTarget) => void;
   onCommit: (uid: string, field: "text" | "text_en", value: string) => void;
-  onPlay: (url: string | null) => void;
+  /** `window` confines playback to a span of the file — see `clipAudio`. */
+  onPlay: (url: string | null, window?: [number, number] | null) => void;
   onToggleKeep: (seg: Segment) => void;
 };
 
@@ -345,10 +346,15 @@ function Row({
           (selected || menuOpen) && "visible",
         )}
       >
+        {/* A is a *window* of the source track, not a file of its own: the
+            server says which one in `media.source_window`, and without it the
+            press starts wherever the browser felt like starting and never
+            stopped at the segment's end. */}
         <ClipButton
           label="A"
           title="Play the original audio for this span"
           url={sourceUrl}
+          window={seg.media?.source_window ?? null}
           playing={playingUrl != null && playingUrl === sourceUrl}
           onPlay={onPlay}
         />
@@ -564,6 +570,7 @@ function ClipButton({
   label,
   title,
   url,
+  window,
   playing,
   onPlay,
   emptyTitle,
@@ -571,19 +578,33 @@ function ClipButton({
   label: string;
   title: string;
   url: string | null;
+  /** The span of `url` this side is: null when the file is already the clip. */
+  window?: [number, number] | null;
   playing: boolean;
+<<<<<<< HEAD
   onPlay: (url: string | null) => void;
   emptyTitle?: string;
+=======
+  onPlay: (url: string | null, window?: [number, number] | null) => void;
+>>>>>>> fix/ui-seams
 }) {
   return (
     <button
       type="button"
       data-clip={label}
       data-url={url ?? ""}
+      // The span this side is confined to, for the same reason `data-url` is
+      // here: it is the contract the smoke test can see from outside.
+      data-window={window ? JSON.stringify(window) : ""}
       disabled={!url}
       aria-pressed={playing}
+<<<<<<< HEAD
       title={url ? title : (emptyTitle ?? "No audio for this side yet")}
       onClick={() => onPlay(url)}
+=======
+      title={url ? title : "No audio for this side yet"}
+      onClick={() => onPlay(url, window)}
+>>>>>>> fix/ui-seams
       className={cn(
         "inline-flex h-6 items-center gap-0.5 rounded-md border px-1.5 text-[11px] font-bold",
         "transition-colors",
