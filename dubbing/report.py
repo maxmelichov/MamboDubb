@@ -29,7 +29,7 @@ from typing import Any
 
 import numpy as np
 
-from . import audio, manifest as manifest_mod, timeline, transcript
+from . import audio, manifest as manifest_mod, script, timeline, transcript
 from . import tts
 
 SCAN_SR = 16000
@@ -76,6 +76,33 @@ def uncovered_spans(source_wav: Path, words: list[dict], segments: list[dict],
                               "duration": round(t1 - t0, 2), "rms": round(level, 4)})
         i = j
     return spans
+
+
+def declared_source_mismatch(m: dict[str, Any],
+                             segments: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The transcript disagrees with the project's declared source language.
+
+    Script is the one witness that needs no model: when most of the speech that
+    was heard is not written in the source language's script, the declaration
+    itself is the likeliest bug (an English video imported as Hebrew), and every
+    keep/dub verdict downstream inherits it — script-keeps then file the real
+    language of the video as "already the target". The report cannot fix a
+    declaration; it can refuse to let it pass silently. Same-script mistakes
+    (a German video declared English) are invisible to this check by nature.
+    """
+    src = ((m.get("source") or {}).get("src_lang") or "").lower()
+    if not src:
+        return None
+    voiced = [(s, float(s["end"]) - float(s["start"]))
+              for s in segments if (s.get("text") or "").strip()]
+    total = sum(d for _, d in voiced)
+    if total < 30.0:          # too little speech to accuse a declaration
+        return None
+    in_src = sum(d for s, d in voiced if script.is_script(s["text"], src))
+    frac = in_src / total
+    if frac >= 0.5:
+        return None
+    return {"declared": src, "in_source_script": round(frac, 2)}
 
 
 def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
@@ -162,6 +189,7 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
         "speed": {"max": round(max(rates, default=1.0), 3),
                   "compressed": sum(1 for r in rates if r > 1.01)},
         "uncovered_audible": spans,
+        "source_mismatch": declared_source_mismatch(m, segments),
     }
     (workdir / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1),
                                          encoding="utf-8")
@@ -180,6 +208,12 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
             print(f"  WARNING: {verify['unverified']} clip(s) accepted without "
                   f"verification (of {checked + verify['unverified']} dubbed)",
                   file=sys.stderr)
+    if report["source_mismatch"]:
+        mm = report["source_mismatch"]
+        print(f"  WARNING: only {mm['in_source_script']:.0%} of the speech is written "
+              f"in the declared source language ({mm['declared']}) — the declaration "
+              "is probably wrong; re-create the project with the language the video "
+              "actually speaks", file=sys.stderr)
     for name, reason in sorted(health.items()):
         print(f"  degraded: {name} — {reason}", file=sys.stderr)
     print(f"  drift: max {report['drift']['max']}s, {report['drift']['over_soft']} over "

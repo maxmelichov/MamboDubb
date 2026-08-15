@@ -1847,3 +1847,25 @@ def test_untranslated_reopens_translate():
     ]
     assert translate.untranslated(segs) == [0, 1]
     assert translate.untranslated([{"id": 0, "keep": False, "text_en": "x"}]) == []
+
+
+def test_declared_source_mismatch():
+    from dubbing import report
+
+    def seg(text, dur=10.0, at=0.0):
+        return {"start": at, "end": at + dur, "text": text}
+
+    m_he = {"source": {"src_lang": "he"}}
+    # An English video imported as Hebrew: nearly all speech is Latin-script.
+    english = [seg("This is from the side.", at=i * 10) for i in range(5)]
+    mm = report.declared_source_mismatch(m_he, english)
+    assert mm and mm["declared"] == "he" and mm["in_source_script"] < 0.5
+    # A genuinely Hebrew video: no accusation.
+    hebrew = [seg("זה מן הצד של הדברים", at=i * 10) for i in range(5)]
+    assert report.declared_source_mismatch(m_he, hebrew) is None
+    # Too little speech to judge — under the 30s floor, silence.
+    assert report.declared_source_mismatch(m_he, [seg("Hello there", dur=5.0)]) is None
+    # Same-script mistakes are invisible by nature (declared en, actually de).
+    m_en = {"source": {"src_lang": "en"}}
+    german = [seg("Das ist von der Seite der Dinge", at=i * 10) for i in range(5)]
+    assert report.declared_source_mismatch(m_en, german) is None

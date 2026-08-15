@@ -51,7 +51,9 @@ STAGE_TAGS = {
     # v3: honest failure accounting — verify.unverified, degraded, overrun,
     # shorten_abandoned, subtitles_failed, stale_locked_clips — alongside the
     # transcript-origin stamping. (v2 was claimed for the first half alone.)
-    "report": "report/v3",
+    # v4: source_mismatch — the report says when most of the heard speech is
+    # not written in the declared source language's script (wrong declaration).
+    "report": "report/v4",
 }
 
 # Anything not listed here is dropped on save. This is what stops the segment
