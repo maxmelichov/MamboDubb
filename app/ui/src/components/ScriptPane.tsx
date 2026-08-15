@@ -30,7 +30,15 @@
 import { useEffect, useMemo, useRef } from "react";
 import { Film, Languages, ListX, Mic2, Search, Volume2 } from "lucide-react";
 import { cn } from "../lib/classNames";
-import { hasLocks, needsModelWork, segmentState, unfinished } from "../lib/segments";
+import { lineCount, theseLines } from "../lib/format";
+import {
+  hasLocks,
+  hasTranscript,
+  modelCost,
+  needsModelWork,
+  segmentState,
+  unfinished,
+} from "../lib/segments";
 import { Button, ConfirmButton, Empty } from "./ui";
 import { ScriptRow, type EditTarget } from "./ScriptRow";
 import type { Segment } from "../lib/types";
@@ -253,9 +261,20 @@ export function ScriptPane({
    * but no placement needs a render, not a model: re-voicing it is a minute of
    * GPU to arrive back exactly where it started.
    */
-  const bulkSegs = visible.filter(
+  const bulkCandidates = visible.filter(
     (seg) => needsModelWork(seg) && (!seg.keep || segmentState(seg) === "failed"),
   );
+  /*
+   * …and a line with nothing written on it is not model work either.
+   *
+   * `segments.fill_uncovered_audible` writes spans with `text: ""` — audible
+   * stretches the transcript never claimed — and a flip to "Dub it" puts one in
+   * this set. Translating an empty string and voicing the result is a minute of
+   * GPU spent replacing correct original audio with garbage, so they are skipped
+   * and the count says how many, rather than being quietly folded in.
+   */
+  const bulkSegs = bulkCandidates.filter(hasTranscript);
+  const bulkSkipped = bulkCandidates.length - bulkSegs.length;
   const bulkUids = bulkSegs.map((seg) => seg.uid);
   const renderUids = visible.filter((seg) => segmentState(seg) === "unplaced").map((s) => s.uid);
   const needText = bulkSegs.filter((seg) => !(seg.text_en ?? "").trim()).length;
@@ -272,7 +291,22 @@ export function ScriptPane({
     .map((s) => s.uid);
   const showBulk =
     (filter === "failed" || filter === "unfinished") && bulkUids.length + renderUids.length > 0;
-  const lines = `${bulkUids.length} line${bulkUids.length === 1 ? "" : "s"}`;
+  const lines = lineCount(bulkUids.length);
+
+  const searching = query.trim().length > 0;
+  /*
+   * Every bulk bar names its set precisely once a search has narrowed it.
+   *
+   * The Kept bar has said this since it was written — the search box is a filter
+   * like any other, and a button that quietly acted on two hundred lines while
+   * eleven are on screen is the worst kind of bulk action. The Failed and
+   * Unfinished bars had the same property and never said so; it is one sentence,
+   * so they say it the same way rather than each in its own words.
+   */
+  const searchNote = (noun: string) =>
+    searching ? ` — the ones this search leaves on screen, not every ${noun} line in the run` : "";
+  /** What a work set left behind, and why. Reads as nothing when it left nothing. */
+  const skipNote = (n: number) => (n > 0 ? ` (${n} skipped — no transcript to translate)` : "");
 
   /*
    * The third bulk offer, and the only one that changes a verdict rather than
@@ -289,10 +323,18 @@ export function ScriptPane({
    * hundred lines when eleven are showing would be the worst kind of bulk
    * action. It says which it is, in the sentence beside it.
    */
-  const keptUids = filter === "kept" ? visible.map((seg) => seg.uid) : [];
-  const searching = query.trim().length > 0;
+  const keptSegs = filter === "kept" ? visible.filter(hasTranscript) : [];
+  const keptUids = keptSegs.map((seg) => seg.uid);
+  const keptSkipped = filter === "kept" ? visible.length - keptSegs.length : 0;
+  // What the flip will cost: every line is voiced, and every line whose
+  // translation is the pipeline's is translated again first — `set_keep`
+  // discards it on the way through, and only a hand-written one is locked
+  // against that.
+  const keptNeedText = keptSegs.filter(
+    (seg) => !((seg.text_en ?? "").trim() && seg.locked?.text_en),
+  ).length;
   const showDubBulk = filter === "kept" && keptUids.length > 0;
-  const keptLines = `${keptUids.length} line${keptUids.length === 1 ? "" : "s"}`;
+  const keptLines = lineCount(keptUids.length);
 
   return (
     <section
@@ -342,7 +384,11 @@ export function ScriptPane({
         >
           <span className="min-w-0 flex-1 text-[11px] text-secondary">
             {filter === "failed" ? (
-              <>{lines} the pipeline could not say. One job, not {bulkUids.length}.</>
+              <>
+                {lines} the pipeline could not say{searchNote("failed")}.
+                {/* "One job, not 1." is a promise about nothing. */}
+                {bulkUids.length > 1 ? ` One job, not ${bulkUids.length}.` : null}
+              </>
             ) : (
               <>
                 {lines} with nothing to play
@@ -350,7 +396,10 @@ export function ScriptPane({
                 {renderUids.length > 0
                   ? `${bulkUids.length > 0 ? ", and " : ""}${renderUids.length} already voiced and waiting for a render`
                   : null}
-                . One click, at most two jobs.
+                {bulkSkipped > 0
+                  ? `${bulkUids.length + renderUids.length > 0 ? ", and " : ""}${bulkSkipped} with no transcript to translate`
+                  : null}
+                {searchNote("unfinished")}. One click, at most two jobs.
               </>
             )}
           </span>
@@ -363,33 +412,80 @@ export function ScriptPane({
               Render {renderUids.length}
             </Button>
           ) : null}
+          {/*
+            Every one of these is minutes of model time per line, and until now
+            each was a single unguarded click: "Re-voice these 27" is half an
+            hour of GPU, asked for and started in the same gesture. They ask
+            first, and what they ask with is the price — the same ~20s / ~1min
+            the selection panel already quotes for one line, multiplied by the
+            work set each button actually sends.
+          */}
           {bulkUids.length === 0 ? null : filter === "unfinished" ? (
-            <Button size="xs" onClick={() => onFixMany(bulkUids)}>
+            <ConfirmButton
+              size="xs"
+              confirmLabel={
+                needText > 0
+                  ? `Translate & voice ${theseLines(bulkUids.length)}`
+                  : `Re-voice ${theseLines(bulkUids.length)}`
+              }
+              message={
+                <>
+                  {lines}
+                  {skipNote(bulkSkipped)} ·{" "}
+                  {modelCost({ translate: needText, voice: bulkUids.length })}
+                  {searchNote("unfinished")}. Whatever has no line is translated first, then
+                  the lot is voiced — two jobs, in that order.
+                </>
+              }
+              onConfirm={() => onFixMany(bulkUids)}
+            >
               {needText > 0 ? (
                 <>
                   <Languages className="h-3 w-3" />
-                  Translate &amp; voice these {bulkUids.length}
+                  Translate &amp; voice {theseLines(bulkUids.length)}
                 </>
               ) : (
                 <>
                   <Volume2 className="h-3 w-3" />
-                  Re-voice these {bulkUids.length}
+                  Re-voice {theseLines(bulkUids.length)}
                 </>
               )}
-            </Button>
+            </ConfirmButton>
           ) : (
             <>
               {voiceUids.length > 0 ? (
-                <Button size="xs" onClick={() => onResynthesizeMany(voiceUids)}>
+                <ConfirmButton
+                  size="xs"
+                  confirmLabel={`Re-voice ${theseLines(voiceUids.length)}`}
+                  message={
+                    <>
+                      {lineCount(voiceUids.length)} · {modelCost({ voice: voiceUids.length })}
+                      {searchNote("failed")}. Each one is synthesized again and its old clip
+                      replaced.
+                    </>
+                  }
+                  onConfirm={() => onResynthesizeMany(voiceUids)}
+                >
                   <Volume2 className="h-3 w-3" />
-                  Re-voice these {voiceUids.length}
-                </Button>
+                  Re-voice {theseLines(voiceUids.length)}
+                </ConfirmButton>
               ) : null}
               {textUids.length > 0 ? (
-                <Button size="xs" onClick={() => onRetranslateMany(textUids)}>
+                <ConfirmButton
+                  size="xs"
+                  confirmLabel={`Re-translate ${theseLines(textUids.length)}`}
+                  message={
+                    <>
+                      {lineCount(textUids.length)} · {modelCost({ translate: textUids.length })}
+                      {searchNote("failed")}. The model's line replaces what is there now,
+                      including anything written by hand.
+                    </>
+                  }
+                  onConfirm={() => onRetranslateMany(textUids)}
+                >
                   <Languages className="h-3 w-3" />
-                  Re-translate these {textUids.length}
-                </Button>
+                  Re-translate {theseLines(textUids.length)}
+                </ConfirmButton>
               ) : null}
             </>
           )}
@@ -401,30 +497,31 @@ export function ScriptPane({
           data-bulk="kept"
           className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-sunken px-3 py-1.5"
         >
+          {/* The sentence counts what is on screen; the button counts what it
+              will actually send, which is not the same number once the spans
+              with no transcript are out of the work set. */}
           <span className="min-w-0 flex-1 text-[11px] text-secondary">
-            {searching ? (
-              <>
-                {keptLines} play as recorded — the ones this search leaves on screen, not every
-                kept line in the run.
-              </>
-            ) : (
-              <>{keptLines} play as recorded, subtitled. One click, at most two jobs.</>
-            )}
+            {lineCount(visible.length)} play as recorded
+            {searching ? null : ", subtitled"}
+            {keptSkipped > 0 ? ` — ${keptSkipped} with no transcript to translate` : null}
+            {searchNote("kept")}. One click, at most two jobs.
           </span>
           <ConfirmButton
             size="xs"
-            confirmLabel={`Dub these ${keptUids.length}`}
+            confirmLabel={`Dub ${theseLines(keptUids.length)}`}
             message={
               <>
-                {keptUids.length} line{keptUids.length === 1 ? "" : "s"} switch to dubbed
-                {searching ? " — the ones this search leaves on screen" : ""}; translate + voice
-                queue behind any running job.
+                {keptLines}
+                {skipNote(keptSkipped)} ·{" "}
+                {modelCost({ translate: keptNeedText, voice: keptUids.length })}
+                {searchNote("kept")}. {keptUids.length === 1 ? "It switches" : "They switch"} to
+                dubbed; translate + voice queue behind any running job.
               </>
             }
             onConfirm={() => onDubMany(keptUids)}
           >
             <Mic2 className="h-3 w-3" />
-            Dub these {keptUids.length}
+            Dub {theseLines(keptUids.length)}
           </ConfirmButton>
         </div>
       ) : null}

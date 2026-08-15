@@ -112,6 +112,38 @@ export function needsModelWork(seg: Segment): boolean {
 }
 
 /**
+ * Is there anything here to translate or to say?
+ *
+ * `segments.fill_uncovered_audible` writes spans with `text: ""` — audible
+ * stretches the transcript never claimed, kept so the original at least plays.
+ * They are keeps with nothing in them, and a bulk "dub these" that swept them up
+ * asked the translator to translate an empty string and the voice to say the
+ * result. Voicing nothing produces garbage, over the top of audio that was
+ * already correct.
+ */
+export function hasTranscript(seg: Segment): boolean {
+  return seg.text.trim().length > 0;
+}
+
+/**
+ * What a bulk action costs, in the only unit that matters here.
+ *
+ * The numbers are the ones the selection panel already prints for a single line
+ * — `~20 s` for a translate, `~1 min` for a voice — so a bar that offers to do
+ * twenty-seven of them says half an hour rather than "queues behind any running
+ * job", which is what "Dub these 27" used to say about thirty minutes of GPU.
+ */
+const TRANSLATE_SECONDS = 20;
+const VOICE_SECONDS = 60;
+
+export function modelCost(work: { translate?: number; voice?: number }): string {
+  const seconds = (work.translate ?? 0) * TRANSLATE_SECONDS + (work.voice ?? 0) * VOICE_SECONDS;
+  // Never "0 min": the cheapest thing on offer is still a model load, and a
+  // quoted zero is the one number a user would read as free.
+  return `roughly ${Math.max(1, Math.round(seconds / 60))} min of model time`;
+}
+
+/**
  * A kept line carrying a translation the user typed.
  *
  * `edit.set_text` stores it and does *not* reopen the verdict — a keep the user
@@ -293,6 +325,7 @@ const KEEP_REASONS: Record<string, string> = {
   foreign: "another language",
   no_text: "no speech",
   interjection: "just a sound",
+  uncovered: "nothing was transcribed here",
   // Already the target language, by four different routes.
   latin: "already in the target language",
   target_lang: "already in the target language",
@@ -303,6 +336,19 @@ const KEEP_REASONS: Record<string, string> = {
 export function keepReason(reason: string | null | undefined): string {
   const key = (reason ?? "").trim();
   return KEEP_REASONS[key] || key || "no reason recorded";
+}
+
+/**
+ * Does this file have a real phrase for the reason, or is it falling through?
+ *
+ * The row's meta line prints the reason where it used to print "— original audio
+ * plays here", so the reviewer judging a keep can see *why* without opening the
+ * panel. But the fallthrough is a raw manifest token or "no reason recorded",
+ * and neither of those is worth the space the sentence they replaced was
+ * earning — so those rows keep the sentence.
+ */
+export function hasKeepPhrase(reason: string | null | undefined): boolean {
+  return Boolean(KEEP_REASONS[(reason ?? "").trim()]);
 }
 
 /** True when the keep is "this is already the target language". */

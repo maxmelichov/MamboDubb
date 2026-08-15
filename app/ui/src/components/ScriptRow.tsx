@@ -58,7 +58,15 @@ import { createPortal } from "react-dom";
 import { Lock, MoreHorizontal, Pause, Play, TriangleAlert } from "lucide-react";
 import { cn } from "../lib/classNames";
 import { speakerLabel, timecode } from "../lib/format";
-import { STATE_META, hasLocks, segmentState, subtitleOnly, verifyConcern } from "../lib/segments";
+import {
+  STATE_META,
+  hasKeepPhrase,
+  hasLocks,
+  keepReason,
+  segmentState,
+  subtitleOnly,
+  verifyConcern,
+} from "../lib/segments";
 import { StateIcon, TextArea } from "./ui";
 import type { Segment } from "../lib/types";
 
@@ -251,6 +259,15 @@ function Row({
             what that state means is worth reading once, for the row you are
             actually looking at. It stays in the DOM either way, so it is
             always there for a screen reader and for find-in-page.
+
+            And what it says is the *reason*, not the consequence. "Original
+            audio plays here" is already spelled by the Keep badge two spans to
+            the left; the question a reviewer checking keeps actually has is
+            why this one was kept, and it was only answerable by selecting the
+            row and reading the panel. `keepReason` is the same mapping the
+            panel and the run summary use, so the three cannot drift — and a
+            reason it has no phrase for falls back to the old sentence rather
+            than printing a manifest token on seventy-three rows.
           */}
           {seg.keep ? (
             <span
@@ -259,7 +276,9 @@ function Row({
                 selected ? "opacity-100" : "opacity-0 group-hover/row:opacity-100",
               )}
             >
-              — original audio plays here
+              — {hasKeepPhrase(seg.keep_reason)
+                ? keepReason(seg.keep_reason)
+                : "original audio plays here"}
             </span>
           ) : null}
         </button>

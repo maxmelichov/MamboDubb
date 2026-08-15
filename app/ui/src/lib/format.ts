@@ -31,6 +31,27 @@ export function languageName(code: string | null | undefined): string {
   }
 }
 
+/**
+ * "27 lines" / "1 line". The noun phrase every bulk sentence counts with.
+ *
+ * A formatter rather than an inline ternary because there are now nine places
+ * that say it and the one that got it wrong said "Re-voice these 1".
+ */
+export function lineCount(n: number): string {
+  return `${n} line${n === 1 ? "" : "s"}`;
+}
+
+/**
+ * The object of a bulk verb: "these 27", or "this line" when there is one.
+ *
+ * `Re-voice these 1` is the same bug as `1 lines`, one part of speech along —
+ * and it is the label on the button, which is the part a user reads before
+ * pressing something that costs half an hour.
+ */
+export function theseLines(n: number): string {
+  return n === 1 ? "this line" : `these ${n}`;
+}
+
 /** A speaker id is `SPEAKER_04`; the label that reads is `S4`. */
 export function speakerLabel(speaker: string): string {
   const match = /^SPEAKER_(\d+)$/.exec(speaker);

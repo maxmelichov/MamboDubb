@@ -598,16 +598,35 @@ check(
 );
 
 /*
- * A kept line says what will play — once, as a clause on the meta line. It used
+ * A kept line says WHY it was kept — once, as a clause on the meta line. It used
  * to be a paragraph of its own under the two texts, which on an all-kept run is
- * seventy-three identical sentences down the page.
+ * seventy-three identical sentences down the page; then it was one clause saying
+ * "original audio plays here", which is the *consequence*, and the consequence
+ * is already spelled two spans to the left by the word "Keep".
+ *
+ * The question a reviewer checking keeps actually has is why this one was kept,
+ * and until now it took selecting the row and reading the panel to answer it —
+ * seventy-three times. `keepReason` is the same mapping the panel and the run
+ * summary use, so the three cannot drift.
  */
-const keptRow = rows().find((r) => r.textContent.includes("original audio plays here"));
-check("kept lines say what plays", keptRow != null);
+const keptRow = rows().find((r) => r.textContent.includes("already in the target language"));
+check("kept lines say why they were kept, on the row", keptRow != null);
 const keptMeta = [...keptRow.querySelectorAll("button")].find((b) => /Keep/.test(b.textContent));
 check(
   "…as a clause on the row's meta line, not a fourth line of its own",
-  keptMeta != null && keptMeta.textContent.includes("original audio plays here"),
+  keptMeta != null && keptMeta.textContent.includes("already in the target language"),
+);
+// The reason and nothing else: the fixture's keeps all have a phrase, so no row
+// falls back to restating what the badge says.
+check(
+  "…in place of the sentence the state badge already says",
+  !/original audio plays here/.test(root.textContent),
+);
+// And the span nobody transcribed says so in words: `uncovered` had no phrase
+// in the map, so the row would have printed the manifest's own token.
+check(
+  "…including the spans the transcript never claimed",
+  rows().some((r) => r.textContent.includes("nothing was transcribed here")),
 );
 
 /*
@@ -920,6 +939,9 @@ check("re-spacing a line is not an edit", calls().patch === patchesBefore);
  */
 const chip = (label) =>
   [...document.querySelectorAll("button")].find((b) => b.textContent.startsWith(label));
+/** The confirm panel's own buttons — every bulk action opens one now. */
+const dialogButton = (label) =>
+  [...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent === label);
 check(
   "the script has filter chips",
   ["All", "Failed", "Unfinished", "Kept", "Edited"].every((l) => chip(l)),
@@ -946,11 +968,11 @@ await settle(200);
 check("the Failed chip narrows the script", rows().length < 40 && rows().length > 0);
 check("…and it finds the keeps the pipeline decided against itself", rows().length === 2);
 check(
-  "…which are keeps, and still say so",
-  rows().every((r) => r.textContent.includes("original audio plays here")),
+  "…which are keeps, and name the failure as the reason on the row",
+  rows().every((r) => /voice failed|translation failed/.test(r.textContent)),
 );
 const bulk = [...document.querySelectorAll("button")].find((b) =>
-  /Re-voice these \d+/.test(b.textContent),
+  /Re-voice (these \d+|this line)/.test(b.textContent),
 );
 check("a filtered set can be fixed in one job", bulk != null);
 // The bulk set used to be `visible.filter(seg => !seg.keep)`, which is every
@@ -958,11 +980,37 @@ check("a filtered set can be fixed in one job", bulk != null);
 // two buttons are not two ways to do one thing — an `mt_failed` line's
 // `text_en` is the source line the translator copied in when it gave up, so
 // re-voicing it would synthesize the wrong language.
-check("…over the lines the chip actually found", /Re-voice these 1/.test(bulk.textContent));
+check("…over the lines the chip actually found", /Re-voice this line/.test(bulk.textContent));
 check(
   "…and the one the translator lost is re-translated instead",
-  [...document.querySelectorAll("button")].some((b) => /Re-translate these 1/.test(b.textContent)),
+  [...document.querySelectorAll("button")].some((b) => /Re-translate this line/.test(b.textContent)),
 );
+/*
+ * n=1, in the copy. "Re-voice these 1" and "One job, not 1." are the same
+ * mistake in two parts of speech, and this is the set that produces it: the
+ * Failed chip on a healthy run finds one of each.
+ */
+check("…without saying “these 1”", !/these 1\b/.test(root.textContent));
+check("…or promising one job instead of one job", !/One job, not 1\./.test(root.textContent));
+
+/*
+ * And the price, before the click.
+ *
+ * Every one of these buttons is minutes of model time per line — "Re-voice these
+ * 27" is half an hour of GPU — and each was one unguarded click that asked for
+ * the work and started it in the same gesture.
+ */
+const beforeAsking = calls().log.length;
+clickIt(bulk);
+await settle(150);
+check(
+  "a bulk model action asks first, and quotes what it costs",
+  /min of model time/.test(document.querySelector('[role="dialog"]').textContent),
+);
+check("…and sends nothing while it is asking", calls().log.length === beforeAsking);
+clickIt(dialogButton("Cancel"));
+await settle(150);
+check("…so cancelling queues no model time", calls().log.length === beforeAsking);
 clickIt(chip("Failed"));
 await settle(200);
 check("the chip toggles back off", rows().length > 40);
@@ -1033,6 +1081,19 @@ check(
     /Translate & voice these 3/.test(b.textContent),
   ),
 );
+// …and that click costs three model loads, which it now says before it is made.
+clickIt(
+  [...document.querySelectorAll("button")].find((b) =>
+    /Translate & voice these 3/.test(b.textContent),
+  ),
+);
+await settle(150);
+check(
+  "the one-click fix quotes its model time first",
+  /min of model time/.test(document.querySelector('[role="dialog"]').textContent),
+);
+clickIt(dialogButton("Cancel"));
+await settle(150);
 // Four rows, three of them model work: the render one is offered a render.
 check(
   "the line that only needs a render is offered one, not a re-voice",
@@ -1066,25 +1127,50 @@ const setInput = (el, value) => {
 const bulkBar = () => document.querySelector('[data-bulk="kept"]');
 const dubTrigger = () =>
   [...(bulkBar()?.querySelectorAll("button") ?? [])].find((b) => b.hasAttribute("aria-expanded"));
-const dialogButton = (label) =>
-  [...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent === label);
 
 clickIt(chip("Kept"));
 await settle(200);
 check("the Kept chip narrows to the lines that play as recorded", rows().length === 29);
-check("…and offers to dub the lot in one gesture", /Dub these 29/.test(dubTrigger().textContent));
 check(
   "…over the same count the chip is showing",
   /Kept\s*29/.test(chip("Kept").textContent),
+);
+/*
+ * …but the button offers 25, not 29.
+ *
+ * Four of those keeps are spans `fill_uncovered_audible` wrote with `text: ""` —
+ * audible stretches the transcript never claimed, kept so the original at least
+ * plays. Dubbing one asks the translator to translate an empty string and the
+ * voice to say the result: four minutes of GPU spent replacing correct original
+ * audio with garbage. They are out of the work set, and the confirm says how
+ * many and why rather than dropping them quietly.
+ */
+check(
+  "…and offers to dub the ones there is something to dub",
+  /Dub these 25/.test(dubTrigger().textContent),
+);
+check(
+  "…with the bar itself accounting for the four it will not touch",
+  /29 lines play as recorded, subtitled — 4 with no transcript to translate/.test(
+    bulkBar().textContent,
+  ),
 );
 
 const beforeBulk = calls().log.length;
 clickIt(dubTrigger());
 await settle(150);
+const dubDialog = document.querySelector('[role="dialog"]').textContent;
 check(
-  "rewriting 29 verdicts asks first, and says what it costs",
-  /29 lines switch to dubbed/.test(document.querySelector('[role="dialog"]').textContent) &&
-    /translate \+ voice queue behind any running job/.test(root.textContent),
+  "rewriting 25 verdicts asks first, and says what it costs in model time",
+  /25 lines/.test(dubDialog) && /min of model time/.test(dubDialog),
+);
+check(
+  "…and names the four it is leaving out, and why",
+  /\(4 skipped — no transcript to translate\)/.test(dubDialog),
+);
+check(
+  "…and still says what the flip does",
+  /translate \+ voice queue behind any running job/.test(dubDialog),
 );
 check("…and sends nothing while it is asking", calls().log.length === beforeBulk);
 clickIt(dialogButton("Cancel"));
@@ -1105,10 +1191,25 @@ check(
   "…saying out loud that it is the search's set, not the run's",
   /not every kept line in the run/.test(bulkBar().textContent),
 );
+/*
+ * …and every other bulk bar says it the same way.
+ *
+ * The Kept bar has carried this sentence since it was written; the Failed and
+ * Unfinished bars had exactly the same property and never mentioned it. Which
+ * bar is on screen is a filter away, so the claim is checked at the source: one
+ * sentence, one definition, every bar and every confirm using it.
+ */
+const paneSource = readFileSync(new URL("../src/components/ScriptPane.tsx", import.meta.url), "utf8");
+check(
+  "one sentence names a searched-down set, and every bulk bar uses it",
+  (paneSource.match(/not every \$\{noun\} line in the run/g) ?? []).length === 1 &&
+    (paneSource.match(/searchNote\("(failed|unfinished|kept)"\)/g) ?? []).length >= 6,
+);
 
 clickIt(dubTrigger());
 await settle(150);
 clickIt(dialogButton("Dub these 2"));
+
 await settle(700);
 check(
   "the bulk flip is one PATCH per line, then one translate and one voice for the lot",
@@ -1192,15 +1293,50 @@ const click = (label) => {
  * rather than watched: a job that was never enqueued looks exactly like a job
  * that has not started.
  */
-const keptBefore = rows().filter((r) => r.textContent.includes("original audio plays here")).length;
+/*
+ * …and the direction that had neither a cost nor a guard.
+ *
+ * `edit.set_keep` invalidates translate in BOTH directions, so pressing Keep
+ * throws the line's translation away — and Keep is a button, a menu item, and
+ * `k`, a bare keystroke. It was the only unguarded destructive action in the
+ * app, and it said nothing at all about what it destroyed.
+ */
+clickIt(rowFor(1).querySelector('[aria-label^="Select segment"]'));
+await settle(250);
+check(
+  "the panel says what Keep will cost before it is pressed",
+  /Switching to Keep discards this line’s translation/.test(root.textContent),
+);
+
+const keptBefore = rows().filter((r) => r.textContent.includes("you chose this")).length;
+clickIt(rowFor(2).querySelector('[aria-label^="Select segment"]'));
+await settle(250);
+// Segment 2's translation was typed by hand a few checks above, and a lock is
+// honoured by `invalidate` — so this one survives the flip, and warning about a
+// loss that cannot happen is the same failure as staying silent about one that
+// can.
+check(
+  "…and does not claim a loss a locked line cannot suffer",
+  /Switching to Keep leaves your translation in place/.test(root.textContent),
+);
+
 const sinceKeep = calls().log.length;
 click("Keep original");
 await settle(250);
 check(
-  "keep applies immediately, and the row says what will play",
-  rows().filter((r) => r.textContent.includes("original audio plays here")).length > keptBefore,
+  "keep applies immediately, and the row says why it is kept",
+  rows().filter((r) => r.textContent.includes("you chose this")).length > keptBefore,
 );
 check("keeping the original queues nothing", calls().log.slice(sinceKeep).join() === "patch");
+// The whole guard: no dialog — judging a run is a hundred of these — but an
+// undo, for as long as anyone would notice they had pressed the wrong thing.
+const keepToast = document.querySelector("[data-undo-toast]");
+check("…but it leaves an undo behind, naming the line", keepToast != null &&
+  /Kept #2\b/.test(keepToast.textContent) && /Undo/.test(keepToast.textContent));
+check(
+  "…and says that a restored line comes back hand-written",
+  /counts as hand-written/.test(keepToast.getAttribute("title") ?? ""),
+);
 // Segment 2's translation was typed by hand a few checks above, and a kept line
 // with a hand-written translation is the case the row used to render as a dub:
 // an English sentence under a Hebrew one, in the place a spoken line goes.
@@ -1213,10 +1349,7 @@ check(
 // the voice has to be queued.
 click("Dub it");
 await settle(350);
-check(
-  "the verdict goes both ways",
-  !rowFor(2).textContent.includes("original audio plays here"),
-);
+check("the verdict goes both ways", !rowFor(2).textContent.includes("you chose this"));
 check(
   "a dub whose translation survived queues only the voice",
   calls().log.slice(sinceKeep).join() === "patch,patch,resynthesize",
@@ -1239,9 +1372,42 @@ check(
   calls().log.slice(sinceDub).join() === "patch,retranslate,resynthesize",
 );
 
-// Let the three jobs those flips queued drain, so the next assertions are about
-// the job they ask for and not about one of these.
-await settle(2000);
+/*
+ * And the undo, driven from the key that makes the guard necessary.
+ *
+ * `k` is one keystroke with no modifier and it destroys a translation. The undo
+ * has to put back exactly the sentence that was there — nothing else on the
+ * client remembers it once the server has answered — and it has to put the
+ * verdict back with it, and queue the voice the flip destroyed, or the line is
+ * left in the same limbo a "Dub it" used to create.
+ */
+const undoTarget = rowFor(1);
+const priorLine = undoTarget.querySelector('[data-line="text_en"]').textContent.trim();
+clickIt(undoTarget.querySelector('[aria-label^="Select segment"]'));
+await settle(250);
+const sinceUndo = calls().log.length;
+dom.window.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "k", bubbles: true }));
+await settle(350);
+check("k flips the verdict, in one keystroke", rowFor(1).textContent.includes("you chose this"));
+check("…discarding the translation, as it always did", !rowFor(1).textContent.includes(priorLine));
+const undoStrip = document.querySelector("[data-undo-toast]");
+check("…and the strip is the only thing that still knows the line", undoStrip != null);
+clickIt(undoStrip.querySelector("[data-undo-keep]"));
+await settle(400);
+check(
+  "undo puts back the exact sentence that was there",
+  rowFor(1).querySelector('[data-line="text_en"]').textContent.trim() === priorLine,
+);
+check("…and the verdict with it", !rowFor(1).textContent.includes("you chose this"));
+check(
+  "…in one PATCH, and queues the voice the flip destroyed — never the limbo again",
+  calls().log.slice(sinceUndo).join() === "patch,patch,resynthesize",
+);
+check("…and the strip goes when it is used", document.querySelector("[data-undo-toast]") == null);
+
+// Let the jobs those flips queued drain, so the next assertions are about the
+// job they ask for and not about one of these.
+await settle(3500);
 check("the queue drains", document.querySelector("[data-job-strip]") == null);
 
 /*

@@ -71,12 +71,14 @@ import {
   StateIcon,
 } from "../components/ui";
 import { api } from "../lib/api";
+import { cn } from "../lib/classNames";
 import { stopClip, toggleClip, useClipPlayback } from "../lib/clipAudio";
 import { isDesktop, revealRunFile } from "../lib/desktop";
 import { FIXTURE_PROJECT } from "../lib/fixtures";
 import { languageName, timecode } from "../lib/format";
 import {
   STATE_META,
+  hasTranscript,
   keepReason,
   keptAsTargetLanguage,
   needsModelWork,
@@ -95,6 +97,23 @@ const ZOOM_STEPS = [0.5, 1, 2, 4, 8, 16, 32];
 
 /** The run's own audio, written by `fetch` (dubbing/fetch.py) long before `mix`. */
 const SOURCE_AUDIO = "source.wav";
+
+/**
+ * How long the undo behind a keep stays reachable.
+ *
+ * Long enough to read the row you just changed and notice it was the wrong one;
+ * short enough that it is gone before the next decision, so the strip is never
+ * something to dismiss.
+ */
+const UNDO_MS = 6000;
+
+/**
+ * The whole of what a flip to keep destroys, held for {@link UNDO_MS}.
+ *
+ * A fresh object every time, so a second keep re-arms the timer rather than
+ * inheriting whatever was left of the first one's.
+ */
+type KeptUndo = { uid: string; id: number; text_en: string | null };
 
 /** Every shortcut the editor binds, in the order they are learned. */
 const SHORTCUTS: [string[], string][] = [
@@ -286,7 +305,14 @@ export function EditorPage() {
       // A line that has its clip and only lacks a placement is not model work:
       // re-voicing it costs a model load to produce the clip it already has,
       // and leaves it exactly as unplaced as before. Render is its button.
-      const work = segs.filter(needsModelWork);
+      //
+      // Nor is a span with nothing written on it: `fill_uncovered_audible`
+      // writes `text: ""` for audible stretches the transcript never claimed,
+      // and translating an empty string and voicing the result replaces correct
+      // original audio with garbage. The bulk bars filter these out of the sets
+      // they offer; this is the same rule at the seam every caller goes through,
+      // including the single-line flip.
+      const work = segs.filter((seg) => needsModelWork(seg) && hasTranscript(seg));
       const uids = work.map((seg) => seg.uid);
       if (uids.length === 0) return;
       const untranslated = work.filter((seg) => !(seg.text_en ?? "").trim());
@@ -295,6 +321,14 @@ export function EditorPage() {
     },
     [actions],
   );
+
+  /** The undo behind the one destructive verdict — see `setVerdict` below. */
+  const [undoKeep, setUndoKeep] = useState<KeptUndo | null>(null);
+  useEffect(() => {
+    if (!undoKeep) return;
+    const timer = window.setTimeout(() => setUndoKeep(null), UNDO_MS);
+    return () => window.clearTimeout(timer);
+  }, [undoKeep]);
 
   /**
    * The verdict, and everything it implies.
@@ -317,20 +351,61 @@ export function EditorPage() {
    * exactly as they are, and queues the work itself, once, over the lot. The
    * saved segment comes back for that reason — the server's answer is what says
    * whether the translation survived the flip.
+   *
+   * The *other* other direction is the one nothing guarded. `set_keep`
+   * invalidates translate both ways, so flipping a line TO keep throws its
+   * translation away — and that flip is a button, a menu item, and `k`, a single
+   * keystroke with no modifier. A confirm on it would be the wrong control:
+   * judging a run is a hundred of these decisions and a dialog on each is a tool
+   * nobody uses. So the flip stays instant and leaves an undo behind, holding
+   * the *whole* of what was lost — the server drops the line a moment later and
+   * nothing else on the client remembers it.
    */
   const setVerdict = useCallback(
     async (seg: Segment, keep: boolean, queue = true): Promise<Segment | null> => {
       if (seg.keep === keep) return null;
+      const lost = (seg.text_en ?? "").trim() || null;
       const saved = await actions.patch(
         seg.uid,
         keep ? { keep: true, keep_reason: "manual" } : { keep: false },
       );
-      if (!saved || keep) return saved;
+      if (!saved) return null;
+      if (keep) {
+        setUndoKeep({ uid: seg.uid, id: seg.id, text_en: lost });
+        return saved;
+      }
       if (queue) await queueDubWork([saved]);
       return saved;
     },
     [actions, queueDubWork],
   );
+
+  /**
+   * Undo: back to a dub, with the sentence that was there.
+   *
+   * One PATCH and not two, because `_apply_patch` runs `set_text` before
+   * `set_keep` and `invalidate` honours locks — so the restored line is written,
+   * locked, and then survives the very flip that is being undone. It is locked
+   * afterwards, which is a real difference from the state before the keep and is
+   * why the strip says so: a restored line is now the user's, and a re-run will
+   * not replace it.
+   *
+   * The work is queued for the same reason the ordinary "Dub it" queues it: the
+   * clip is gone and only a job can make another one. A line handed back with no
+   * audio and nothing coming is exactly the limbo this flip used to create.
+   */
+  const undoLastKeep = useCallback(() => {
+    const target = undoKeep;
+    if (!target) return;
+    setUndoKeep(null);
+    void (async () => {
+      const saved = await actions.patch(
+        target.uid,
+        target.text_en ? { keep: false, text_en: target.text_en } : { keep: false },
+      );
+      if (saved) await queueDubWork([saved]);
+    })();
+  }, [actions, queueDubWork, undoKeep]);
 
   const toggleKeep = useCallback(
     (seg: Segment) => void setVerdict(seg, !seg.keep),
@@ -656,6 +731,52 @@ export function EditorPage() {
           />
         </>
       )}
+
+      {undoKeep ? <UndoKeepStrip undo={undoKeep} onUndo={undoLastKeep} /> : null}
+    </div>
+  );
+}
+
+/**
+ * "Kept #17 — Undo."
+ *
+ * The whole guard on the one destructive verdict, and deliberately not a dialog:
+ * the flip has to stay a keystroke, because checking a run is a hundred of them.
+ * A strip that costs nothing to ignore and one click to reverse is the trade a
+ * confirm cannot make.
+ *
+ * The title says the part the strip has no room for and the user has no way to
+ * guess: the restored translation comes back *locked*, because restoring it is
+ * writing it, and writing a line is what makes it the user's. That is a better
+ * outcome than losing it and it is not the same state as before, so it is said
+ * rather than glossed.
+ */
+function UndoKeepStrip({ undo, onUndo }: { undo: KeptUndo; onUndo: () => void }) {
+  return (
+    <div
+      role="status"
+      data-undo-toast
+      title={
+        undo.text_en
+          ? "Undo switches this line back to Dub and puts its translation back. A restored " +
+            "line counts as hand-written from then on, so a re-run will not replace it."
+          : "Undo switches this line back to Dub and queues the work it needs."
+      }
+      className={cn(
+        // Above the 7rem timeline strip, centred, out of the script's way.
+        "fixed bottom-[8.5rem] left-1/2 z-50 -translate-x-1/2",
+        "flex items-center gap-2 rounded-full border border-border bg-raised px-3 py-1.5",
+        "text-[12.5px] text-primary shadow-pop",
+      )}
+    >
+      <StateIcon state="kept" className="h-2.5 w-2.5" />
+      <span className="font-mono tabular-nums">Kept #{undo.id}</span>
+      <span aria-hidden className="text-muted">
+        —
+      </span>
+      <Button size="xs" variant="ghost" data-undo-keep onClick={onUndo}>
+        Undo
+      </Button>
     </div>
   );
 }

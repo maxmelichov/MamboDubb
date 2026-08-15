@@ -168,6 +168,13 @@ export function SelectionPanel({
             is locked and survives the flip. Saying "synthesized speech
             replaces the source audio" and then queueing nothing is how two
             lines ended up dubbed in name only.
+
+            The other direction cost nothing to say and said nothing about its
+            cost. `set_keep` invalidates translate in *both* directions, so
+            pressing Keep throws the line's translation away — the one
+            destructive action in this app that neither asked nor warned, and
+            the one `k` fires on a single keystroke. It says so now, and the
+            flip itself leaves an undo behind.
           */}
           <p className="text-[11px] leading-snug text-muted">
             {seg.keep ? (
@@ -177,8 +184,20 @@ export function SelectionPanel({
                   ? "queues voice for this line — your translation is kept."
                   : "queues translate + voice for this line."}
               </>
+            ) : (seg.text_en ?? "").trim() && seg.locked?.text_en ? (
+              // A hand-written line is locked, and `invalidate` honours locks:
+              // it survives the flip as a subtitle. Warning about a loss that
+              // cannot happen is the same failure as staying silent about one
+              // that can.
+              <>
+                The source audio plays untouched. Switching to Keep leaves your translation
+                in place, as a subtitle.
+              </>
             ) : (
-              "Synthesized speech replaces the source audio."
+              <>
+                The source audio plays untouched. Switching to Keep discards this line’s
+                translation — a later re-run makes a new one.
+              </>
             )}
             {/* The reason in words. `keep_reason` is a manifest token — and
                 the user's own verdict comes back from a headless re-run spelled
