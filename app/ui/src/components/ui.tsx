@@ -22,6 +22,7 @@
 import {
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type ComponentProps,
@@ -704,12 +705,25 @@ export function Popover({
  * and merging (both discard a translation and a clip), and re-translating over
  * a line the user wrote by hand. Cheap reversible things — keep/dub, a text
  * edit — are just done.
+ *
+ * ## Which side it opens on
+ *
+ * Downward, until downward does not fit. The panel is 72 rem-ish of prose hung
+ * under a button, and the button that most needs it — Split, in the timeline's
+ * control cluster — sits about thirty pixels off the bottom of the window: the
+ * question opened 81px below the fold, so the only destructive gesture in the
+ * strip could be armed and never confirmed with a mouse. `side="auto"` (the
+ * default, so every other caller gets it for free) measures the panel once it
+ * is mounted and flips it above the trigger when there is not room under it and
+ * there is more room over it. The measurement is in a layout effect, so the
+ * flip happens before the frame is painted rather than as a visible jump.
  */
 export function ConfirmButton({
   message,
   confirmLabel,
   onConfirm,
   align = "right",
+  side = "auto",
   children,
   ...props
 }: ComponentProps<"button"> & {
@@ -721,9 +735,14 @@ export function ConfirmButton({
   confirmLabel: string;
   onConfirm: () => void;
   align?: "left" | "right";
+  /** `below` pins it under the trigger; `auto` flips it up when it must. */
+  side?: "below" | "auto";
 }) {
   const [open, setOpen] = useState(false);
+  const [above, setAbove] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -743,17 +762,40 @@ export function ConfirmButton({
     };
   }, [open]);
 
+  /*
+   * Measured, not guessed. The panel's height depends on the message, which is
+   * a sentence a caller composes — so a fixed "flip below 200px from the bottom"
+   * rule would be wrong for half of them. `useLayoutEffect` runs after the panel
+   * is in the DOM and before the browser paints it, which is the whole window in
+   * which a position can change without the user seeing it move.
+   */
+  useLayoutEffect(() => {
+    if (!open || side !== "auto") {
+      setAbove(false);
+      return;
+    }
+    const rect = trigger.current?.getBoundingClientRect();
+    const height = panel.current?.offsetHeight ?? 0;
+    if (!rect || height === 0) return;
+    const GAP = 6;
+    const below = window.innerHeight - rect.bottom;
+    setAbove(height + GAP > below && rect.top > below);
+  }, [open, side, message]);
+
   return (
     <div className="relative" ref={wrap}>
-      <Button {...props} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+      <Button ref={trigger} {...props} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
         {children}
       </Button>
       {open ? (
         <div
+          ref={panel}
           role="dialog"
           aria-label={confirmLabel}
+          data-confirm-side={above ? "above" : "below"}
           className={cn(
-            "absolute top-full z-50 mt-1.5 w-72 rounded-xl border border-border bg-raised p-3 shadow-pop",
+            "absolute z-50 w-72 rounded-xl border border-border bg-raised p-3 shadow-pop",
+            above ? "bottom-full mb-1.5" : "top-full mt-1.5",
             align === "right" ? "right-0" : "left-0",
           )}
         >

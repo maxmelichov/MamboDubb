@@ -1180,6 +1180,23 @@ check(
   "a bulk model action asks first, and quotes what it costs",
   /min of model time/.test(document.querySelector('[role="dialog"]').textContent),
 );
+/*
+ * …and the question has to be on screen to be answered.
+ *
+ * Every confirm hung its panel under its trigger unconditionally, which is fine
+ * until the trigger is thirty pixels off the bottom of the window — the
+ * timeline's Split, whose panel opened 81px below the fold, so the strip's one
+ * destructive gesture could be armed and never confirmed with a mouse. The panel
+ * measures itself and flips above the trigger when it must; the side it chose is
+ * on the panel, so it is checkable from outside. (jsdom has no layout, so what
+ * this proves is that the decision is made and recorded, not which way it went.)
+ */
+check(
+  "…and the question records which side it opened on",
+  ["above", "below"].includes(
+    document.querySelector('[role="dialog"]').getAttribute("data-confirm-side"),
+  ),
+);
 check("…and sends nothing while it is asking", calls().log.length === beforeAsking);
 clickIt(dialogButton("Cancel"));
 await settle(150);
