@@ -24,6 +24,7 @@
 
 import { useState } from "react";
 import {
+  Check,
   Clock,
   Languages,
   ListTree,
@@ -597,11 +598,19 @@ function Choice({
       aria-pressed={active}
       className={cn(
         "flex h-8 flex-1 items-center justify-center gap-1.5 whitespace-nowrap px-2 text-[12.5px] transition-colors",
-        active ? "bg-primary/[0.09] font-semibold text-primary" : "text-secondary hover:bg-border/50",
+        // The chosen half must dominate at a glance: a user who has to weigh two
+        // washes reads the control backwards, and then reads everything the row
+        // says through that mistake (a real support case, not a hypothetical).
+        // Ink-on-inverted is unambiguous in both themes; the state icon stays as
+        // the hue but only the active side gets the checkmark's weight.
+        active
+          ? "bg-primary font-semibold text-on-primary"
+          : "text-muted hover:bg-border/50 hover:text-secondary",
       )}
     >
-      <StateIcon state={state} className="h-2.5 w-2.5" />
+      <StateIcon state={state} className={cn("h-2.5 w-2.5", !active && "opacity-50")} />
       {label}
+      {active ? <Check className="h-3 w-3" strokeWidth={3} aria-hidden /> : null}
     </button>
   );
 }

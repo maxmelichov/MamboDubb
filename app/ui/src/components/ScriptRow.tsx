@@ -356,11 +356,19 @@ function Row({
           label="B"
           title={
             seg.keep
-              ? "This line is kept, so the original audio is what plays"
+              ? "No dub exists — this line keeps the original, so A and B would be the same audio"
               : "Play what actually went into the mix, after time-fitting"
           }
-          url={dubUrl}
-          playing={playingUrl != null && playingUrl === dubUrl}
+          // A kept line's placed clip IS the original slice; letting B play it
+          // sounds identical to A, which a user reads as "the buttons are
+          // swapped". No dub means no B.
+          emptyTitle={
+            seg.keep
+              ? "No dub exists — this line keeps the original, so A and B would be the same audio"
+              : undefined
+          }
+          url={seg.keep ? null : dubUrl}
+          playing={playingUrl != null && !seg.keep && playingUrl === dubUrl}
           onPlay={onPlay}
         />
         <RowMenu
@@ -558,12 +566,14 @@ function ClipButton({
   url,
   playing,
   onPlay,
+  emptyTitle,
 }: {
   label: string;
   title: string;
   url: string | null;
   playing: boolean;
   onPlay: (url: string | null) => void;
+  emptyTitle?: string;
 }) {
   return (
     <button
@@ -572,7 +582,7 @@ function ClipButton({
       data-url={url ?? ""}
       disabled={!url}
       aria-pressed={playing}
-      title={url ? title : "No audio for this side yet"}
+      title={url ? title : (emptyTitle ?? "No audio for this side yet")}
       onClick={() => onPlay(url)}
       className={cn(
         "inline-flex h-6 items-center gap-0.5 rounded-md border px-1.5 text-[11px] font-bold",
