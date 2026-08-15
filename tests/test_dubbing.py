@@ -1869,3 +1869,42 @@ def test_declared_source_mismatch():
     m_en = {"source": {"src_lang": "en"}}
     german = [seg("Das ist von der Seite der Dinge", at=i * 10) for i in range(5)]
     assert report.declared_source_mismatch(m_en, german) is None
+
+
+def test_bare_rerun_keeps_languages_and_cap():
+    # A bare `python -m dubbing <input>` on an existing run must BE a re-run:
+    # argparse's he/en/full-length used to overwrite the recorded pair and cap
+    # — a 320-second iteration run silently became the whole 57-minute episode,
+    # and an en→de project would have flipped to he→en.
+    import argparse
+
+    from dubbing import cli
+
+    def parsed(**typed):
+        ns = argparse.Namespace(src=None, tgt=None, duration=None)
+        for key in cli.RECORDED_DEFAULTS:
+            setattr(ns, key, None)
+        for key, value in typed.items():
+            setattr(ns, key, value)
+        return ns
+
+    m = {"source": {"src_lang": "en", "tgt_lang": "de", "duration_limit": 320.0}}
+
+    args = parsed()
+    cli.resolve_settings(args, m)
+    assert (args.src, args.tgt, args.duration) == ("en", "de", 320.0)
+
+    # normalize_lang folds an untyped None to "" before resolve runs.
+    args = parsed(src="", tgt="")
+    cli.resolve_settings(args, m)
+    assert (args.src, args.tgt) == ("en", "de")
+
+    # A typed flag still wins, and 0 clears a recorded cap.
+    args = parsed(tgt="fr", duration=0.0)
+    cli.resolve_settings(args, m)
+    assert (args.src, args.tgt, args.duration) == ("en", "fr", None)
+
+    # First run, nothing typed: the documented defaults.
+    args = parsed()
+    cli.resolve_settings(args, None)
+    assert (args.src, args.tgt, args.duration) == ("he", "en", None)

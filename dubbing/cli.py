@@ -69,9 +69,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("source", help="YouTube URL or local video file")
     p.add_argument("-o", "--out", type=Path, help="work directory (default: outputs/<slug>)")
     p.add_argument("--captions", type=Path, help="json3 caption file for a local video")
-    p.add_argument("--src", default="he", help="source language code (default: he)")
-    p.add_argument("--tgt", default="en", help="target language code (default: en)")
-    p.add_argument("--duration", type=float, help="only dub the first N seconds")
+    # None, not the default value — same rule as RECORDED_DEFAULTS below: a
+    # bare re-run must keep THIS run's languages and cap, and argparse filling
+    # in he/en/full-length is indistinguishable from the user typing them. The
+    # he→en/full-length effective defaults are applied in `resolve_settings`.
+    p.add_argument("--src", default=None, help="source language code (default: he)")
+    p.add_argument("--tgt", default=None, help="target language code (default: en)")
+    p.add_argument("--duration", type=float, default=None,
+                   help="only dub the first N seconds (0 = the whole video, "
+                        "which also clears a recorded cap on a re-run)")
     p.add_argument("--context", help="one-line note on who/what the video is about and "
                    "the spellings of names the ASR mangles steers the translator")
     # Every option in RECORDED_DEFAULTS defaults to None, not to its value: the
@@ -146,6 +152,20 @@ def resolve_settings(args: argparse.Namespace, m: dict[str, Any] | None = None) 
     for typing the command without its flags.
     """
     recorded = (m or {}).get("source") or {}
+    # The three options whose manifest names differ from their flag names — and
+    # whose loss is the catastrophic kind: --src/--tgt falling back to he/en
+    # flips the language pair of any other-pair project, and a lost --duration
+    # turned a 320-second iteration run into the whole 57-minute episode.
+    # "not" rather than "is None": `normalize_lang` has already run by the time
+    # main() calls this, and it folds an untyped None into "".
+    if not args.src:
+        args.src = recorded.get("src_lang") or "he"
+    if not args.tgt:
+        args.tgt = recorded.get("tgt_lang") or "en"
+    if args.duration is None:
+        args.duration = recorded.get("duration_limit")
+    elif args.duration <= 0:
+        args.duration = None               # typed 0: dub the whole video
     for key, fallback in RECORDED_DEFAULTS.items():
         if getattr(args, key, None) is not None:
             continue                       # typed on this command line: it wins
