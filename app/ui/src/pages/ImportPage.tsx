@@ -295,9 +295,10 @@ export function ImportPage() {
 
           <Divider />
 
-          {/* The card's own big text area. Borderless on purpose: inside a card
-              this generous, a second boxed field is a box in a box, and the
-              focus ring in App.css is affordance enough once the caret is in. */}
+          {/* A bordered field like every other input on the page. It was
+              borderless when it filled the whole card, but at three rows an
+              edge is what says "type here" — without one it read as a caption
+              under the section label. */}
           <CardSection className="flex flex-1 flex-col pb-6">
             {/*
               The label leads with the word that answers the question the field
@@ -312,10 +313,7 @@ export function ImportPage() {
             <TextArea
               autoGrow
               rows={3}
-              className={cn(
-                "mt-2 min-h-20 resize-none border-transparent bg-transparent px-0 text-[13.5px]",
-                "hover:border-transparent focus:border-transparent",
-              )}
+              className="mt-2 min-h-20 resize-none rounded-xl text-[13.5px]"
               aria-label="Context"
               value={form.context ?? ""}
               placeholder="Who and what this is about, and how names are spelled. For example: a news interview about the housing market; the host is Dana (she), the guest is Prof. Ronen Levi (he) — keep these spellings."
