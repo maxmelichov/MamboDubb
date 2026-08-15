@@ -150,6 +150,29 @@ def merge(m: dict[str, Any], uid_a: str, uid_b: str) -> str:
 # the run's pipeline options
 # --------------------------------------------------------------------------
 
+def recorded_opts(m: dict[str, Any]) -> dict[str, Any]:
+    """This run's settings: the flat keys on `m["source"]` over `app_opts`.
+
+    Two writers, one question. `dubbing.cli` records settings as flat keys on
+    `m["source"]` (`cli.source_record`); the app records the same settings under
+    `m["source"]["app_opts"]`. `dubbing.edit._args` resolves the pair flat-first,
+    because flat is the older writer and the one a headless re-run refreshes —
+    and, since `PATCH /api/projects/{name}`, the one a user's edit lands in.
+
+    This resolves it the same way, and it has to: reading only `app_opts` here
+    meant a genre the user changed after creation was honoured by every per-line
+    re-translate (which goes through `edit._args`) and silently ignored by a full
+    run or a resume (which comes through this module) — the same project rendered
+    two ways depending on which button was pressed.
+    """
+    src = m.get("source") or {}
+    stored = dict(src.get("app_opts") or {})
+    for key in (*OPT_KEYS, "captions"):
+        if src.get(key) is not None:
+            stored[key] = src[key]
+    return stored
+
+
 def pipeline_overrides(m: dict[str, Any]) -> dict[str, Any]:
     """The `dubbing.cli` arguments this project was created with.
 
@@ -157,7 +180,7 @@ def pipeline_overrides(m: dict[str, Any]) -> dict[str, Any]:
     `m["source"]` and then falls back to argparse's defaults, and overriding a key
     the project never chose would replace that fallback with a guess.
     """
-    stored = (m.get("source") or {}).get("app_opts") or {}
+    stored = recorded_opts(m)
     return {key: stored[key] for key in OPT_KEYS if stored.get(key) is not None}
 
 
@@ -167,7 +190,7 @@ def _opts(m: dict[str, Any]) -> dict[str, Any]:
     Stored by the server at project creation so a later run reproduces the same
     pipeline parameters instead of silently switching genre/register.
     """
-    stored = dict((m.get("source") or {}).get("app_opts") or {})
+    stored = recorded_opts(m)
     return {"genre": stored.get("genre") or "documentary",
             "register": stored.get("register") or "narration",
             "tts_model": stored.get("tts_model") or "1.7b",

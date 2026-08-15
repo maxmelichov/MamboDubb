@@ -18,6 +18,8 @@ import type {
   Peaks,
   PeaksFile,
   ProjectDetail,
+  ProjectOptionsPatch,
+  ProjectSource,
   ProjectSummary,
   Segment,
   SegmentMedia,
@@ -221,6 +223,7 @@ export const api = {
                   outputs: ProjectDetail["outputs"] };
       stages: ProjectDetail["stages"];
       report: ProjectDetail["report"];
+      jobs?: Job[];
     };
     return request<Wire>(`/api/projects/${encodeURIComponent(name)}`).then((r) => ({
       name: r.name,
@@ -229,7 +232,40 @@ export const api = {
       stages: r.stages,
       outputs: r.manifest.outputs ?? {},
       report: r.report,
+      // Dropped on the floor until now, which is why a failed run could only be
+      // described as "stopped at fetch": the stream replays nothing terminal, so
+      // after a reload the error that stopped it is in this list and nowhere else.
+      jobs: r.jobs ?? [],
     }));
+  },
+
+  /**
+   * Change the run options that are still a decision: genre, register, context.
+   *
+   * Not a job and not a stage invalidation — the server writes them and says so.
+   * They reach the translator the next time it runs, which is the sentence the
+   * editor puts under the control.
+   */
+  updateProject(name: string, patch: ProjectOptionsPatch): Promise<ProjectSource> {
+    if (USE_FIXTURES) return fixtures.updateProject(name, patch);
+    return request<{ source: ProjectSource }>(`/api/projects/${encodeURIComponent(name)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }).then((r) => r.source);
+  },
+
+  /**
+   * Run this project — a resume on one that has already run.
+   *
+   * The pipeline is stage-cached, so re-running is how it picks up where it
+   * stopped; there is no second code path and there must not be. 409 while
+   * anything is already in flight on the project.
+   */
+  resume(name: string): Promise<Job> {
+    if (USE_FIXTURES) return fixtures.resume(name);
+    return request<{ job: Job }>(
+      `/api/projects/${encodeURIComponent(name)}/run`, json({}),
+    ).then((r) => r.job);
   },
 
   getSegments(name: string): Promise<Segment[]> {

@@ -9,9 +9,18 @@
  * - **Never colour alone.** Every row carries a glyph, the word "Ready" or
  *   "Missing", and a hue — in that order of importance. A monochrome screen
  *   reads exactly the same.
+ * - **A failure says what it costs.** Every missing row used to be the same red
+ *   X, so a gated Hugging Face token (the run works, everyone in the video
+ *   becomes one speaker) looked exactly like a missing ffmpeg (nothing runs at
+ *   all), which looked exactly like a Korean TTS checkpoint a Hebrew→English run
+ *   will never open. The server now grades them — `severity` is `blocking`,
+ *   `degrades` or `optional` — and each grade gets its own word: REQUIRED,
+ *   DEGRADES, OPTIONAL. The hue follows the word, never the other way round.
  * - **The detail line is the whole point.** "Missing" is not actionable; "run
  *   this command to fetch it (320 MB)" is. The server writes that sentence, the
- *   UI only renders it.
+ *   UI only renders it — and every command in it is one click to the clipboard,
+ *   because a command that has to be retyped from a screenshot is a command
+ *   that gets retyped wrong.
  * - **A row the server can fix gets a button.** `installable` comes from the
  *   server (it is the key set of `install.INSTALLERS`), never from a list kept
  *   here — a copy would drift and put a button on a row whose POST is a 400.
@@ -25,9 +34,9 @@
  * screen answers "how far off am I" before it answers "what exactly is wrong".
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowRight, Check, Download, Loader2, RefreshCw, X } from "lucide-react";
+import { ArrowRight, Check, Copy, Download, Loader2, RefreshCw, X } from "lucide-react";
 import { PageShell } from "../components/AppShell";
 import {
   Badge,
@@ -41,7 +50,45 @@ import {
 import { USE_FIXTURES, api } from "../lib/api";
 import { cn } from "../lib/classNames";
 import { isDesktop } from "../lib/desktop";
-import type { SetupCheck, SetupInstall, SetupStatus } from "../lib/types";
+import { STAGES } from "../lib/types";
+import type { SetupCheck, SetupInstall, SetupSeverity, SetupStatus } from "../lib/types";
+
+/**
+ * What a failing row actually costs, with a fallback for a server that predates
+ * the field.
+ *
+ * That fallback reads `required` as blocking and everything else as optional,
+ * which is the *old* two-value contract — the one reading that can understate a
+ * failure but never overstate one. An unknown grade defaulting to "degrades"
+ * would invent a claim about a check nobody has graded.
+ */
+function severityOf(check: SetupCheck): SetupSeverity {
+  return check.severity ?? (check.required === false ? "optional" : "blocking");
+}
+
+const SEVERITY_META: Record<
+  SetupSeverity,
+  { word: string; token: string; tone: "bad" | "warn" | "neutral"; wash: boolean }
+> = {
+  // Nothing runs. Red, a wash, and the word people already read as "stop".
+  blocking: { word: "Required", token: "var(--color-critical)", tone: "bad", wash: true },
+  // The run works and is worse. Amber: it must not be dismissible at a glance,
+  // and it must not read as broken either.
+  degrades: { word: "Degrades", token: "var(--color-warning)", tone: "warn", wash: true },
+  // Irrelevant until you ask for it. No hue and no wash — an optional row that
+  // shouted was what taught users to ignore the whole list.
+  optional: { word: "Optional", token: "var(--color-muted)", tone: "neutral", wash: false },
+};
+
+/** The earliest stage a failing blocking row would stop a run at, if any. */
+function firstBlockingStage(checks: SetupCheck[]): string | null {
+  const stages = checks
+    .filter((check) => !check.ok && severityOf(check) === "blocking")
+    .map((check) => check.stage)
+    .filter((stage): stage is (typeof STAGES)[number] => Boolean(stage));
+  if (stages.length === 0) return null;
+  return STAGES.find((stage) => stages.includes(stage)) ?? null;
+}
 
 /**
  * How often to ask where the install got to.
@@ -135,6 +182,19 @@ export function SetupPage() {
   const passing = checks.length - failing.length;
   const ready = status?.ok === true;
 
+  /*
+   * The three failure counts, kept apart.
+   *
+   * `ready` is the server's verdict on the *required* rows, and the footer used
+   * to lump every other failure into "optional items missing for wider language
+   * pairs" — which is a specific, wrong claim about a missing HF token. Split by
+   * grade, each sentence is about the thing it names.
+   */
+  const blocking = failing.filter((check) => severityOf(check) === "blocking");
+  const degraded = failing.filter((check) => severityOf(check) === "degrades");
+  const optional = failing.filter((check) => severityOf(check) === "optional");
+  const stopsAt = firstBlockingStage(checks);
+
   return (
     <PageShell
       title="Setup."
@@ -152,10 +212,18 @@ export function SetupPage() {
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>
               <Eyebrow>Readiness</Eyebrow>
-              <p className="mt-2 text-lg font-semibold tracking-tight">
+              <p className="mt-2 text-lg font-semibold tracking-tight" data-readiness>
+                {/* "All checks pass" is only true when they all do. `ready` is
+                    the verdict on the BLOCKING rows, so it can be true with a
+                    gated token and an un-downloaded cache still red above this
+                    line — and that state is "ready to run", not "all pass". */}
                 {status ? (
                   ready ? (
-                    "All checks pass"
+                    failing.length === 0 ? (
+                      "All checks pass"
+                    ) : (
+                      "Ready to run"
+                    )
                   ) : (
                     <>
                       {failing.length} of {checks.length} need attention
@@ -228,25 +296,40 @@ export function SetupPage() {
               <ArrowRight className="h-3.5 w-3.5" />
             </Button>
           ) : (
+            /*
+             * Skipping is allowed and always was — the gate never traps anyone.
+             * What it must not do is stay cheerful: with a blocking row red, the
+             * next thing that happens after "Skip for now" is a run that dies,
+             * and the link is the last place to say so before it does.
+             */
             <Link
               to="/"
               replace
+              data-skip
               className="rounded-md text-[12px] font-semibold text-secondary underline underline-offset-4 transition-colors hover:text-primary"
             >
-              Skip for now
+              {blocking.length > 0
+                ? `Skip anyway — runs will fail${stopsAt ? ` at ${stopsAt}` : ""}`
+                : "Skip for now"}
             </Link>
           )}
-          <span className="ml-auto max-w-xs text-[12px] leading-relaxed text-muted">
+          <span className="ml-auto max-w-xs text-[12px] leading-relaxed text-muted" data-footer>
             {/* `ready` is the server's verdict on the REQUIRED checks only, so it
-                can be true while optional rows sit red above this line — saying
-                "nothing is missing" under a MISSING badge reads as a lie. */}
-            {ready
-              ? failing.length === 0
+                can be true while degraded and optional rows sit above this line —
+                saying "nothing is missing" under a MISSING badge reads as a lie,
+                and so does calling a gated token an "optional item for wider
+                language pairs", which is what this used to do. */}
+            {blocking.length > 0
+              ? "A required tool is missing — runs will fail."
+              : failing.length === 0
                 ? "Nothing is missing."
-                : `Everything required is ready; ${failing.length} optional ` +
-                  `item${failing.length === 1 ? " is" : "s are"} missing for wider ` +
-                  "language pairs."
-              : "A missing model fails the stage that needs it, not the whole run."}
+                : degraded.length > 0
+                  ? `Everything required is ready. ${degraded.length} ` +
+                    `thing${degraded.length === 1 ? "" : "s"} above will still run — ` +
+                    "just worse."
+                  : `Everything required is ready; ${optional.length} optional ` +
+                    `item${optional.length === 1 ? " is" : "s are"} missing for wider ` +
+                    "language pairs."}
           </span>
         </CardSection>
       </Card>
@@ -290,6 +373,11 @@ function CheckRow({
   // fix, that is currently broken. A passing row needs nothing and a model row
   // has no argv behind it — its detail line is the answer.
   const offerInstall = check.installable === true && !check.ok;
+  const severity = severityOf(check);
+  const meta = SEVERITY_META[severity];
+  // A passing row is green whatever it would have cost; a failing one wears the
+  // hue of what it costs. `--color-good` is the one case that is not a grade.
+  const token = check.ok ? "var(--color-good)" : meta.token;
   return (
     <li
       className={cn(
@@ -297,22 +385,27 @@ function CheckRow({
         // Eight rows that look identical make the reader scan all eight to
         // find the two that need them. The failing ones get a wash and a rule
         // so the eye lands on them first — reinforcing the word and the glyph
-        // that already say it, never replacing them.
-        !check.ok && "bg-critical/[0.04] shadow-[inset_3px_0_0_var(--color-critical)]",
+        // that already say it, never replacing them. An *optional* failure gets
+        // neither: it is the row the list is allowed to be quiet about, and
+        // shouting it in red is what taught users to skim past the red.
+        !check.ok && meta.wash && "shadow-[inset_3px_0_0_var(--wash)]",
       )}
+      style={!check.ok && meta.wash
+        ? ({
+            "--wash": meta.token,
+            backgroundColor: `color-mix(in srgb, ${meta.token} 4%, transparent)`,
+          } as CSSProperties)
+        : undefined}
       data-check={check.id}
+      data-severity={severity}
     >
       <span
         aria-hidden
         className="mt-px grid h-6 w-6 shrink-0 place-items-center rounded-md border"
         style={{
-          color: check.ok ? "var(--color-good)" : "var(--color-critical)",
-          borderColor: `color-mix(in srgb, ${
-            check.ok ? "var(--color-good)" : "var(--color-critical)"
-          } 35%, transparent)`,
-          backgroundColor: `color-mix(in srgb, ${
-            check.ok ? "var(--color-good)" : "var(--color-critical)"
-          } 10%, transparent)`,
+          color: token,
+          borderColor: `color-mix(in srgb, ${token} 35%, transparent)`,
+          backgroundColor: `color-mix(in srgb, ${token} 10%, transparent)`,
         }}
       >
         <Glyph className="h-3.5 w-3.5" strokeWidth={3} />
@@ -321,6 +414,14 @@ function CheckRow({
         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
           <span className="text-[13px] font-semibold text-primary">{check.label}</span>
           <Badge tone={check.ok ? "good" : "bad"}>{check.ok ? "Ready" : "Missing"}</Badge>
+          {/* The consequence, spelled as a word beside the state. "Missing" is
+              what is true; this is what it costs, and the two are different
+              facts — a screenshot read at a glance needs both. Only on a
+              failing row: what a passing check *would* have cost is trivia. */}
+          {check.ok ? null : <Badge tone={meta.tone}>{meta.word}</Badge>}
+          {!check.ok && severity === "blocking" && check.stage ? (
+            <span className="text-[11px] text-muted">stops the run at {check.stage}</span>
+          ) : null}
         </div>
         {check.detail ? (
           <p className="mt-1 max-w-2xl text-[12px] leading-relaxed text-secondary">
@@ -382,29 +483,74 @@ function lastLine(install: SetupInstall): string | null {
 }
 
 /**
- * The detail sentence, with its backticked spans set as code.
+ * The detail sentence, with its backticked spans set as code — and copyable.
  *
  * The server writes these to be read by a human and marks the parts that are
  * meant to be typed — a path, a variable, a command — the way every other tool
  * on that machine does, with backticks. Rendering them literally put stray
  * punctuation in the middle of the one line on the screen whose whole job is
  * to be copied correctly.
+ *
+ * Setting them as code was half the fix. The other half is that these are
+ * `uv run hf download …` commands and absolute `.env` paths — sixty characters
+ * of exactness that a user was expected to select by dragging across a 11.5px
+ * monospace span, in a *desktop shell* where there is no address bar to paste
+ * into and no browser view-source to fall back on. One click is the whole
+ * interaction, and a tick confirms it, because a clipboard write that says
+ * nothing is indistinguishable from a click that missed.
  */
 function Detail({ text }: { text: string }) {
   return (
     <>
       {text.split(/`([^`]+)`/g).map((part, i) =>
-        i % 2 === 1 ? (
-          <code
-            key={i}
-            className="rounded bg-sunken px-1 py-0.5 font-mono text-[11.5px] text-primary"
-          >
-            {part}
-          </code>
-        ) : (
-          <span key={i}>{part}</span>
-        ),
+        i % 2 === 1 ? <CopyCode key={i} text={part} /> : <span key={i}>{part}</span>,
       )}
     </>
+  );
+}
+
+/** How long the tick stays up. Long enough to be seen, short enough to not nag. */
+const COPIED_MS = 1400;
+
+function CopyCode({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<number | undefined>(undefined);
+
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+
+  const copy = useCallback(() => {
+    // `navigator.clipboard` is absent over plain HTTP on a non-localhost origin
+    // and in jsdom. Failing silently would leave a button that looks like it
+    // worked, so the tick is only shown when the write actually resolved.
+    void navigator.clipboard
+      ?.writeText(text)
+      .then(() => {
+        setCopied(true);
+        window.clearTimeout(timer.current);
+        timer.current = window.setTimeout(() => setCopied(false), COPIED_MS);
+      })
+      .catch(() => setCopied(false));
+  }, [text]);
+
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      data-copy={text}
+      title={copied ? "Copied" : `Copy "${text}"`}
+      aria-label={`Copy ${text}`}
+      className={cn(
+        "inline-flex max-w-full items-center gap-1 rounded bg-sunken px-1 py-0.5 align-baseline",
+        "font-mono text-[11.5px] text-primary transition-colors",
+        "hover:bg-raised hover:ring-1 hover:ring-axis",
+      )}
+    >
+      <code className="min-w-0 break-all">{text}</code>
+      {copied ? (
+        <Check aria-hidden className="h-3 w-3 shrink-0" style={{ color: "var(--color-good)" }} />
+      ) : (
+        <Copy aria-hidden className="h-3 w-3 shrink-0 text-muted" />
+      )}
+    </button>
   );
 }

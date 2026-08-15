@@ -211,6 +211,148 @@ def test_get_project(client):
     assert len(body["manifest"]["segments"]) == 5
 
 
+# ---------------------------------------------------------------------------
+# resuming a run, and editing the options it runs with
+# ---------------------------------------------------------------------------
+
+def test_resume_reruns_the_project_with_what_it_recorded(client, outputs, fake):
+    """A stopped run had no way back in: the app could create a project and edit
+    one, and nothing in it could start the pipeline again. There is no separate
+    resume machinery — every stage is skipped when its inputs are unchanged, so
+    the same `run` job *is* the resume, and its payload is the manifest's own
+    source record read back."""
+    from dubbing import cli
+
+    r = client.post(f"/api/projects/{NAME}/run", json={})
+    assert r.status_code == 202 and r.json()["job"]["kind"] == "run"
+    assert wait_until(lambda: fake.calls, 5.0)
+
+    kind, project, payload = fake.calls[0]
+    assert (kind, project) == ("run", NAME)
+    args = cli.parse_args(ops.full_run_argv(Path(payload["workdir"]), payload["source"]))
+    assert args.source == "inputs/whatsapp.mp4"
+    assert (args.src, args.tgt) == ("he", "en")
+    assert Path(payload["workdir"]) == outputs / NAME
+
+
+def test_resume_is_refused_while_a_job_is_already_going(outputs):
+    hold = threading.Event()
+    fake = FakeRunner(hold=hold)
+    with TestClient(create_app(outputs, runner=fake, ui_dir="")) as c:
+        assert c.post(f"/api/projects/{NAME}/run", json={}).status_code == 202
+        r = c.post(f"/api/projects/{NAME}/run", json={})
+        assert r.status_code == 409 and envelope_of(r)["code"] == "busy"
+        assert "already going" in envelope_of(r)["message"]
+        hold.set()
+
+
+def test_resume_of_an_unknown_project_is_not_found(client):
+    r = client.post("/api/projects/nope/run", json={})
+    assert r.status_code == 404 and envelope_of(r)["code"] == "not_found"
+
+
+def test_resume_refuses_a_project_that_does_not_say_what_it_was_made_from(client, outputs):
+    m = manifest.load(outputs / NAME)
+    m["source"].pop("input")
+    manifest.save(outputs / NAME, m)
+    r = client.post(f"/api/projects/{NAME}/run", json={})
+    assert r.status_code == 400 and "nothing to re-run" in envelope_of(r)["message"]
+
+
+def test_a_failed_run_is_served_with_the_error_that_stopped_it(outputs):
+    """The other half of recovery: the placeholder can only offer "retry from
+    fetch" if the server says which stage died and why. Both are on the project."""
+    class Boom:
+        def run(self, job, emit):
+            emit(events.stage_event("fetch", "running", 0.1, "downloading"))
+            raise RuntimeError("HTTP Error 410: Gone")
+
+        def cancel(self, job):
+            pass
+
+    with TestClient(create_app(outputs, runner=Boom(), ui_dir="")) as c:
+        job = c.post(f"/api/projects/{NAME}/run", json={}).json()["job"]
+        assert wait_until(lambda: c.get(f"/api/jobs/{job['id']}").json()["job"]["status"]
+                          == "failed")
+        body = c.get(f"/api/projects/{NAME}").json()
+    assert body["stages"]["fetch"] == "failed"
+    dead = [j for j in body["jobs"] if j["status"] == "failed"]
+    assert dead and dead[-1]["stage"] == "fetch"
+    assert "HTTP Error 410" in dead[-1]["error"]
+    # …and the project is runnable again the moment nothing is in flight.
+    assert dead[-1]["kind"] == "run"
+
+
+def test_patch_project_writes_the_spelling_the_pipeline_reads_first(client, outputs):
+    """Flat keys on `m["source"]`, not `app_opts`: `dubbing.edit._args` resolves
+    the pair flat-first, so this is the only spelling that reaches every re-run."""
+    from dubbing import edit as edit_mod
+
+    r = client.patch(f"/api/projects/{NAME}",
+                     json={"genre": "movie", "register": "dialogue", "context": " a note "})
+    assert r.status_code == 200
+    source = r.json()["source"]
+    assert (source["genre"], source["register"]) == ("movie", "dialogue")
+    assert source["context"] == "a note"                 # stripped, not stored raw
+
+    m = manifest.load(outputs / NAME)
+    assert m["source"]["genre"] == "movie"
+    args = edit_mod._args(m)
+    assert (args.genre, args.register, args.context) == ("movie", "dialogue", "a note")
+
+
+def test_patch_project_beats_the_app_opts_recorded_at_creation(client, outputs, fake):
+    """The bug this closes: `app_opts` was the only place `ops` looked, so an
+    option changed here was honoured by a per-line re-translate and ignored by a
+    resume — the same project rendered two ways depending on the button."""
+    from dubbing import cli
+
+    m = manifest.load(outputs / NAME)
+    m["source"]["app_opts"] = {"genre": "documentary", "register": "narration"}
+    manifest.save(outputs / NAME, m)
+
+    assert client.patch(f"/api/projects/{NAME}", json={"genre": "movie"}).status_code == 200
+    assert client.post(f"/api/projects/{NAME}/run", json={}).status_code == 202
+    assert wait_until(lambda: fake.calls, 5.0)
+    args = cli.parse_args(ops.full_run_argv(Path(fake.calls[0][2]["workdir"]),
+                                            fake.calls[0][2]["source"]))
+    assert args.genre == "movie"
+    assert ops.pipeline_overrides(manifest.load(outputs / NAME))["genre"] == "movie"
+
+
+def test_patch_project_clears_a_context_with_the_empty_string(client, outputs):
+    client.patch(f"/api/projects/{NAME}", json={"context": "wrong note"})
+    r = client.patch(f"/api/projects/{NAME}", json={"context": ""})
+    assert r.status_code == 200 and r.json()["source"]["context"] is None
+    assert manifest.load(outputs / NAME)["source"]["context"] is None
+
+
+def test_patch_project_refuses_what_the_cli_cannot_take(client):
+    for body in ({"genre": "banana"}, {"register": "shouting"}, {"src_lang": "ru"},
+                 {"source": "other.mp4"}):
+        r = client.patch(f"/api/projects/{NAME}", json=body)
+        assert r.status_code == 400, body
+        assert envelope_of(r)["code"] == "invalid_request"
+
+
+def test_patch_project_empty_body_is_invalid(client):
+    r = client.patch(f"/api/projects/{NAME}", json={})
+    assert r.status_code == 400 and "at least one" in envelope_of(r)["message"]
+
+
+def test_patch_project_is_refused_while_a_job_runs(outputs):
+    hold = threading.Event()
+    fake = FakeRunner(hold=hold)
+    with TestClient(create_app(outputs, runner=fake, ui_dir="")) as c:
+        c.post(f"/api/projects/{NAME}/render", json={})
+        assert wait_until(lambda: fake.calls, 5.0)
+        r = c.patch(f"/api/projects/{NAME}", json={"genre": "movie"})
+        assert r.status_code == 409 and envelope_of(r)["code"] == "busy"
+        hold.set()
+    # …and nothing was written on the way to the refusal.
+    assert manifest.load(outputs / NAME)["source"].get("genre") is None
+
+
 def test_stage_status_folds_in_the_live_queue(outputs):
     """`done`/`pending` is all the manifest can say. Running and failed live in the
     queue, and without them the UI's whole failure treatment is unreachable."""
@@ -1661,6 +1803,63 @@ def test_setup_report_shape(client):
     assert by_id["model.demucs"]["required"] is False
     assert by_id["disk"]["required"] is False
     assert body["ok"] == all(c["ok"] for c in body["checks"] if c["required"])
+
+
+def test_setup_grades_every_check_and_required_is_derived_from_it(client):
+    """`required` has two values and the question has three: a missing HF token
+    (every speaker in the video collapsed into one) was reported exactly as
+    informationally as a Korean checkpoint a Hebrew→English run never opens."""
+    from dubbing_app import setup as setup_mod
+
+    checks = client.get("/api/setup").json()["checks"]
+    for c in checks:
+        assert c["severity"] in setup_mod.SEVERITIES, c["id"]
+        # One source of truth: nothing may be blocking and not required, or the
+        # reverse — the old flag is now a view of the new grade.
+        assert c["required"] is (c["severity"] == setup_mod.BLOCKING), c["id"]
+
+    by_id = {c["id"]: c["severity"] for c in checks}
+    from dubbing import tts
+
+    assert by_id["ffmpeg"] == by_id["sox"] == by_id["uv"] == "blocking"
+    assert by_id["model.translate"] == by_id["model.asr.en"] == "blocking"
+    assert by_id[f"model.tts.{tts.DEFAULT_TTS_MODEL}"] == "blocking"
+    # The run works and is worse: one voice for everybody, no third language found.
+    assert by_id["hf_token"] == by_id["model.lid"] == "degrades"
+    # Irrelevant until asked for, or self-downloading.
+    for optional in ("model.asr.he", "model.asr.tgt", "model.tts.he", "model.g2p.he",
+                     "model.demucs", "disk"):
+        assert by_id[optional] == "optional", optional
+
+
+def test_setup_names_the_stage_a_blocking_check_would_kill(client):
+    """"Runs will fail" is true and useless. The screen offers "Skip anyway —
+    runs will fail at fetch", and only the server knows which stage that is."""
+    checks = {c["id"]: c for c in client.get("/api/setup").json()["checks"]}
+    assert checks["ffmpeg"]["stage"] == "fetch"
+    assert checks["model.translate"]["stage"] == "translate"
+    assert checks["model.asr.en"]["stage"] == "tts"
+    # Only where it means something: a stage on an optional row reads as urgency.
+    assert "stage" not in checks["disk"] and "stage" not in checks["hf_token"]
+    # And `None` is an honest answer for a blocking check with no stage to name:
+    # `uv` is how this project's environment is built, but a running server
+    # spawns its job child with `sys.executable` and never shells out to it, so
+    # picking a stage for it would be a guess dressed as a fact.
+    assert checks["uv"]["severity"] == "blocking" and checks["uv"]["stage"] is None
+
+
+def test_setup_token_row_names_the_env_file_by_absolute_path(monkeypatch, tmp_path):
+    """"Put HF_TOKEN in .env" is a scavenger hunt on a machine with three
+    checkouts; only this process knows which `.env` it will read."""
+    from dubbing_app import setup as setup_mod
+
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+    env = tmp_path / ".env"
+    row = setup_mod.hf_token_check(env)
+    assert row["ok"] is False and row["severity"] == "degrades"
+    assert f"`{env}`" in row["detail"]          # backticked, so the UI can copy it
+    assert Path(row["path"]).is_absolute()
 
 
 def test_setup_model_paths_come_from_the_pipeline(client):

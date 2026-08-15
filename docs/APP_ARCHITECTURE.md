@@ -257,8 +257,10 @@ JSON in, JSON out. Errors are uniform, after MamboRambo's `write_error`:
 | POST | `/api/setup/install` | `{id}` → run the hardcoded argv for that check (`ffmpeg`, `sox`); 400 otherwise, 409 while one runs |
 | GET | `/api/setup/install` | `{running, id, ok, error, tail:[…], check}` — poll it; `check` is a fresh probe once the process exits |
 | GET | `/api/projects` | list run dirs: name, title, langs, duration, stage state, mtime |
-| POST | `/api/projects` | `{source, src_lang, tgt_lang, duration?, name?, context?, genre?, register?}` → create dir, enqueue a full run |
+| POST | `/api/projects` | `{source, src_lang, tgt_lang, duration?, name?, context?, genre?, register?, transcript?, tts_model?, dub_foreign?, captions?}` → create dir, enqueue a full run |
 | GET | `/api/projects/{name}` | manifest + report (+`stale`) + stage status + jobs |
+| PATCH | `/api/projects/{name}` | `{context?, genre?, register?}` → change the run's options (see below); 409 while a job runs |
+| POST | `/api/projects/{name}/run` | run it again — which on a stopped run is a **resume** (see below); 409 while a job runs |
 | GET | `/api/projects/{name}/segments` | the segment list, enriched (see below) |
 | PATCH | `/api/projects/{name}/segments/{uid}` | any no-model edit; body mirrors the setters |
 | POST | `/api/projects/{name}/segments/{uid}/split` `/merge` | structural edits |
@@ -273,6 +275,47 @@ JSON in, JSON out. Errors are uniform, after MamboRambo's `write_error`:
 store: absolute media URLs for `place.clip` and `tts.clip`, the verification verdict from
 `clips/<hash>.json` (`heard`, `overlap` — the ready-made "did the voice say the right
 thing" signal), and the segment's source-audio window as a URL.
+
+Two options on `POST /api/projects` are deliberately **server-side only**, with no control
+on the import screen: `captions` (a filesystem path to a caption file to use instead of the
+fetched one — a browser cannot produce a real path, and the desktop file picker offers
+videos) and `tts_model` (one checkpoint is current; the field exists so an old manifest
+still re-runs). The transcript *source* — `auto | captions | asr` — is a different thing
+and is on the screen, because "the auto-captions for this video are mangled" is a judgement
+only the person watching it can make.
+
+### Running it again is how a run resumes
+
+`POST /api/projects/{name}/run` enqueues the same `run` job that created the project, with
+the payload read back off `m["source"]`. There is no separate resume machinery and there
+must not be: every stage is skipped when its inputs and outputs are unchanged, so
+re-running *is* resuming, and a second implementation of "where did this stop" would be the
+fork this document rules out. The local-file probe that `POST /api/projects` does is not
+repeated — a run past `fetch` no longer needs its input, and refusing to resume because the
+source file was moved is a refusal with nothing behind it. Refused with 409 while anything
+is queued or running on the project.
+
+Recovery needs the other half too, and it is already served: `GET /api/projects/{name}`
+returns `jobs`, and the most recent failed one carries the `stage` it died in and the
+`error` that killed it. That is the **only** copy — the event stream deliberately replays
+nothing terminal (see below) — so a client that wants to say more than "stopped at fetch"
+reads it there.
+
+### Genre, register and context can change; the source and the languages cannot
+
+`PATCH /api/projects/{name}` writes those three as **flat keys on `m["source"]`**, which is
+the spelling `dubbing.edit._args` resolves first (`app_opts` is the app's own, older record
+and loses to it). One spelling, so the change reaches every path that re-runs anything: a
+per-line re-translate, a render, a resume. `dubbing_app.ops` resolves the pair the same way
+— reading only `app_opts` there meant an edited genre was honoured by a re-translate and
+silently ignored by a full run.
+
+Nothing is invalidated and no job is enqueued. All three are inputs to the *translator*, so
+they take effect the next time translation runs; re-translating two hundred lines because a
+dropdown moved would be a worse surprise than the wait. `context: ""` clears the note — the
+one field with a way to be removed. The source and the language pair are **not** patchable:
+changing either invalidates `fetch` and every stage after it, which is a new project
+wearing an old project's name.
 
 ### A job says which segments it is about
 
@@ -376,20 +419,42 @@ dies halfway and an absent model directory silently becomes a multi-gigabyte dow
 {"ok": true,
  "checks": [{"id": "model.translate", "label": "Translation model (Gemma 4 12B)",
              "ok": true, "detail": "9.7 GB in /…/models/gemma-4-12B-it-6bit",
+             "severity": "blocking", "stage": "translate",
              "required": true, "installable": false,
              "path": "/…", "bytes": 10424182784}]}
 ```
 
-* Ids: `ffmpeg`, `sox`, `hf_token`, `model.translate`, `model.tts.<key>` (one per
+* Ids: `ffmpeg`, `sox`, `uv`, `hf_token`, `model.translate`, `model.tts.<key>` (one per
   `tts.TTS_MODELS`), `model.asr.he`, `model.asr.src`, `model.asr.en`, `model.asr.tgt`,
-  `model.lid`, `model.demucs`, `disk`. `label` and `detail` are for display; `id` is stable.
-* **`ok` is the conjunction of the `required` checks only.** Required = a default run cannot
-  work: ffmpeg, sox, the translator, the default TTS checkpoint, the English ASR that
-  verifies every clip. Everything else is informational — Demucs and Pyannote download
-  themselves, a missing `HF_TOKEN` degrades diarization to one speaker, the other ASR/TTS
-  models matter only for particular language pairs — and must not gate first run.
+  `model.lid`, `model.demucs`, `model.tts.he`, `model.g2p.he`, `disk`. `label` and `detail`
+  are for display; `id` is stable.
+* **`severity` is the grade, and `required` is derived from it.** A boolean has two values
+  and the question has three, so everything that was not required was reported as one
+  undifferentiated "informational" — which put a gated `HF_TOKEN` (every speaker in the
+  video collapsed into one) on the same row as a Korean checkpoint a Hebrew→English run
+  never opens.
+  * `blocking` — the run **fails**: `ffmpeg`, `sox`, `uv`, the translator, the default TTS
+    checkpoint, the English ASR that verifies every clip. `required: true`, and these rows
+    also carry **`stage`**, the pipeline stage the absence kills, so a client can say
+    "runs will fail at translate" instead of "runs will fail". `stage` may be `null` and a
+    client must handle that: `uv` blocks (nothing here is installed or updated without it)
+    but a running server spawns its job child with `sys.executable` and never shells out to
+    it, so naming a stage for it would be a guess dressed as a fact.
+  * `degrades` — the run **works and is worse**: `hf_token` (diarization falls back to one
+    speaker), `model.lid` (foreign speech is never detected). Neither stops anything and
+    neither is nothing.
+  * `optional` — irrelevant until asked for: the per-language-pair models, the
+    self-downloading caches (Demucs), free disk.
+* **`ok` is the conjunction of the `required` checks only** — unchanged, and now equal to
+  "no blocking check fails". A client must not compute readiness as "every row passes":
+  that is stricter than the server and makes the "ready, with things missing" state
+  unreachable.
 * **The token is reported as present or absent, never echoed.** Env first
-  (`HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN`), then a `HF_TOKEN=` line in `.env`.
+  (`HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN`), then a `HF_TOKEN=` line in `.env` — whose
+  **absolute** path the failing row names, backticked, because "put it in `.env`" is a
+  scavenger hunt on a machine with three checkouts and only the server knows which one it
+  reads. Backticked spans in `detail` are the parts meant to be typed; the UI sets them as
+  code and offers each as one click to the clipboard.
 * **No model is loaded and no import is heavy**: `shutil.which`, `os.environ`, `stat`,
   `shutil.disk_usage`. Milliseconds, safe to poll, and it must stay that way.
 * **`installable` is the server's answer to "can the app fix this?"** — true for exactly
@@ -412,7 +477,10 @@ context, following MamboRambo's deliberately plain approach.
 Two screens:
 
 1. **Import** — file picker or URL, source/target language, duration cap, genre/register,
-   optional context note. Starts a run and goes to the editor with live progress.
+   transcript source, optional context note. Starts a run and goes to the editor with live
+   progress. The rail ends with the sentence that says which of those are final: genre,
+   register and context can be changed later (`PATCH /api/projects/{name}`); the source and
+   the languages cannot.
 2. **Editor** — script-first, in three regions. A 44px **header** (back to runs, title,
    `he→en`, Render preview, run health, keyboard help, theme). A **main row** split
    between the **script** (~58%, and it is the pane that grows) and a fixed **viewer

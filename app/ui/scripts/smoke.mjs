@@ -47,6 +47,20 @@ dom.window.HTMLMediaElement.prototype.play = function play() {
 dom.window.HTMLMediaElement.prototype.pause = function pause() {};
 dom.window.URL.createObjectURL = () => "blob:fixture";
 globalThis.URL.createObjectURL = dom.window.URL.createObjectURL;
+// jsdom ships no clipboard, and the setup screen's copy buttons only show their
+// tick when the write actually resolves — so without this the one interaction
+// they exist for is untestable in the only mode that is ever tested.
+const clipboard = { text: null, writes: 0 };
+Object.defineProperty(dom.window.navigator, "clipboard", {
+  configurable: true,
+  value: {
+    writeText(text) {
+      clipboard.text = text;
+      clipboard.writes += 1;
+      return Promise.resolve();
+    },
+  },
+});
 
 const errors = [];
 const realError = console.error;
@@ -336,22 +350,78 @@ check(
  * can speak, so Hebrew and Arabic are source-only. Offering Hebrew as a dub
  * target creates a run whose tts stage can only fail.
  */
-const selects = [...document.querySelectorAll("select")];
+const selectFor = (label) => document.querySelector(`select[aria-label="${label}"]`);
 const optionsOf = (select) => [...select.options].map((o) => o.value);
-check("the screen has exactly the two language selects", selects.length === 2);
+const srcLangSelect = selectFor("Spoken language");
+const dubInto = selectFor("Dub into");
+check("both language selects are on the screen", srcLangSelect != null && dubInto != null);
 check(
   "spoken and dub-into are different lists",
-  optionsOf(selects[0]).join() !== optionsOf(selects[1]).join(),
+  optionsOf(srcLangSelect).join() !== optionsOf(dubInto).join(),
 );
 check(
   "…and only the source list offers a language the voice cannot speak",
   // Arabic is the source-only language now; Hebrew became a target via the
   // LoRA adapter, and the same-language pair (he→he) must be expressible.
-  optionsOf(selects[0]).includes("ar") && !optionsOf(selects[1]).includes("ar"),
+  optionsOf(srcLangSelect).includes("ar") && !optionsOf(dubInto).includes("ar"),
 );
 check(
   "Hebrew is a dub target, so a same-language pair is expressible",
-  optionsOf(selects[1]).includes("he"),
+  optionsOf(dubInto).includes("he"),
+);
+
+/*
+ * Where the transcript comes from.
+ *
+ * `--transcript auto|captions|asr` was accepted by the server from the first day
+ * and reachable only from the CLI, so a user who could hear that the
+ * auto-captions were mangled — the case AGENTS.md's invariant 4 exists for — had
+ * no way to say so from the screen that starts the run. `auto` is the pipeline's
+ * own answer and stays the default; the point is that the other two exist.
+ *
+ * `captions` (a *path* to a caption file) stays server-side: it is a local path
+ * a browser cannot produce, and offering a text box for it would be a control
+ * that only works in the desktop shell.
+ */
+const transcript = selectFor("Transcript source");
+check("the transcript source is pickable at last", transcript != null);
+check(
+  "…offering exactly the CLI's three answers",
+  optionsOf(transcript).join() === "auto,captions,asr",
+);
+check("…defaulting to the pipeline's own", transcript.value === "auto");
+check(
+  "…with the one sentence that says when to override it",
+  /auto-generated and mangled/i.test(root.textContent),
+);
+
+/*
+ * What this screen commits you to, and what it does not.
+ *
+ * Three sentences, each one an answer to a question the screen used to leave
+ * open. They are not decoration: the observed behaviour is a user who stalls on
+ * the genre radio because starting a run feels irreversible, and a user who
+ * discovers the source field was mandatory by pressing the primary button.
+ */
+check(
+  "the rail says which of these choices are final",
+  /Genre, register and context can be changed later; the source and languages cannot\./.test(
+    document.querySelector("[data-rail-note]")?.textContent ?? "",
+  ),
+);
+check(
+  "the one mandatory field says so before the refusal does",
+  document.querySelector("[data-required]") != null &&
+    document.querySelector('[aria-label="Source"]').getAttribute("aria-required") === "true",
+);
+check(
+  "a third language kept now can still be dubbed line by line later",
+  /individual lines can still be switched to dubbed later, in the editor/.test(root.textContent),
+);
+check(
+  "the scope placeholders read as examples, not as values already set",
+  document.querySelector('[aria-label="Duration cap in seconds"]').placeholder === "e.g. 320" &&
+    document.querySelector('[aria-label="Run name"]').placeholder === "e.g. my_first_dub",
 );
 
 /*
@@ -429,6 +499,75 @@ check("no continue while something is missing", ![...document.querySelectorAll("
 ));
 
 /*
+ * What a failure COSTS, not just that there is one.
+ *
+ * Every missing row used to be the same red X and the same word. So a gated
+ * Hugging Face token — the run works, everybody in the video becomes one
+ * speaker — was drawn identically to a missing ffmpeg, which was drawn
+ * identically to a Demucs cache that downloads itself on first use. Three very
+ * different situations, one alarm, and a list that teaches you to ignore it.
+ *
+ * The server grades them (`severity`) and the screen spells the grade as a word
+ * beside the state, because a hue is not a grade to a colour-blind reader or in
+ * a screenshot. `data-severity` is that grade in the DOM.
+ */
+const severityOf = (id) => rowSeverity(id);
+function rowSeverity(id) {
+  return document.querySelector(`[data-check="${id}"]`)?.getAttribute("data-severity") ?? null;
+}
+check(
+  "every row is graded, and the grade is the server's",
+  [...document.querySelectorAll("[data-check]")].every((row) =>
+    ["blocking", "degrades", "optional"].includes(row.getAttribute("data-severity")),
+  ),
+);
+check(
+  "the three grades are three different situations",
+  severityOf("ffmpeg") === "blocking" &&
+    severityOf("hf_token") === "degrades" &&
+    severityOf("model_stems") === "optional",
+);
+check(
+  "…and each says its grade as a word, never as a hue alone",
+  /Required/.test(document.querySelector('[data-check="ffmpeg"]').textContent) &&
+    /Degrades/.test(document.querySelector('[data-check="hf_token"]').textContent) &&
+    /Optional/.test(document.querySelector('[data-check="model_stems"]').textContent),
+);
+check(
+  "a blocking row names the stage it stops",
+  /stops the run at fetch/.test(document.querySelector('[data-check="ffmpeg"]').textContent),
+);
+check(
+  "the footer is honest while something required is missing",
+  /A required tool is missing — runs will fail\./.test(
+    document.querySelector("[data-footer]").textContent,
+  ),
+);
+check(
+  "…and skipping says what skipping costs",
+  /Skip anyway — runs will fail at fetch/.test(document.querySelector("[data-skip]").textContent),
+);
+
+/*
+ * The commands are copyable.
+ *
+ * These are `uv run hf download …` lines and absolute `.env` paths — sixty
+ * characters of exactness, in an 11.5px monospace span, inside a desktop shell
+ * with no address bar to paste into. Selecting one by dragging is not an
+ * interaction, it is a transcription error waiting to happen.
+ */
+const copyButtons = [...document.querySelectorAll("[data-copy]")];
+check("the parts meant to be typed are one click to the clipboard", copyButtons.length > 0);
+const tokenCopy = [...document.querySelectorAll('[data-check="hf_token"] [data-copy]')].find((b) =>
+  b.getAttribute("data-copy").endsWith(".env"),
+);
+check("…including the absolute path of the .env the server actually reads", tokenCopy != null);
+tokenCopy.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+await new Promise((resolve) => setTimeout(resolve, 80));
+check("clicking one copies it exactly", clipboard.text === tokenCopy.getAttribute("data-copy"));
+check("…and says it did", /Copied/.test(tokenCopy.getAttribute("title")));
+
+/*
  * Install from the app.
  *
  * The button exists for one state and no other: a row the *server* says it has
@@ -475,6 +614,40 @@ check("the installed row turns Ready", /Ready/.test(rowOf("ffmpeg").textContent)
 check("…and drops its Install button", !installButton("ffmpeg"));
 check("…and the count comes down", /3 of 8 need attention/.test(root.textContent));
 check("the other row can be installed again", installButton("sox").disabled === false);
+
+/*
+ * The state the footer's kind branch was written for, reachable at last.
+ *
+ * `ok` is the conjunction of the BLOCKING rows only — that is the server's
+ * contract — and the fixture used to compute it as "every row passes", which is
+ * stricter than the server and made this whole branch dead code: no fixture
+ * state could ever have both `ok: true` and a failing row. With both tools
+ * installed the machine IS ready, with a token still missing and a Demucs cache
+ * still un-downloaded, and the screen has to say both halves of that.
+ */
+installButton("sox").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+await new Promise((resolve) => setTimeout(resolve, 1400));
+check(
+  "with both tools in, the machine is ready — and does not claim all checks pass",
+  document.querySelector("[data-readiness]").textContent === "Ready to run",
+);
+check("…with the two that are still red still counted", /6\/8/.test(root.textContent));
+check(
+  "…so the way forward appears",
+  [...document.querySelectorAll("button")].some((b) =>
+    b.textContent.includes("Continue to projects"),
+  ),
+);
+check(
+  "…and the footer stops calling a gated token an optional item for wider language pairs",
+  /Everything required is ready\..*will still run — just worse\./.test(
+    document.querySelector("[data-footer]").textContent,
+  ),
+);
+check(
+  "…while the two rows that are still red keep their own grades",
+  rowSeverity("hf_token") === "degrades" && rowSeverity("model_stems") === "optional",
+);
 
 const recheck = [...document.querySelectorAll("button")].find((b) =>
   b.textContent.includes("Re-check"),
@@ -1484,6 +1657,63 @@ check(
   "each file says what the click will do",
   fileRows.every((b) => /Open .* in a new tab/.test(b.getAttribute("title") ?? "")),
 );
+
+/*
+ * The run options that are still a decision, editable where the run is read.
+ *
+ * Genre, register and context were picked once on the import screen — in ten
+ * seconds, before a single line had been read — and then became unreachable for
+ * the life of the project. Nothing about them is structural: all three are
+ * inputs to the translator, which is exactly why they can change and the source
+ * and the language pair cannot.
+ *
+ * Everything asserted here is about the *request*, because the screen shows no
+ * consequence of any of them until translation runs again — the same reason the
+ * import screen's switches are judged on `calls.created`.
+ */
+check("the run's options are on the screen at last", document.querySelector("[data-run-options]") != null);
+const optionSelect = (label) =>
+  document.querySelector(`[data-run-options] select[aria-label="${label}"]`);
+check(
+  "…as the two the pipeline actually takes",
+  optionSelect("Genre") != null && optionSelect("Register") != null,
+);
+check(
+  "…and they say when they take effect, since nothing is queued",
+  /Applies to the next translate or render/.test(root.textContent),
+);
+
+const setSelect = (el, value) => {
+  Object.getOwnPropertyDescriptor(dom.window.HTMLSelectElement.prototype, "value").set.call(
+    el,
+    value,
+  );
+  el.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+};
+const updatesBefore = calls().updated.length;
+setSelect(optionSelect("Genre"), "movie");
+await settle(250);
+check("changing one saves it", calls().updated.length === updatesBefore + 1);
+check("…carrying only what changed", JSON.stringify(calls().updated.at(-1)) === '{"genre":"movie"}');
+
+// Context is prose, so it commits explicitly: a textarea that saved on blur
+// would fire on every stray click out of a note somebody was still writing.
+const editContext = document.querySelector("[data-edit-context]");
+check("the context note is editable in place", editContext != null);
+clickIt(editContext);
+await settle(120);
+const contextField = document.querySelector('[data-run-options] textarea[aria-label="Context"]');
+check("…in a field of its own", contextField != null);
+setValue(contextField, "  the host is Dana; the guest is Prof. Ronen Levi  ");
+await settle(80);
+clickIt(document.querySelector("[data-save-context]"));
+await settle(220);
+check(
+  "…and saving sends the note",
+  calls().updated.at(-1).context === "the host is Dana; the guest is Prof. Ronen Levi",
+);
+check("…closing the field", document.querySelector('[data-run-options] textarea') == null);
+
 clickIt(menu);
 await settle(120);
 
@@ -1527,7 +1757,20 @@ click("Render preview");
 await settle(150);
 check(
   "a destructive action asks in the app, not in an OS sheet",
-  /full video re-encode/.test(root.textContent),
+  /no clip yet|full video re-encode/.test(root.textContent),
+);
+/*
+ * …and the sentence is about *this* run.
+ *
+ * "A full video re-encode, typically a few minutes" is true of a finished run
+ * and a lie about this one: `edit.start_stage` deliberately backs a render up to
+ * tts or translate to make the missing clips, so on a run with unfinished lines
+ * the button loads two models. The fixture has such lines (`seedOverrides`),
+ * which is the only reason this branch is reachable here at all.
+ */
+check(
+  "…and it says what this render will actually cost",
+  /model time, not the few minutes a re-encode takes/.test(root.textContent),
 );
 check(
   "the confirming button repeats the verb",
@@ -1535,7 +1778,7 @@ check(
 );
 click("Cancel");
 await settle(150);
-check("cancelling does nothing", !/full video re-encode/.test(root.textContent));
+check("cancelling does nothing", !/model time, not the few minutes/.test(root.textContent));
 
 // A model action must queue and report progress instead of blocking the UI.
 click("Re-voice this line");
@@ -1707,6 +1950,55 @@ check(
 );
 
 /*
+ * …and it is not a dead end any more.
+ *
+ * This screen was the end of the road: a run that fell over at fetch had an
+ * empty script, a dead play button, a Render button that could only produce a
+ * second failure, and nothing anywhere in the app that could start the pipeline
+ * again. Two things fix it, and they are two halves of one question — what
+ * happened, and what do I press.
+ *
+ * The error is the *pipeline's own last words*, read off the project's job list
+ * (`GET /api/projects/{name}` → `jobs`). It is the only copy: the event stream
+ * deliberately replays nothing terminal, so after a reload there is nowhere else
+ * for it to come from. Paraphrasing it would collapse a dead URL, a private
+ * video and a full disk into one sentence, and only one of the three is worth
+ * retrying unchanged.
+ */
+check(
+  "a run that died says what killed it, in the pipeline's own words",
+  /Video unavailable/.test(document.querySelector("[data-failure]")?.textContent ?? ""),
+);
+const resume = document.querySelector("[data-resume]");
+check("…and offers the way back in", resume != null);
+check("…named for the stage it will retry", resume.textContent.includes("Retry from fetch"));
+check(
+  "…promising a resume, not a restart",
+  /picks up where the run stopped rather than starting over/.test(root.textContent),
+);
+/* Render, meanwhile, is refused with its reason instead of enqueueing a job that
+   dies in the mix: there is no source.wav to lay speech over and no duration to
+   lay it against, because fetch never finished. */
+const renderButton = [...document.querySelectorAll("header button")].find((b) =>
+  b.textContent.includes("Render preview"),
+);
+check("Render is refused before the click, not by a job that dies", renderButton.disabled === true);
+check(
+  "…and says why",
+  /fetch has not finished/.test(renderButton.getAttribute("title") ?? ""),
+);
+
+const logBefore = calls().log.length;
+clickIt(resume);
+await settle(250);
+check("resuming enqueues the run job that IS the resume", calls().log.at(-1) === "resume");
+check("…exactly one of them", calls().log.length === logBefore + 1);
+check(
+  "…and the strip picks it up, so the dead end is now a running run",
+  document.querySelector("[data-job-strip]") != null,
+);
+
+/*
  * The import screen's switches only exist to be *sent*: the screen shows no
  * consequence of any of them, so the request body is the only place their
  * correctness is observable. "Dub foreign speech" is the one that had no way to
@@ -1726,6 +2018,10 @@ await settle(80);
 clickIt(foreignBox());
 await settle(120);
 check("the switch flips", foreignBox().checked === true);
+// The other option that could not reach a run: forcing local transcription when
+// the video's auto-captions are the mangled kind AGENTS.md's invariant 4 is about.
+setSelect(document.querySelector('select[aria-label="Transcript source"]'), "asr");
+await settle(120);
 
 const createdBefore = calls().created.length;
 [...document.querySelectorAll("button")]
@@ -1738,6 +2034,10 @@ check("…carrying the source that was typed", created.source === SOURCE);
 check(
   "…and dub_foreign, which no run started here could ask for before",
   created.dub_foreign === true,
+);
+check(
+  "…and the transcript source, which was the other one",
+  created.transcript === "asr",
 );
 
 check(
