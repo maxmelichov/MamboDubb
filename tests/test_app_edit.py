@@ -901,3 +901,16 @@ def test_clear_downstream_is_the_shared_helper():
     assert manifest.clear_downstream(m, "tts") == ["timeline", "mix", "report"]
     assert set(m["stages"]) == {"translate", "tts"}
     assert "place" not in m["segments"][0]
+
+
+def test_args_reads_the_apps_recorded_options():
+    # The studio app records run settings under source["app_opts"]; reading only
+    # the CLI's flat keys made every app project re-place its timeline with
+    # documentary rules whatever genre was chosen at import.
+    m = mk(seg())
+    m["source"]["app_opts"] = {"genre": "movie", "register": "dialogue"}
+    args = edit._args(m)
+    assert args.genre == "movie" and args.register == "dialogue"
+    # The flat (CLI) spelling wins when both exist.
+    m["source"]["genre"] = "documentary"
+    assert edit._args(m).genre == "documentary"

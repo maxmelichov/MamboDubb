@@ -758,9 +758,16 @@ def _args(m: dict[str, Any], **overrides: Any):
     args.tgt = cli.normalize_lang(src.get("tgt_lang") or args.tgt)
     args.duration = src.get("duration_limit")
     args.context = src.get("context")
+    # The CLI records settings as flat keys; the studio app records the same
+    # settings under source["app_opts"]. Reading only the flat spelling made
+    # every app-created project silently fall back to CLI defaults here — a
+    # "movie" run re-placed its timeline with documentary timing on every
+    # per-line re-voice. Flat wins when both exist (it is the older writer).
+    app_opts = src.get("app_opts") or {}
     for key in ("register", "genre", "transcript", "tts_model", "dub_foreign", "device"):
-        if src.get(key) is not None:
-            setattr(args, key, src[key])
+        value = src.get(key) if src.get(key) is not None else app_opts.get(key)
+        if value is not None:
+            setattr(args, key, value)
     for key, value in overrides.items():
         if not hasattr(args, key):
             raise EditError(f"unknown option {key!r}")
