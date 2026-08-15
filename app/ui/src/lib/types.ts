@@ -221,6 +221,36 @@ export type ProjectDetail = {
   stages: Partial<Record<Stage, StageStatus>>;
   outputs: { preview?: string; dub_wav?: string; srt?: string } & Record<string, string>;
   report: Report | null;
+  /**
+   * This project's jobs, oldest first — the server has always sent them and the
+   * client threw them away.
+   *
+   * They are the only record of *why* a run stopped. The event stream replays
+   * nothing terminal (`app.py::project_events`, deliberately — a failure
+   * replayed on every reconnect resurrects an error bar dismissed an hour ago),
+   * so after a reload the most recent failed job's `error` and `stage` exist
+   * here and nowhere else. Without them "The run stopped at fetch" is all the
+   * editor can say, and the sentence the user needs is the one after it.
+   */
+  jobs: Job[];
+};
+
+/**
+ * Body of `PATCH /api/projects/{name}` — the run options that are still a
+ * decision after the run has started.
+ *
+ * These three are inputs to the *translator*, so nothing already fetched,
+ * transcribed or segmented depends on them and they take effect the next time
+ * translation runs. The source and the language pair are deliberately not here:
+ * changing either invalidates fetch and everything after it, which is a new
+ * project wearing an old project's name.
+ *
+ * `context: ""` clears the note — the one field with a way to be removed.
+ */
+export type ProjectOptionsPatch = {
+  context?: string;
+  genre?: "documentary" | "movie";
+  register?: "narration" | "dialogue";
 };
 
 /**
@@ -248,6 +278,17 @@ export type CreateProjectRequest = {
   context?: string | null;
   genre?: "documentary" | "movie" | null;
   register?: "narration" | "dialogue" | null;
+  /**
+   * Where the transcript comes from. `auto` (the pipeline's default) uses the
+   * captions when the fetch found some and ASR otherwise; `captions` and `asr`
+   * force one. It was accepted by the server and unreachable from the screen,
+   * so a user who knew the auto-captions were garbage had no way to say so.
+   *
+   * The server also accepts `captions` — a path to a caption file to use instead
+   * of the fetched one — which stays CLI-only: it is a local path the browser
+   * cannot produce and the desktop file picker does not offer.
+   */
+  transcript?: "auto" | "captions" | "asr" | null;
   /**
    * Translate and voice speech that is in neither the source nor the target
    * language. Off by default, which is the pipeline's own default: a third
@@ -337,11 +378,32 @@ export type Health = { status: "ok"; version: string };
  * free disk. `detail` is the sentence shown under the label: a size when the
  * check passes, what to install when it does not.
  */
+export type SetupSeverity = "blocking" | "degrades" | "optional";
+
 export type SetupCheck = {
   id: string;
   label: string;
   ok: boolean;
   detail: string;
+  /**
+   * What a failure of this check actually costs — `blocking` (the run fails),
+   * `degrades` (the run works and is worse), `optional` (irrelevant until you
+   * ask for it). The screen showed a single red MISSING for all three, which
+   * made a gated HF token look like a broken install and a Korean checkpoint
+   * look like a reason not to start.
+   *
+   * Optional on the type, because a server older than this field sends rows
+   * without it; `severityOf` treats those as blocking-if-required, which is the
+   * only reading that cannot understate a failure.
+   */
+  severity?: SetupSeverity;
+  /**
+   * Blocking rows only: the pipeline stage this check's absence kills, so the
+   * screen can say *where* a run would stop rather than that it would.
+   */
+  stage?: Stage | null;
+  /** `severity === "blocking"`, as the server has always sent it. */
+  required?: boolean;
   /**
    * The server has an argv for this one, so the row may offer a button. It is a
    * server flag rather than a list in the UI on purpose: a hardcoded list here

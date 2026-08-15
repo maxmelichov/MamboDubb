@@ -49,6 +49,7 @@ import {
   HelpCircle,
   Loader2,
   MoreHorizontal,
+  RotateCcw,
   TriangleAlert,
 } from "lucide-react";
 import { AppHeader } from "../components/AppShell";
@@ -68,7 +69,9 @@ import {
   Eyebrow,
   Kbd,
   Popover,
+  Select,
   StateIcon,
+  TextArea,
 } from "../components/ui";
 import { api } from "../lib/api";
 import { stopClip, toggleClip, useClipPlayback } from "../lib/clipAudio";
@@ -88,7 +91,7 @@ import { summarizeStages } from "../lib/stages";
 import { bucketsFor, usePeaks } from "../lib/usePeaks";
 import { activeJob, useProject } from "../lib/useProject";
 import { useTransport } from "../lib/useTransport";
-import type { Job, ProjectDetail, Segment } from "../lib/types";
+import type { Job, ProjectDetail, ProjectOptionsPatch, Segment } from "../lib/types";
 import type { StageProgress } from "../lib/useProject";
 
 const ZOOM_STEPS = [0.5, 1, 2, 4, 8, 16, 32];
@@ -507,6 +510,48 @@ export function EditorPage() {
   const job = activeJob(state.jobs);
   const queued = state.jobs.filter((j) => j.status === "queued" && j.id !== job?.id).length;
 
+  /*
+   * When Render has nothing to work with, and when it is not the button it says.
+   *
+   * `mix` lays speech over `source.wav` for the length the manifest recorded, so
+   * on a run that never got through `fetch` there is no bed and no duration —
+   * and the button sat there, primary and inviting, on the one screen where it
+   * could only produce a second failure twenty minutes later. That is the case
+   * that is refused *here*, with the reason, rather than by a job that dies.
+   *
+   * Unfinished lines are a different thing and must NOT be refused:
+   * `edit.start_stage` deliberately backs a render up to tts or translate to
+   * make the missing work, because "refusing would leave the user with a button
+   * that only works on runs that did not need it". What was wrong there was the
+   * sentence — "typically a few minutes" over a job that loads two models — so
+   * that is what changes, not the button's availability.
+   */
+  const renderBlocked =
+    project == null
+      ? null
+      : project.stages.fetch !== "done"
+        ? "Nothing to render yet: the mix lays speech over the audio the fetch stage " +
+          "writes, and fetch has not finished."
+        : segments.length === 0
+          ? "Nothing to render yet: this run has no lines. The segments stage makes them."
+          : null;
+  const unfinishedLines = counts.untranslated + counts.unvoiced;
+
+  /*
+   * A run option changed here is written by the server and read back, never
+   * predicted: `PATCH /api/projects/{name}` normalizes the context (trimmed, and
+   * cleared when empty) and the reload is what puts the server's version on the
+   * screen. Optimism would show a note that the server stored differently.
+   */
+  const reload = actions.reload;
+  const saveOptions = useCallback(
+    async (patch: ProjectOptionsPatch) => {
+      await api.updateProject(name, patch);
+      await reload();
+    },
+    [name, reload],
+  );
+
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-plane">
       <AppHeader
@@ -521,7 +566,16 @@ export function EditorPage() {
               variant="primary"
               size="sm"
               confirmLabel="Render"
-              message="Re-render the preview. This re-runs timeline, mix and report and replaces preview.mp4 — a full video re-encode, typically a few minutes."
+              disabled={renderBlocked != null}
+              title={renderBlocked ?? undefined}
+              message={
+                unfinishedLines > 0
+                  ? `${unfinishedLines} line${unfinishedLines === 1 ? " has" : "s have"} no ` +
+                    "clip yet, so this render backs up and makes them first: it loads the " +
+                    "translator and the voice, which is model time, not the few minutes a " +
+                    "re-encode takes."
+                  : "Re-render the preview. This re-runs timeline, mix and report and replaces preview.mp4 — a full video re-encode, typically a few minutes."
+              }
               onConfirm={() => void actions.render()}
             >
               <Film className="h-3.5 w-3.5" />
@@ -532,6 +586,7 @@ export function EditorPage() {
               name={name}
               counts={counts}
               onSeek={transport.seek}
+              onSaveOptions={saveOptions}
             />
             <ShortcutHelp />
           </>
@@ -610,6 +665,7 @@ export function EditorPage() {
                     job={job}
                     stage={state.stage}
                     mode={transportMode}
+                    onResume={() => void actions.resume()}
                   />
                 }
               />
@@ -891,11 +947,13 @@ function RunMenu({
   name,
   counts,
   onSeek,
+  onSaveOptions,
 }: {
   project: ProjectDetail | null;
   name: string;
   counts: Record<SegmentState, number>;
   onSeek: (time: number) => void;
+  onSaveOptions: (patch: ProjectOptionsPatch) => Promise<void>;
 }) {
   const gaps = project?.report?.uncovered_audible ?? [];
   const preview = project?.outputs.preview;
@@ -934,6 +992,8 @@ function RunMenu({
         ) : null}
       </dl>
 
+      <RunOptions source={project?.source ?? null} onSave={onSaveOptions} />
+
       {/*
         What the run produced, by name, each one a click away.
         It used to be a single desktop-only "Show preview.mp4 in Finder" button
@@ -954,6 +1014,200 @@ function RunMenu({
         </>
       ) : null}
     </Popover>
+  );
+}
+
+/**
+ * The three run options that are still a decision, editable in place.
+ *
+ * Genre, register and context were chosen once on the import screen and then
+ * became unreachable — a `--genre documentary` picked in ten seconds before the
+ * first line had been read, binding every re-translate for the rest of the
+ * project's life. Nothing about them is structural: all three are inputs to the
+ * *translator*, so nothing already fetched, transcribed or segmented depends on
+ * them, which is exactly why they can be changed and the source and the language
+ * pair cannot (the import screen now says so, in those words).
+ *
+ * Saving enqueues nothing. `PATCH /api/projects/{name}` writes them and returns;
+ * silently re-translating two hundred lines because a dropdown moved would be a
+ * worse surprise than the wait. The note under the group is therefore not a
+ * disclaimer, it is the contract: they take effect the next time translation
+ * runs, and the buttons that run it are on this screen already.
+ */
+function RunOptions({
+  source,
+  onSave,
+}: {
+  source: ProjectDetail["source"] | null;
+  onSave: (patch: ProjectOptionsPatch) => Promise<void>;
+}) {
+  const [editingContext, setEditingContext] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const context = (source?.context ?? "").trim();
+
+  /*
+   * The refusal is shown here, not swallowed and not thrown at the window.
+   *
+   * The server 409s while a job runs — run options are read when a job starts,
+   * so changing one mid-render would be a setting the user then watches not
+   * happen. A dropdown that snapped back with no sentence would be the same
+   * lie in the other direction, and the field stays open on failure so the
+   * note nobody managed to save is still there to try again with.
+   */
+  const save = async (patch: ProjectOptionsPatch) => {
+    setSaving(true);
+    setError(null);
+    try {
+      await onSave(patch);
+      setEditingContext(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!source) return null;
+
+  return (
+    <div data-run-options>
+      <Eyebrow className="mt-3.5 mb-1.5">Run options</Eyebrow>
+
+      <div className="flex flex-col gap-1.5">
+        {/*
+          Two-value choices, so the select IS the edit: an Edit button in front
+          of a two-option dropdown is a click spent to reach a click.
+        */}
+        <OptionSelect
+          label="Genre"
+          value={source.genre ?? "documentary"}
+          disabled={saving}
+          options={[
+            ["documentary", "Documentary"],
+            ["movie", "Movie"],
+          ]}
+          onChange={(value) => void save({ genre: value as ProjectOptionsPatch["genre"] })}
+        />
+        <OptionSelect
+          label="Register"
+          value={source.register ?? "narration"}
+          disabled={saving}
+          options={[
+            ["narration", "Narration"],
+            ["dialogue", "Dialogue"],
+          ]}
+          onChange={(value) => void save({ register: value as ProjectOptionsPatch["register"] })}
+        />
+      </div>
+
+      {/* Context is prose, so it gets a field and an explicit commit — a
+          textarea that saved on blur would fire on every accidental click out
+          of a note somebody was still writing. */}
+      <div className="mt-2">
+        <div className="flex items-baseline gap-2">
+          <span className="shrink-0 text-[11px] text-muted">context</span>
+          {!editingContext ? (
+            <button
+              type="button"
+              data-edit-context
+              disabled={saving}
+              onClick={() => {
+                setDraft(context);
+                setEditingContext(true);
+              }}
+              className="ml-auto rounded text-[11px] font-semibold text-secondary underline underline-offset-2 transition-colors hover:text-primary disabled:opacity-50"
+            >
+              {context ? "Edit" : "Add"}
+            </button>
+          ) : null}
+        </div>
+
+        {editingContext ? (
+          <>
+            <TextArea
+              autoFocus
+              rows={4}
+              aria-label="Context"
+              className="mt-1 text-[12px]"
+              value={draft}
+              disabled={saving}
+              onChange={(event) => setDraft(event.currentTarget.value)}
+            />
+            <div className="mt-1.5 flex justify-end gap-2">
+              <Button size="sm" variant="ghost" onClick={() => setEditingContext(false)}>
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                data-save-context
+                disabled={saving}
+                // The empty string is how the note is *removed*; the server
+                // reads it as a clear, which is why the draft is sent as typed
+                // rather than skipped when it is blank.
+                onClick={() => void save({ context: draft.trim() })}
+              >
+                Save
+              </Button>
+            </div>
+          </>
+        ) : (
+          <p className="mt-0.5 text-[11.5px] leading-relaxed text-secondary">
+            {context || <span className="text-muted">none — names and spellings go here</span>}
+          </p>
+        )}
+      </div>
+
+      {error ? (
+        <p
+          data-options-error
+          className="mt-2 rounded-lg border border-critical/35 bg-critical/[0.06] px-2 py-1.5 text-[11px] leading-relaxed text-secondary"
+        >
+          {error}
+        </p>
+      ) : null}
+
+      <p className="mt-2 text-[11px] leading-relaxed text-muted">
+        Applies to the next translate or render. Nothing already translated changes on its own.
+      </p>
+    </div>
+  );
+}
+
+/** One labelled two-value run option. The select is the whole control. */
+function OptionSelect({
+  label,
+  value,
+  options,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: [string, string][];
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="flex items-center gap-2">
+      <span className="shrink-0 text-[11px] text-muted">{label.toLowerCase()}</span>
+      <Select
+        aria-label={label}
+        value={value}
+        disabled={disabled}
+        className="ml-auto h-7 w-[9.5rem] text-[12px]"
+        onChange={(event) => onChange(event.currentTarget.value)}
+      >
+        {options.map(([key, text]) => (
+          <option key={key} value={key}>
+            {text}
+          </option>
+        ))}
+      </Select>
+    </label>
   );
 }
 
@@ -1010,6 +1264,22 @@ function ShortcutHelp() {
 }
 
 /**
+ * The most recent failure that is still the answer about this run.
+ *
+ * Same rule the server applies to stages (`Projects.stage_status`): a job that
+ * succeeded *after* a failure is the newer answer, so the failure is cleared
+ * rather than kept as a permanent scar. Jobs arrive oldest first.
+ */
+function lastFailure(jobs: Job[]): Job | null {
+  let dead: Job | null = null;
+  for (const job of jobs) {
+    if (job.status === "done") dead = null;
+    else if (job.status === "failed") dead = job;
+  }
+  return dead;
+}
+
+/**
  * The preview stage when there is no `preview.mp4` to show.
  *
  * This is the screen a user stares at for the entire length of a run, so it has
@@ -1018,26 +1288,60 @@ function ShortcutHelp() {
  * job strip has the second, both of them three inches away and both of them
  * permanent. What it keeps that nothing else has is the stage track — which of
  * the nine stages this run has got through.
+ *
+ * And, since a run could stop, the way back in.
+ *
+ * A failed or abandoned run was a dead end: the app could create a project and
+ * edit one, and nothing anywhere in it could start the pipeline again. The
+ * screen said "The run stopped at fetch" and left the user with a script pane of
+ * nothing, a dead play button and a Render button that would produce another
+ * failure twenty minutes later. Both halves of the fix are here because both
+ * halves are the same question — *what happened, and what do I press*:
+ *
+ * * **What happened** is the failed job's own error. It is only on the project
+ *   (`GET /api/projects/{name}` → `jobs`); the event stream deliberately replays
+ *   nothing terminal, so after a reload this is the only copy of it.
+ * * **What to press** is the same `run` job that created the project. Every
+ *   stage is skipped when its inputs are unchanged, so re-running *is* resuming
+ *   — which is why the button is honest about naming the stage it will retry.
  */
 function PreviewPlaceholder({
   project,
   job,
   stage,
   mode,
+  onResume,
 }: {
   project: ProjectDetail | null;
   job: Job | null;
   stage: StageProgress | null;
   /** What the transport is on, so the panel does not promise a clock that is not one. */
   mode: TransportMode;
+  onResume: () => void;
 }) {
   const summary = summarizeStages(project?.stages);
   const working = job != null && (job.status === "running" || job.status === "queued");
+  const dead = lastFailure(project?.jobs ?? []);
+  /*
+   * A run that is not finished and has nothing in flight is stopped, whether or
+   * not a stage says "failed". A job cancelled mid-fetch, a server restarted
+   * under a run, a laptop that slept — none of them leave a failed stage behind,
+   * and all of them leave a project that will never move again on its own.
+   */
+  const stopped = project != null && !working && !summary.complete;
 
   return (
     <div className="grid h-full place-items-center px-4 py-3">
       <div className="w-full max-w-sm text-center">
-        <Eyebrow>{working ? "Working" : summary.complete ? "No preview file" : "Preview"}</Eyebrow>
+        <Eyebrow>
+          {working
+            ? "Working"
+            : summary.failed || dead
+              ? "Stopped"
+              : summary.complete
+                ? "No preview file"
+                : "Preview"}
+        </Eyebrow>
 
         <p className="mt-1.5 text-[14px] font-semibold text-primary">
           {working
@@ -1051,7 +1355,22 @@ function PreviewPlaceholder({
                   : "Nothing has run yet"}
         </p>
 
-        <p className="mt-1 text-[11px] leading-relaxed text-muted">
+        {/*
+          The pipeline's own last words, verbatim.
+          Never paraphrased and never truncated to a category: "the run stopped
+          at fetch" is the same sentence for a dead URL, a private video and a
+          full disk, and only one of the three is worth retrying unchanged.
+        */}
+        {!working && dead?.error ? (
+          <p
+            data-failure
+            className="mt-2.5 max-h-24 overflow-auto rounded-lg border border-critical/35 bg-critical/[0.06] px-2.5 py-2 text-left font-mono text-[11px] leading-relaxed break-words text-secondary"
+          >
+            {dead.error}
+          </p>
+        ) : null}
+
+        <p className="mt-2 text-[11px] leading-relaxed text-muted">
           {working
             ? (stage?.message ?? "preview.mp4 is written by the mix stage, at the end.")
             : summary.complete
@@ -1062,6 +1381,36 @@ function PreviewPlaceholder({
                 : "preview.mp4 is written by the mix stage. There is nothing to play until " +
                   "fetch has written source.wav, but the timeline and the script still work."}
         </p>
+
+        {/*
+          The way back in.
+          The rationale sits under the button rather than above it because it is
+          the answer to the question the button raises — "will this start over?"
+          — and because a user who already knows presses it without reading.
+        */}
+        {stopped ? (
+          <>
+            <Button
+              variant="primary"
+              size="sm"
+              className="mt-3"
+              data-resume
+              onClick={onResume}
+              title={
+                summary.failed
+                  ? `Run the pipeline again from ${summary.failed}`
+                  : "Run the pipeline again; finished stages are skipped"
+              }
+            >
+              <RotateCcw className="h-3.5 w-3.5" aria-hidden />
+              {summary.failed ? `Retry from ${summary.failed}` : "Resume the run"}
+            </Button>
+            <p className="mt-1.5 text-[11px] leading-relaxed text-muted">
+              Every stage is skipped when its inputs have not changed, so this picks up where the
+              run stopped rather than starting over.
+            </p>
+          </>
+        ) : null}
 
         <div className="mt-3 flex justify-center">
           <StageTrack stages={project?.stages} current={stage?.stage ?? null} />

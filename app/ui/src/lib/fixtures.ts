@@ -25,6 +25,8 @@ import type {
   Peaks,
   PeaksFile,
   ProjectDetail,
+  ProjectOptionsPatch,
+  ProjectSource,
   ProjectSummary,
   Segment,
   SegmentPatch,
@@ -185,6 +187,12 @@ export const calls = {
    * so the sent body is the only place their correctness is observable.
    */
   created: [] as CreateProjectRequest[],
+  /**
+   * Every run-option patch the editor has sent. Same argument as `created`: the
+   * three options live on the server, the screen re-reads them, and the only way
+   * to tell "the control saved" from "the control redrew itself" is the body.
+   */
+  updated: [] as ProjectOptionsPatch[],
 };
 (globalThis as { __DUBBING_FIXTURE_CALLS__?: typeof calls }).__DUBBING_FIXTURE_CALLS__ = calls;
 
@@ -279,15 +287,25 @@ export function health(): Promise<Health> {
  */
 export function setup(): Promise<SetupStatus> {
   const checks = setupChecks();
-  return delay({ ok: checks.every((c) => c.ok), checks });
+  // `ok` is the conjunction of the BLOCKING checks only, exactly as
+  // `setup.report` computes it. It used to be `every(c => c.ok)`, which made the
+  // fixture stricter than the server: a machine with a gated token and an
+  // un-downloaded Demucs cache is ready to run, and this said it was not — so
+  // the whole "everything required is ready, N optional things are missing"
+  // branch of the footer could not be reached in the only mode that is tested.
+  return delay({
+    ok: checks.filter((c) => c.severity === "blocking").every((c) => c.ok),
+    checks,
+  });
 }
 
 /** Which tools this fake machine has had installed during the session. */
 const installed = new Set<string>();
 
-const TOOL_ROWS: Record<string, { label: string; here: string; missing: string }> = {
+const TOOL_ROWS: Record<string, { label: string; here: string; missing: string; stage: Stage }> = {
   ffmpeg: {
     label: "ffmpeg",
+    stage: "fetch",
     here: "7.1.1 — /opt/homebrew/bin/ffmpeg",
     missing:
       "ffmpeg not on PATH — every stage shells out to it for audio and video. " +
@@ -295,6 +313,7 @@ const TOOL_ROWS: Record<string, { label: string; here: string; missing: string }
   },
   sox: {
     label: "SoX",
+    stage: "tts",
     here: "14.4.2 — /opt/homebrew/bin/sox",
     missing:
       "sox not on PATH — Qwen3-TTS text normalization needs it. " +
@@ -302,57 +321,84 @@ const TOOL_ROWS: Record<string, { label: string; here: string; missing: string }
   },
 };
 
-function toolRow(id: string): SetupCheck {
+function toolRow(id: string, stage: Stage): SetupCheck {
   const row = TOOL_ROWS[id];
   const ok = installed.has(id);
-  return { id, label: row.label, ok, installable: true, detail: ok ? row.here : row.missing };
+  return {
+    id,
+    label: row.label,
+    ok,
+    installable: true,
+    severity: "blocking",
+    required: true,
+    stage,
+    detail: ok ? row.here : row.missing,
+  };
 }
 
 function setupChecks(): SetupCheck[] {
-  return [
-    toolRow("ffmpeg"),
-    toolRow("sox"),
+  const rows: SetupCheck[] = [
+    toolRow("ffmpeg", "fetch"),
+    toolRow("sox", "tts"),
     {
       id: "hf_token",
       label: "Hugging Face token",
       ok: false,
+      severity: "degrades",
       detail:
-        "No HF_TOKEN in .env. Pyannote's diarization models are gated; without a token every " +
-        "segment is attributed to one speaker. Accept the model terms, then put HF_TOKEN=… in .env.",
+        "not set — diarization falls back to a single speaker, so every line is attributed " +
+        "to one voice. Accept Pyannote's model terms, then add `HF_TOKEN=hf_…` to " +
+        "`/Users/you/DubbingQwen/.env`",
     },
     {
       id: "model_translate",
       label: "Translation model — Gemma 3 12B (MLX, 4-bit)",
       ok: true,
+      severity: "blocking",
+      stage: "translate",
       detail: "6.9 GB — models/gemma-3-12b-it-qat-4bit",
     },
     {
       id: "model_tts",
       label: "Speech model — Qwen3-TTS 1.7B",
       ok: true,
+      severity: "blocking",
+      stage: "tts",
       detail: "3.4 GB — models/qwen3-tts-1.7b",
     },
     {
       id: "model_asr",
       label: "Transcription model — faster-whisper large-v3",
       ok: true,
+      severity: "blocking",
+      stage: "tts",
       detail: "3.1 GB — models/faster-whisper-large-v3",
     },
     {
       id: "model_stems",
       label: "Stem separation — Demucs htdemucs",
       ok: false,
+      severity: "optional",
       detail:
-        "Not in models/demucs. Needed to lift the speech off the music before transcription. " +
-        "Run `uv run python -m dubbing.stems --download` to fetch it (320 MB).",
+        "Not in models/demucs. Fetched on the first stems run. " +
+        "Run `uv run python -m dubbing.stems --download` to get it now (320 MB).",
     },
     {
       id: "disk",
       label: "Free disk space",
       ok: true,
+      severity: "optional",
       detail: "184 GB free — a 20-minute run writes about 4 GB under outputs/",
     },
-  ].map((row) => ({ installable: false, ...row }));
+  ];
+  // `required` is the server's derived view of `severity`, and the fixture has to
+  // derive it the same way — a row that disagreed with itself would let the
+  // screen read one field on the server and the other here.
+  return rows.map((row) => ({
+    installable: false,
+    ...row,
+    required: row.severity === "blocking",
+  }));
 }
 
 /**
@@ -429,7 +475,7 @@ async function runInstall(id: string): Promise<void> {
     running: false,
     ok: true,
     tail: [...installState.tail, `🍺  /opt/homebrew/Cellar/${id}: 1 file`],
-    check: toolRow(id),
+    check: toolRow(id, TOOL_ROWS[id].stage),
   };
 }
 
@@ -447,8 +493,20 @@ async function runInstall(id: string): Promise<void> {
  */
 const HOUR = 3600;
 
-/** A row, plus how long ago it last moved — the list wants a clock time. */
-type OtherRun = Omit<ProjectSummary, "mtime"> & { age: number };
+/**
+ * A row, plus how long ago it last moved — the list wants a clock time — and,
+ * when the run died, the job that died.
+ *
+ * `failure` is not decoration either. The server keeps a project's jobs and the
+ * event stream deliberately replays nothing terminal, so after a reload the
+ * *reason* a run stopped exists only in that list. A fixture with a failed run
+ * and no failed job would demo the recovery panel with the one sentence that
+ * matters missing, which is the state it was written for.
+ */
+type OtherRun = Omit<ProjectSummary, "mtime"> & {
+  age: number;
+  failure?: { stage: Stage; error: string };
+};
 
 const OTHER_RUNS: OtherRun[] = [
   {
@@ -475,6 +533,12 @@ const OTHER_RUNS: OtherRun[] = [
     // The download itself failed — a dead URL, the commonest first-stage
     // failure there is — so this run has no source.wav and nothing to play.
     stages: { fetch: "failed" },
+    failure: {
+      stage: "fetch",
+      error:
+        "RuntimeError: yt-dlp exited 1 — ERROR: [youtube] 8pQ2mAy: Video unavailable. " +
+        "This video is no longer available.",
+    },
     age: 39 * HOUR,
   },
 ];
@@ -508,6 +572,9 @@ function detailOf(run: OtherRun): ProjectDetail {
       title: run.title,
       duration: run.duration,
       transcript_origin: "asr",
+      genre: "documentary",
+      register: "narration",
+      context: null,
     },
     speakers: {},
     stages: { ...run.stages },
@@ -515,16 +582,101 @@ function detailOf(run: OtherRun): ProjectDetail {
     // writes one, and neither of these runs has reached one that does.
     outputs: {},
     report: null,
+    jobs: [],
   };
+}
+
+/**
+ * A project's jobs, as `GET /api/projects/{name}` serves them: oldest first,
+ * this project's only.
+ *
+ * The dead job of a run that failed goes first, because it happened first — and
+ * because it is the whole point of the list. Everything the session has since
+ * enqueued follows it, so a resume shows up here the moment it is submitted.
+ */
+function jobsOf(name: string): Job[] {
+  const failure = OTHER_RUNS.find((run) => run.name === name)?.failure;
+  const dead: Job[] = failure
+    ? [{
+        id: `job_dead_${name}`,
+        project: name,
+        kind: "run",
+        status: "failed",
+        progress: 0.12,
+        stage: failure.stage,
+        message: null,
+        error: failure.error,
+      }]
+    : [];
+  return [...dead, ...jobs.filter((job) => job.project === name)].map((job) =>
+    structuredClone(job),
+  );
 }
 
 function projectOf(name: string): ProjectDetail {
   const other = OTHER_RUNS.find((run) => run.name === name);
-  return other ? detailOf(other) : structuredClone(store.project);
+  const detail = other ? detailOf(other) : (structuredClone(store.project) as ProjectDetail);
+  return { ...detail, jobs: jobsOf(name) };
 }
 
 export function getProject(name: string): Promise<ProjectDetail> {
   return delay(projectOf(name));
+}
+
+/**
+ * `PATCH /api/projects/{name}` — the three run options that are still a decision.
+ *
+ * No job, no stage invalidation: the server writes them onto `m["source"]` and
+ * they reach the translator the next time it runs. Only the snapshot project has
+ * a mutable source here; the two synthetic runs answer with what they would
+ * become, which is enough for a screen that re-reads the project afterwards.
+ */
+export function updateProject(
+  name: string,
+  patch: ProjectOptionsPatch,
+): Promise<ProjectSource> {
+  calls.log.push("updateProject");
+  calls.updated.push(structuredClone(patch));
+  if (activeJobsFor(name).length > 0) {
+    return Promise.reject(
+      new ApiError(
+        "busy",
+        `a job is running on '${name}' — run options are read when a job starts, ` +
+          "not while it runs",
+        409,
+      ),
+    );
+  }
+  const next: ProjectSource = {
+    ...projectOf(name).source,
+    ...(patch.genre ? { genre: patch.genre } : {}),
+    ...(patch.register ? { register: patch.register } : {}),
+    // "" is how the note is cleared — the one field with a way out.
+    ...(patch.context === undefined ? {} : { context: patch.context.trim() || null }),
+  };
+  if (name === store.project.name) store.project.source = next;
+  return delay(structuredClone(next));
+}
+
+/**
+ * `POST /api/projects/{name}/run` — run it again, which on a stopped run is a
+ * resume. Refused while anything is already in flight, exactly as the server
+ * refuses it: the pipeline would otherwise re-run the stages it is inside.
+ */
+export function resume(name: string): Promise<Job> {
+  calls.log.push("resume");
+  if (activeJobsFor(name).length > 0) {
+    return Promise.reject(
+      new ApiError("busy", `a job is already going on '${name}'`, 409),
+    );
+  }
+  return delay(structuredClone(makeJob("run", [], name)));
+}
+
+function activeJobsFor(name: string): Job[] {
+  return jobs.filter(
+    (job) => job.project === name && (job.status === "queued" || job.status === "running"),
+  );
 }
 
 /**
@@ -733,6 +885,9 @@ export function createProject(body: CreateProjectRequest): Promise<CreateProject
     context: body.context ?? null,
     genre: body.genre ?? null,
     register: body.register ?? null,
+    transcript_origin: body.transcript && body.transcript !== "auto"
+      ? body.transcript
+      : store.project.source.transcript_origin,
   };
   const job = makeJob("run", []);
   return delay({ name: store.project.name, job: structuredClone(job) });
@@ -745,11 +900,11 @@ export function enqueue(_name: string, kind: JobKind, uids: string[]): Promise<J
   return delay(structuredClone(job));
 }
 
-function makeJob(kind: JobKind, uids: string[]): Job {
+function makeJob(kind: JobKind, uids: string[], project = store.project.name): Job {
   jobSeq += 1;
   const job: Job = {
     id: `job_${jobSeq}`,
-    project: store.project.name,
+    project,
     kind,
     status: "queued",
     progress: null,
@@ -831,7 +986,12 @@ async function runJob(job: Job): Promise<void> {
         });
       }
     }
-    store.project.stages = { ...store.project.stages, [stage]: "done" };
+    // The *job's* project, not always the snapshot: a resume on a run that fell
+    // over at fetch has to move that run's stages, or the recovery panel it was
+    // started from stays stuck on the failure it just fixed.
+    const other = OTHER_RUNS.find((run) => run.name === job.project);
+    if (other) other.stages = { ...other.stages, [stage]: "done" };
+    else store.project.stages = { ...store.project.stages, [stage]: "done" };
     emit({ type: "stage", stage, status: "done", progress: 1 });
     emit({ type: "log", level: "info", message: `${stage} done` });
   }

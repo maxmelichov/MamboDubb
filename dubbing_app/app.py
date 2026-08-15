@@ -69,6 +69,27 @@ class CreateProject(Strict):
     captions: str | None = None
 
 
+class PatchProject(Strict):
+    """The three run options that are still a decision after the run has started.
+
+    Genre, register and context change what the *translator* is told; nothing
+    that has already been fetched, transcribed or segmented depends on them, so
+    they can be corrected without recreating the project — which is what the
+    import screen now promises. The source and the language pair are not here on
+    purpose: changing either invalidates the fetch and every stage after it,
+    which is a new project wearing an old project's name.
+
+    Every field is optional and `None` means "not supplied". `context` is the one
+    that can be *cleared*, by sending the empty string: a note that turned out to
+    be wrong has to have a way out, and the pipeline reads a missing context and
+    an empty one identically (`edit._args`, `cli.main`).
+    """
+
+    context: str | None = None
+    genre: Genre | None = None
+    register_: Register | None = Field(default=None, alias="register")
+
+
 class PatchSegment(Strict):
     """Every field is optional; `None` means "not supplied", never "clear".
 
@@ -108,6 +129,13 @@ class UidsBody(Strict):
 
 class RenderBody(Strict):
     pass
+
+
+class RunBody(Strict):
+    """Nothing. A resume takes no arguments — it re-runs *this* project, with the
+    options this project recorded. A body that could change them would make the
+    button "run it differently", which is what `PATCH /api/projects/{name}` is
+    for, and the two must not be one gesture."""
 
 
 class InstallBody(Strict):
@@ -189,6 +217,23 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
             if job.status == "running":
                 raise busy(f"job {job.id} ({job.kind}) is running on {name!r}; "
                            "structural edits would renumber segments under it")
+
+    def guard_idle(name: str, because: str) -> None:
+        """Refuse while this project has any job queued or running.
+
+        Stricter than `guard_structural`, which tolerates a *queued* job because a
+        queued job has not read the manifest yet. These two callers cannot:
+
+        * a resume enqueued behind a running run would re-run the stages the
+          running one is in the middle of, against the same directory;
+        * a run option changed while a job holds the manifest is a setting that
+          job has already read, and whose effect the user would then watch not
+          happen.
+
+        Both are cheap to refuse and expensive to explain afterwards.
+        """
+        for job in queue.active(name):
+            raise busy(f"job {job.id} ({job.kind}) is {job.status} on {name!r} — {because}")
 
     def enqueue(kind: str, name: str, payload: dict[str, Any]) -> dict[str, Any]:
         workdir = projects.require_dir(name)
@@ -302,6 +347,60 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
                 "stages": projects.stage_status(m, jobs),
                 "summary": projects.summary(name, jobs),
                 "jobs": jobs}
+
+    @app.patch("/api/projects/{name}")
+    def patch_project(name: str, body: PatchProject = Body(...)) -> dict[str, Any]:
+        """Change this run's genre, register or context.
+
+        Written as **flat keys** on `m["source"]`, which is the spelling
+        `dubbing.edit._args` reads first (`app_opts` is the app's own, older
+        record and loses to it). So the change reaches every path that re-runs
+        anything — a per-line re-translate, a render, a resume — without a second
+        copy of the setting anywhere.
+
+        No stage is invalidated and no job is enqueued: these three are inputs to
+        the *translator*, so they take effect the next time translation runs, and
+        saying so is the UI's job. Silently re-translating two hundred lines
+        because a dropdown moved would be a worse surprise than the wait.
+        """
+        fields = body.model_dump(exclude_unset=True, by_alias=True)
+        if not fields:
+            raise invalid("empty patch: send at least one of context, genre, register")
+        with lock_for(name):
+            guard_idle(name, "run options are read when a job starts, not while it runs")
+            m = projects.load(name)
+            source = m.setdefault("source", {})
+            for key, value in fields.items():
+                # The empty string is how a context note is *removed*; for the two
+                # Literals there is no such value, so `None` never gets this far.
+                source[key] = (value or "").strip() or None if key == "context" else value
+            projects.save(name, m)
+        return {"source": m["source"], "project": projects.summary(name)}
+
+    @app.post("/api/projects/{name}/run", status_code=202)
+    def resume_run(name: str, body: RunBody = Body(default=RunBody())) -> dict[str, Any]:
+        """Run this project — which, on a project that has already run, is a resume.
+
+        There is no separate resume machinery and there must not be: every stage
+        is skipped when its inputs and outputs are unchanged (AGENTS.md), so
+        enqueueing the same `run` job that created the project picks up exactly
+        where it stopped. The payload is the one `create_project` built, read back
+        off the manifest, so the resumed run reproduces the original run's argv —
+        including any option changed since through `PATCH /api/projects/{name}`.
+
+        The local-file probe `create_project` does is deliberately *not* repeated:
+        a run past `fetch` no longer needs its input, and refusing to resume a
+        half-finished dub because the source file has since been moved would be a
+        refusal with no cause behind it.
+        """
+        m = projects.load(name)
+        source = dict(m.get("source") or {})
+        if not source.get("input"):
+            raise invalid(f"project {name!r} does not record what it was made from, "
+                          "so there is nothing to re-run")
+        with lock_for(name):
+            guard_idle(name, "the run is already going")
+            return {"job": enqueue("run", name, {"source": source})}
 
     # -- segments ----------------------------------------------------------
 

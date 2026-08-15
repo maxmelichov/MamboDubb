@@ -62,6 +62,15 @@ export type ProjectActions = {
   retranslate: (uids: string[]) => Promise<void>;
   resynthesize: (uids: string[]) => Promise<void>;
   render: () => Promise<void>;
+  /**
+   * Run the pipeline on this project again — a resume, on one that stopped.
+   *
+   * Goes through `submit` like every other model action, which is what puts the
+   * refusal in the error bar: the server 409s while anything is already in
+   * flight, and a resume that silently did nothing would look exactly like a
+   * resume that worked.
+   */
+  resume: () => Promise<void>;
   cancel: (id: string) => Promise<void>;
   reload: () => Promise<void>;
   dismissError: () => void;
@@ -263,6 +272,7 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
       retranslate: (uids) => submit(uids, () => api.retranslate(name, uids)),
       resynthesize: (uids) => submit(uids, () => api.resynthesize(name, uids)),
       render: () => submit([], () => api.render(name)),
+      resume: () => submit([], () => api.resume(name)),
       // Optimistic in the same shape the event handler is: a cancel ends the
       // job, so the stage strip and the per-segment spinners end with it, and
       // whatever the worker saved on its way out is re-read. The `cancelled`

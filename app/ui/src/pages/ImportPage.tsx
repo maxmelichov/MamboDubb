@@ -7,9 +7,12 @@
  * - **New dub** — the generous card. It holds the two things you *type*: the
  *   source, and the context note. The single primary action sits in a sunken
  *   band at its foot, bottom-right, so it reads as the card's conclusion.
- * - **Options** — the rail beside it. Four labelled groups, hairlined apart:
- *   languages, genre, register, scope. Nothing here is typed prose; it is all
- *   picking, which is why it is a rail and not a second column of paragraphs.
+ * - **Options** — the rail beside it. Five labelled groups, hairlined apart:
+ *   languages, genre, register, transcript, scope. Nothing here is typed prose;
+ *   it is all picking, which is why it is a rail and not a second column of
+ *   paragraphs. It ends with the sentence that says which of these choices are
+ *   final — because two of them are, and a screen that does not say so is asking
+ *   people to guess whether a run is a commitment.
  * - **Existing runs** — full width underneath, as cards. The only other thing
  *   you can do from this screen is re-open one.
  *
@@ -29,6 +32,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   ArrowRight,
+  Captions,
   ChevronRight,
   Clapperboard,
   Film,
@@ -118,6 +122,11 @@ export function ImportPage() {
     context: "",
     genre: "documentary",
     register: "narration",
+    // The pipeline's own default: captions when the fetch found some, ASR
+    // otherwise. Accepted by the server since the first day and unreachable from
+    // this screen until now, so a user who knew the auto-captions were garbage
+    // had no way to say so.
+    transcript: "auto",
     // Off, because off is what the pipeline does when nobody says otherwise.
     dub_foreign: false,
   });
@@ -202,11 +211,28 @@ export function ImportPage() {
           className="flex flex-col overflow-hidden rounded-3xl p-0 shadow-lift"
         >
           <CardSection className="pt-6">
-            <SectionLabel icon={FileVideo}>Source</SectionLabel>
+            {/*
+              The only field on this screen that must be filled in, and the only
+              one that said nothing about it. Every other control has a default,
+              so the screen read as "all optional" right up to the moment Start
+              dubbing answered with a refusal — a rule learned by breaking it.
+            */}
+            <div className="flex items-baseline gap-2">
+              <SectionLabel icon={FileVideo}>Source</SectionLabel>
+              <span
+                data-required
+                className="text-[10px] font-bold uppercase tracking-[0.14em]"
+                style={{ color: "var(--color-critical)" }}
+              >
+                * required
+              </span>
+            </div>
             <div className="mt-3 flex flex-col gap-2 sm:flex-row">
               <TextInput
                 className="h-12 flex-1 rounded-xl px-4 text-[14px]"
                 value={form.source}
+                required
+                aria-required="true"
                 aria-label="Source"
                 placeholder="https://www.youtube.com/watch?v=… or /Users/you/clip.mp4"
                 onChange={(event) => update({ source: event.currentTarget.value })}
@@ -351,7 +377,8 @@ export function ImportPage() {
                 <span className="block text-[12.5px] text-secondary">Dub foreign speech</span>
                 <span className="mt-0.5 block text-[12px] leading-relaxed text-muted">
                   A third language inside the video is translated and voiced too — otherwise it
-                  plays as recorded, subtitled.
+                  plays as recorded, subtitled — individual lines can still be switched to dubbed
+                  later, in the editor.
                 </span>
               </span>
             </label>
@@ -406,7 +433,41 @@ export function ImportPage() {
 
           <Divider />
 
-          <CardSection className="px-5 pb-6 sm:px-5">
+          {/*
+            Where the words come from.
+            The pipeline takes `--transcript auto|captions|asr` and this screen
+            had no way to say it, so a run whose auto-captions were mangled — the
+            case invariant 4 in AGENTS.md exists for — could only be fixed from
+            the CLI. `auto` is the pipeline's own answer and stays the default;
+            the other two are for the user who has already heard the result.
+          */}
+          <CardSection className="px-5 sm:px-5">
+            <SectionLabel icon={Captions}>Transcript</SectionLabel>
+            <Field className="mt-3" label="Where the words come from">
+              <Select
+                aria-label="Transcript source"
+                value={form.transcript ?? "auto"}
+                onChange={(event) =>
+                  update({
+                    transcript: event.currentTarget
+                      .value as CreateProjectRequest["transcript"],
+                  })
+                }
+              >
+                <option value="auto">Automatic</option>
+                <option value="captions">The video's captions</option>
+                <option value="asr">Transcribe it here</option>
+              </Select>
+            </Field>
+            <p className="mt-2 text-[12px] leading-relaxed text-muted">
+              Automatic uses the downloaded captions when there are any and transcribes locally
+              otherwise. Force transcription when the captions are auto-generated and mangled.
+            </p>
+          </CardSection>
+
+          <Divider />
+
+          <CardSection className="px-5 sm:px-5">
             <SectionLabel icon={Timer}>Scope</SectionLabel>
             <div className="mt-3 grid grid-cols-2 gap-3">
               <Field label="Duration cap" hint="blank = all of it">
@@ -415,7 +476,11 @@ export function ImportPage() {
                   step={10}
                   suffix="sec"
                   value={form.duration ?? ""}
-                  placeholder="320"
+                  // An example, not an instruction. A bare "320" in an empty
+                  // field reads as a value that is already set — which is
+                  // exactly the wrong thing to think about the one control that
+                  // decides whether this run is four minutes or two hours.
+                  placeholder="e.g. 320"
                   aria-label="Duration cap in seconds"
                   onChange={(event) =>
                     update({
@@ -428,12 +493,30 @@ export function ImportPage() {
               <Field label="Run name" hint="blank = from the title">
                 <TextInput
                   value={form.name ?? ""}
-                  placeholder="my_first_dub"
+                  placeholder="e.g. my_first_dub"
                   aria-label="Run name"
                   onChange={(event) => update({ name: event.currentTarget.value || null })}
                 />
               </Field>
             </div>
+          </CardSection>
+
+          {/*
+            What is still a decision after this button, and what is not.
+            Genre, register and context are inputs to the translator and can be
+            corrected from the editor's run menu at any time. The source and the
+            language pair are not: changing either invalidates the fetch and
+            every stage after it, which is a new project wearing an old
+            project's name. Saying so here costs one line and saves the run
+            somebody would otherwise abandon rather than "risk" starting.
+          */}
+          <CardSection
+            tone="sunken"
+            className="mt-auto border-t border-border px-5 py-4 sm:px-5"
+          >
+            <p className="text-[12px] leading-relaxed text-muted" data-rail-note>
+              Genre, register and context can be changed later; the source and languages cannot.
+            </p>
           </CardSection>
         </Card>
       </div>
