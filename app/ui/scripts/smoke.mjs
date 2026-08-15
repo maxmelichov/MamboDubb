@@ -99,6 +99,39 @@ check(
 );
 
 /*
+ * One contract, one error type, one 404 branch.
+ *
+ * `peaks` returns null when the file is not there yet — `dub.wav` does not
+ * exist until the mix stage has run — and the fixture call was routed *around*
+ * the catch that does it, so the one branch this method exists for behaved one
+ * way against the server and threw in the only mode that is ever tested. It is
+ * the same bug the fixtures' plain `new Error(...)` rejections cause everywhere
+ * else: an error with no code and no status cannot be branched on at all.
+ */
+const fixtureSource = readFileSync(new URL("../src/lib/fixtures.ts", import.meta.url), "utf8");
+check(
+  "the fixture's 404 goes through the same catch as the server's",
+  /try \{\s*if \(USE_FIXTURES\) return await fixtures\.peaks/.test(apiSource),
+);
+check(
+  "every fixture rejection is an ApiError, not a bare Error",
+  !/new Error\(/.test(fixtureSource) && /new ApiError\(/.test(fixtureSource),
+);
+/* And the invented busy sentence is gone from the artifact: 409/busy is raised
+   for edits the server *refuses*, which are never queued behind anything. */
+const bundleSource = readFileSync(new URL(bundle, assetDir), "utf8");
+check("a refusal is never reported as a queued job", !/queued behind it/.test(bundleSource));
+/* One table for what a PATCH does, imported by both sides of the seam. The
+   fixture used to carry its own copy, which modelled three of the seven
+   patchable fields — a speaker change kept the clip in the old voice. */
+check(
+  "the fixture applies patches through the shared prediction, not a copy",
+  /import \{ applyPatch \} from "\.\/patch"/.test(fixtureSource) &&
+    /Object\.assign\(seg, applyPatch\(seg, patch\)\)/.test(fixtureSource) &&
+    !/locked\.keep = true/.test(fixtureSource),
+);
+
+/*
  * The state palette, checked structurally rather than by hex.
  *
  * Pinning "kept is #306357" in a test is pinning a *decision* that is allowed
@@ -290,6 +323,20 @@ check("editor renders", /Render preview/.test(editor));
 check("with nothing selected the rail summarises the run", /This run/.test(editor));
 check("…counting the lines by state", /Dubbed/.test(editor) && /Kept original/.test(editor));
 check("…saying why the kept ones were kept", /Kept because/.test(editor));
+/*
+ * …in words, not in manifest tokens.
+ *
+ * `keep_reason` is a pipeline enum (`latin`, `speaker_en`, `tts_failed`, and —
+ * after a headless re-run of a keep made right here — `user`), and it was
+ * printed raw. So the app told the user "Kept because user" about a button they
+ * had pressed themselves, while special-casing exactly two of the tokens
+ * somewhere else entirely. One mapping, used by the rail and the panel both.
+ */
+check("…in a phrase rather than a manifest token", /already in the target language/.test(editor));
+check(
+  "…with no raw enum left on screen",
+  !/\blatin\b/.test(editor) && !/speaker_en/.test(editor) && !/tts_failed/.test(editor),
+);
 check("…and where speech is uncovered", /Audible, uncovered/.test(editor));
 check("the empty rail is not an apology", !/No line selected/.test(editor));
 check("the script loaded", document.querySelectorAll('[role="option"]').length > 40);
@@ -385,7 +432,7 @@ check("every row carries its state shape", rows().every((r) => r.querySelector("
 // card — under the 3:1 gate — and there is no legend on screen any more.
 check(
   "every row says its state in words",
-  rows().every((r) => /Dub|Keep|Fail|Voice|Text/.test(r.textContent)),
+  rows().every((r) => /Dub|Keep|Fail|Render|Voice|Text/.test(r.textContent)),
 );
 check("the legend is not permanent chrome", !editor.includes("Unclaimed time"));
 
@@ -511,8 +558,10 @@ check(
  * that reaches the element went through the seam, and it is not the raw one.
  */
 const played = [];
+let sounding = null;
 dom.window.HTMLMediaElement.prototype.play = function play() {
   played.push(this.src);
+  sounding = this;
   return Promise.resolve();
 };
 const press = (el) => el.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
@@ -538,6 +587,47 @@ check(
 press(clip(rowFor(1), "B"));
 await settle(120);
 check("pressing the sounding side again stops it", clip(rowFor(1), "B").getAttribute("aria-pressed") === "false");
+
+/*
+ * A is a *window* of the source track, and the window has two edges.
+ *
+ * `media.source_window` has been on the wire since `Projects.enrich` was
+ * written and had no consumers at all: the element got the URL, then
+ * `currentTime = 0`, which fights the `#t=start,end` fragment's own seek — so
+ * pressing A on a line an hour in could play the top of the video — and nothing
+ * anywhere enforced the fragment's *end*, so it then ran on into the next
+ * lines. Both edges are enforced from the numbers now, which is also the only
+ * way they can be checked: jsdom loads no media, so a fragment would do nothing
+ * here and a browser's handling of it is not the app's to rely on.
+ */
+const row9 = rowFor(9);
+const window9 = JSON.parse(row9.querySelector('[data-clip="A"]').getAttribute("data-window"));
+press(clip(row9, "A"));
+await settle(120);
+check("A knows which span of the source it is", window9[1] > window9[0]);
+check("pressing A seeks to the segment's start, not to 0:00", sounding.currentTime === window9[0]);
+// The element reports its own position as it plays; the span's end has to stop
+// it, or A runs into the lines after it.
+sounding.currentTime = window9[1] + 0.01;
+sounding.dispatchEvent(new dom.window.Event("timeupdate"));
+await settle(120);
+check(
+  "…and stops at its end instead of running on",
+  clip(rowFor(9), "A").getAttribute("aria-pressed") === "false",
+);
+// The dub side is a clip file that is already exactly the segment, so it has no
+// window to confine it and must not inherit the last one's.
+press(clip(rowFor(9), "B"));
+await settle(120);
+sounding.currentTime = window9[1] + 5;
+sounding.dispatchEvent(new dom.window.Event("timeupdate"));
+await settle(120);
+check(
+  "the dub side plays the whole clip — it is not a window",
+  clip(rowFor(9), "B").getAttribute("aria-pressed") === "true",
+);
+press(clip(rowFor(9), "B"));
+await settle(120);
 
 /*
  * Inline editing. The translation is edited where it is read — that is the
@@ -649,20 +739,61 @@ check(
 // flip stamps. The third is the one edited by hand a few checks above.
 check("the Edited chip counts the line just edited", /Edited\s*3/.test(chip("Edited").textContent));
 
+/*
+ * What "failed" is.
+ *
+ * It used to be `tts.verify === "failed"` — a value `dubbing/tts.py` has never
+ * written; its verdicts are ok / soft / keep. A real failure is a keep the
+ * pipeline decided *against itself*: the voice could not say the line
+ * (`tts_failed`) or the translator could not produce the target language
+ * (`mt_failed`), and either way the segment is stored as a keep with a slice of
+ * the original attached so the mix is never silent. Which the UI drew as a calm
+ * green "Kept original" — the pipeline's own losses, reported as resolved, with
+ * a Failed chip that could only ever count zero.
+ */
 clickIt(chip("Failed"));
 await settle(200);
-check("the Failed chip narrows the script", rows().length < 40);
+check("the Failed chip narrows the script", rows().length < 40 && rows().length > 0);
+check("…and it finds the keeps the pipeline decided against itself", rows().length === 2);
+check(
+  "…which are keeps, and still say so",
+  rows().every((r) => r.textContent.includes("original audio plays here")),
+);
 const bulk = [...document.querySelectorAll("button")].find((b) =>
   /Re-voice these \d+/.test(b.textContent),
 );
 check("a filtered set can be fixed in one job", bulk != null);
+// The bulk set used to be `visible.filter(seg => !seg.keep)`, which is every
+// row on this screen removed: both buttons offered a job for nobody.
+check("…over the lines the chip actually found", /Re-voice these 2/.test(bulk.textContent));
 check(
   "…and re-translated in one job too",
-  [...document.querySelectorAll("button")].some((b) => /Re-translate these \d+/.test(b.textContent)),
+  [...document.querySelectorAll("button")].some((b) => /Re-translate these 2/.test(b.textContent)),
 );
 clickIt(chip("Failed"));
 await settle(200);
 check("the chip toggles back off", rows().length > 40);
+
+// The panel says which failure it is, because the two have different fixes:
+// `edit.resynthesize` reopens a tts_failed keep on the way in, and a mt_failed
+// one needs the translator first.
+clickIt(chip("Failed"));
+await settle(200);
+clickIt(rows()[0].querySelector('[aria-label^="Select segment"]'));
+await settle(250);
+check(
+  "a failed line names its failure",
+  /Synthesis failed for this line|Translation failed for this line/.test(root.textContent),
+);
+const revoice = [...document.querySelectorAll("aside button")].find((b) =>
+  b.textContent.includes("Re-voice this line"),
+);
+check(
+  "…and the way out of it is not disabled because it is a keep",
+  revoice != null && !revoice.disabled,
+);
+clickIt(chip("Failed"));
+await settle(200);
 
 /*
  * Limbo, and the way out of it.
@@ -676,25 +807,43 @@ check("the chip toggles back off", rows().length > 40);
 clickIt(chip("Unfinished"));
 await settle(200);
 const stuck = rows();
-// Two from the fixture — one stranded by a verdict flip, one never voiced —
-// plus the line whose translation was rewritten by hand a few checks above,
-// which dropped the clip that said the old words.
-check("the Unfinished chip finds the stranded lines", stuck.length === 3);
+// Three from the fixture — one stranded by a verdict flip, one never voiced,
+// one voiced and never placed — plus the line whose translation was rewritten
+// by hand a few checks above, which dropped the clip that said the old words.
+check("the Unfinished chip finds the stranded lines", stuck.length === 4);
 const stranded = stuck.find((r) => r.textContent.includes("not translated yet"));
 check("…the one a Dub it left with nothing to say", stranded != null);
 check(
   "…still carrying the keep lock that flip stamped on it",
   stranded.querySelector('[aria-label^="Hand-edited"]') != null,
 );
+/*
+ * …and the one that is *not* waiting on a model.
+ *
+ * A line with a clip and no placement is the ordinary state of a segment
+ * between a re-voice and the render that lays it down. It read as "Needs
+ * voice", so the one-click fix swept it up and queued a minute of synthesis to
+ * reproduce a clip that already existed — and left it exactly as unplaced as it
+ * found it, because only `timeline.place` can finish it.
+ */
+const unplaced = stuck.filter((r) => /Render/.test(r.textContent));
+check("…the one that is synthesized and waiting for a render", unplaced.length === 1);
 check(
   "…and the ones that only need a voice",
-  stuck.filter((r) => r !== stranded).every((r) => /Voice/.test(r.textContent)),
+  stuck.filter((r) => r !== stranded && !unplaced.includes(r)).every((r) =>
+    /Voice/.test(r.textContent),
+  ),
 );
 check(
   "…fixable in one click, not two hundred",
   [...document.querySelectorAll("button")].some((b) =>
     /Translate & voice these 3/.test(b.textContent),
   ),
+);
+// Four rows, three of them model work: the render one is offered a render.
+check(
+  "the line that only needs a render is offered one, not a re-voice",
+  [...document.querySelectorAll("button")].some((b) => /^Render 1$/.test(b.textContent.trim())),
 );
 clickIt(chip("Unfinished"));
 await settle(200);
@@ -981,9 +1130,54 @@ check(
   "re-opening a run mid-job finds the job again — the stream replays it",
   /Rendering preview/.test(root.textContent),
 );
+/*
+ * Cancelling is an ending, not a pause.
+ *
+ * The worker's journal saves whatever the job finished before it stopped, so a
+ * cancelled run has real results on disk — and the editor only treated
+ * done|failed as terminal, so the stage strip and every per-segment spinner
+ * stayed up and the partial work was never re-read. The refetch is the claim
+ * worth counting: it is invisible in the DOM (the segments come back looking
+ * the same) and it is the whole difference.
+ */
+const readsBeforeCancel = calls().segments;
 click("Cancel");
 await settle(500);
 check("…and it is the same job, cancellable from here", !/Rendering preview/.test(root.textContent));
+check("a cancel is terminal — the partial work is read back", calls().segments > readsBeforeCancel);
+
+/*
+ * "Inherit" has to be able to undo an override.
+ *
+ * The per-segment language pair is the one field in the patch body where the
+ * empty string means *clear* — `null` is "not supplied, leave it alone" for
+ * everything (`app.py::PatchSegment`), and the select was sending `value ||
+ * null`. So picking "inherit" sent a patch the server correctly ignored: an
+ * override could be set and never taken off. And clearing it is a translate
+ * invalidation like any other — the line was translated under the old pair.
+ */
+clickIt(rowFor(23).querySelector('[aria-label^="Select segment"]'));
+await settle(250);
+const timing = [...document.querySelectorAll("aside details")].find((d) =>
+  d.querySelector("summary").textContent.includes("Timing & languages"),
+);
+check("the segment carries a language override", /ar → en/.test(timing.textContent));
+if (!timing.open) clickIt(timing.querySelector("summary"));
+await settle(150);
+const spoken = [...timing.querySelectorAll("select")].find((s) => s.value === "ar");
+if (!spoken) throw new Error("smoke: no spoken-language select on the override segment");
+const selectValue = Object.getOwnPropertyDescriptor(
+  dom.window.HTMLSelectElement.prototype,
+  "value",
+).set;
+selectValue.call(spoken, "");
+spoken.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+await settle(300);
+check("picking inherit clears the override", /inherit → en/.test(timing.textContent));
+check(
+  "…and the translation made under the old pair goes with it",
+  rowFor(23).textContent.includes("not translated yet"),
+);
 
 check(
   "no console errors",
