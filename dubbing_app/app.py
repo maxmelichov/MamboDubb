@@ -13,6 +13,8 @@ handlers:
 
 from __future__ import annotations
 
+import json
+import secrets
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -159,8 +161,91 @@ class InstallBody(Strict):
 # app
 # ---------------------------------------------------------------------------
 
+class RequestGate:
+    """The request gate, chosen by how the server is bound (dubbing_app/server.py).
+
+    * Loopback bind (the default, and the desktop shell's only mode): no token,
+      but the Host header must BE a loopback name. Strict CORS already stops a
+      malicious page reading responses — DNS rebinding is the remaining move,
+      serving the attacker's page from a hostname that *resolves* to 127.0.0.1:
+      same-origin in the browser's eyes, foreign in the Host header, which is
+      why the header is the check. ("testserver" is FastAPI's TestClient
+      default; not a name a browser can be steered to via public DNS.)
+    * Non-loopback bind: the Host header can legitimately be any LAN name, so
+      the gate is a bearer token instead — Jupyter-style: `?token=` once sets
+      an HttpOnly cookie and every later request (media, events, the lot)
+      rides the cookie.
+
+    Pure ASGI on purpose, not `@app.middleware`: that decorator is Starlette's
+    BaseHTTPMiddleware, which re-streams every response through a shim that
+    loses client-disconnect cancellation — the events stream then never
+    released its subscription. Raw ASGI passes the stream and its cancellation
+    through untouched. OPTIONS passes free: a CORS preflight carries neither
+    cookie nor token by design, and answering it reveals nothing.
+    """
+
+    TRUSTED_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "testserver"})
+    COOKIE = "mambodubb_token"
+
+    def __init__(self, app, *, token: str | None):
+        self.app = app
+        self.token = token
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("method") == "OPTIONS":
+            return await self.app(scope, receive, send)
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1")
+                   for k, v in scope.get("headers") or []}
+        if self.token:
+            return await self._token_gate(scope, receive, send, headers)
+        host = headers.get("host", "").strip()
+        name = (host[1:host.index("]")] if host.startswith("[") and "]" in host
+                else host.rsplit(":", 1)[0] if host.count(":") == 1 else host)
+        if name.lower() not in self.TRUSTED_HOSTS:
+            return await self._refuse(send, 403, f"refused Host {host!r}: this "
+                                      "server answers loopback names only")
+        await self.app(scope, receive, send)
+
+    async def _token_gate(self, scope, receive, send, headers) -> None:
+        from urllib.parse import parse_qs
+
+        cookie = headers.get("cookie", "")
+        supplied = ""
+        for part in cookie.split(";"):
+            name, _, value = part.strip().partition("=")
+            if name == self.COOKIE:
+                supplied = value
+        from_cookie = bool(supplied)
+        if not supplied:
+            qs = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+            supplied = (qs.get("token") or [""])[0]
+        if not supplied:
+            supplied = headers.get("authorization", "").removeprefix("Bearer ").strip()
+        if not secrets.compare_digest(supplied, self.token):
+            return await self._refuse(send, 401, "authentication required: open "
+                                      "the ?token=… link the server printed at startup")
+
+        async def send_with_cookie(message):
+            if message["type"] == "http.response.start" and not from_cookie:
+                message["headers"] = list(message.get("headers") or []) + [
+                    (b"set-cookie",
+                     f"{self.COOKIE}={self.token}; HttpOnly; SameSite=Strict; "
+                     "Path=/".encode())]
+            await send(message)
+
+        await self.app(scope, receive, send_with_cookie)
+
+    @staticmethod
+    async def _refuse(send, status: int, message: str) -> None:
+        body = json.dumps({"error": message}).encode()
+        await send({"type": "http.response.start", "status": status,
+                    "headers": [(b"content-type", b"application/json"),
+                                (b"content-length", str(len(body)).encode())]})
+        await send({"type": "http.response.body", "body": body})
+
+
 def create_app(outputs: Path, *, runner=None, version: str | None = None,
-               ui_dir: str | Path | None = None) -> FastAPI:
+               ui_dir: str | Path | None = None, token: str | None = None) -> FastAPI:
     from . import __version__
 
     version = version or __version__
@@ -196,10 +281,24 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
     app.state.installer = installer
     app.state.version = version
     errors.install(app)
-    # The Vite dev server is a different origin; the server only ever binds
-    # loopback, so this is not a wider hole than the port already is.
-    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
-                       allow_headers=["*"], expose_headers=["Content-Range", "Accept-Ranges"])
+    # The gate goes on first so the CORS layer added after it wraps OUTSIDE it
+    # (Starlette: later add_middleware = outermost) and answers preflights
+    # itself — an OPTIONS request carries neither cookie nor token by design.
+    app.add_middleware(RequestGate, token=token)
+    # Exactly the cross-origin callers that exist, and no others. `["*"]` here
+    # meant any web page open in the user's browser could read and drive this
+    # API on localhost — the server can read the filesystem and run the
+    # pipeline, so that wildcard was the hole, not the port. The Tauri webview
+    # (tauri://localhost, and tauri.localhost on Windows) and a localhost Vite
+    # dev server are the only legitimate foreign origins; the served UI is
+    # same-origin and needs no CORS at all.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"^(tauri://localhost|https?://tauri\.localhost"
+                           r"|http://(localhost|127\.0\.0\.1)(:\d+)?)$",
+        allow_methods=["*"], allow_headers=["*"],
+        expose_headers=["Content-Range", "Accept-Ranges"],
+    )
 
     def lock_for(name: str) -> threading.Lock:
         with locks_guard:

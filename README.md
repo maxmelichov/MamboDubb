@@ -77,9 +77,14 @@ uv run mambodubb --port 4400                          # → http://127.0.0.1:440
 ```
 
 `--outputs` picks the run directory root (default `outputs/`); pass
-`--ui-dir ""` to serve the API alone. The server has **no authentication** —
-it can read your filesystem and run the pipeline, so keep it on `127.0.0.1`
-(the default) and don't bind it to a network-visible address.
+`--ui-dir ""` to serve the API alone.
+
+On the default loopback bind no login is needed; requests with a non-local
+`Host` header are refused (DNS-rebinding guard). Binding any other address
+(`--host 0.0.0.0` for LAN use) **requires a token**: pass `--token`, or let the
+server generate one — it prints a one-click `?token=…` link that sets a cookie
+for the rest of the session. The traffic is plain HTTP; treat the LAN mode as
+"trusted home network", not "the internet".
 
 ## Languages
 

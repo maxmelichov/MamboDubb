@@ -22,6 +22,7 @@ import argparse
 import json
 import logging
 import os
+import secrets
 import socket
 import sys
 import threading
@@ -61,6 +62,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--ui-dir", default=None,
                    help="directory of the built UI (default: app/ui/dist; "
                         "pass an empty string to serve the API only)")
+    p.add_argument("--token", default=None,
+                   help="bearer token required on every request; auto-generated "
+                        "(and printed) whenever --host is not loopback")
     p.add_argument("--no-watchdog", action="store_true",
                    help="do not exit when the parent process goes away")
     p.add_argument("--exit-on-stdin-close", action="store_true",
@@ -160,7 +164,14 @@ def main(argv: list[str] | None = None) -> int:
 
     outputs = args.outputs.resolve()
     outputs.mkdir(parents=True, exist_ok=True)
-    app = create_app(outputs, ui_dir=args.ui_dir)
+
+    # Loopback binds are gated by the Host header; anything else is reachable
+    # from the network and REQUIRES a token — generated here when the flag
+    # didn't supply one, never skipped. The token has to outrank the bind
+    # address because the server can read the filesystem and run the pipeline.
+    loopback = args.host in ("127.0.0.1", "localhost", "::1")
+    token = args.token or (None if loopback else secrets.token_urlsafe(24))
+    app = create_app(outputs, ui_dir=args.ui_dir, token=token)
 
     sock = bind(args.host, args.port)
     port = sock.getsockname()[1]
@@ -174,6 +185,10 @@ def main(argv: list[str] | None = None) -> int:
     served = getattr(app.state, "ui_dir", None)
     print(f"mambodubb on http://{args.host}:{port} (outputs {outputs}; "
           f"ui {served or 'not served API only'})", file=sys.stderr, flush=True)
+    if token:
+        # The one line the user needs: opening this URL once sets the cookie.
+        print(f"  open http://{args.host}:{port}/?token={token}",
+              file=sys.stderr, flush=True)
 
     server = uvicorn.Server(uvicorn.Config(app, log_config=log_config, access_log=False))
     server.run(sockets=[sock])

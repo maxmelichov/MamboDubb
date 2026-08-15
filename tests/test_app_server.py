@@ -2258,3 +2258,33 @@ def test_create_project_probes_a_local_input_before_making_anything(client, outp
     ok.write_bytes(b"\x00" * 64)
     r = client.post("/api/projects", json={"source": str(ok), "name": "probe_ok"})
     assert r.status_code == 201
+
+
+class TestRequestGate:
+    """The two gates: loopback Host names without a token, the token with one."""
+
+    def test_foreign_host_refused(self, client):
+        # DNS rebinding serves the attacker's page from a name that RESOLVES to
+        # 127.0.0.1 — same-origin to the browser, foreign in the Host header.
+        r = client.get("/api/projects", headers={"host": "evil.example:53943"})
+        assert r.status_code == 403
+
+    def test_loopback_hosts_pass(self, client):
+        for host in ("localhost:1", "127.0.0.1:9999", "[::1]:80", "localhost"):
+            assert client.get("/api/projects", headers={"host": host}).status_code == 200
+
+    def test_token_mode(self, tmp_path):
+        from fastapi.testclient import TestClient
+
+        from dubbing_app.app import create_app
+
+        app = create_app(tmp_path, ui_dir="", token="s3cret")
+        with TestClient(app) as c:
+            assert c.get("/api/projects").status_code == 401
+            assert c.get("/api/projects?token=wrong").status_code == 401
+            first = c.get("/api/projects?token=s3cret")
+            assert first.status_code == 200
+            # The ?token= visit set the cookie; later requests ride it bare.
+            assert c.get("/api/projects").status_code == 200
+            assert c.get("/health", headers={"Authorization": "Bearer s3cret"},
+                         cookies={}).status_code == 200
