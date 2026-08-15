@@ -372,17 +372,28 @@ function Row({
       */}
       <div
         className={cn(
-          "flex w-[88px] shrink-0 items-start gap-0.5 pt-0.5",
+          // Wide enough for the two words and the menu. It was 88px when the
+          // buttons said "A" and "B"; the 36 the labels cost come out of the
+          // reading column, which is the trade the words are worth.
+          "flex w-[124px] shrink-0 items-start gap-0.5 pt-0.5",
           "invisible group-hover/row:visible",
           (selected || menuOpen) && "visible",
         )}
       >
-        {/* A is a *window* of the source track, not a file of its own: the
+        {/* Orig is a *window* of the source track, not a file of its own: the
             server says which one in `media.source_window`, and without it the
             press starts wherever the browser felt like starting and never
-            stopped at the segment's end. */}
+            stopped at the segment's end.
+
+            "A" and "B" were the keyboard's names for these, printed on the
+            buttons — a convention from comparison tools, which this is, but one
+            that tells a reviewer meeting the row nothing about which side is
+            which. The words say it; `a` and `b` still press them, and the
+            shortcut list names both. `data-clip` stays A/B: it is the seam the
+            smoke test reads, and the sides have not changed. */}
         <ClipButton
-          label="A"
+          id="A"
+          label="Orig"
           title="Play the original audio for this span"
           url={sourceUrl}
           window={seg.media?.source_window ?? null}
@@ -390,7 +401,8 @@ function Row({
           onPlay={onPlay}
         />
         <ClipButton
-          label="B"
+          id="B"
+          label="Dub"
           title={
             seg.keep
               ? "No dub exists — this line keeps the original, so A and B would be the same audio"
@@ -596,8 +608,9 @@ function RowEditor({
   );
 }
 
-/** A/B, one clip each, on the app's single shared audio element. */
+/** Orig/Dub, one clip each, on the app's single shared audio element. */
 function ClipButton({
+  id,
   label,
   title,
   url,
@@ -606,6 +619,9 @@ function ClipButton({
   onPlay,
   emptyTitle,
 }: {
+  /** The side, A or B — the keybinding's name and the smoke test's handle. */
+  id: "A" | "B";
+  /** The word on the button. */
   label: string;
   title: string;
   url: string | null;
@@ -618,7 +634,7 @@ function ClipButton({
   return (
     <button
       type="button"
-      data-clip={label}
+      data-clip={id}
       data-url={url ?? ""}
       // The span this side is confined to, for the same reason `data-url` is
       // here: it is the contract the smoke test can see from outside.

@@ -121,14 +121,21 @@ const ANNOUNCE_MS = 4000;
  */
 type KeptUndo = { uid: string; id: number; text_en: string | null };
 
-/** Every shortcut the editor binds, in the order they are learned. */
+/**
+ * Every shortcut the editor binds, in the order they are learned.
+ *
+ * `a` and `b` name the buttons they press, which now say Orig and Dub on their
+ * faces. The keys did not change — a comparison tool's A and B are worth keeping
+ * as *keys* — but a help list that says "play the original" next to a button
+ * labelled "Orig" is one vocabulary, and it used to be two.
+ */
 const SHORTCUTS: [string[], string][] = [
   [["space"], "play / pause"],
   [["↑", "↓"], "previous / next line"],
   [["↵"], "edit the selected translation"],
   [["esc"], "leave the field without saving"],
-  [["a"], "play the original for the selected line"],
-  [["b"], "play the dub for the selected line"],
+  [["a"], "play Orig — the original for this line"],
+  [["b"], "play Dub — the dubbed clip for this line"],
   [["k"], "switch between dub and keep"],
   [["s"], "split the selection at the playhead"],
   [["+", "−"], "zoom the timeline"],

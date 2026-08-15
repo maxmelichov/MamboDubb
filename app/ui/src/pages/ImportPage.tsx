@@ -195,7 +195,17 @@ export function ImportPage() {
   return (
     <PageShell
       width="wide"
-      title="New dub."
+      /*
+       * The page is the workspace, not the form on it.
+       *
+       * It was titled "New dub." — which is the name of the card at the top of
+       * it, and left the nav cell saying "Runs" while the page it went to said
+       * something else. Every run in `outputs/` is listed here and re-opening
+       * one is at least as common a reason to be on this screen as starting
+       * another; the card below still says what it is and its button still says
+       * "Start dubbing".
+       */
+      title="Runs."
       accent="Entirely on this machine."
       lede={
         <>
@@ -274,7 +284,16 @@ export function ImportPage() {
               this generous, a second boxed field is a box in a box, and the
               focus ring in App.css is affordance enough once the caret is in. */}
           <CardSection className="flex flex-1 flex-col pb-6">
-            <SectionLabel icon={PencilLine}>Context</SectionLabel>
+            {/*
+              The label leads with the word that answers the question the field
+              raises. Source is marked required in red beside its own label, so
+              a second unmarked field of the same size directly under it reads as
+              the second half of one form — and a user who does not know what to
+              write in it stops there. "Optional" first, because that is the
+              part that unblocks them; the sentence under the field still says
+              it is the cheapest thing on the screen.
+            */}
+            <SectionLabel icon={PencilLine}>Optional — Context</SectionLabel>
             <TextArea
               className={cn(
                 "mt-2 min-h-40 flex-1 resize-none border-transparent bg-transparent px-0 text-[13.5px]",
@@ -286,8 +305,8 @@ export function ImportPage() {
               onChange={(event) => update({ context: event.currentTarget.value })}
             />
             <p className="mt-3 text-[11.5px] leading-relaxed text-muted">
-              Optional, and the single cheapest thing on this screen: a sentence of context
-              materially improves the translation.
+              The single cheapest thing on this screen: a sentence of context materially
+              improves the translation.
             </p>
           </CardSection>
 

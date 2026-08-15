@@ -184,13 +184,24 @@ export function subtitleOnly(seg: Segment): boolean {
  * takes the resolved green, so a run where every line is correctly kept is a
  * calm screen instead of two hundred rows of amber.
  */
+/**
+ * `short` is the word a script row prints, and it is only allowed to be shorter
+ * than `label` where the shortening loses nothing.
+ *
+ * Three of them lost the sentence. "Voice" and "Text" were abbreviations of
+ * "Needs voice" and "Needs translation" that read as nouns — a column that says
+ * "Text" next to a line of text is saying nothing — and "Dub" was the same word
+ * as the *verb* on the row's own button, so the state and the action shared a
+ * label. The full phrases cost a few pixels on a row that has room for them.
+ * "Keep", "Fail" and "Render" stay short: each is unambiguous on its own.
+ */
 export const STATE_META: Record<
   SegmentState,
   { label: string; short: string; icon: typeof Square; filled: boolean; token: string }
 > = {
   dubbed: {
     label: "Dubbed",
-    short: "Dub",
+    short: "Dubbed",
     icon: Diamond,
     filled: true,
     token: "var(--color-dubbed)",
@@ -222,14 +233,14 @@ export const STATE_META: Record<
   },
   unvoiced: {
     label: "Needs voice",
-    short: "Voice",
+    short: "Needs voice",
     icon: Circle,
     filled: false,
     token: "var(--color-pending)",
   },
   untranslated: {
     label: "Needs translation",
-    short: "Text",
+    short: "Needs translation",
     icon: CircleDashed,
     filled: false,
     token: "var(--color-pending)",

@@ -293,7 +293,15 @@ check(
 );
 
 const root = document.getElementById("root");
-check("import screen renders", /New dub/.test(root.textContent));
+/* The home screen is titled for the workspace, not for the card at the top of
+   it — the nav cell that reaches it says "Runs" and used to land on a page
+   headed "New dub." The card is unchanged and still names its own action. */
+check("home screen renders, titled for the workspace", /Runs\./.test(root.textContent));
+check("…and still carries the new-dub card", root.querySelector('[data-region="new-dub"]') != null);
+check("…whose action still says what it starts", /Start dubbing/.test(root.textContent));
+/* Context is the one optional field sitting under a required one of the same
+   size, and it says so in the label rather than three lines below it. */
+check("the context field leads with Optional", /Optional — Context/.test(root.textContent));
 
 /*
  * The toggle itself, driven through the DOM. jsdom does not run index.html's
@@ -699,7 +707,7 @@ check("re-check re-renders the list", document.querySelectorAll("[data-check]").
 // The gate must not strand the user here: fixture mode never auto-routes, and
 // the import screen is one link away.
 await go("/", 200);
-check("setup does not trap navigation", /New dub/.test(root.textContent));
+check("setup does not trap navigation", /Start dubbing/.test(root.textContent));
 
 const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -853,7 +861,24 @@ check("every row carries its state shape", rows().every((r) => r.querySelector("
 // card — under the 3:1 gate — and there is no legend on screen any more.
 check(
   "every row says its state in words",
-  rows().every((r) => /Dub|Keep|Fail|Render|Voice|Text/.test(r.textContent)),
+  rows().every((r) => /Dubbed|Keep|Fail|Render|Needs voice|Needs translation/.test(r.textContent)),
+);
+/*
+ * …in words that are the state, not abbreviations of it.
+ *
+ * "Voice" and "Text" read as nouns — a column saying "Text" beside a line of
+ * text says nothing — and "Dub" was the same word as the verb on the row's own
+ * button, so the state and the action shared a label. The three that lost
+ * something got it back; "Keep", "Fail" and "Render" are unambiguous short and
+ * stay short.
+ */
+const segSource = readFileSync(new URL("../src/lib/segments.ts", import.meta.url), "utf8");
+check(
+  "the state words are the states, not abbreviations of them",
+  !/short: "(Voice|Text|Dub)"/.test(segSource) &&
+    /short: "Needs voice"/.test(segSource) &&
+    /short: "Needs translation"/.test(segSource) &&
+    /short: "Dubbed"/.test(segSource),
 );
 check("the legend is not permanent chrome", !editor.includes("Unclaimed time"));
 
@@ -1105,7 +1130,7 @@ check(
 // rather than keep a "Dubbed" badge and a live B button over stale audio.
 check(
   "the invalidated clip is modelled locally, not left stale",
-  /Voice/.test(rowFor(2).textContent) && clip(rowFor(2), "B").disabled,
+  /Needs voice/.test(rowFor(2).textContent) && clip(rowFor(2), "B").disabled,
 );
 
 /*
@@ -1301,7 +1326,7 @@ check("…the one that is synthesized and waiting for a render", unplaced.length
 check(
   "…and the ones that only need a voice",
   stuck.filter((r) => r !== stranded && !unplaced.includes(r)).every((r) =>
-    /Voice/.test(r.textContent),
+    /Needs voice/.test(r.textContent),
   ),
 );
 check(
@@ -2025,6 +2050,14 @@ check("the transport says what it is on", transportBar()?.getAttribute("data-tra
 check(
   "no original-audio chip on a run that has a preview",
   document.querySelector("[data-transport-note]") == null,
+);
+/* The keys stayed A and B; the buttons say what the sides are. "A" and "B" on
+   a row a reviewer is meeting for the first time is a convention they have to
+   be told, and nothing on the screen was telling them. */
+check(
+  "…labelled Orig and Dub, not A and B",
+  clip(rowFor(9), "A").textContent.includes("Orig") &&
+    clip(rowFor(9), "B").textContent.includes("Dub"),
 );
 
 /*
