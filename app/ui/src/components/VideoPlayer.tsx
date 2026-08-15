@@ -32,7 +32,8 @@
  * that says "original audio" over the finished dub would be worse than no chip.
  */
 
-import { Pause, Play, SkipBack, SkipForward } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Pause, Play, SkipBack, SkipForward, TriangleAlert } from "lucide-react";
 import { cn } from "../lib/classNames";
 import { timecode } from "../lib/format";
 import type { Transport } from "../lib/useTransport";
@@ -47,8 +48,19 @@ const ORIGINAL_AUDIO = "Original audio (no preview yet)";
 /** Why the play button is dead. Reads as a state of the run, not a failure. */
 const NOTHING_TO_PLAY = "Nothing to play yet — the fetch stage hasn't run";
 
+/**
+ * Why the play button is dead when the run *says* it has a file.
+ *
+ * The manifest naming `preview.mp4` and the browser being able to load it are
+ * two different facts, and they come apart routinely: fixture mode, a file
+ * deleted out from under a run, a mid-render truncated mp4. "The fetch stage
+ * hasn't run" is the wrong sentence for every one of those.
+ */
+const NO_MEDIA = "This run's video could not be loaded — there is nothing to play";
+
 export function VideoPlayer({
   src,
+  srcLabel,
   mode,
   transport,
   duration,
@@ -57,6 +69,8 @@ export function VideoPlayer({
 }: {
   /** The file in the element: the preview, the original audio, or neither. */
   src: string | null;
+  /** What that file is called, for the sentence when it will not load. */
+  srcLabel?: string | null;
   mode: TransportMode;
   transport: Transport;
   duration: number;
@@ -64,12 +78,32 @@ export function VideoPlayer({
   placeholder?: ReactNode;
   className?: string;
 }) {
-  // The picture needs both a preview and a URL for it. They come apart in
-  // fixture mode, where the manifest names a preview.mp4 that no fixture can
-  // serve — and the panel is a status board rather than a blank rectangle in
-  // exactly that case, which is the case it was written for.
-  const picture = mode === "preview" && src != null;
-  const silent = mode === "none";
+  /*
+   * The element said it could not load the file.
+   *
+   * Without this, a `<video>` whose `src` 404s is a black rectangle with a live
+   * transport under it — the app claiming to be playing a video it does not
+   * have. The state is keyed to the source: a render finishing swaps the URL,
+   * and the new file deserves its own attempt rather than inheriting the old
+   * one's failure.
+   */
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [src]);
+
+  // The picture needs both a preview and a URL for it, and the URL has to load.
+  // They come apart in fixture mode, where the manifest names a preview.mp4 that
+  // no fixture can serve — and the panel is a status board rather than a blank
+  // rectangle in exactly that case, which is the case it was written for.
+  const picture = mode === "preview" && src != null && !failed;
+  /*
+   * Nothing attached is nothing to play, whatever the mode says.
+   *
+   * `mode === "none"` alone left the button live over a run whose preview is
+   * named but unreachable, and the transport's fallback clock then swept a
+   * playhead across the timeline with no audio anywhere — the same lie the dead
+   * play button was written to stop, one branch further along.
+   */
+  const silent = mode === "none" || src == null || failed;
 
   return (
     <div className={cn("flex flex-col bg-sunken", className)}>
@@ -84,9 +118,10 @@ export function VideoPlayer({
             data-transport-media={mode}
             className={cn("h-full w-full object-contain", !picture && "hidden")}
             preload="metadata"
+            onError={() => setFailed(true)}
           />
         ) : null}
-        {picture ? null : placeholder}
+        {picture ? null : failed ? <MediaError label={srcLabel} /> : placeholder}
       </div>
 
       <div
@@ -99,7 +134,7 @@ export function VideoPlayer({
         <TransportButton
           onClick={transport.toggle}
           label={transport.playing ? "Pause" : "Play"}
-          title={silent ? NOTHING_TO_PLAY : undefined}
+          title={silent ? (mode === "none" ? NOTHING_TO_PLAY : NO_MEDIA) : undefined}
           disabled={silent}
           primary
         >
@@ -130,6 +165,36 @@ export function VideoPlayer({
           {timecode(transport.currentTime)}
           <span className="text-muted"> / {timecode(duration, 0)}</span>
         </span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The file is named and the file will not load.
+ *
+ * It replaces the status board rather than sitting beside it, because the board
+ * would be answering a question this run has already moved past: the stages all
+ * say `done`, and the thing that is wrong is one file. Named, because "could not
+ * be loaded" about an unnamed thing is not something anyone can act on.
+ */
+function MediaError({ label }: { label?: string | null }) {
+  return (
+    <div className="grid h-full place-items-center px-4 py-3" data-media-error>
+      <div className="max-w-sm text-center">
+        <TriangleAlert
+          aria-hidden
+          className="mx-auto h-4 w-4"
+          style={{ color: "var(--color-critical)" }}
+        />
+        <p className="mt-2 text-[14px] font-semibold text-primary">
+          {label ?? "The video"} could not be loaded
+        </p>
+        <p className="mt-1.5 text-[11px] leading-relaxed text-muted">
+          The run names the file but the player could not open it — it may have been moved or
+          deleted, or the render may not have finished writing it. Render the preview again to
+          make a new one.
+        </p>
       </div>
     </div>
   );

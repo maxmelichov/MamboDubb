@@ -2020,10 +2020,21 @@ check("…closing the field", document.querySelector('[data-run-options] textare
 clickIt(menu);
 await settle(120);
 
-const openPreview = [...document.querySelectorAll("header button")].find((b) =>
-  /Open preview|Show in Finder/.test(b.textContent),
-);
-check("the finished video is one click from the header", openPreview != null);
+/*
+ * One source of truth about whether there is a video.
+ *
+ * The header offered "Open preview" whenever the *manifest* named one, while
+ * the panel three inches below it decides on whether the file can actually be
+ * reached — so this run, whose preview.mp4 no fixture can serve, showed a
+ * button offering to open a video directly beside a panel saying there is no
+ * video. Both now read the same fact, which is the URL and not the manifest
+ * key: no reachable file, no offer to open one.
+ */
+const openPreview = () =>
+  [...document.querySelectorAll("header button")].find((b) =>
+    /Open preview|Show in Finder/.test(b.textContent),
+  );
+check("no offer to open a preview that cannot be reached", openPreview() == null);
 check(
   "…and the header stays at its height",
   document.querySelector("header").className.includes("h-11"),
@@ -2051,13 +2062,22 @@ check(
   "no original-audio chip on a run that has a preview",
   document.querySelector("[data-transport-note]") == null,
 );
-/* The keys stayed A and B; the buttons say what the sides are. "A" and "B" on
-   a row a reviewer is meeting for the first time is a convention they have to
-   be told, and nothing on the screen was telling them. */
+/*
+ * …and a preview that is named is not a preview that plays.
+ *
+ * The silent guard was `mode === "none"` alone, so this run — preview mode, no
+ * reachable file — kept a live play button, and pressing it started the
+ * transport's fallback clock: a playhead sweeping the strip with no audio
+ * anywhere, which is the exact lie the dead play button was written to stop.
+ * Nothing attached is nothing to play, whatever the mode says.
+ */
+const previewPlay = [...document.querySelectorAll("button")].find((b) =>
+  ["Play", "Pause"].includes(b.getAttribute("aria-label")),
+);
+check("a named-but-unreachable preview does not get a live play button", previewPlay.disabled);
 check(
-  "…labelled Orig and Dub, not A and B",
-  clip(rowFor(9), "A").textContent.includes("Orig") &&
-    clip(rowFor(9), "B").textContent.includes("Dub"),
+  "…and says which of the two reasons it is",
+  /could not be loaded/.test(previewPlay.getAttribute("title")),
 );
 
 /*
@@ -2281,6 +2301,24 @@ check(
     /Original audio \(no preview yet\)/.test(transportBar().textContent),
 );
 check("…behind a live play button", playButton() != null && !playButton().disabled);
+/*
+ * …in a band, not on a stage.
+ *
+ * With no video the panel kept the video's own 16:9, which on a wide window is
+ * 270 vertical pixels of the right-hand rail spent on four short sentences —
+ * while the selection panel under it scrolled a thirty-control inspector through
+ * what was left. The picture gets a picture's room; a status board gets a band.
+ */
+const stage = transportBar().parentElement;
+check(
+  "with no picture the viewer collapses to a band",
+  !/aspect-video/.test(stage.className) && !/\bh-40\b/.test(stage.className),
+);
+check(
+  "…still carrying the eyebrow, a sentence and the stage track",
+  document.querySelector("[data-preview-placeholder]") != null &&
+    /stages done/.test(root.textContent),
+);
 const running = clock();
 pressSpace();
 await settle(250);

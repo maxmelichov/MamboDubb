@@ -217,6 +217,7 @@ export function EditorPage() {
     [fetched, name, previewPath],
   );
   const transportMode: TransportMode = previewPath ? "preview" : sourceUrl ? "source" : "none";
+  const mediaUrl = previewUrl ?? sourceUrl;
 
   /**
    * Nothing to play means nothing playing.
@@ -225,11 +226,20 @@ export function EditorPage() {
    * `/editor/a` → `/editor/b` is the same route, so this component is not
    * remounted and the clock carries across. A playhead sweeping a run that has
    * no audio at all is the same lie the live play button was telling.
+   *
+   * `mode` alone was not the whole test. A run whose manifest names a
+   * `preview.mp4` is in `preview` mode whether or not that file can actually be
+   * reached — fixture mode never can, and a deleted or half-written render is
+   * the same shape — so the clock swept a playhead across an empty strip with a
+   * live play button under it. The transport is silent when there is no URL,
+   * and `space` is the same control as the button, so it refuses in the same
+   * case rather than being a second opinion about it.
    */
+  const playable = transportMode !== "none" && mediaUrl != null;
   const pause = transport.pause;
   useEffect(() => {
-    if (transportMode === "none") pause();
-  }, [pause, transportMode]);
+    if (!playable) pause();
+  }, [pause, playable]);
 
   const counts = useMemo(() => {
     const out: Record<SegmentState, number> = {
@@ -597,7 +607,7 @@ export function EditorPage() {
           // Nothing on disk to play: the button is disabled and the key is the
           // same control, so it refuses in the same case rather than starting a
           // clock over silence.
-          if (transportMode !== "none") transport.toggle();
+          if (playable) transport.toggle();
           break;
         case "ArrowDown":
           event.preventDefault();
@@ -728,14 +738,18 @@ export function EditorPage() {
       <AppHeader
         actions={
           <>
-            {/* The finished file, one click from the run it came out of. It
-                only exists when the file does. */}
-            {project?.outputs.preview ? (
-              <OpenFileButton
-                name={name}
-                path={project.outputs.preview}
-                title={staleNote ?? undefined}
-              />
+            {/*
+              The finished file, one click from the run it came out of. It only
+              exists when the file does — and "the file does" is `previewUrl`,
+              not `outputs.preview`. The manifest naming a preview and the app
+              being able to reach one are two different facts, and while the
+              button hung off the first of them it sat there offering to open a
+              video three inches from a panel explaining that there is no video.
+              One source of truth: if the panel cannot show it, the header does
+              not offer it.
+            */}
+            {previewPath && previewUrl ? (
+              <OpenFileButton name={name} path={previewPath} title={staleNote ?? undefined} />
             ) : null}
             {/*
               Quiet when the video is current, loud when it is not.
@@ -852,11 +866,36 @@ export function EditorPage() {
             */}
             <aside className="flex min-h-0 max-h-[45%] shrink-0 flex-col bg-surface xl:max-h-none xl:w-[42%] xl:min-w-[26rem] xl:max-w-[40rem]">
               <VideoPlayer
-                src={previewUrl ?? sourceUrl}
+                src={mediaUrl}
+                srcLabel={previewPath ?? SOURCE_AUDIO}
                 mode={transportMode}
                 transport={transport}
                 duration={total}
-                className="h-40 shrink-0 xl:h-auto xl:aspect-video"
+                /*
+                  The picture gets a picture's worth of room. Anything else gets
+                  a band.
+
+                  There is no video until `mix` has run, which is most of the
+                  time a run exists — and the empty stage kept the video's own
+                  16:9, so on a 1512px window a status board four sentences long
+                  sat in 270 vertical pixels of nothing while the selection panel
+                  under it scrolled a thirty-control inspector through the
+                  remainder. The placeholder is laid out for a band and the
+                  column stops reserving a stage for a file that is not there;
+                  a stopped run grows it back, because its failure text and its
+                  Resume button are worth the pixels the idle case is not.
+
+                  The test is a preview that is actually *attached*, not one the
+                  manifest names: a run whose preview.mp4 cannot be reached shows
+                  the same status board as a run that has not mixed yet, and it
+                  has earned the same band rather than the same empty 16:9.
+                */
+                className={cn(
+                  "shrink-0",
+                  transportMode === "preview" && previewUrl
+                    ? "h-40 xl:h-auto xl:aspect-video"
+                    : "h-auto",
+                )}
                 placeholder={
                   <PreviewPlaceholder
                     project={project}
@@ -1574,6 +1613,15 @@ function lastFailure(jobs: Job[]): Job | null {
  * permanent. What it keeps that nothing else has is the stage track — which of
  * the nine stages this run has got through.
  *
+ * It is a band and not a stage. It used to be laid out as a centred column
+ * inside the video's own 16:9, which on a wide window is 270 vertical pixels of
+ * the right-hand rail spent on four short sentences — while the selection panel
+ * beneath it, which is where the actual work is done, scrolled thirty controls
+ * through what was left. Eyebrow, one sentence, the stage track, left-aligned
+ * and about 140px. The two cases that are worth more than that take more: a
+ * stopped run adds the pipeline's own error and the Resume button, and a run
+ * behind its script adds the stale sentence.
+ *
  * And, since a run could stop, the way back in.
  *
  * A failed or abandoned run was a dead end: the app could create a project and
@@ -1622,8 +1670,8 @@ function PreviewPlaceholder({
   const stopped = project != null && !working && !summary.complete;
 
   return (
-    <div className="grid h-full place-items-center px-4 py-3">
-      <div className="w-full max-w-sm text-center">
+    <div className="px-3 py-2.5" data-preview-placeholder>
+      <div className="w-full">
         <Eyebrow>
           {working
             ? "Working"
@@ -1634,7 +1682,7 @@ function PreviewPlaceholder({
                 : "Preview"}
         </Eyebrow>
 
-        <p className="mt-1.5 text-[14px] font-semibold text-primary">
+        <p className="mt-1 text-[14px] font-semibold leading-snug text-primary">
           {working
             ? `Running ${stage?.stage ?? summary.current ?? "the pipeline"}`
             : summary.failed
@@ -1655,22 +1703,30 @@ function PreviewPlaceholder({
         {!working && dead?.error ? (
           <p
             data-failure
-            className="mt-2.5 max-h-24 overflow-auto rounded-lg border border-critical/35 bg-critical/[0.06] px-2.5 py-2 text-left font-mono text-[11px] leading-relaxed break-words text-secondary"
+            className="mt-2 max-h-24 overflow-auto rounded-lg border border-critical/35 bg-critical/[0.06] px-2.5 py-2 text-left font-mono text-[11px] leading-relaxed break-words text-secondary"
           >
             {dead.error}
           </p>
         ) : null}
 
-        <p className="mt-2 text-[11px] leading-relaxed text-muted">
+        {/*
+          One sentence, not three.
+          It was a paragraph explaining where preview.mp4 comes from, in a panel
+          whose eyebrow and headline had already said which stage the run is on
+          — read once on the first run and then re-read on every screen for the
+          rest of the project's life. What survives is the part that is news:
+          what you can do *now*, which differs by mode.
+        */}
+        <p className="mt-1 text-[11px] leading-relaxed text-muted">
           {working
             ? (stage?.message ?? "preview.mp4 is written by the mix stage, at the end.")
             : summary.complete
               ? "Render preview re-runs timeline, mix and report and writes preview.mp4."
               : mode === "source"
-                ? "preview.mp4 is written by the mix stage, at the end. Until then press play " +
-                  "and the transport plays the run's original audio, in step with the script."
-                : "preview.mp4 is written by the mix stage. There is nothing to play until " +
-                  "fetch has written source.wav, but the timeline and the script still work."}
+                ? "Press play for the run's original audio, in step with the script — " +
+                  "preview.mp4 arrives with the mix stage."
+                : "Nothing to play until fetch writes source.wav; the timeline and the script " +
+                  "still work."}
         </p>
 
         {/*
@@ -1684,7 +1740,7 @@ function PreviewPlaceholder({
             <Button
               variant="primary"
               size="sm"
-              className="mt-3"
+              className="mt-2"
               data-resume
               onClick={onResume}
               title={
@@ -1703,7 +1759,7 @@ function PreviewPlaceholder({
           </>
         ) : null}
 
-        <div className="mt-3 flex justify-center">
+        <div className="mt-2 flex">
           <StageTrack
             stages={project?.stages}
             current={stage?.stage ?? null}
@@ -1718,7 +1774,7 @@ function PreviewPlaceholder({
           on screen that says so.
         */}
         {staleBand && !working ? (
-          <p data-stale-band className="mt-2.5 text-[11px] leading-relaxed text-secondary">
+          <p data-stale-band className="mt-2 text-[11px] leading-relaxed text-secondary">
             {staleBand}
           </p>
         ) : null}
