@@ -1027,6 +1027,9 @@ def test_the_run_records_its_own_settings_so_the_studio_reproduces_them():
     argv = ["clip.mp4", "--genre", "movie", "--register", "dialogue",
             "--tts-model", "1.7b", "--dub-foreign", "--transcript", "asr"]
     args = cli.parse_args(argv)
+    # main() resolves before anything reads or records a setting; --src/--tgt/
+    # --duration now parse as None so a re-run can tell "typed" from "default".
+    cli.resolve_settings(args, None)
     m = manifest.new(cli.source_record(args))
     back = edit._args(m)
     assert (back.genre, back.register, back.tts_model, back.dub_foreign,
