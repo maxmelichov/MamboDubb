@@ -1071,19 +1071,19 @@ const dialogButton = (label) =>
 
 clickIt(chip("Kept"));
 await settle(200);
-check("the Kept chip narrows to the lines that play as recorded", rows().length === 27);
-check("…and offers to dub the lot in one gesture", /Dub these 27/.test(dubTrigger().textContent));
+check("the Kept chip narrows to the lines that play as recorded", rows().length === 29);
+check("…and offers to dub the lot in one gesture", /Dub these 29/.test(dubTrigger().textContent));
 check(
   "…over the same count the chip is showing",
-  /Kept\s*27/.test(chip("Kept").textContent),
+  /Kept\s*29/.test(chip("Kept").textContent),
 );
 
 const beforeBulk = calls().log.length;
 clickIt(dubTrigger());
 await settle(150);
 check(
-  "rewriting 27 verdicts asks first, and says what it costs",
-  /27 lines switch to dubbed/.test(document.querySelector('[role="dialog"]').textContent) &&
+  "rewriting 29 verdicts asks first, and says what it costs",
+  /29 lines switch to dubbed/.test(document.querySelector('[role="dialog"]').textContent) &&
     /translate \+ voice queue behind any running job/.test(root.textContent),
 );
 check("…and sends nothing while it is asking", calls().log.length === beforeBulk);
@@ -1091,7 +1091,7 @@ clickIt(dialogButton("Cancel"));
 await settle(150);
 check(
   "…so cancelling changes no verdict",
-  calls().log.length === beforeBulk && rows().length === 27,
+  calls().log.length === beforeBulk && rows().length === 29,
 );
 
 // The search box is a filter like any other, and a bulk button that ignored it
@@ -1118,7 +1118,7 @@ check("…and the lines it flipped have left the kept filter", rows().length ===
 
 setInput(searchBox, "");
 await settle(200);
-check("the rest of the run is still kept", rows().length === 25);
+check("the rest of the run is still kept", rows().length === 27);
 clickIt(chip("Kept"));
 await settle(200);
 check("the Kept chip toggles back off as well", rows().length > 40);

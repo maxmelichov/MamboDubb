@@ -380,15 +380,17 @@ export function startInstall(id: string): Promise<SetupInstall> {
   calls.log.push(`install:${id}`);
   if (installState.running) {
     return Promise.reject(
-      new Error(`an install is already running (${installState.id}); one at a time`),
+      new ApiError("busy", `an install is already running (${installState.id}); one at a time`, 409),
     );
   }
   if (!(id in TOOL_ROWS)) {
     return Promise.reject(
-      new Error(
+      new ApiError(
+        "invalid_request",
         `'${id}' cannot be installed from the app. The only installs it runs are ` +
           "`brew install ffmpeg`, `brew install sox`. Everything else is by hand — " +
           "the command is in that check's detail line.",
+        400,
       ),
     );
   }
@@ -553,23 +555,15 @@ export function getSegments(name: string): Promise<Segment[]> {
 export function peaks(name: string, file: PeaksFile, n: number): Promise<Peaks> {
   calls.peaks += 1;
   const buckets = Math.max(16, Math.min(Math.round(n), 4000));
-<<<<<<< HEAD
-  // Each lane's file is written by one stage — `source.wav` by fetch, `dub.wav`
+// Each lane's file is written by one stage — `source.wav` by fetch, `dub.wav`
   // by mix — and before that stage has run the server 404s and the lane falls
-  // back to marks alone. The fixture has to refuse in the same cases or that
-  // fallback is never exercised anywhere.
+  // back to marks alone. The fixture has to refuse in the same cases, in the
+  // server's own error shape, or that fallback is never exercised anywhere.
   const stages = projectOf(name).stages;
   if (stages[file === "dub" ? "mix" : "fetch"] !== "done") {
-    return Promise.reject(new Error(`${file}.wav does not exist yet for this run`));
-=======
-  // `dub.wav` is written by the mix stage; before it has run the server 404s
-  // and the lane falls back to marks alone. The fixture has to refuse it in
-  // the same case or that fallback is never exercised anywhere.
-  if (file === "dub" && store.project.stages.mix !== "done") {
     return Promise.reject(
-      new ApiError("not_found", "dub.wav does not exist yet for this run", 404),
+      new ApiError("not_found", `${file}.wav does not exist yet for this run`, 404),
     );
->>>>>>> fix/ui-seams
   }
 
   const spans = store.segments.map((seg) =>

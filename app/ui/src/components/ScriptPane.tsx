@@ -28,17 +28,10 @@
  */
 
 import { useEffect, useMemo, useRef } from "react";
-<<<<<<< HEAD
-import { Languages, ListX, Mic2, Search, Volume2 } from "lucide-react";
-import { cn } from "../lib/classNames";
-import { hasLocks, segmentState, unfinished } from "../lib/segments";
-import { Button, ConfirmButton, Empty } from "./ui";
-=======
-import { Film, Languages, ListX, Search, Volume2 } from "lucide-react";
+import { Film, Languages, ListX, Mic2, Search, Volume2 } from "lucide-react";
 import { cn } from "../lib/classNames";
 import { hasLocks, needsModelWork, segmentState, unfinished } from "../lib/segments";
-import { Button, Empty } from "./ui";
->>>>>>> fix/ui-seams
+import { Button, ConfirmButton, Empty } from "./ui";
 import { ScriptRow, type EditTarget } from "./ScriptRow";
 import type { Segment } from "../lib/types";
 
@@ -103,11 +96,8 @@ export function ScriptPane({
   onRetranslateMany,
   onResynthesizeMany,
   onFixMany,
-<<<<<<< HEAD
   onDubMany,
-=======
   onRender,
->>>>>>> fix/ui-seams
 }: {
   segments: Segment[];
   selectedUid: string | null;
@@ -131,13 +121,10 @@ export function ScriptPane({
   onResynthesizeMany: (uids: string[]) => void;
   /** Translate whatever has no line, then voice all of them — in that order. */
   onFixMany: (uids: string[]) => void;
-<<<<<<< HEAD
   /** Flip every one of these from keep to dub, then queue the work once. */
   onDubMany: (uids: string[]) => void;
-=======
   /** timeline → mix → report, for the lines that only lack a placement. */
   onRender: () => void;
->>>>>>> fix/ui-seams
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
 

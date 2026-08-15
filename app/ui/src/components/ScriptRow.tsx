@@ -581,12 +581,8 @@ function ClipButton({
   /** The span of `url` this side is: null when the file is already the clip. */
   window?: [number, number] | null;
   playing: boolean;
-<<<<<<< HEAD
-  onPlay: (url: string | null) => void;
-  emptyTitle?: string;
-=======
   onPlay: (url: string | null, window?: [number, number] | null) => void;
->>>>>>> fix/ui-seams
+  emptyTitle?: string;
 }) {
   return (
     <button
@@ -598,13 +594,8 @@ function ClipButton({
       data-window={window ? JSON.stringify(window) : ""}
       disabled={!url}
       aria-pressed={playing}
-<<<<<<< HEAD
       title={url ? title : (emptyTitle ?? "No audio for this side yet")}
-      onClick={() => onPlay(url)}
-=======
-      title={url ? title : "No audio for this side yet"}
       onClick={() => onPlay(url, window)}
->>>>>>> fix/ui-seams
       className={cn(
         "inline-flex h-6 items-center gap-0.5 rounded-md border px-1.5 text-[11px] font-bold",
         "transition-colors",
