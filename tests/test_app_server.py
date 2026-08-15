@@ -211,6 +211,45 @@ def test_get_project(client):
     assert len(body["manifest"]["segments"]) == 5
 
 
+def test_stage_status_folds_in_the_live_queue(outputs):
+    """`done`/`pending` is all the manifest can say. Running and failed live in the
+    queue, and without them the UI's whole failure treatment is unreachable."""
+    from dubbing_app.projects import Projects
+
+    m = manifest.load(outputs / NAME)
+    m["stages"].pop("mix"), m["stages"].pop("report")
+    assert Projects.stage_status(m)["mix"] == "pending"
+
+    running = {"id": "a", "status": "running", "stage": "mix", "error": None}
+    assert Projects.stage_status(m, [running])["mix"] == "running"
+
+    failed = {"id": "b", "status": "failed", "stage": "mix", "error": "boom"}
+    assert Projects.stage_status(m, [failed])["mix"] == "failed"
+    # A job that succeeded afterwards is the newer answer about that stage.
+    later = {"id": "c", "status": "done", "stage": "report", "error": None}
+    assert Projects.stage_status(m, [failed, later])["mix"] == "pending"
+    # …and a job running now outranks an older failure on the same stage.
+    assert Projects.stage_status(m, [failed, running])["mix"] == "running"
+
+
+def test_a_failed_job_is_reported_on_the_stage_it_died_in(outputs):
+    class Boom:
+        def run(self, job, emit):
+            emit(events.stage_event("mix", "running", 0.2, "muxing"))
+            raise RuntimeError("mix died")
+
+        def cancel(self, job):
+            pass
+
+    with TestClient(create_app(outputs, runner=Boom(), ui_dir="")) as c:
+        job = c.post(f"/api/projects/{NAME}/render", json={}).json()["job"]
+        assert wait_until(lambda: c.get(f"/api/jobs/{job['id']}").json()["job"]["status"]
+                          == "failed")
+        body = c.get(f"/api/projects/{NAME}").json()
+    assert body["stages"]["mix"] == "failed"
+    assert body["summary"]["stages"]["mix"] == "failed"
+
+
 def stamp_report(workdir):
     """Re-stamp the fixture's report.json the way `report.run` does."""
     m = manifest.load(workdir)
@@ -781,6 +820,51 @@ def test_events_prelude_reports_stage_state(live):
     stages = {f["stage"]: f for f in frames if f["type"] == "stage"}
     assert len(stages) == 9
     assert stages["mix"]["status"] == "done" and stages["mix"]["progress"] == 1.0
+    # A snapshot of nine stages at once, not a progression: marked so a client
+    # that follows "the last stage frame seen" does not read the ninth as the
+    # stage this run is in.
+    assert all(f["replay"] is True for f in stages.values())
+
+
+def test_events_prelude_does_not_resurrect_a_finished_failure(outputs, monkeypatch):
+    """The UI reopens this stream on every navigation and every wake from sleep.
+    Replaying a terminal job puts the error bar the user dismissed an hour ago back
+    on the screen, for a job that is long over."""
+    monkeypatch.setattr(events, "HEARTBEAT_SECONDS", 0.05)
+
+    class Boom:
+        def run(self, job, emit):
+            raise RuntimeError("mix died")
+
+        def cancel(self, job):
+            pass
+
+    with live_server(create_app(outputs, runner=Boom(), ui_dir="")) as base:
+        with httpx.Client(base_url=base, timeout=20.0) as c:
+            job = c.post(f"/api/projects/{NAME}/render", json={}).json()["job"]
+            assert wait_until(lambda: c.get(f"/api/jobs/{job['id']}").json()["job"]["status"]
+                              == "failed")
+            with c.stream("GET", f"/api/projects/{NAME}/events") as r:
+                frames = Frames(r)
+                assert frames.until(lambda f: f["type"] == "heartbeat") is not None
+    assert [f for f in frames.seen if f["type"] == "job"] == []
+
+
+def test_events_prelude_still_replays_work_in_flight(outputs, monkeypatch):
+    """The other half: a job that has not finished is exactly what a reconnecting
+    client has to be told about, and it is marked as a replay, not as news."""
+    monkeypatch.setattr(events, "HEARTBEAT_SECONDS", 0.05)
+    hold = threading.Event()
+    with live_server(create_app(outputs, runner=FakeRunner(hold=hold), ui_dir="")) as base:
+        with httpx.Client(base_url=base, timeout=20.0) as c:
+            job = c.post(f"/api/projects/{NAME}/render", json={}).json()["job"]
+            assert wait_until(lambda: c.get(f"/api/jobs/{job['id']}").json()["job"]["status"]
+                              == "running")
+            with c.stream("GET", f"/api/projects/{NAME}/events") as r:
+                frames = Frames(r)
+                replayed = frames.until(lambda f: f["type"] == "job")
+            hold.set()
+    assert replayed["id"] == job["id"] and replayed["replay"] is True
 
 
 def test_events_carry_job_and_stage_progress(live):

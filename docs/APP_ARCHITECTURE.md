@@ -248,7 +248,7 @@ JSON in, JSON out. Errors are uniform, after MamboRambo's `write_error`:
 | GET | `/api/setup/install` | `{running, id, ok, error, tail:[…], check}` — poll it; `check` is a fresh probe once the process exits |
 | GET | `/api/projects` | list run dirs: name, title, langs, duration, stage state, mtime |
 | POST | `/api/projects` | `{source, src_lang, tgt_lang, duration?, name?, context?, genre?, register?}` → create dir, enqueue a full run |
-| GET | `/api/projects/{name}` | manifest + report + derived stage status |
+| GET | `/api/projects/{name}` | manifest + report (+`stale`) + stage status + jobs |
 | GET | `/api/projects/{name}/segments` | the segment list, enriched (see below) |
 | PATCH | `/api/projects/{name}/segments/{uid}` | any no-model edit; body mirrors the setters |
 | POST | `/api/projects/{name}/segments/{uid}/split` `/merge` | structural edits |
@@ -263,6 +263,16 @@ JSON in, JSON out. Errors are uniform, after MamboRambo's `write_error`:
 store: absolute media URLs for `place.clip` and `tts.clip`, the verification verdict from
 `clips/<hash>.json` (`heard`, `overlap` — the ready-made "did the voice say the right
 thing" signal), and the segment's source-audio window as a URL.
+
+### Stage status — four values, not two
+
+`stages` (on `GET /api/projects/{name}`, in `summary`, and in the event prelude) is
+`{stage: "done" | "pending" | "running" | "failed"}`. `done`/`pending` come from the
+manifest's `stages` map, which is the only truth about what *finished*; the other two come
+from the project's jobs, because an unfinished stage and one that was never reached look
+identical in the manifest. The stage a running job is in is `running`; the stage the most
+recent failed job died in is `failed`, unless a job has succeeded since. A UI's failure
+treatment ("stopped at transcript") has nothing else to key on.
 
 ### The report says what it is a report about
 
@@ -290,6 +300,19 @@ Chosen over MamboRambo's binary framing because our payloads are metadata, not W
 kept from it: **errors travel as a frame**, so a mid-run failure surfaces without needing a
 non-200 status on an already-streaming response. Send a heartbeat every 15 s so proxies and
 sleeping laptops do not silently drop the stream.
+
+#### The prelude — catching a new reader up
+
+Opening the stream replays a `log` frame, one `stage` frame per pipeline stage, and the
+jobs that are still **queued or running**. Two rules the client can rely on:
+
+* **`"replay": true`** is on every prelude frame and on nothing else. The nine stage frames
+  are a snapshot of all nine at once, not a progression, so a client that pins its display
+  to the last stage frame it saw must skip them and read the snapshot as a whole.
+* **Terminal jobs are never replayed.** A `failed`/`cancelled` job resent on every
+  reconnect resurrects an error bar the user dismissed an hour ago — and the UI reconnects
+  on every navigation and every wake from sleep. A finished job's outcome is in
+  `GET /api/projects/{name}` (`jobs`), which is where a client that wants history looks.
 
 ## Desktop packaging
 

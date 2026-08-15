@@ -106,21 +106,46 @@ class Projects:
     # -- derived views -----------------------------------------------------
 
     @staticmethod
-    def stage_status(m: dict[str, Any]) -> dict[str, str]:
-        """`done` for stages with a fingerprint on record, `pending` otherwise.
+    def stage_status(m: dict[str, Any],
+                     jobs: list[dict[str, Any]] | None = None) -> dict[str, str]:
+        """What each pipeline stage is doing: `done`, `pending`, `running`, `failed`.
 
-        Derived, never stored: the manifest's `stages` map is the only truth
-        about what has run, and re-deriving it keeps the server from holding a
-        second copy that can drift.
+        Derived, never stored: the manifest's `stages` map is the only truth about
+        what has *finished*, and re-deriving it keeps the server from holding a
+        second copy that can drift. But the manifest cannot say what is happening
+        right now or what died — an unfinished stage looks exactly like one that
+        was never reached — so the project's jobs (as `Job.to_dict`, newest last)
+        are folded in on top:
+
+        * the stage a **running** job is in is `running`;
+        * the stage the most recent **failed** job died in is `failed`, unless a
+          job has succeeded since — that later success is the answer about whether
+          the run gets past that stage.
+
+        Without this the whole failure treatment in the UI — the red dot, "stopped
+        at transcript" — was unreachable against the real server, which only ever
+        said done or pending.
         """
         recorded = m.get("stages") or {}
-        return {stage: ("done" if stage in recorded else "pending") for stage in STAGES}
+        status = {stage: ("done" if stage in recorded else "pending") for stage in STAGES}
+        died: str | None = None
+        for job in jobs or []:
+            if job.get("status") == "done":
+                died = None
+            elif job.get("status") == "failed" and job.get("stage") in status:
+                died = job["stage"]
+        if died:
+            status[died] = "failed"
+        for job in jobs or []:
+            if job.get("status") == "running" and job.get("stage") in status:
+                status[job["stage"]] = "running"
+        return status
 
-    def summary(self, name: str) -> dict[str, Any]:
+    def summary(self, name: str, jobs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         workdir = self.root / name
         m = manifest.load(workdir) or {}
         src = m.get("source") or {}
-        stages = self.stage_status(m) if m else {s: "pending" for s in STAGES}
+        stages = self.stage_status(m, jobs) if m else {s: "pending" for s in STAGES}
         done = [s for s in STAGES if stages[s] == "done"]
         return {
             "name": name,
