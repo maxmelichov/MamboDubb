@@ -42,6 +42,20 @@ def mk(*segs, **source):
     return m
 
 
+class StubEngine:
+    """A synthesiser that loads nothing. `REF_BUILD` is the real one's: it is in
+    the tts stage's fingerprint, so a stub without it changes what the CLI would
+    compute."""
+
+    REF_BUILD = tts_mod.Engine.REF_BUILD
+
+    def __init__(self, *args, **kw):
+        pass
+
+    def close(self):
+        pass
+
+
 def two_segs():
     """Two adjacent same-speaker segments, both fully generated."""
     return mk(
@@ -929,8 +943,7 @@ def test_rebuild_runs_forward_and_marks_the_stages_the_cli_would(monkeypatch):
     monkeypatch.setattr(timeline, "run", lambda *a, **k: ran.append("timeline"))
     monkeypatch.setattr(mix_mod, "run", lambda *a, **k: ran.append("mix"))
     monkeypatch.setattr(report_mod, "run", lambda *a, **k: ran.append("report") or {})
-    monkeypatch.setattr(tts_mod, "Engine",
-                        lambda *a, **k: type("E", (), {"close": lambda self: None})())
+    monkeypatch.setattr(tts_mod, "Engine", StubEngine)
     monkeypatch.setattr(cli, "_retimers", lambda *a, **k: (None, None))
     done = edit.rebuild(m, tmp_workdir(), from_stage="timeline", save=lambda: None)
     assert done == ["timeline", "mix", "report"] == ran
@@ -999,8 +1012,7 @@ def test_rebuild_fails_when_the_report_says_the_dub_has_holes(monkeypatch):
     monkeypatch.setattr(timeline, "run", lambda *a, **k: None)
     monkeypatch.setattr(mix_mod, "run", lambda *a, **k: None)
     monkeypatch.setattr(report_mod, "run", lambda *a, **k: {"unaccounted": [1]})
-    monkeypatch.setattr(tts_mod, "Engine",
-                        lambda *a, **k: type("E", (), {"close": lambda self: None})())
+    monkeypatch.setattr(tts_mod, "Engine", StubEngine)
     monkeypatch.setattr(cli, "_retimers", lambda *a, **k: (None, None))
     with pytest.raises(edit.RebuildIncomplete, match="no audio"):
         edit.rebuild(m, tmp_workdir(), from_stage="timeline", save=lambda: None)
@@ -1055,6 +1067,67 @@ def test_force_does_not_discard_a_users_locked_work():
     kept, other = m["segments"]
     assert kept["text_en"] == "one two" and kept["tts"] == {"clip": "clips/a.wav", "dur": 1.8}
     assert "tts" not in other       # everything unlocked is invalidated as usual
+
+
+# ------------------------------------------------------ fingerprint knobs
+
+def params_for(m, argv=("in.mp4",)):
+    args = cli.parse_args(list(argv))
+    cli.resolve_settings(args, m)
+    return cli.stage_params(args, m)
+
+
+def test_the_tts_fingerprint_carries_the_reference_recipe(monkeypatch):
+    # `m["speakers"]` survives a tts reset, so a new canonical-reference recipe
+    # would otherwise keep cloning from the old references forever — and
+    # `needs_synthesis` answers by file existence, so nothing else would notice.
+    m = manifest.new({"input": "in.mp4", "src_lang": "he", "tgt_lang": "en"})
+    before = params_for(m)["tts"]
+    monkeypatch.setattr(tts_mod.Engine, "REF_BUILD", tts_mod.Engine.REF_BUILD + 1)
+    assert params_for(m)["tts"] != before
+
+
+def test_the_tts_fingerprint_carries_the_hebrew_adapter(monkeypatch):
+    from dubbing import hebrew
+
+    he = manifest.new({"input": "in.mp4", "src_lang": "en", "tgt_lang": "he"})
+    en = manifest.new({"input": "in.mp4", "src_lang": "he", "tgt_lang": "en"})
+    tagged = params_for(he, ("in.mp4", "--tgt", "he"))["tts"]
+    assert tagged["adapter"] == hebrew.ADAPTER_TAG
+    # A run that does not go through the adapter does not carry its tag at all.
+    assert "adapter" not in params_for(en)["tts"]
+    monkeypatch.setattr(hebrew, "ADAPTER_TAG", "qwentts-he-lora-v2")
+    assert params_for(he, ("in.mp4", "--tgt", "he"))["tts"] != tagged
+
+
+def test_the_transcript_fingerprint_carries_where_the_words_came_from():
+    # Captions and ASR produce different words for identical parameters, so the
+    # source has to be in the chain: a run that started on the captions fallback
+    # and later got its ASR must redo the segments built on the caption text.
+    m = manifest.new({"input": "in.mp4", "src_lang": "he", "tgt_lang": "en"})
+    m["source"]["transcript_origin"] = "captions"
+    fallback = params_for(m)["transcript"]
+    m["source"]["transcript_origin"] = "asr"
+    assert params_for(m)["transcript"] != fallback
+
+
+def test_a_captions_fallback_is_recorded_as_not_the_answer_that_was_asked_for():
+    from dubbing import transcript as transcript_mod
+
+    m = manifest.new({"input": "in.mp4", "src_lang": "he", "tgt_lang": "en"})
+    m["source"]["transcript_origin"] = "captions"
+    assert transcript_mod.is_fallback(m, "auto")
+    assert not transcript_mod.is_fallback(m, "captions")   # captions were asked for
+    m["source"]["transcript_origin"] = "asr"
+    assert not transcript_mod.is_fallback(m, "auto")
+
+    # A provisional mark can never equal a recomputed fingerprint, so the stage
+    # runs again — while everything downstream keeps its place in the chain for
+    # as long as the fallback keeps producing the same words.
+    fp = manifest.stage_fingerprint(m, "transcript", params_for(m)["transcript"])
+    manifest.mark_provisional(m, "transcript", fp)
+    assert "transcript" in m["stages"]
+    assert not manifest.stage_done(m, tmp_workdir(), "transcript", fp, [])
 
 
 # ------------------------------------------------ the run's recorded settings

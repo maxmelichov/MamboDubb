@@ -97,6 +97,11 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
         # way to tell a current report from one the manifest had moved past hours
         # ago — and it was served as current either way.
         "manifest": manifest_mod.content_fingerprint(m),
+        # Where the words came from. "captions" on a run that asked for ASR means
+        # every line downstream was translated from a caption track that mangles
+        # exactly the words that matter (AGENTS.md, invariant 4) — the single most
+        # useful thing to know when a dub reads like nonsense.
+        "transcript_origin": transcript.origin(m),
         "segments": len(segments),
         "dubbed": len(dubbed),
         "kept": len(kept),

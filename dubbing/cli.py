@@ -176,7 +176,12 @@ def stage_params(args: argparse.Namespace, m: dict[str, Any]) -> dict[str, dict[
         "fetch": {"source": args.source, "captions": str(args.captions or ""),
                   "duration": args.duration, "src": args.src},
         "stems": {},
-        "transcript": {"src": args.src, "tgt": args.tgt, "prefer": args.transcript},
+        # `origin` is this stage's own output (ASR, or the captions fallback when
+        # ASR was unavailable), and the two produce different words for the same
+        # parameters — so a run whose transcript source changed invalidates
+        # everything built on it, instead of caching a degraded transcript forever.
+        "transcript": {"src": args.src, "tgt": args.tgt, "prefer": args.transcript,
+                       "origin": m["source"].get("transcript_origin")},
         # segments reads tgt_lang from the manifest, so the pair must be in its
         # fingerprint — with params={} changing --tgt never invalidated it.
         "segments": {"src": args.src, "tgt": args.tgt, "dub_foreign": args.dub_foreign,
@@ -184,7 +189,14 @@ def stage_params(args: argparse.Namespace, m: dict[str, Any]) -> dict[str, dict[
         "translate": {"src": args.src, "tgt": args.tgt,
                       "context": m["source"].get("context") or "",
                       "register": args.register, "genre": args.genre},
-        "tts": {"model": args.tts_model, "tgt": args.tgt},
+        # Two version knobs that change the audio and are not otherwise in here:
+        # the reference-building recipe (`m["speakers"]` survives a tts reset, so
+        # nothing else would notice a new one) and the Hebrew LoRA's tag. Bumping
+        # either used to leave every existing clip in place — `needs_synthesis`
+        # answers by file existence — and quietly ship the old voice.
+        "tts": {"model": args.tts_model, "tgt": args.tgt,
+                "refs": tts_mod.Engine.REF_BUILD,
+                **({"adapter": hebrew.ADAPTER_TAG} if hebrew.is_hebrew(args.tgt) else {})},
         "timeline": {"genre": args.genre},
         "mix": {},
         "report": {},
@@ -301,6 +313,19 @@ def main(argv: list[str] | None = None) -> int:
         elif stage == "transcript":
             transcript.run(m, workdir, src_lang=args.src, tgt_lang=args.tgt,
                            prefer=args.transcript)
+            # This stage's fingerprint contains its own verdict about where the
+            # words came from, so the mark has to describe what it produced, not
+            # what was known before it ran — otherwise a first run would spend the
+            # next one redoing the whole pipeline to reach the same answer.
+            params = stage_params(args, m)
+            fp = manifest.stage_fingerprint(m, stage, params[stage])
+            if transcript.is_fallback(m, args.transcript):
+                print("  transcript: this is the captions fallback, not ASR — the "
+                      "next run will try the ASR again", file=sys.stderr)
+                manifest.mark_provisional(m, stage, fp)
+                save()
+                print(f"[{stage}] done in {time.time() - t0:.0f}s", file=sys.stderr)
+                continue
         elif stage == "segments":
             words = words or transcript.load_words(workdir, m)
             segments.run(m, workdir, words, transcript.load_foreign_spans(workdir, m),

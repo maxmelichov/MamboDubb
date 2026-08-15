@@ -246,6 +246,25 @@ def mark_stage(m: dict[str, Any], stage: str, fp: str) -> None:
     m.setdefault("stages", {})[stage] = {"fp": fp}
 
 
+# Suffix on a stage mark that says "this ran, and it is not the answer that was
+# asked for" — see `mark_provisional`. Never equal to a recomputed fingerprint.
+PROVISIONAL = "~provisional"
+
+
+def mark_provisional(m: dict[str, Any], stage: str, fp: str) -> None:
+    """Record what `stage` produced while saying it is not what was asked for.
+
+    A transcript that fell back to captions because the ASR was unavailable is a
+    real result — everything downstream is built on it and must not be thrown
+    away — but it is not the transcript the run asked for, so the next run has to
+    try again. A mark that can never equal a recomputed fingerprint says both at
+    once: this stage re-runs, and the stages after it keep their place in the
+    chain for as long as the fallback keeps producing the same thing. Marked, not
+    left blank, so `--stages` still sees a stage that has run.
+    """
+    mark_stage(m, stage, fp + PROVISIONAL)
+
+
 def clear_stage(m: dict[str, Any], stage: str) -> None:
     """Force a full redo of `stage`, discarding even resumable partial work."""
     (m.get("stages") or {}).pop(stage, None)

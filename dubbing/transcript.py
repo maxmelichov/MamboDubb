@@ -1258,6 +1258,24 @@ def run(m: dict[str, Any], workdir: Path, *, src_lang: str, tgt_lang: str = "en"
           file=sys.stderr)
 
 
+def origin(m: dict[str, Any]) -> str | None:
+    """Where the transcript on record came from: "asr", "captions", or nothing yet."""
+    return (m.get("source") or {}).get("transcript_origin")
+
+
+def is_fallback(m: dict[str, Any], prefer: str = "auto") -> bool:
+    """True when the transcript is the captions fallback, not the one asked for.
+
+    Captions are authoritative about *where* the target language is spoken and
+    nowhere else — they mangle exactly the words that matter (AGENTS.md, invariant
+    4) — so a run that asked for ASR and got captions because the model was
+    missing is running on a degraded transcript. It is a real result and
+    everything downstream is built on it, but it is not an answer to cache: the
+    next run has to try the ASR again.
+    """
+    return prefer != "captions" and origin(m) == "captions"
+
+
 def load_words(workdir: Path, m: dict[str, Any]) -> list[dict[str, Any]]:
     data = json.loads((workdir / m["files"]["words"]).read_text(encoding="utf-8"))
     return data["words"]
