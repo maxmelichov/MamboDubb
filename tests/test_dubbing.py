@@ -1779,3 +1779,15 @@ def test_a_named_witness_outranks_the_target_script():
               "text": "What plane is missing"}]
     segments.mark_keep(segs3, spans, target="en")
     assert segs3[0]["keep"] and segs3[0]["keep_reason"] == "latin"
+
+
+def test_speakable_none_for_failed_locked_dub():
+    # translate.mark_failed on a user-locked "dub it" leaves keep=false with no
+    # translation. tts.run used to crash on seg["text_en"] for exactly this
+    # shape; speakable() names it a real state instead.
+    failed = {"id": 3, "start": 0.0, "end": 2.0, "text": "שלום",
+              "keep": False, "keep_reason": "mt_failed",
+              "locked": {"keep": True}}
+    assert tts.speakable(failed) is None
+    assert tts.speakable({"text_en": "   "}) is None
+    assert tts.speakable({"text_en": "Guten Tag"}) == "Guten Tag"

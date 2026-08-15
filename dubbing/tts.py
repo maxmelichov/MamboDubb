@@ -577,6 +577,20 @@ def stale_locked_clip(seg: dict[str, Any]) -> bool:
     return manifest.is_locked(seg, "tts") and clip_text_stale(seg)
 
 
+def speakable(seg: dict[str, Any]) -> str | None:
+    """The text this dubbed segment can be synthesized from, or None.
+
+    None is a real state, not an error: `translate.mark_failed` honours a
+    user-locked "dub it" by leaving `keep` false with NO translation — the
+    failure was the translator's, and flipping the verdict would be the
+    overwrite that path refused. Such a segment reaches this stage with
+    nothing to speak; the stage's answer is the universal fallback
+    (`keep_clip`), not a crash and not a re-decided verdict.
+    """
+    text = (seg.get("text_en") or "").strip()
+    return text or None
+
+
 def needs_synthesis(seg: dict[str, Any], workdir: Path) -> bool:
     """True when this dubbed segment has no clip that still matches its options.
 
@@ -1487,7 +1501,18 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
     done = 0
     with cf.ThreadPoolExecutor(max_workers=1) as vpool:
         for seg in todo:
-            plan = engine._plan(seg, seg["text_en"])
+            text = speakable(seg)
+            if text is None:
+                # mt_failed on a user-locked dub: nothing to speak. The line
+                # plays its original slice — exactly what the editor promises
+                # of a failed translation — and stays failed until the user
+                # re-translates it.
+                if keep_needs_slice(seg, workdir):
+                    seg["tts"] = engine.keep_clip(seg)
+                print(f"  tts: seg {seg['id']} has no translation — the original "
+                      "plays until it is re-translated", file=sys.stderr)
+                continue
+            plan = engine._plan(seg, text)
             if plan is None:
                 retry.append(seg)
                 continue
