@@ -411,18 +411,26 @@ function Row({
           title={
             seg.keep
               ? "No dub exists — this line keeps the original, so A and B would be the same audio"
-              : "Play what actually went into the mix, after time-fitting"
+              : seg.media?.fallback
+                ? "No dub yet — the mix plays the original here until this line is translated and voiced"
+                : "Play what actually went into the mix, after time-fitting"
           }
           // A kept line's placed clip IS the original slice; letting B play it
           // sounds identical to A, which a user reads as "the buttons are
-          // swapped". No dub means no B.
+          // swapped". No dub means no B — and the same is true of a dub-wanted
+          // line whose voice fell back to the original slice (`media.fallback`):
+          // a fallback is not a dub, it is the absence of one.
           emptyTitle={
             seg.keep
               ? "No dub exists — this line keeps the original, so A and B would be the same audio"
-              : undefined
+              : seg.media?.fallback
+                ? "No dub yet — the mix plays the original here until this line is translated and voiced"
+                : undefined
           }
-          url={seg.keep ? null : dubUrl}
-          playing={playingUrl != null && !seg.keep && playingUrl === dubUrl}
+          url={seg.keep || seg.media?.fallback ? null : dubUrl}
+          playing={
+            playingUrl != null && !seg.keep && !seg.media?.fallback && playingUrl === dubUrl
+          }
           onPlay={onPlay}
         />
         <RowMenu

@@ -241,6 +241,11 @@ function enrich(seg: Segment): Segment {
         : null,
       source: toneUrl({ hz: speakerHz(seg.speaker, 0), dur: sourceDur, seed }),
       source_window: [seg.start, seg.end],
+      // Server rule verbatim: a dub-wanted line wearing a keep-slice is a
+      // fallback, not a dub (dubbing_app/projects.py).
+      fallback: Boolean(
+        !seg.keep && (seg.place?.clip ?? "").split("/").pop()?.startsWith("keep_"),
+      ),
     },
   };
 }

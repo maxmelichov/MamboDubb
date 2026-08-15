@@ -75,6 +75,13 @@ export type SegmentMedia = {
   /** this segment's window of the source audio, as a `#t=` media fragment */
   source: string | null;
   source_window?: [number, number] | null;
+  /**
+   * True when a dub-wanted line's placed clip is the original-audio slice —
+   * tts's universal fallback for a line it could not voice (no translation,
+   * failed synthesis). Its "dub" then IS the original, and the row must say
+   * so instead of letting Orig and Dub play identical audio unexplained.
+   */
+  fallback?: boolean;
 };
 
 /**

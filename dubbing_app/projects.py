@@ -234,6 +234,15 @@ class Projects:
             "tts": self.media_url(name, tts.get("clip"), workdir),
             "source": f"{media_path(name, source_wav)}#t={start:.3f},{end:.3f}",
             "source_window": [start, end],
+            # A dub-wanted line can wear an original-audio slice: tts gives an
+            # unspeakable dub (no translation, failed synthesis) the universal
+            # fallback rather than silence. Its "dub" then sounds exactly like
+            # the original — true, and baffling unless the UI says so. Keep
+            # slices are span-keyed `keep_*.wav` files, which is the seam this
+            # reads; a kept line's slice is not a fallback, it is the verdict.
+            "fallback": bool(not seg.get("keep")
+                             and str(place.get("clip") or "").split("/")[-1]
+                             .startswith("keep_")),
         }
         out["verify"] = self.verdict(workdir, tts.get("clip"))
         return out
