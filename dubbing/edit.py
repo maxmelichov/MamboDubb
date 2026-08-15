@@ -54,6 +54,14 @@ class SegmentNotFound(EditError):
     """No segment with that uid."""
 
 
+class RebuildIncomplete(RuntimeError):
+    """A rebuild ran to the end and the report says the dub still has holes.
+
+    Not an `EditError`: the caller asked for something perfectly valid and the
+    pipeline could not deliver it. `cli.main` says the same thing by exiting 1.
+    """
+
+
 def _progress(progress: Progress | None, fraction: float, message: str) -> None:
     if progress is not None:
         progress(max(0.0, min(1.0, float(fraction))), message)
@@ -130,6 +138,12 @@ def invalidate(m: dict[str, Any], uid: str, *, stages: set[str]) -> set[str]:
     looks past the lock at what the user actually said (`keep.user_wants_dub`),
     and old manifests carrying that contradiction repair themselves on first
     touch.
+
+    The run's stage marks come off with the fields (`manifest.reopen_from`, mix and
+    report included). Deleting a clip while nine stages still say "done" is how an
+    edited segment ended up silent in a dub the CLI called up to date: nothing
+    would ever refill the hole, and `report.json` went on claiming full coverage.
+    Every caller gets that for free — which is why it lives here and not in them.
     """
     seg = _require(m, uid)
     want: set[str] = set()
@@ -139,6 +153,7 @@ def invalidate(m: dict[str, Any], uid: str, *, stages: set[str]) -> set[str]:
                             f"{', '.join(sorted(STAGE_FIELDS))}")
         want.add(stage)
         want.update(DOWNSTREAM[stage])
+    manifest.reopen_from(m, min(want, key=STAGES.index))
 
     dropped: set[str] = set()
     for stage in ("translate", "tts", "timeline"):
@@ -392,6 +407,12 @@ def split(m: dict[str, Any], uid: str, at: float) -> tuple[str, str]:
     m["segments"][i:i + 1] = [left, right]
     manifest.ensure_uids(m["segments"])
     _renumber(m)
+    # Two segments with nothing generated for them, in a run that says translate
+    # onward is done. Reopened here rather than in `invalidate` (no field was
+    # dropped — the whole segment was replaced), and never earlier than translate:
+    # re-running the segments stage would rebuild the list from the words and
+    # undo the cut. `mark_keep` re-decides the halves the way it decided the whole.
+    manifest.reopen_from(m, "translate")
     return left["uid"], right["uid"]
 
 
@@ -430,6 +451,7 @@ def merge(m: dict[str, Any], uid_a: str, uid_b: str) -> str:
     m["segments"][i:j + 1] = [merged]
     manifest.ensure_uids(m["segments"])
     _renumber(m)
+    manifest.reopen_from(m, "translate")   # one new segment, nothing generated for it
     return merged["uid"]
 
 
@@ -744,6 +766,38 @@ def _replace_timeline(m: dict[str, Any], workdir: Path) -> bool:
     return True
 
 
+def start_stage(m: dict[str, Any], from_stage: str) -> tuple[str, str | None]:
+    """Where a rebuild from `from_stage` must really start, and why.
+
+    A rebuild is asked for a stage; what it can *run* depends on what the segments
+    hold. `timeline.build_items` reads `seg["tts"]` for every segment in one
+    forward pass and `tts.run` reads `seg["text_en"]` for every dubbed one, so
+    either dies with a bare `KeyError` on the ordinary post-edit manifest — the
+    state every corrected-but-not-yet-revoiced line leaves behind.
+
+    So the missing work is *made*, not tripped over: a render that finds segments
+    without audio starts at tts, and one that finds dubbed segments without a line
+    starts at translate. Backing up is the honest reading of "render this run" and
+    it is what `_replace_timeline` already does per call; refusing would leave the
+    user with a button that only works on runs that did not need it. Never the
+    other direction — a rebuild asked for translate is not quietly narrowed.
+    """
+    idx = STAGES.index(from_stage)
+    segs = m.get("segments") or []
+    if idx > STAGES.index("translate"):
+        untranslated = [s for s in segs
+                        if not s.get("keep") and not (s.get("text_en") or "").strip()]
+        if untranslated:
+            return "translate", (f"{len(untranslated)} segment(s) have no line to "
+                                 f"speak — starting from translate")
+    if idx > STAGES.index("tts"):
+        unvoiced = [s for s in segs if not (s.get("tts") or {}).get("clip")]
+        if unvoiced:
+            return "tts", (f"{len(unvoiced)} segment(s) have no audio — starting "
+                           f"from tts")
+    return from_stage, None
+
+
 def rebuild(m: dict[str, Any], workdir: Path, *, from_stage: str,
             progress: Progress | None = None, save: Callable[[], None] | None = None,
             **overrides: Any) -> list[str]:
@@ -757,6 +811,15 @@ def rebuild(m: dict[str, Any], workdir: Path, *, from_stage: str,
 
     Only the manifest-side stages can be rebuilt — anything before `translate` needs
     the source media and belongs to a real run.
+
+    What it can actually run is decided *before* anything is cleared
+    (`start_stage`): this used to reset timeline, mix and report and only then die
+    on the first segment with no clip, which left the run strictly worse than the
+    Render button found it.
+
+    Raises `RebuildIncomplete` when the report it ends on finds segments with no
+    audio — the same verdict `python -m dubbing` exits 1 on, so a render job fails
+    instead of reporting success over a dub with holes in it.
     """
     from . import cli, mix, report
     from . import timeline as timeline_mod
@@ -766,6 +829,10 @@ def rebuild(m: dict[str, Any], workdir: Path, *, from_stage: str,
     if from_stage not in REBUILDABLE:
         raise EditError(f"cannot rebuild from {from_stage!r}; choose from "
                         f"{', '.join(REBUILDABLE)}")
+    from_stage, why = start_stage(m, from_stage)
+    if why:
+        print(f"  edit: {why}", file=sys.stderr)
+        _progress(progress, 0.0, why)
     args = _args(m, **overrides)
     params = cli.stage_params(args, m)
     todo = [s for s in STAGES[STAGES.index(from_stage):]]
@@ -777,6 +844,7 @@ def rebuild(m: dict[str, Any], workdir: Path, *, from_stage: str,
 
     save = save or (lambda: manifest.save(workdir, m))
     engine = None
+    unaccounted: list[int] = []
     try:
         for n, stage in enumerate(todo):
             _progress(progress, n / len(todo), f"{stage}")
@@ -798,23 +866,33 @@ def rebuild(m: dict[str, Any], workdir: Path, *, from_stage: str,
                     engine = None
                 mix.run(m, workdir)
             elif stage == "report":
-                report.run(m, workdir)
+                unaccounted = list((report.run(m, workdir) or {}).get("unaccounted") or [])
             manifest.mark_stage(m, stage, manifest.stage_fingerprint(m, stage, params[stage]))
             save()
     finally:
         if engine is not None:
             engine.close()
     _progress(progress, 1.0, f"rebuilt {len(todo)} stage(s)")
+    if unaccounted:
+        # `cli.main` exits 1 on exactly this, and the app's job runner treats a
+        # non-zero exit as a failed job. A render that ends with segments the mix
+        # has no audio for is the same failure through a different door, and
+        # reporting it as success is how a dub with holes reaches the user.
+        raise RebuildIncomplete(
+            f"{len(unaccounted)} segment(s) have no audio in the mix "
+            f"({', '.join(str(i) for i in unaccounted[:8])}"
+            f"{'…' if len(unaccounted) > 8 else ''}) — see report.json")
     return todo
 
 
 def _args(m: dict[str, Any], **overrides: Any):
-    """CLI arguments for this run: argparse's defaults, then whatever it recorded.
+    """CLI arguments for this run: whatever it recorded, then the CLI's defaults.
 
     The run's settings live in `m["source"]`, so a rebuild reproduces the fingerprints
-    of the run that made the manifest instead of inventing new ones. A setting the
-    run never recorded (genre, register, tts model — the CLI does not store them
-    today) falls back to the CLI default; a caller that knows better passes it in.
+    of the run that made the manifest instead of inventing new ones — the same
+    resolution `cli.main` applies to a bare re-run (`cli.resolve_settings`), so the
+    two paths cannot drift. A setting the run never recorded falls back to the CLI
+    default; a caller that knows better passes it in.
     """
     from . import cli
 
@@ -830,12 +908,14 @@ def _args(m: dict[str, Any], **overrides: Any):
     # settings under source["app_opts"]. Reading only the flat spelling made
     # every app-created project silently fall back to CLI defaults here — a
     # "movie" run re-placed its timeline with documentary timing on every
-    # per-line re-voice. Flat wins when both exist (it is the older writer).
+    # per-line re-voice. Flat wins when both exist (it is the older writer), and
+    # `cli.resolve_settings` fills in whatever neither recorded, exactly as a bare
+    # re-run does, so the two front ends cannot disagree about a run's settings.
     app_opts = src.get("app_opts") or {}
-    for key in ("register", "genre", "transcript", "tts_model", "dub_foreign", "device"):
-        value = src.get(key) if src.get(key) is not None else app_opts.get(key)
-        if value is not None:
-            setattr(args, key, value)
+    recorded = {**app_opts, **{k: v for k, v in src.items() if v is not None}}
+    cli.resolve_settings(args, {"source": recorded})
+    if recorded.get("device") is not None:   # not a recorded setting; the app's alone
+        args.device = recorded["device"]
     for key, value in overrides.items():
         if not hasattr(args, key):
             raise EditError(f"unknown option {key!r}")

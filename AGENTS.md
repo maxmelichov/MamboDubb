@@ -75,6 +75,12 @@ true, not working around them.
    `untranslated` — instead of answering with a keep. A keep written over the user's
    word does not merely overrule them; it contradicts `passthrough`, and the next run's
    `apply_passthrough` flips it back and re-renders the tail of the run forever.
+10. **An edit reopens the stages whose work it deleted.** Dropping a segment's
+    translation, clip or placement while the run still says those stages are done is how
+    an edited line ends up silent in a dub the CLI calls up to date. `edit.invalidate`
+    calls `manifest.reopen_from`, which un-marks that stage onward (mix and report
+    included) and keeps the *progress* marks, so the reruns resume and refill only the
+    hole rather than rebuilding the whole run.
 
 ## Passthrough — the editor app's per-segment override
 
@@ -161,7 +167,13 @@ non-overlapping.
 - The pure logic (segmentation, placement, translation guards) is unit tested without
   models in `tests/test_dubbing.py` — add a test alongside the change.
 - Bump a stage's tag in `manifest.STAGE_TAGS` when its logic changes; that invalidates
-  its cached output and everything after it.
+  its cached output and everything after it. Changing what a stage's *fingerprint is
+  made of* (`cli.stage_params`) invalidates it too, and is the right move when a new
+  input decides the output — the tag is for logic.
+- A stage that ran but could not do what was asked is marked **provisional**
+  (`manifest.mark_provisional`): the transcript that fell back to captions because the
+  ASR was missing runs again next time, while the stages after it keep their place in
+  the chain for as long as the fallback keeps producing the same words.
 - `uv` only. Python 3.12. Secrets in `.env` (`HF_TOKEN` for Pyannote).
 
 ## Device notes (Apple Silicon)

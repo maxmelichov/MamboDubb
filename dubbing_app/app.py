@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from dubbing import STAGES, manifest
 
-from . import errors, events, install, media, ops, peaks, setup, ui
+from . import errors, events, install, jobs as jobs_mod, media, ops, peaks, setup, ui
 from .errors import ApiError, busy, invalid, not_found
 from .events import EventBus
 from .jobs import JobQueue
@@ -176,6 +176,14 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
 
         They renumber `seg["id"]`, which the running stage is iterating over.
         Field edits are allowed at any time — the contract requires it.
+
+        Called **inside** `lock_for(name)`, never before it: checked outside, a job
+        could start in the window between the check and the write, and the job
+        child — which loaded the manifest before the split existed — would write
+        its own segment list back over it (`worker.Journal`, which matches by uid
+        and cannot re-apply a segment it has never seen). The lock does not stop
+        the worker thread, so the journal reports what it finds as a conflict; this
+        closes the half of the race the server owns.
         """
         for job in queue.active(name):
             if job.status == "running":
@@ -286,10 +294,14 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
     @app.get("/api/projects/{name}")
     def get_project(name: str) -> dict[str, Any]:
         m = projects.load(name)
-        return {"name": name, "manifest": m, "report": projects.report(name),
-                "stages": projects.stage_status(m),
-                "summary": projects.summary(name),
-                "jobs": [j.to_dict() for j in queue.list(name)]}
+        # The queue is the only thing that knows a stage is running right now or
+        # that one died: the manifest records what finished, and an unfinished
+        # stage is indistinguishable from one that was never reached.
+        jobs = [j.to_dict() for j in queue.list(name)]
+        return {"name": name, "manifest": m, "report": projects.report(name, m),
+                "stages": projects.stage_status(m, jobs),
+                "summary": projects.summary(name, jobs),
+                "jobs": jobs}
 
     # -- segments ----------------------------------------------------------
 
@@ -311,9 +323,9 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
             raise invalid("empty patch")
         if ("start" in fields) != ("end" in fields):
             raise invalid("start and end must be changed together")
-        if "start" in fields:
-            guard_structural(name)
         with lock_for(name):
+            if "start" in fields:
+                guard_structural(name)
             m = projects.load(name)
             try:
                 seg = _apply_patch(m, uid, fields)
@@ -326,8 +338,8 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
 
     @app.post("/api/projects/{name}/segments/{uid}/split")
     def split_segment(name: str, uid: str, body: SplitBody) -> dict[str, Any]:
-        guard_structural(name)
         with lock_for(name):
+            guard_structural(name)
             m = projects.load(name)
             try:
                 uid_a, uid_b = ops.split(m, uid, body.at)
@@ -341,8 +353,8 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
     @app.post("/api/projects/{name}/segments/{uid}/merge")
     def merge_segment(name: str, uid: str, body: MergeBody = Body(default=MergeBody())
                       ) -> dict[str, Any]:
-        guard_structural(name)
         with lock_for(name):
+            guard_structural(name)
             m = projects.load(name)
             other = body.other or body.uid or _next_uid(m, uid)
             if not other:
@@ -374,16 +386,33 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
 
     @app.get("/api/projects/{name}/events")
     async def project_events(name: str, request: Request):
+        """The stream, opened with a prelude that catches a new reader up.
+
+        Two things the prelude must not do, both learned from the client:
+
+        * **Nothing terminal is replayed.** A failed or cancelled job replayed on
+          every reconnect resurrects an error bar the user dismissed an hour ago,
+          and the UI reconnects on every navigation and every wake from sleep.
+          Only work that is still queued or running is news.
+        * **Replayed stage frames say so** (`"replay": true`). They are a snapshot
+          of nine stages at once, not a progression, so a client that pins its
+          display to "the last stage frame seen" would read the ninth as the stage
+          the run is in.
+        """
         m = projects.load(name)
         sub = bus.subscribe(name)
         prelude: list[dict[str, Any]] = [
             {"type": "log", "level": "info", "message": f"watching {name}"},
         ]
-        status = projects.stage_status(m)
-        prelude += [events.stage_event(s, status[s], 1.0 if status[s] == "done" else None)
+        jobs = [j.to_dict() for j in queue.list(name)]
+        status = projects.stage_status(m, jobs)
+        prelude += [{**events.stage_event(s, status[s],
+                                          1.0 if status[s] == "done" else None),
+                     "replay": True}
                     for s in STAGES]
-        prelude += [events.job_event(j.id, j.status, j.error, kind=j.kind, project=j.project)
-                    for j in queue.list(name) if j.status not in ("done",)]
+        prelude += [events.job_event(j["id"], j["status"], j["error"],
+                                     kind=j["kind"], project=j["project"], replay=True)
+                    for j in jobs if j["status"] not in jobs_mod.TERMINAL]
         return StreamingResponse(
             events.stream(sub, prelude=prelude),
             media_type="application/x-ndjson",

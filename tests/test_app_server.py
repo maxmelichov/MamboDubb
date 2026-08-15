@@ -211,6 +211,74 @@ def test_get_project(client):
     assert len(body["manifest"]["segments"]) == 5
 
 
+def test_stage_status_folds_in_the_live_queue(outputs):
+    """`done`/`pending` is all the manifest can say. Running and failed live in the
+    queue, and without them the UI's whole failure treatment is unreachable."""
+    from dubbing_app.projects import Projects
+
+    m = manifest.load(outputs / NAME)
+    m["stages"].pop("mix"), m["stages"].pop("report")
+    assert Projects.stage_status(m)["mix"] == "pending"
+
+    running = {"id": "a", "status": "running", "stage": "mix", "error": None}
+    assert Projects.stage_status(m, [running])["mix"] == "running"
+
+    failed = {"id": "b", "status": "failed", "stage": "mix", "error": "boom"}
+    assert Projects.stage_status(m, [failed])["mix"] == "failed"
+    # A job that succeeded afterwards is the newer answer about that stage.
+    later = {"id": "c", "status": "done", "stage": "report", "error": None}
+    assert Projects.stage_status(m, [failed, later])["mix"] == "pending"
+    # …and a job running now outranks an older failure on the same stage.
+    assert Projects.stage_status(m, [failed, running])["mix"] == "running"
+
+
+def test_a_failed_job_is_reported_on_the_stage_it_died_in(outputs):
+    class Boom:
+        def run(self, job, emit):
+            emit(events.stage_event("mix", "running", 0.2, "muxing"))
+            raise RuntimeError("mix died")
+
+        def cancel(self, job):
+            pass
+
+    with TestClient(create_app(outputs, runner=Boom(), ui_dir="")) as c:
+        job = c.post(f"/api/projects/{NAME}/render", json={}).json()["job"]
+        assert wait_until(lambda: c.get(f"/api/jobs/{job['id']}").json()["job"]["status"]
+                          == "failed")
+        body = c.get(f"/api/projects/{NAME}").json()
+    assert body["stages"]["mix"] == "failed"
+    assert body["summary"]["stages"]["mix"] == "failed"
+
+
+def stamp_report(workdir):
+    """Re-stamp the fixture's report.json the way `report.run` does."""
+    m = manifest.load(workdir)
+    path = workdir / "report.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["manifest"] = manifest.content_fingerprint(m)
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_a_report_that_predates_the_stamp_is_not_served_as_current(client):
+    # It cannot prove it is about this manifest, and it was being shown as if it
+    # were: nothing in report.json referred to the segments it counted.
+    assert client.get(f"/api/projects/{NAME}").json()["report"]["stale"] is True
+
+
+def test_a_report_goes_stale_the_moment_an_edit_lands(client, outputs):
+    stamp_report(outputs / NAME)
+    body = client.get(f"/api/projects/{NAME}").json()
+    assert body["report"]["stale"] is False and body["report"]["segments"] == 5
+
+    uid = body["manifest"]["segments"][1]["uid"]
+    assert client.patch(f"/api/projects/{NAME}/segments/{uid}",
+                        json={"text_en": "A better line"}).status_code == 200
+    after = client.get(f"/api/projects/{NAME}").json()["report"]
+    # Still served — the numbers were true of the render that produced them — but
+    # no longer claimed to be about the manifest the editor is showing.
+    assert after["stale"] is True and after["segments"] == 5
+
+
 def test_uids_are_minted_once_and_persisted(client, outputs):
     first = [s["uid"] for s in client.get(f"/api/projects/{NAME}/segments").json()["segments"]]
     second = [s["uid"] for s in client.get(f"/api/projects/{NAME}/segments").json()["segments"]]
@@ -752,6 +820,51 @@ def test_events_prelude_reports_stage_state(live):
     stages = {f["stage"]: f for f in frames if f["type"] == "stage"}
     assert len(stages) == 9
     assert stages["mix"]["status"] == "done" and stages["mix"]["progress"] == 1.0
+    # A snapshot of nine stages at once, not a progression: marked so a client
+    # that follows "the last stage frame seen" does not read the ninth as the
+    # stage this run is in.
+    assert all(f["replay"] is True for f in stages.values())
+
+
+def test_events_prelude_does_not_resurrect_a_finished_failure(outputs, monkeypatch):
+    """The UI reopens this stream on every navigation and every wake from sleep.
+    Replaying a terminal job puts the error bar the user dismissed an hour ago back
+    on the screen, for a job that is long over."""
+    monkeypatch.setattr(events, "HEARTBEAT_SECONDS", 0.05)
+
+    class Boom:
+        def run(self, job, emit):
+            raise RuntimeError("mix died")
+
+        def cancel(self, job):
+            pass
+
+    with live_server(create_app(outputs, runner=Boom(), ui_dir="")) as base:
+        with httpx.Client(base_url=base, timeout=20.0) as c:
+            job = c.post(f"/api/projects/{NAME}/render", json={}).json()["job"]
+            assert wait_until(lambda: c.get(f"/api/jobs/{job['id']}").json()["job"]["status"]
+                              == "failed")
+            with c.stream("GET", f"/api/projects/{NAME}/events") as r:
+                frames = Frames(r)
+                assert frames.until(lambda f: f["type"] == "heartbeat") is not None
+    assert [f for f in frames.seen if f["type"] == "job"] == []
+
+
+def test_events_prelude_still_replays_work_in_flight(outputs, monkeypatch):
+    """The other half: a job that has not finished is exactly what a reconnecting
+    client has to be told about, and it is marked as a replay, not as news."""
+    monkeypatch.setattr(events, "HEARTBEAT_SECONDS", 0.05)
+    hold = threading.Event()
+    with live_server(create_app(outputs, runner=FakeRunner(hold=hold), ui_dir="")) as base:
+        with httpx.Client(base_url=base, timeout=20.0) as c:
+            job = c.post(f"/api/projects/{NAME}/render", json={}).json()["job"]
+            assert wait_until(lambda: c.get(f"/api/jobs/{job['id']}").json()["job"]["status"]
+                              == "running")
+            with c.stream("GET", f"/api/projects/{NAME}/events") as r:
+                frames = Frames(r)
+                replayed = frames.until(lambda f: f["type"] == "job")
+            hold.set()
+    assert replayed["id"] == job["id"] and replayed["replay"] is True
 
 
 def test_events_carry_job_and_stage_progress(live):
@@ -1047,6 +1160,61 @@ def test_a_render_merges_at_every_stage_save(outputs, monkeypatch):
     monkeypatch.setattr(ops, "rebuild", fake_rebuild)
     worker.execute({"kind": "render", "workdir": str(workdir), "payload": {}})
     assert ops.find(manifest.load(workdir), edited)["text_en"] == "hand corrected"
+
+
+def test_a_journal_reports_a_split_that_landed_under_it(outputs, capsys):
+    """`guard_structural` refuses a split while a job runs, but the check and the
+    job's start are not one atomic act. When one does land, the child's list is
+    stale — it has never seen either half — and `merge` matches by uid, so it
+    would keep its own list and undo the split without a word."""
+    from dubbing_app.worker import Journal
+
+    workdir = outputs / NAME
+    m = manifest.load(workdir)
+    journal = Journal(workdir, m)
+
+    disk = manifest.load(workdir)
+    uid = disk["segments"][2]["uid"]
+    halves = ops.split(disk, uid, 6.0)
+    manifest.save(workdir, disk)
+
+    journal.merge(manifest.load(workdir))
+    frames = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
+    conflict = next(f for f in frames if f["type"] == "log" and f["level"] == "error")
+    assert "segment list changed on disk" in conflict["message"]
+    assert any(u in conflict["message"] for u in (uid,) + halves)
+
+
+def test_a_journal_says_nothing_when_only_fields_changed(outputs, capsys):
+    from dubbing_app.worker import Journal
+
+    workdir = outputs / NAME
+    journal = Journal(workdir, manifest.load(workdir))
+    edit_on_disk(workdir, manifest.load(workdir)["segments"][3]["uid"],
+                 text_en="hand corrected")
+    journal.merge(manifest.load(workdir))
+    assert "error" not in capsys.readouterr().out
+
+
+def test_a_structural_edit_is_guarded_under_the_lock_it_writes_in(outputs):
+    """Checked before the lock, the guard leaves a window: a job that starts in it
+    is one the split is invisible to. The check belongs to the same critical
+    section as the write."""
+    import inspect
+
+    source = inspect.getsource(app_mod.create_app)
+    for route in ("def split_segment", "def merge_segment", "def patch_segment"):
+        body = source.split(route, 1)[1].split("\n    @app.", 1)[0]
+        assert body.index("with lock_for(name):") < body.index("guard_structural(name)")
+
+
+def test_a_job_carries_the_segments_it_is_about(client, fake):
+    uid = uids(client)[1]
+    job = client.post(f"/api/projects/{NAME}/resynthesize",
+                      json={"uids": [uid]}).json()["job"]
+    assert job["uids"] == [uid]
+    # A whole-run job is about the whole run, and says so as a list, not a null.
+    assert client.post(f"/api/projects/{NAME}/render", json={}).json()["job"]["uids"] == []
 
 
 def test_a_job_keeps_its_own_work_when_nothing_else_changed(outputs):

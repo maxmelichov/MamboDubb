@@ -52,9 +52,13 @@ class Journal:
     Comparing against a snapshot rather than against `locked` alone is what makes
     a *release* (`PATCH {"locked": {}}`, which deletes keys) replay too.
 
-    Matching by `uid` is enough: structural edits renumber segments and the server
-    refuses them outright while a job is running (`guard_structural`), so the
-    segment set cannot change underneath this.
+    Matching by `uid` is enough for field edits, which is what the server allows
+    while a job runs. A *structural* edit is a different thing — a split retires
+    the uid this child holds a clip for and makes two it has never seen — and the
+    merge cannot re-apply one: it would silently keep its own list and undo the
+    split. `guard_structural` refuses those edits while a job runs, but the check
+    and the job's start are not one atomic act, so `conflict` says what it found
+    in the job log rather than resolving it quietly.
     """
 
     # `id` is positional and belongs to whoever renumbered last; `uid` is identity.
@@ -70,10 +74,32 @@ class Journal:
         return {seg["uid"]: copy.deepcopy(seg)
                 for seg in (m.get("segments") or []) if seg.get("uid")}
 
+    def conflict(self, disk: dict[str, Any]) -> list[str]:
+        """Segments that appeared or vanished on disk while this job worked.
+
+        Field edits merge cleanly; a *structural* edit does not. A split makes two
+        segments this child has never seen and retires the one it is holding a
+        clip for, and `merge` matches by uid — so it silently keeps its own list
+        and the save undoes the split without a word. `guard_structural` refuses
+        those edits while a job runs, but it cannot be atomic against a job that
+        starts in the same instant, so the last line of defence is to say so
+        rather than to resolve it quietly.
+        """
+        seen = {seg.get("uid") for seg in disk.get("segments") or []} - {None}
+        return sorted(seen.symmetric_difference(self.base))
+
     def merge(self, disk: dict[str, Any] | None) -> list[str]:
         """Re-apply onto our copy the edits `disk` gained since our last write."""
         if not disk:
             return []
+        clash = self.conflict(disk)
+        if clash:
+            log(f"the segment list changed on disk while this job ran "
+                f"({len(clash)} segment(s): {', '.join(clash[:6])}"
+                f"{'…' if len(clash) > 6 else ''}). This job is working from the "
+                f"list as it was, so that structural edit is not in what it is "
+                f"about to write — redo it, or re-run the affected segments.",
+                "error")
         mine = {seg["uid"]: seg for seg in (self.m.get("segments") or []) if seg.get("uid")}
         touched: list[str] = []
         for seg in disk.get("segments") or []:

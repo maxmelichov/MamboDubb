@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from dubbing import cli, edit, manifest, segments, timeline, translate
+from dubbing import STAGES, cli, edit, manifest, segments, timeline, translate
 from dubbing import keep as keep_mod
 from dubbing import tts as tts_mod
 
@@ -41,6 +41,20 @@ def mk(*segs, **source):
         s["id"] = i
     manifest.ensure_uids(m["segments"])
     return m
+
+
+class StubEngine:
+    """A synthesiser that loads nothing. `REF_BUILD` is the real one's: it is in
+    the tts stage's fingerprint, so a stub without it changes what the CLI would
+    compute."""
+
+    REF_BUILD = tts_mod.Engine.REF_BUILD
+
+    def __init__(self, *args, **kw):
+        pass
+
+    def close(self):
+        pass
 
 
 def two_segs():
@@ -292,6 +306,98 @@ def test_invalidate_rejects_an_unknown_stage():
     m = two_segs()
     with pytest.raises(edit.EditError):
         edit.invalidate(m, m["segments"][0]["uid"], stages={"mix"})
+
+
+# ------------------------------------------------- edit: the run's stage marks
+
+def finished(m):
+    """A run where every stage is marked done, as a finished one's manifest is."""
+    m["stages"] = {s: {"fp": f"fp-{s}"} for s in STAGES}
+    m["progress"] = {s: f"fp-{s}" for s in STAGES}
+    return m
+
+
+def test_invalidate_reopens_the_stages_whose_work_it_deleted():
+    m = finished(two_segs())
+    edit.invalidate(m, m["segments"][0]["uid"], stages={"translate"})
+    # Deleting a translation, a clip and a placement while the run still says
+    # "translate: done" is how an edited segment ends up silent: the next run
+    # skips all nine stages, nothing refills the hole, and report.json goes on
+    # claiming every second is covered.
+    assert set(m["stages"]) == {"fetch", "stems", "transcript", "segments"}
+    # …but the *progress* marks stay, so the reopened stages resume and refill
+    # only what was deleted, instead of restarting and rebuilding the whole run.
+    assert set(m["progress"]) == set(STAGES)
+    assert m["segments"][1]["text_en"] == "three four"
+
+
+def test_invalidate_reopens_no_further_back_than_the_stage_it_touched():
+    m = finished(two_segs())
+    edit.invalidate(m, m["segments"][0]["uid"], stages={"timeline"})
+    assert set(m["stages"]) == set(STAGES) - {"timeline", "mix", "report"}
+
+
+@pytest.mark.parametrize("apply,gone", [
+    (lambda m, uid: edit.set_text(m, uid, text_en="a better line"),
+     {"translate", "tts", "timeline", "mix", "report"}),
+    (lambda m, uid: edit.set_text(m, uid, text="שורה אחרת"),
+     {"translate", "tts", "timeline", "mix", "report"}),
+    (lambda m, uid: edit.set_keep(m, uid, True),
+     {"translate", "tts", "timeline", "mix", "report"}),
+    (lambda m, uid: edit.set_langs(m, uid, tgt_lang="ru"),
+     {"translate", "tts", "timeline", "mix", "report"}),
+    (lambda m, uid: edit.set_speaker(m, uid, "S9"), {"tts", "timeline", "mix", "report"}),
+    (lambda m, uid: edit.set_bounds(m, uid, 0.2, 1.9), {"tts", "timeline", "mix", "report"}),
+    (lambda m, uid: edit.set_tts_opts(m, uid, seed=7), {"tts", "timeline", "mix", "report"}),
+])
+def test_every_no_model_edit_reopens_what_it_invalidated(apply, gone):
+    m = finished(two_segs())
+    apply(m, m["segments"][0]["uid"])
+    assert set(STAGES) - set(m["stages"]) == gone
+
+
+def test_a_split_reopens_from_translate_and_never_the_segmentation():
+    m = finished(two_segs())
+    edit.split(m, m["segments"][0]["uid"], 1.0)
+    # `segments` stays done on purpose: re-running it rebuilds the list from the
+    # words and would undo the very cut the user just made.
+    assert set(m["stages"]) == {"fetch", "stems", "transcript", "segments"}
+
+
+def test_a_merge_reopens_from_translate():
+    m = finished(two_segs())
+    a, b = (s["uid"] for s in m["segments"])
+    edit.merge(m, a, b)
+    assert set(m["stages"]) == {"fetch", "stems", "transcript", "segments"}
+
+
+def test_a_headless_rerun_after_an_edit_is_not_up_to_date(tmp_path):
+    """The whole point, end to end: the studio hollows out a segment, and the CLI
+    that runs next has to notice. Every stage output the run declares is on disk,
+    so before this fix `stage_done` answered True nine times and the run printed
+    "up to date" for a manifest with a hole in it."""
+    workdir = tmp_workdir(["clips/a.wav", "clips/b.wav"])
+    for out in ("source.wav", "words.json", "dub.wav", "preview.mp4", "report.json",
+                "stems/vocals.wav", "stems/background.wav"):
+        (workdir / out).parent.mkdir(parents=True, exist_ok=True)
+        (workdir / out).write_text("x")
+
+    args = cli.parse_args([str(workdir / "in.mp4"), "-o", str(workdir)])
+    m = two_segs()
+    params = cli.stage_params(args, m)
+    for stage in STAGES:                       # pretend a full run just finished
+        manifest.mark_stage(m, stage, manifest.stage_fingerprint(m, stage, params[stage]))
+        m["progress"][stage] = m["stages"][stage]["fp"]
+
+    def verdicts():
+        return {s: manifest.stage_done(m, workdir, s,
+                                       manifest.stage_fingerprint(m, s, params[s]),
+                                       cli.STAGE_OUTPUTS[s]) for s in STAGES}
+
+    assert all(verdicts().values())
+    edit.set_text(m, m["segments"][1]["uid"], text_en="What on earth is it")
+    assert [s for s, done in verdicts().items() if not done] == \
+        ["translate", "tts", "timeline", "mix", "report"]
 
 
 # --------------------------------------------------------------- edit: setters
@@ -976,13 +1082,81 @@ def test_rebuild_runs_forward_and_marks_the_stages_the_cli_would(monkeypatch):
     monkeypatch.setattr(timeline, "run", lambda *a, **k: ran.append("timeline"))
     monkeypatch.setattr(mix_mod, "run", lambda *a, **k: ran.append("mix"))
     monkeypatch.setattr(report_mod, "run", lambda *a, **k: ran.append("report") or {})
-    monkeypatch.setattr(tts_mod, "Engine",
-                        lambda *a, **k: type("E", (), {"close": lambda self: None})())
+    monkeypatch.setattr(tts_mod, "Engine", StubEngine)
     monkeypatch.setattr(cli, "_retimers", lambda *a, **k: (None, None))
     done = edit.rebuild(m, tmp_workdir(), from_stage="timeline", save=lambda: None)
     assert done == ["timeline", "mix", "report"] == ran
     assert m["stages"]["fetch"]["fp"] == "old"          # upstream untouched
     assert m["stages"]["timeline"]["fp"] != "old"       # and re-marked, not left stale
+
+
+# --------------------------------------------------- rebuild: look before clearing
+
+@pytest.mark.parametrize("asked,expect", [
+    ("timeline", "timeline"), ("mix", "mix"), ("translate", "translate"),
+])
+def test_start_stage_leaves_a_runnable_rebuild_alone(asked, expect):
+    assert edit.start_stage(two_segs(), asked)[0] == expect
+
+
+def test_start_stage_backs_up_to_tts_for_a_segment_with_no_clip():
+    m = two_segs()
+    edit.set_text(m, m["segments"][1]["uid"], text_en="a better line")   # drops the clip
+    for asked in ("timeline", "mix", "report"):
+        stage, why = edit.start_stage(m, asked)
+        assert stage == "tts" and "no audio" in why
+    # tts is what fills the hole, so a rebuild already starting there is untouched.
+    assert edit.start_stage(m, "tts")[0] == "tts"
+
+
+def test_start_stage_backs_up_to_translate_for_a_line_that_was_never_made():
+    m = two_segs()
+    m["segments"][1].pop("text_en")
+    m["segments"][1].pop("tts")
+    assert edit.start_stage(m, "timeline")[0] == "translate"
+    # A keep speaks its original audio; it needs no translation to be renderable.
+    m["segments"][1].update(keep=True, keep_reason="manual",
+                            tts={"clip": "clips/b.wav", "dur": 1.9})
+    assert edit.start_stage(m, "timeline")[0] == "timeline"
+
+
+def test_rebuild_fills_the_hole_instead_of_clearing_and_dying(monkeypatch):
+    """The Render button on the state an ordinary text edit leaves behind. It used
+    to clear timeline/mix/report first and only then hit `KeyError: 'tts'` inside
+    `timeline.build_items` — leaving the run strictly worse than it found it."""
+    from dubbing import mix as mix_mod
+    from dubbing import report as report_mod
+
+    m = finished(two_segs())
+    edit.set_text(m, m["segments"][1]["uid"], text_en="a better line")
+    ran = []
+    monkeypatch.setattr(tts_mod, "run",
+                        lambda *a, **k: ran.append("tts") or type(
+                            "E", (), {"close": lambda self: None})())
+    monkeypatch.setattr(timeline, "run", lambda *a, **k: ran.append("timeline"))
+    monkeypatch.setattr(mix_mod, "run", lambda *a, **k: ran.append("mix"))
+    monkeypatch.setattr(report_mod, "run", lambda *a, **k: ran.append("report") or {})
+    monkeypatch.setattr(cli, "_retimers", lambda *a, **k: (None, None))
+
+    done = edit.rebuild(m, tmp_workdir(), from_stage="timeline", save=lambda: None)
+    assert done == ["tts", "timeline", "mix", "report"] == ran
+    assert m["segments"][0]["text_en"] == "one two"     # the other line is untouched
+
+
+def test_rebuild_fails_when_the_report_says_the_dub_has_holes(monkeypatch):
+    from dubbing import mix as mix_mod
+    from dubbing import report as report_mod
+
+    m = two_segs()
+    monkeypatch.setattr(timeline, "run", lambda *a, **k: None)
+    monkeypatch.setattr(mix_mod, "run", lambda *a, **k: None)
+    monkeypatch.setattr(report_mod, "run", lambda *a, **k: {"unaccounted": [1]})
+    monkeypatch.setattr(tts_mod, "Engine", StubEngine)
+    monkeypatch.setattr(cli, "_retimers", lambda *a, **k: (None, None))
+    with pytest.raises(edit.RebuildIncomplete, match="no audio"):
+        edit.rebuild(m, tmp_workdir(), from_stage="timeline", save=lambda: None)
+    # It ran to the end first: the work is marked and saved, only the verdict fails.
+    assert set(m["stages"]) >= {"timeline", "mix", "report"}
 
 
 # --------------------------------------------------------------- --force downstream
@@ -1032,6 +1206,132 @@ def test_force_does_not_discard_a_users_locked_work():
     kept, other = m["segments"]
     assert kept["text_en"] == "one two" and kept["tts"] == {"clip": "clips/a.wav", "dur": 1.8}
     assert "tts" not in other       # everything unlocked is invalidated as usual
+
+
+# ------------------------------------------------------ fingerprint knobs
+
+def params_for(m, argv=("in.mp4",)):
+    args = cli.parse_args(list(argv))
+    cli.resolve_settings(args, m)
+    return cli.stage_params(args, m)
+
+
+def test_the_tts_fingerprint_carries_the_reference_recipe(monkeypatch):
+    # `m["speakers"]` survives a tts reset, so a new canonical-reference recipe
+    # would otherwise keep cloning from the old references forever — and
+    # `needs_synthesis` answers by file existence, so nothing else would notice.
+    m = manifest.new({"input": "in.mp4", "src_lang": "he", "tgt_lang": "en"})
+    before = params_for(m)["tts"]
+    monkeypatch.setattr(tts_mod.Engine, "REF_BUILD", tts_mod.Engine.REF_BUILD + 1)
+    assert params_for(m)["tts"] != before
+
+
+def test_the_tts_fingerprint_carries_the_hebrew_adapter(monkeypatch):
+    from dubbing import hebrew
+
+    he = manifest.new({"input": "in.mp4", "src_lang": "en", "tgt_lang": "he"})
+    en = manifest.new({"input": "in.mp4", "src_lang": "he", "tgt_lang": "en"})
+    tagged = params_for(he, ("in.mp4", "--tgt", "he"))["tts"]
+    assert tagged["adapter"] == hebrew.ADAPTER_TAG
+    # A run that does not go through the adapter does not carry its tag at all.
+    assert "adapter" not in params_for(en)["tts"]
+    monkeypatch.setattr(hebrew, "ADAPTER_TAG", "qwentts-he-lora-v2")
+    assert params_for(he, ("in.mp4", "--tgt", "he"))["tts"] != tagged
+
+
+def test_the_transcript_fingerprint_carries_where_the_words_came_from():
+    # Captions and ASR produce different words for identical parameters, so the
+    # source has to be in the chain: a run that started on the captions fallback
+    # and later got its ASR must redo the segments built on the caption text.
+    m = manifest.new({"input": "in.mp4", "src_lang": "he", "tgt_lang": "en"})
+    m["source"]["transcript_origin"] = "captions"
+    fallback = params_for(m)["transcript"]
+    m["source"]["transcript_origin"] = "asr"
+    assert params_for(m)["transcript"] != fallback
+
+
+def test_a_captions_fallback_is_recorded_as_not_the_answer_that_was_asked_for():
+    from dubbing import transcript as transcript_mod
+
+    m = manifest.new({"input": "in.mp4", "src_lang": "he", "tgt_lang": "en"})
+    m["source"]["transcript_origin"] = "captions"
+    assert transcript_mod.is_fallback(m, "auto")
+    assert not transcript_mod.is_fallback(m, "captions")   # captions were asked for
+    m["source"]["transcript_origin"] = "asr"
+    assert not transcript_mod.is_fallback(m, "auto")
+
+    # A provisional mark can never equal a recomputed fingerprint, so the stage
+    # runs again — while everything downstream keeps its place in the chain for
+    # as long as the fallback keeps producing the same words.
+    fp = manifest.stage_fingerprint(m, "transcript", params_for(m)["transcript"])
+    manifest.mark_provisional(m, "transcript", fp)
+    assert "transcript" in m["stages"]
+    assert not manifest.stage_done(m, tmp_workdir(), "transcript", fp, [])
+
+
+# ------------------------------------------------ the run's recorded settings
+
+def test_a_bare_rerun_reproduces_the_run_instead_of_overwriting_it():
+    """`python -m dubbing <input>` on an existing run is a *re-run*. It used to
+    overwrite `m["source"]` with argparse's defaults, which changed the segments,
+    translate and timeline fingerprints — and a changed segments fingerprint empties
+    `m["segments"]`, taking every edit, lock and passthrough in the project with it."""
+    made = cli.parse_args(["in.mp4", "--genre", "movie", "--register", "dialogue",
+                           "--dub-foreign"])
+    cli.resolve_settings(made)
+    m = manifest.new(cli.source_record(made))
+    assert m["source"]["genre"] == "movie" and m["source"]["dub_foreign"] is True
+
+    again = cli.parse_args(["in.mp4"])                 # the user types no flags
+    cli.resolve_settings(again, m)
+    assert cli.source_record(again) == cli.source_record(made)
+    assert cli.stage_params(again, m) == cli.stage_params(made, m)
+
+
+def test_an_explicit_flag_still_beats_what_the_run_recorded():
+    m = manifest.new({"input": "in.mp4", "src_lang": "he", "tgt_lang": "en",
+                      "genre": "movie", "register": "dialogue", "dub_foreign": True})
+    args = cli.parse_args(["in.mp4", "--genre", "documentary", "--no-dub-foreign"])
+    cli.resolve_settings(args, m)
+    assert args.genre == "documentary"          # the command line is the last word
+    assert args.dub_foreign is False            # …including turning a flag back off
+    assert args.register == "dialogue"          # and it says nothing about the rest
+
+
+def test_a_run_that_recorded_nothing_gets_the_documented_defaults():
+    args = cli.parse_args(["in.mp4"])
+    assert args.genre is None                   # "nobody said" is a distinct answer
+    cli.resolve_settings(args, manifest.new({"input": "in.mp4"}))
+    assert (args.genre, args.register, args.transcript, args.tts_model,
+            args.dub_foreign) == ("documentary", "narration", "auto", "1.7b", False)
+    assert cli.source_record(args)["genre"] == "documentary"
+
+
+def test_the_studio_resolves_a_runs_settings_the_way_the_cli_does():
+    # One resolution, two front ends: `edit._args` is what `rebuild` computes its
+    # fingerprints from, so a drift here is a whole tail of the pipeline redone.
+    made = cli.parse_args(["in.mp4", "--genre", "movie", "--transcript", "asr"])
+    cli.resolve_settings(made)
+    m = manifest.new(cli.source_record(made))
+    assert cli.stage_params(edit._args(m), m) == cli.stage_params(made, m)
+
+
+def test_content_fingerprint_answers_what_a_derived_artifact_was_made_from(tmp_path):
+    # `report.json` is written beside the manifest and describes the segments as
+    # they were. An edit changes no stage parameter, so a stage fingerprint cannot
+    # tell the two apart — this one can, and survives the JSON round trip a report
+    # is compared across.
+    m = two_segs()
+    before = manifest.content_fingerprint(m)
+    manifest.save(tmp_path, m)
+    assert manifest.content_fingerprint(manifest.load(tmp_path)) == before
+    edit.set_text(m, m["segments"][0]["uid"], text_en="a better line")
+    edited = manifest.content_fingerprint(m)
+    assert edited != before
+    # Stage marks are not in it: `report.run` is called before its own stage is
+    # marked, so a fingerprint that counted them could never match afterwards.
+    manifest.mark_stage(m, "report", "anything")
+    assert manifest.content_fingerprint(m) == edited
 
 
 def test_clear_downstream_is_the_shared_helper():
