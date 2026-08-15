@@ -49,7 +49,22 @@
   --color-sunken: #f4f3ef;
   --color-primary: #14130f;
   --color-secondary: #5c584f;
-  --color-muted: #7d7a71;
+  /*
+   * The quiet ink, and the one token in the light ramp that did not clear the
+   * text gate. It was #7d7a71: 4.29:1 on the card, 3.97:1 on the plane, 3.86:1
+   * on the sunken tone — and it is what every 9–11px label in the app is set in
+   * (the eyebrows, the meta line, the tallies, the hints under a field), which
+   * is precisely the size that cannot afford to be under it. Nine percent
+   * darker, at the same warm hue, clears 4.5:1 on all three grounds it lands on:
+   *
+   *   on surface #ffffff  5.02:1     on plane  #f7f6f2  4.64:1
+   *   on sunken  #f4f3ef  4.52:1
+   *
+   * Dark is untouched — #98948b already measures 5.70:1 on the dark card.
+   * `--color-unclaimed` keeps the old value on purpose: it is a hatch and a
+   * mark edge, never text, and it is measured against the 3:1 non-text gate.
+   */
+  --color-muted: #726f67;
   --color-border: #e5e2d8;
   --color-grid: #e5e2d8;
   --color-axis: #c8c4b6;

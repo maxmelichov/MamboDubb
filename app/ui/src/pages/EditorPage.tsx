@@ -110,6 +110,9 @@ const SOURCE_AUDIO = "source.wav";
  */
 const UNDO_MS = 6000;
 
+/** How long an announcement stays in the live region before it empties. */
+const ANNOUNCE_MS = 4000;
+
 /**
  * The whole of what a flip to keep destroys, held for {@link UNDO_MS}.
  *
@@ -337,6 +340,47 @@ export function EditorPage() {
     [actions],
   );
 
+  /**
+   * The editor's one spoken channel.
+   *
+   * Almost everything this screen says, it says by *changing* — a row's badge
+   * flips, the strip appears, the marks get wider — and a change with no text is
+   * a change a screen reader cannot report. Three kinds of event were silent and
+   * are the three worth saying: the verdict, because `k` is a single keystroke
+   * that rewrites a line's future; the zoom, because its only readout is a
+   * number in the corner of a strip; and a job starting or ending, because those
+   * happen without being asked for. One region, polite, so they queue behind
+   * whatever the user is reading rather than interrupting it.
+   */
+  const [spoken, setSpoken] = useState("");
+  const say = useCallback((message: string) => setSpoken(message), []);
+
+  /*
+   * And empties itself again.
+   *
+   * A live region that keeps its last sentence is a sentence still on the page:
+   * it is read again by anything that walks the document, and it makes the same
+   * announcement twice in a row impossible — the region only speaks when its
+   * contents *change*, so a second "Kept #17" after a first would be silent.
+   * Going back to empty after a beat fixes both.
+   */
+  useEffect(() => {
+    if (!spoken) return;
+    const timer = window.setTimeout(() => setSpoken(""), ANNOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [spoken]);
+
+  /* Skips the mount, which is not a change — otherwise every run announces its
+     own default zoom on open. */
+  const firstZoom = useRef(true);
+  useEffect(() => {
+    if (firstZoom.current) {
+      firstZoom.current = false;
+      return;
+    }
+    say(`Timeline zoom ${zoom >= 10 ? Math.round(zoom) : Math.round(zoom * 10) / 10} pixels per second`);
+  }, [say, zoom]);
+
   /** The undo behind the one destructive verdict — see `setVerdict` below. */
   const [undoKeep, setUndoKeep] = useState<KeptUndo | null>(null);
   useEffect(() => {
@@ -387,12 +431,14 @@ export function EditorPage() {
       if (!saved) return null;
       if (keep) {
         setUndoKeep({ uid: seg.uid, id: seg.id, text_en: lost });
+        say(`Kept #${seg.id}`);
         return saved;
       }
+      say(`Dubbing #${seg.id}`);
       if (queue) await queueDubWork([saved]);
       return saved;
     },
-    [actions, queueDubWork],
+    [actions, queueDubWork, say],
   );
 
   /**
@@ -746,7 +792,18 @@ export function EditorPage() {
         connected={state.connected}
         log={state.log}
         onCancel={(id, batch) => void actions.cancel(id, batch)}
+        onAnnounce={say}
       />
+      {/*
+        The one place this screen speaks. Off-screen, polite, never given
+        anything a sighted user is not also being shown — see `say`. It sits
+        beside the strip because that is where two of the three announcements
+        come from, and early in the document because a live region has to be in
+        the tree before it is written to for the first write to be announced.
+      */}
+      <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+        {spoken}
+      </div>
       {state.error ? <ErrorBar message={state.error} onDismiss={actions.dismissError} /> : null}
 
       {state.loading ? (

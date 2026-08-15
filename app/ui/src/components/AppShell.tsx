@@ -170,16 +170,26 @@ export function AppHeader({
 }
 
 /**
- * The theme control.
+ * The theme control. One button, two glyphs.
  *
- * A segmented pair rather than one mystery icon: a single button that swaps
- * between a sun and a moon never says whether the glyph is the state or the
- * destination, and the answer differs by app. Two cells with `aria-pressed`
- * say both at once — which one you are in, and what the other one is.
+ * It was a segmented pair — two buttons, `aria-pressed` on each — on the
+ * argument that a lone sun-or-moon never says whether the glyph is the state or
+ * the destination. The argument holds; the pair was the wrong answer to it. Two
+ * radio-shaped controls for a binary is two tab stops, two things to hit, and a
+ * dead cell half the time: pressing the one that is already on does nothing, and
+ * a control that is sometimes a no-op is a control the keyboard has to be told
+ * about. One button toggles, and the ambiguity is settled by *saying* it —
+ * `aria-label` and `title` both name the destination ("Switch to light theme"),
+ * which is the thing pressing it will do.
  *
- * There is no "System" third cell on purpose. The OS preference is not
- * consulted anywhere in this app (see lib/theme.ts), so offering it would be
- * a control that does nothing.
+ * The picture is unchanged, because the picture was never the problem: both
+ * glyphs stay in the pill, and the one that is on wears the accent. That is a
+ * state anyone can read at a glance, and it is now decoration over a single
+ * control rather than two controls pretending to be one.
+ *
+ * There is no "System" option on purpose. The OS preference is not consulted
+ * anywhere in this app (see lib/theme.ts), so offering it would be a control
+ * that does nothing.
  */
 function ThemeToggle() {
   const [theme, setLocal] = useState<Theme>(currentTheme);
@@ -191,33 +201,30 @@ function ThemeToggle() {
     return onThemeChange(setLocal);
   }, []);
 
-  const cell = (value: Theme, Icon: typeof Sun, label: string) => (
-    <button
-      type="button"
-      onClick={() => setTheme(value)}
-      aria-pressed={theme === value}
-      aria-label={`Switch to ${label} theme`}
-      title={`${label[0].toUpperCase()}${label.slice(1)} theme`}
+  const next: Theme = theme === "dark" ? "light" : "dark";
+  const glyph = (value: Theme, Icon: typeof Sun) => (
+    <span
       className={cn(
         "grid h-6 w-7 place-items-center rounded-full transition-colors",
-        theme === value
-          ? "bg-accent text-on-accent"
-          : "text-muted hover:text-primary",
+        theme === value ? "bg-accent text-on-accent" : "text-muted",
       )}
     >
       <Icon className="h-3.5 w-3.5" aria-hidden />
-    </button>
+    </span>
   );
 
   return (
-    <div
-      role="group"
-      aria-label="Theme"
+    <button
+      type="button"
+      data-theme-toggle={theme}
+      onClick={() => setTheme(next)}
+      aria-label={`Switch to ${next} theme`}
+      title={`Switch to ${next} theme`}
       className="flex shrink-0 items-center gap-0.5 rounded-full border border-border bg-raised p-0.5"
     >
-      {cell("light", Sun, "light")}
-      {cell("dark", Moon, "dark")}
-    </div>
+      {glyph("light", Sun)}
+      {glyph("dark", Moon)}
+    </button>
   );
 }
 

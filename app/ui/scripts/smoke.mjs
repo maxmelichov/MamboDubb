@@ -94,6 +94,37 @@ check("the pre-paint canvas covers both themes", /theme-dark[^}]*#110e16/.test(h
 check("native number spinners are suppressed", /-webkit-inner-spin-button/.test(css));
 
 /*
+ * The quiet ink has to clear the text gate.
+ *
+ * `--color-muted` is what every 9–11px label in the app is set in — the
+ * eyebrows, the meta line, the tallies, the hints under a field — which is
+ * exactly the size that cannot afford to be under 4.5:1. Light's was #7d7a71:
+ * 4.29:1 on the card and 3.86:1 on the sunken tone, both short. Measured here
+ * rather than asserted as a hex, so the check survives the next re-pick.
+ */
+const srgb = (c) => (c / 255 <= 0.04045 ? c / 255 / 12.92 : ((c / 255 + 0.055) / 1.055) ** 2.4);
+const luminance = (hex) => {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  return 0.2126 * srgb(r) + 0.7152 * srgb(g) + 0.0722 * srgb(b);
+};
+const contrast = (a, b) => {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+};
+/* First declaration wins: `@theme` (light) is emitted before `:root.theme-dark`.
+   The minifier shortens `#ffffff` to `#fff`, hence the three-digit branch. */
+const token = (name, block = css) => {
+  const hex = new RegExp(`--color-${name}:\\s*(#[0-9a-f]{3,6})`, "i").exec(block)?.[1];
+  return hex?.length === 4 ? `#${[...hex.slice(1)].map((c) => c + c).join("")}` : hex;
+};
+const lightMuted = token("muted");
+/* The three grounds muted text is actually set on. */
+check(
+  `the quiet ink clears 4.5:1 on every light ground (${lightMuted})`,
+  ["surface", "plane", "sunken"].every((ground) => contrast(lightMuted, token(ground)) >= 4.5),
+);
+
+/*
  * The one claim about `request()` this mode can make.
  *
  * `VITE_USE_FIXTURES=1` is inlined as a literal, so every `if (USE_FIXTURES)
@@ -269,13 +300,21 @@ check("import screen renders", /New dub/.test(root.textContent));
  * inline boot script, so what this proves is the second half of the contract:
  * the bundle applies the stored choice on mount, defaulting to dark.
  */
-const themeButton = (which) =>
-  [...document.querySelectorAll("button")].find(
-    (b) => b.getAttribute("aria-label") === `Switch to ${which} theme`,
-  );
-check("the header carries a theme toggle", themeButton("light") != null && themeButton("dark") != null);
+/*
+ * One button, not two. A binary does not need a radio group: the pair meant two
+ * tab stops for one decision and a dead cell half the time, because pressing the
+ * theme you are already in does nothing. What the single button owes instead is
+ * to *say* which way it goes — the ambiguity a lone sun-or-moon has — so the
+ * accessible name is the destination, and that name is what these read.
+ */
+const themeToggle = () => document.querySelector("[data-theme-toggle]");
+const themeGoesTo = () =>
+  /^Switch to (light|dark) theme$/.exec(themeToggle()?.getAttribute("aria-label") ?? "")?.[1];
+check("the header carries a theme toggle", themeToggle() != null);
+check("…and it is one control, not a pair", document.querySelectorAll("[data-theme-toggle]").length === 1);
 check("dark is the default with nothing stored", document.documentElement.classList.contains("theme-dark"));
-check("the toggle says which theme is on", themeButton("dark").getAttribute("aria-pressed") === "true");
+check("the toggle says which theme is on", themeToggle().getAttribute("data-theme-toggle") === "dark");
+check("…and names the one it would switch to", themeGoesTo() === "light");
 
 /*
  * "Each theme paints its own ground" is the one claim worth checking against a
@@ -293,25 +332,25 @@ document.head.append(injected);
 const canvas = () => dom.window.getComputedStyle(document.documentElement).backgroundColor;
 check("dark paints its own canvas", canvas() === "rgb(17, 14, 22)");
 
-themeButton("light").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+themeToggle().dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
 await new Promise((resolve) => setTimeout(resolve, 120));
 check("toggling drops the dark class", !document.documentElement.classList.contains("theme-dark"));
 check("the choice is persisted", dom.window.localStorage.getItem("dubbing-studio.theme") === "light");
 check("light paints its own canvas", canvas() === "rgb(247, 246, 242)");
 check(
   "the toggle follows the choice",
-  themeButton("light").getAttribute("aria-pressed") === "true" &&
-    themeButton("dark").getAttribute("aria-pressed") === "false",
+  themeToggle().getAttribute("data-theme-toggle") === "light" && themeGoesTo() === "dark",
 );
 check(
   "theme-color follows the theme",
   document.querySelector('meta[name="theme-color"]').getAttribute("content") === "#f7f6f2",
 );
 
-themeButton("dark").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+themeToggle().dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
 await new Promise((resolve) => setTimeout(resolve, 120));
 check("toggling back restores dark", document.documentElement.classList.contains("theme-dark"));
 check("dark is persisted too", dom.window.localStorage.getItem("dubbing-studio.theme") === "dark");
+check("…and one button did both directions", themeGoesTo() === "light");
 
 // An existing run's row has to answer "where did this get to" without being
 // opened — the whole point of listing it.
@@ -1714,6 +1753,26 @@ check(
   "…and says that a restored line comes back hand-written",
   /counts as hand-written/.test(keepToast.getAttribute("title") ?? ""),
 );
+/*
+ * …and it is said out loud as well.
+ *
+ * Almost everything this screen says it says by *changing* — a badge flips, a
+ * strip appears, the marks get wider — and a change with no text is a change a
+ * screen reader cannot report. One polite region carries the three events that
+ * happen without a sentence anywhere: the verdict, the zoom, and a job starting
+ * or ending.
+ */
+const liveRegion = () => document.querySelector('[role="status"][aria-live="polite"]');
+check("the editor has one polite live region", document.querySelectorAll('[role="status"][aria-live="polite"]').length === 1);
+check("…and the verdict is announced in it", /Kept #2\b/.test(liveRegion().textContent));
+const zoomOutButton = [...document.querySelectorAll("button")].find(
+  (b) => b.getAttribute("aria-label") === "Zoom out",
+);
+clickIt(zoomOutButton);
+await settle(150);
+check("…and so is a zoom change", /Timeline zoom \d/.test(liveRegion().textContent));
+clickIt([...document.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === "Zoom in"));
+await settle(150);
 // Segment 2's translation was typed by hand a few checks above, and a kept line
 // with a hand-written translation is the case the row used to render as a dub:
 // an English sentence under a Hebrew one, in the place a spoken line goes.
