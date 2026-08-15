@@ -212,6 +212,16 @@ export type Report = {
   drift: { max: number; mean: number; over_soft: number };
   speed: { max: number; compressed: number };
   uncovered_audible: { start: number; end: number; duration: number; rms: number }[];
+  /**
+   * The manifest has moved on since these numbers were counted.
+   *
+   * Added by the server on read (`Projects.report`), never stored: an edit
+   * changes no stage parameter, so nothing in report.json itself could tell a
+   * current report from one the manifest passed hours ago. The numbers are
+   * served either way — they were true of the run they described — and this is
+   * what lets the UI caption them instead of presenting them as now.
+   */
+  stale?: boolean;
 };
 
 export type ProjectDetail = {
@@ -221,6 +231,27 @@ export type ProjectDetail = {
   stages: Partial<Record<Stage, StageStatus>>;
   outputs: { preview?: string; dub_wav?: string; srt?: string } & Record<string, string>;
   report: Report | null;
+  render: RenderState;
+};
+
+/**
+ * What `preview.mp4` is a render of.
+ *
+ * `report.stale` says the *numbers* moved on; this says the *video* did, and the
+ * video is what the user is about to watch. Without it a mix from before a dozen
+ * corrections looked exactly like a fresh one, and the only way to find out was
+ * to watch five minutes of it.
+ */
+export type RenderState = {
+  /** epoch seconds, or null when the run predates the stamp or was never mixed */
+  at: number | null;
+  stale: boolean;
+  /**
+   * How many lines differ from the ones that render was made of. Exact, not an
+   * estimate — but `0` when there is no stamp to compare against, so never phrase
+   * "N lines changed" off a render whose `at` is null.
+   */
+  changed: number;
 };
 
 /**
@@ -275,19 +306,42 @@ export type Job = {
   message: string | null;
   error: string | null;
   /**
-   * FIXTURE-ONLY. `jobs.Job.to_dict` serializes the uid list under `payload`,
-   * never as a top-level `uids`, so against the real server this is `undefined`
-   * every time and nothing in the app may branch on it. The fixture backend is
-   * its only reader — it needs to know which segments to advance while it fakes
-   * a run. Whether the server should promote it (or the UI read
-   * `payload.uids`) is a server-side decision, not a gap to paper over here.
+   * The segments this job is about; `[]` for a whole-run job.
+   *
+   * Real now: `jobs.Job.to_dict` hoists it out of the payload and the job frames
+   * carry it too, live and replayed. It used to be fixture-only, which is why the
+   * app marked busy rows from a local list that unrelated completions wiped after
+   * about 100 ms. `pendingUids` is derived from these instead — see `useProject`.
    */
-  uids?: string[];
+  uids: string[];
+  /**
+   * The gesture this job came from, shared with the jobs enqueued beside it.
+   *
+   * "Dub these 27" is one decision that becomes a retranslate and a resynthesize.
+   * `null` for a job that was its own gesture. What the Cancel dialog offers
+   * "the whole batch" for, and what `DELETE /api/jobs/{id}?batch=1` acts on.
+   */
+  batch: string | null;
 };
+
+/** A job the user can still stop: it has not finished, failed, or been cancelled. */
+export function isPending(job: Job): boolean {
+  return job.status === "queued" || job.status === "running";
+}
 
 // --- the NDJSON event stream ---------------------------------------------
 
-export type StageEvent = {
+/**
+ * `true` on prelude frames and on nothing else.
+ *
+ * The nine replayed stage frames are a snapshot of all nine stages at once, not a
+ * progression, so a client that pins its display to the last stage frame it saw
+ * reads the ninth as the stage the run is in — which is how the editor came to
+ * announce "Running report · 100%" the instant a re-voice started.
+ */
+type Replayed = { replay?: boolean };
+
+export type StageEvent = Replayed & {
   type: "stage";
   stage: Stage;
   status: StageStatus;
@@ -302,13 +356,15 @@ export type SegmentEvent = {
   status: StageStatus;
 };
 
-export type JobEvent = {
+export type JobEvent = Replayed & {
   type: "job";
   id: string;
   status: JobStatus;
   error?: string | null;
   kind?: JobKind;
   progress?: number | null;
+  uids?: string[];
+  batch?: string | null;
 };
 
 export type LogEvent = {

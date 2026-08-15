@@ -15,6 +15,7 @@ import data from "./fixture-data.json";
 import { ApiError } from "./apiError";
 import { applyPatch } from "./patch";
 import { placedSpan } from "./segments";
+import { isPending } from "./types";
 import { toneUrl } from "./tone";
 import type {
   CreateProjectRequest,
@@ -26,6 +27,7 @@ import type {
   PeaksFile,
   ProjectDetail,
   ProjectSummary,
+  RenderState,
   Segment,
   SegmentPatch,
   SetupCheck,
@@ -515,12 +517,63 @@ function detailOf(run: OtherRun): ProjectDetail {
     // writes one, and neither of these runs has reached one that does.
     outputs: {},
     report: null,
+    render: { at: null, stale: true, changed: 0 },
   };
 }
 
+/**
+ * What the last fixture render was made of: uid -> a digest of that line.
+ *
+ * The server keeps this in `m["render"].segments`, stamped by `mix.run`, and
+ * derives `{stale, changed}` from it on every GET. The fixture does the same
+ * rather than hardcoding a flag, so an edit in the demo goes stale for the real
+ * reason and the count is the real count — which is the whole thing the header
+ * is about to claim.
+ */
+let rendered: Map<string, string> | null = null;
+
+/** `id` is left out for the reason the server leaves it out: splits renumber it. */
+function digestOf(seg: Segment): string {
+  const { id: _id, media: _media, verify: _verify, ...rest } = seg as Segment &
+    Record<string, unknown>;
+  return JSON.stringify(rest, Object.keys(rest).sort());
+}
+
+function renderState(): RenderState {
+  if (!rendered) return { at: null, stale: true, changed: 0 };
+  const now = new Map(store.segments.map((seg) => [seg.uid, digestOf(seg)]));
+  const uids = new Set([...rendered.keys(), ...now.keys()]);
+  let changed = 0;
+  for (const uid of uids) if (rendered.get(uid) !== now.get(uid)) changed += 1;
+  return { at: RENDERED_AT, stale: changed > 0, changed };
+}
+
+function stampRender(): void {
+  rendered = new Map(store.segments.map((seg) => [seg.uid, digestOf(seg)]));
+}
+
+/** Fixed so the demo does not drift: 2024-05-01T09:00:00Z. */
+const RENDERED_AT = 1714554000;
+
+// The snapshot is a run that finished, so it opens with a video that is current.
+// Stamped after `seedOverrides`, or the demo would open already stale and the
+// header would show its loudest state before the user had done anything.
+stampRender();
+
 function projectOf(name: string): ProjectDetail {
   const other = OTHER_RUNS.find((run) => run.name === name);
-  return other ? detailOf(other) : structuredClone(store.project);
+  if (other) return detailOf(other);
+  const render = renderState();
+  const project = structuredClone(store.project);
+  return {
+    ...project,
+    render,
+    // `report.run` is called by the same job that ran `mix`, so the numbers and
+    // the video go out of date together and on the same cause. The server works
+    // it out from the report's own stamp (`Projects.report`); here there is one
+    // stamp for both, which is the same answer by a shorter road.
+    report: project.report ? { ...project.report, stale: render.stale } : null,
+  };
 }
 
 export function getProject(name: string): Promise<ProjectDetail> {
@@ -712,11 +765,27 @@ export function listJobs(): Promise<Job[]> {
   return delay(structuredClone(jobs));
 }
 
-export function cancelJob(id: string): Promise<void> {
-  const job = jobs.find((j) => j.id === id);
-  if (job && (job.status === "queued" || job.status === "running")) {
+/**
+ * `batch` mirrors `JobQueue.cancel_batch`, order included.
+ *
+ * The queued members go first, while the running one still holds the worker —
+ * cancelling the running job first would let `pump` start the very job this call
+ * is stopping, which is the bug the server-side ordering exists to prevent and
+ * which the fixture must be able to reproduce or the smoke test proves nothing.
+ */
+export function cancelJob(id: string, batch = false): Promise<void> {
+  const target = jobs.find((j) => j.id === id);
+  if (!target) return delay(undefined);
+  const doomed =
+    batch && target.batch
+      ? [...jobs.filter((j) => j.batch === target.batch && j.status === "queued"),
+         ...jobs.filter((j) => j.batch === target.batch && j.status === "running")]
+      : [target];
+  for (const job of doomed) {
+    if (job.status !== "queued" && job.status !== "running") continue;
     job.status = "cancelled";
-    emit({ type: "job", id: job.id, status: "cancelled" });
+    emit({ type: "job", id: job.id, status: "cancelled", kind: job.kind,
+           uids: job.uids, batch: job.batch });
   }
   return delay(undefined);
 }
@@ -738,14 +807,19 @@ export function createProject(body: CreateProjectRequest): Promise<CreateProject
   return delay({ name: store.project.name, job: structuredClone(job) });
 }
 
-export function enqueue(_name: string, kind: JobKind, uids: string[]): Promise<Job> {
+export function enqueue(
+  _name: string,
+  kind: JobKind,
+  uids: string[],
+  batch?: string,
+): Promise<Job> {
   if (kind === "retranslate" || kind === "resynthesize") calls[kind] += 1;
   calls.log.push(kind);
-  const job = makeJob(kind, uids);
+  const job = makeJob(kind, uids, batch);
   return delay(structuredClone(job));
 }
 
-function makeJob(kind: JobKind, uids: string[]): Job {
+function makeJob(kind: JobKind, uids: string[], batch?: string): Job {
   jobSeq += 1;
   const job: Job = {
     id: `job_${jobSeq}`,
@@ -757,9 +831,10 @@ function makeJob(kind: JobKind, uids: string[]): Job {
     message: null,
     error: null,
     uids,
+    batch: batch ?? null,
   };
   jobs.push(job);
-  emit({ type: "job", id: job.id, status: "queued", kind });
+  emit({ type: "job", id: job.id, status: "queued", kind, uids, batch: job.batch });
   void pump();
   return job;
 }
@@ -793,7 +868,8 @@ const RUN_STAGES: Stage[] = [
 
 async function runJob(job: Job): Promise<void> {
   job.status = "running";
-  emit({ type: "job", id: job.id, status: "running", kind: job.kind });
+  emit({ type: "job", id: job.id, status: "running", kind: job.kind,
+         uids: job.uids, batch: job.batch });
 
   const stages: Stage[] =
     job.kind === "run"
@@ -832,13 +908,18 @@ async function runJob(job: Job): Promise<void> {
       }
     }
     store.project.stages = { ...store.project.stages, [stage]: "done" };
+    // `mix.run` is what writes preview.mp4 and what stamps the manifest with the
+    // segments it was made from, so the video stops being stale exactly here —
+    // not when the job ends, and not when `report` finishes after it.
+    if (stage === "mix") stampRender();
     emit({ type: "stage", stage, status: "done", progress: 1 });
     emit({ type: "log", level: "info", message: `${stage} done` });
   }
 
   job.status = "done";
   job.progress = 1;
-  emit({ type: "job", id: job.id, status: "done", progress: 1 });
+  emit({ type: "job", id: job.id, status: "done", progress: 1, kind: job.kind,
+         uids: job.uids, batch: job.batch });
 }
 
 /** What a model action actually changes on the segment. */
@@ -924,17 +1005,25 @@ function prelude(name: string): StudioEvent[] {
   const stages = projectOf(name).stages;
   return [
     { type: "log", level: "info", message: `watching ${name}` },
+    // `replay: true` on every prelude frame and on nothing else — the nine stage
+    // frames are a snapshot of all nine at once, not a progression, and a client
+    // that pinned its display to the last one read the ninth as the stage the run
+    // was in. The fixture has to say so too, or the smoke test cannot tell the
+    // difference between a client that reads the flag and one that ignores it.
     ...RUN_STAGES.map((stage) => ({
       type: "stage" as const,
       stage,
       status: stages[stage] ?? ("pending" as const),
       ...(stages[stage] === "done" ? { progress: 1 } : {}),
+      replay: true,
     })),
     ...jobs
       // This run's unfinished jobs, not the process's: a stream is opened per
       // project and replaying somebody else's job puts a strip on the wrong
-      // editor. `app.py::project_events` filters the same way.
-      .filter((job) => job.project === name && job.status !== "done")
+      // editor. `app.py::project_events` filters the same way — and terminal
+      // means done, failed *or* cancelled: a failed job resent on every
+      // reconnect resurrects an error the user dismissed an hour ago.
+      .filter((job) => job.project === name && isPending(job))
       .map((job) => ({
         type: "job" as const,
         id: job.id,
@@ -942,6 +1031,9 @@ function prelude(name: string): StudioEvent[] {
         kind: job.kind,
         progress: job.progress,
         error: job.error,
+        uids: job.uids,
+        batch: job.batch,
+        replay: true,
       })),
   ];
 }

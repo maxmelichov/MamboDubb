@@ -221,6 +221,7 @@ export const api = {
                   outputs: ProjectDetail["outputs"] };
       stages: ProjectDetail["stages"];
       report: ProjectDetail["report"];
+      render?: ProjectDetail["render"];
     };
     return request<Wire>(`/api/projects/${encodeURIComponent(name)}`).then((r) => ({
       name: r.name,
@@ -229,6 +230,9 @@ export const api = {
       stages: r.stages,
       outputs: r.manifest.outputs ?? {},
       report: r.report,
+      // A server too old to send it cannot prove the video is current, which is
+      // the same answer `render_state` gives for a run with no stamp.
+      render: r.render ?? { at: null, stale: true, changed: 0 },
     }));
   },
 
@@ -269,17 +273,22 @@ export const api = {
     ).then(() => api.getSegments(name));
   },
 
-  retranslate(name: string, uids: string[]): Promise<Job> {
-    if (USE_FIXTURES) return fixtures.enqueue(name, "retranslate", uids);
+  /**
+   * `batch` ties this job to the others the same gesture created, so one Cancel
+   * can stop the decision instead of half of it. Only the client knows the two
+   * POSTs came from one click, so the id is minted here and sent on both.
+   */
+  retranslate(name: string, uids: string[], batch?: string): Promise<Job> {
+    if (USE_FIXTURES) return fixtures.enqueue(name, "retranslate", uids, batch);
     return request<{ job: Job }>(
-      `/api/projects/${encodeURIComponent(name)}/retranslate`, json({ uids }),
+      `/api/projects/${encodeURIComponent(name)}/retranslate`, json({ uids, batch }),
     ).then((r) => r.job);
   },
 
-  resynthesize(name: string, uids: string[]): Promise<Job> {
-    if (USE_FIXTURES) return fixtures.enqueue(name, "resynthesize", uids);
+  resynthesize(name: string, uids: string[], batch?: string): Promise<Job> {
+    if (USE_FIXTURES) return fixtures.enqueue(name, "resynthesize", uids, batch);
     return request<{ job: Job }>(
-      `/api/projects/${encodeURIComponent(name)}/resynthesize`, json({ uids }),
+      `/api/projects/${encodeURIComponent(name)}/resynthesize`, json({ uids, batch }),
     ).then((r) => r.job);
   },
 
@@ -325,9 +334,13 @@ export const api = {
     return request<{ jobs: Job[] }>("/api/jobs").then((r) => r.jobs);
   },
 
-  cancelJob(id: string): Promise<void> {
-    if (USE_FIXTURES) return fixtures.cancelJob(id);
-    return request<void>(`/api/jobs/${encodeURIComponent(id)}`, { method: "DELETE" });
+  /** `batch: true` stops every job the same gesture queued, not just this one. */
+  cancelJob(id: string, batch = false): Promise<void> {
+    if (USE_FIXTURES) return fixtures.cancelJob(id, batch);
+    return request<void>(
+      `/api/jobs/${encodeURIComponent(id)}${batch ? "?batch=1" : ""}`,
+      { method: "DELETE" },
+    );
   },
 
   /**

@@ -1299,6 +1299,15 @@ clickIt(menu);
 await settle(120);
 check("run health surfaces uncovered speech", /Audible, uncovered/.test(root.textContent));
 check("run health counts the states", /Kept original/.test(root.textContent));
+/*
+ * A gap list is a finding, and by now the script has been edited past the
+ * report that found them: splitting a segment closes a gap and re-segmenting
+ * opens new ones, and neither shows here until a render re-runs the report.
+ */
+check(
+  "the gap list says which render found them",
+  /Audible, uncovered — \d+ · from the last render/.test(root.textContent),
+);
 
 /*
  * "I can't easily open the ready file." Both of the things a finished run is
@@ -1354,10 +1363,38 @@ check(
 );
 
 /*
+ * The header says whether the video is still about the script.
+ *
+ * By this point the run has been edited a dozen times, so `render.stale` is
+ * true and the button is the loud one, naming the number it would re-render.
+ * It is the whole point of the staleness work: a permanently-accented "Render
+ * preview" could not tell "there is work waiting" from "you are up to date".
+ */
+const renderButton = () =>
+  [...document.querySelectorAll("header button")].find((b) => /Render preview|Update the video/.test(b.textContent));
+check("the header offers to update the video, and says how much", /Update the video · \d+ lines? changed/.test(renderButton().textContent));
+check(
+  "…as the accented button, not the quiet one",
+  /bg-accent/.test(renderButton().className),
+);
+check(
+  "the video area says the same thing in words",
+  /Mixed before your last \d+ lines? — Update the video to hear them/.test(root.textContent),
+);
+check(
+  "the output lane is labelled as the last render",
+  [...document.querySelectorAll("[data-lane-label]")].some((el) => /Output\s*· last render/.test(el.textContent)),
+);
+check(
+  "…and its waveform is drawn back, while the marks stay live",
+  document.querySelector('[data-waveform="dub"]')?.hasAttribute("data-faded") === true,
+);
+
+/*
  * Confirmation is themed and local, never `window.confirm` — which is drawn by
  * the OS, blocks the main thread and stops the playhead.
  */
-click("Render preview");
+click("Update the video");
 await settle(150);
 check(
   "a destructive action asks in the app, not in an OS sheet",
@@ -1410,7 +1447,7 @@ check("job clears when done", !/Re-voicing/.test(root.textContent));
  * that has not finished) for exactly this reason, and the fixtures have to do
  * the same or the flow is green here and dead in the app.
  */
-click("Render preview");
+click("Update the video");
 await settle(150);
 [...document.querySelectorAll('[role="dialog"] button')]
   .find((b) => b.textContent === "Render")
