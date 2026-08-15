@@ -2108,23 +2108,33 @@ def stub_installers(monkeypatch):
 
 def test_setup_marks_the_rows_the_app_can_install(client):
     """The UI must not carry its own copy of the whitelist: a button on a row
-    whose POST is a 400 is worse than no button."""
+    whose POST is a 400 is worse than no button.
+
+    Which rows those are is the *platform's* answer, not this file's: brew and
+    winget can run unattended, `sudo apt-get` cannot (see `dubbing/tools.py`),
+    so on Linux the honest answer is no buttons at all."""
+    from dubbing import tools
+
     checks = client.get("/api/setup").json()["checks"]
     installable = {c["id"] for c in checks if c["installable"]}
     assert installable == set(install_mod.INSTALLERS)
-    assert installable == {"ffmpeg", "sox"}
+    assert installable == set(tools.auto_installers())
+    assert installable <= {"ffmpeg", "sox"}
     assert all(isinstance(c["installable"], bool) for c in checks)
 
 
 def test_install_refuses_an_id_it_has_no_recipe_for(client):
     """A model is gigabytes and a Hugging Face login; the refusal has to hand
     the user the command instead of pretending there is a button for it."""
+    from dubbing import tools
+
     for bad in ("model.translate", "hf_token", "disk", "rm -rf /"):
         r = client.post("/api/setup/install", json={"id": bad})
         assert r.status_code == 400, bad
         message = r.json()["error"]["message"]
         assert r.json()["error"]["code"] == "invalid_request"
-        assert "brew install ffmpeg" in message and "brew install sox" in message
+        # Every tool command this platform knows, whether or not it has a button.
+        assert tools.command("ffmpeg") in message and tools.command("sox") in message
         assert "detail" in message                      # …where the real command is
 
 
@@ -2135,13 +2145,17 @@ def test_install_body_is_strict(client):
     assert r.status_code == 400 and r.json()["error"]["code"] == "invalid_request"
 
 
-def test_install_says_where_to_get_homebrew(client, monkeypatch):
-    real_which = install_mod.shutil.which
-    monkeypatch.setattr(install_mod.shutil, "which",
-                        lambda exe, *a, **k: None if exe == "brew" else real_which(exe, *a, **k))
-    r = client.post("/api/setup/install", json={"id": "ffmpeg"})
-    assert r.status_code == 400
-    message = r.json()["error"]["message"]
+def test_install_says_where_to_get_homebrew(monkeypatch):
+    """The manager that installs the tools cannot itself be installed from here,
+    so the refusal names the one URL. Driven straight at `Installer` with a Mac's
+    recipe: the table is the platform's, this rule is not."""
+    monkeypatch.setattr(install_mod.shutil, "which", lambda exe, *a, **k: None)
+    inst = install_mod.Installer(lambda id_: None,
+                                 recipes={"ffmpeg": ("brew", "install", "ffmpeg")})
+    with pytest.raises(install_mod.invalid("x").__class__) as exc:
+        inst.start("ffmpeg")
+    message = exc.value.message
+    assert exc.value.code == "invalid_request"
     assert "https://brew.sh" in message and "ffmpeg" in message
 
 
@@ -2192,9 +2206,12 @@ def test_probe_returns_the_same_row_shape_the_report_does(client):
     a row one key short is a row that renders differently from its neighbours."""
     from dubbing_app import setup as setup_mod
 
+    from dubbing_app import install as install_module
+
     row = next(c for c in client.get("/api/setup").json()["checks"] if c["id"] == "sox")
     probed = setup_mod.probe("sox")
-    assert set(probed) == set(row) and probed["installable"] is True
+    assert set(probed) == set(row)
+    assert probed["installable"] is ("sox" in install_module.INSTALLERS)
     assert setup_mod.probe("model.translate") is None and setup_mod.probe("nope") is None
 
 
