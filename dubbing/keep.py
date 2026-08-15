@@ -230,6 +230,28 @@ def apply_passthrough(segments: list[dict[str, Any]]) -> list[int]:
     return flipped
 
 
+def user_wants_dub(seg: dict[str, Any]) -> bool:
+    """True when the user has said "dub this line", in either of its two forms.
+
+    One verdict, written twice: `edit.set_keep(keep=False)` stamps `passthrough`
+    False *and* locks `keep`, so a headless re-run honours it (`apply_passthrough`)
+    and no stage rerun regenerates it (`manifest.reset_stage`). Either form alone
+    is still the user speaking, so either one counts here.
+
+    The reason this needs a name: a stage that fails to dub the line answers with
+    a keep (`mt_failed`, `tts_failed`), and a keep written over this verdict does
+    not merely overrule the user — it contradicts the manifest. The next run's
+    `apply_passthrough` reads `passthrough=False` beside `keep=True`, flips it
+    back, drops the translation, the clip and the placement, and the whole tail of
+    the run is redone to reach the same failure again, forever.
+    """
+    from . import manifest
+
+    if seg.get("passthrough") is False:
+        return True
+    return manifest.is_locked(seg, "keep") and not seg.get("keep")
+
+
 def carry_passthrough(segments: list[dict[str, Any]],
                       overrides: list[tuple[float, float, bool]]) -> int:
     """Re-attach saved overrides to freshly rebuilt segments; returns how many stuck.
