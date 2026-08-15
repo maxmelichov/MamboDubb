@@ -538,8 +538,18 @@ export function Disclosure({
   label: string;
   /** One line of the current values, shown only while shut. */
   summary?: ReactNode;
-  /** `warn` tints the shut summary, so a problem is visible without opening. */
-  tone?: "neutral" | "warn";
+  /**
+   * How loudly a shut shelf says there is something on it.
+   *
+   * `warn` is the red one: a failure, and the summary itself goes critical —
+   * which is legible as small text, because red measures 4.80:1 on the card.
+   * `caution` is the amber one, for a *soft* problem, and it deliberately does
+   * not colour the text: `--color-pending` is 3.70:1 in light, fine for a
+   * shape and under the gate for an 11px label. So the amber goes on the shelf's
+   * icon, where the 3:1 non-text gate applies, and the summary merely takes the
+   * weight. Same rule the script row follows for the same concern.
+   */
+  tone?: "neutral" | "warn" | "caution";
   defaultOpen?: boolean;
   className?: string;
   children: ReactNode;
@@ -549,6 +559,7 @@ export function Disclosure({
   return (
     <details
       open={open}
+      data-tone={tone === "neutral" ? undefined : tone}
       onToggle={(event) => {
         const next = event.currentTarget.open;
         setOpen(next);
@@ -562,7 +573,19 @@ export function Disclosure({
           "hover:text-primary [&::-webkit-details-marker]:hidden",
         )}
       >
-        {Icon ? <Icon className="h-3.5 w-3.5 shrink-0 text-muted" aria-hidden /> : null}
+        {Icon ? (
+          <Icon
+            className={cn(
+              "h-3.5 w-3.5 shrink-0",
+              tone === "warn"
+                ? "text-critical"
+                : tone === "caution"
+                  ? "text-warning"
+                  : "text-muted",
+            )}
+            aria-hidden
+          />
+        ) : null}
         <span className="shrink-0 text-[11px] font-bold uppercase tracking-[0.14em] text-secondary">
           {label}
         </span>
@@ -570,7 +593,11 @@ export function Disclosure({
           <span
             className={cn(
               "min-w-0 flex-1 truncate text-right text-[11px] group-open:hidden",
-              tone === "warn" ? "font-semibold text-critical" : "text-muted",
+              tone === "warn"
+                ? "font-semibold text-critical"
+                : tone === "caution"
+                  ? "font-semibold text-secondary"
+                  : "text-muted",
             )}
           >
             {summary}

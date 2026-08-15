@@ -561,7 +561,15 @@ function VerificationShelf({ seg, concern }: { seg: Segment; concern: "none" | "
       id="seg.verify"
       icon={ShieldCheck}
       label="Verification"
-      tone={concern === "bad" ? "warn" : "neutral"}
+      /*
+       * A soft concern is a concern. The shelf read `neutral` for it — same
+       * grey shield, same muted summary as a line with nothing wrong — so a
+       * clone that said 70% of its words was indistinguishable, shut, from one
+       * that said all of them. `caution` is the pending family: the shield goes
+       * amber and the summary takes the weight, without putting a 3.70:1 hue
+       * on eleven-pixel text.
+       */
+      tone={concern === "bad" ? "warn" : concern === "soft" ? "caution" : "neutral"}
       summary={
         seg.keep && !pipelineFailed(seg)
           ? "not synthesized"
@@ -583,13 +591,26 @@ function VerificationShelf({ seg, concern }: { seg: Segment; concern: "none" | "
         </span>
       </div>
 
+      {/*
+        The bar carries the verdict too. It was blue at 70% and blue at 100% —
+        blue being the "done, there is a clip to check" hue — so the one graphic
+        in this shelf said "fine" about the number printed above it. Three
+        states, three hues, all of them the app's own: red below 0.6, amber
+        below 0.9, blue above it.
+      */}
       {overlap != null ? (
         <div className="h-1 overflow-hidden rounded-full bg-border">
           <div
+            data-overlap-bar={concern}
             className="h-full rounded-full transition-[width] duration-300"
             style={{
               width: `${Math.max(0, Math.min(1, overlap)) * 100}%`,
-              backgroundColor: concern === "bad" ? "var(--color-critical)" : "var(--color-dubbed)",
+              backgroundColor:
+                concern === "bad"
+                  ? "var(--color-critical)"
+                  : concern === "soft"
+                    ? "var(--color-warning)"
+                    : "var(--color-dubbed)",
             }}
           />
         </div>

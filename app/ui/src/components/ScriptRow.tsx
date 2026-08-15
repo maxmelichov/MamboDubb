@@ -243,9 +243,21 @@ function Row({
               gate for a label. There is no legend on screen any more, so this
               is the encoding's only spelling out. */}
           <span className="shrink-0 text-secondary">{meta.short}</span>
+          {/*
+            A soft verification is a *concern*, and it was drawn in the colour
+            of furniture: the same muted grey as the timecode beside it, on a
+            row that otherwise looks finished. It joins the pending family —
+            amber, the hue this app already spends on "something is still
+            outstanding here" — while a hard failure keeps the red. Both are
+            icons, where the 3:1 gate applies; neither is coloured text.
+          */}
           {concern !== "none" ? (
             <TriangleAlert
-              className={cn("h-3 w-3 shrink-0", concern === "bad" ? "text-critical" : "text-muted")}
+              data-concern={concern}
+              className={cn(
+                "h-3 w-3 shrink-0",
+                concern === "bad" ? "text-critical" : "text-warning",
+              )}
               aria-label={concern === "bad" ? "Verification failed" : "Verification is low"}
             />
           ) : null}

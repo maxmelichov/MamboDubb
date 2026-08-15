@@ -1547,6 +1547,43 @@ clickIt(chip("Kept"));
 await settle(200);
 
 /*
+ * A soft verification is a concern, and it was drawn as furniture.
+ *
+ * Segment 17's clone said 78% of its words. The row's triangle was the same
+ * muted grey as the timecode next to it and the shelf's summary was the same
+ * grey as a line with nothing wrong, so a clip that said four fifths of its
+ * sentence looked exactly like one that said all of it. Both join the pending
+ * family — amber, this app's hue for "still outstanding" — with red kept for
+ * the hard failure. All of it is icons and a bar, never text: `--color-pending`
+ * is 3.70:1 in light, which clears the 3:1 non-text gate and not the text one.
+ */
+const softRow = rowFor(17);
+const softFlag = softRow.querySelector("[data-concern]");
+check("a soft verification is flagged on the row", softFlag?.getAttribute("data-concern") === "soft");
+// `.className` on an SVG element is an SVGAnimatedString, not a string.
+const softFlagClass = softFlag.getAttribute("class");
+check("…in the pending family, not as furniture", /text-warning/.test(softFlagClass));
+check(
+  "…and it is not the same mark as a hard failure",
+  !/text-critical/.test(softFlagClass) && !/text-muted/.test(softFlagClass),
+);
+clickIt(softRow.querySelector('[aria-label^="Select segment"]'));
+await settle(200);
+const verifyShelf = [...document.querySelectorAll("aside details")].find((d) =>
+  d.querySelector("summary").textContent.includes("Verification"),
+);
+check("…and the shelf says so while it is still shut", verifyShelf.getAttribute("data-tone") === "caution");
+clickIt(verifyShelf.querySelector("summary"));
+await settle(150);
+check(
+  "…with an amber overlap bar rather than the blue one that meant “fine”",
+  verifyShelf.querySelector("[data-overlap-bar]")?.getAttribute("data-overlap-bar") === "soft" &&
+    /var\(--color-warning\)/.test(verifyShelf.querySelector("[data-overlap-bar]").getAttribute("style")),
+);
+clickIt(verifyShelf.querySelector("summary"));
+await settle(150);
+
+/*
  * The selection panel. It holds everything true *about* a line and no text
  * field for the line itself — the text is in the script, where the comparison
  * is. Four shelves, all shut, all named for what is on them.
