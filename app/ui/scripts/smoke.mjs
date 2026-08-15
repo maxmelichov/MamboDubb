@@ -764,11 +764,14 @@ const bulk = [...document.querySelectorAll("button")].find((b) =>
 );
 check("a filtered set can be fixed in one job", bulk != null);
 // The bulk set used to be `visible.filter(seg => !seg.keep)`, which is every
-// row on this screen removed: both buttons offered a job for nobody.
-check("…over the lines the chip actually found", /Re-voice these 2/.test(bulk.textContent));
+// row on this screen removed: both buttons offered a job for nobody. And the
+// two buttons are not two ways to do one thing — an `mt_failed` line's
+// `text_en` is the source line the translator copied in when it gave up, so
+// re-voicing it would synthesize the wrong language.
+check("…over the lines the chip actually found", /Re-voice these 1/.test(bulk.textContent));
 check(
-  "…and re-translated in one job too",
-  [...document.querySelectorAll("button")].some((b) => /Re-translate these 2/.test(b.textContent)),
+  "…and the one the translator lost is re-translated instead",
+  [...document.querySelectorAll("button")].some((b) => /Re-translate these 1/.test(b.textContent)),
 );
 clickIt(chip("Failed"));
 await settle(200);

@@ -251,6 +251,17 @@ export function ScriptPane({
   const bulkUids = bulkSegs.map((seg) => seg.uid);
   const renderUids = visible.filter((seg) => segmentState(seg) === "unplaced").map((s) => s.uid);
   const needText = bulkSegs.filter((seg) => !(seg.text_en ?? "").trim()).length;
+  /*
+   * Within a failed set the two buttons are not two ways to do one thing: a
+   * `tts_failed` line has a translation the voice could not say, and an
+   * `mt_failed` line's `text_en` is the *source* line the translator copied in
+   * when it gave up. Re-voicing that one would synthesize the wrong language,
+   * so each button asks for exactly the lines it fixes.
+   */
+  const voiceUids = bulkSegs.filter((s) => s.keep_reason !== "mt_failed").map((s) => s.uid);
+  const textUids = bulkSegs
+    .filter((s) => s.keep_reason === "mt_failed" || !(s.text_en ?? "").trim())
+    .map((s) => s.uid);
   const showBulk =
     (filter === "failed" || filter === "unfinished") && bulkUids.length + renderUids.length > 0;
   const lines = `${bulkUids.length} line${bulkUids.length === 1 ? "" : "s"}`;
@@ -340,14 +351,18 @@ export function ScriptPane({
             </Button>
           ) : (
             <>
-              <Button size="xs" onClick={() => onResynthesizeMany(bulkUids)}>
-                <Volume2 className="h-3 w-3" />
-                Re-voice these {bulkUids.length}
-              </Button>
-              <Button size="xs" onClick={() => onRetranslateMany(bulkUids)}>
-                <Languages className="h-3 w-3" />
-                Re-translate these {bulkUids.length}
-              </Button>
+              {voiceUids.length > 0 ? (
+                <Button size="xs" onClick={() => onResynthesizeMany(voiceUids)}>
+                  <Volume2 className="h-3 w-3" />
+                  Re-voice these {voiceUids.length}
+                </Button>
+              ) : null}
+              {textUids.length > 0 ? (
+                <Button size="xs" onClick={() => onRetranslateMany(textUids)}>
+                  <Languages className="h-3 w-3" />
+                  Re-translate these {textUids.length}
+                </Button>
+              ) : null}
             </>
           )}
         </div>
