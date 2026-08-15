@@ -938,6 +938,76 @@ def test_rebuild_runs_forward_and_marks_the_stages_the_cli_would(monkeypatch):
     assert m["stages"]["timeline"]["fp"] != "old"       # and re-marked, not left stale
 
 
+# --------------------------------------------------- rebuild: look before clearing
+
+@pytest.mark.parametrize("asked,expect", [
+    ("timeline", "timeline"), ("mix", "mix"), ("translate", "translate"),
+])
+def test_start_stage_leaves_a_runnable_rebuild_alone(asked, expect):
+    assert edit.start_stage(two_segs(), asked)[0] == expect
+
+
+def test_start_stage_backs_up_to_tts_for_a_segment_with_no_clip():
+    m = two_segs()
+    edit.set_text(m, m["segments"][1]["uid"], text_en="a better line")   # drops the clip
+    for asked in ("timeline", "mix", "report"):
+        stage, why = edit.start_stage(m, asked)
+        assert stage == "tts" and "no audio" in why
+    # tts is what fills the hole, so a rebuild already starting there is untouched.
+    assert edit.start_stage(m, "tts")[0] == "tts"
+
+
+def test_start_stage_backs_up_to_translate_for_a_line_that_was_never_made():
+    m = two_segs()
+    m["segments"][1].pop("text_en")
+    m["segments"][1].pop("tts")
+    assert edit.start_stage(m, "timeline")[0] == "translate"
+    # A keep speaks its original audio; it needs no translation to be renderable.
+    m["segments"][1].update(keep=True, keep_reason="manual",
+                            tts={"clip": "clips/b.wav", "dur": 1.9})
+    assert edit.start_stage(m, "timeline")[0] == "timeline"
+
+
+def test_rebuild_fills_the_hole_instead_of_clearing_and_dying(monkeypatch):
+    """The Render button on the state an ordinary text edit leaves behind. It used
+    to clear timeline/mix/report first and only then hit `KeyError: 'tts'` inside
+    `timeline.build_items` — leaving the run strictly worse than it found it."""
+    from dubbing import mix as mix_mod
+    from dubbing import report as report_mod
+
+    m = finished(two_segs())
+    edit.set_text(m, m["segments"][1]["uid"], text_en="a better line")
+    ran = []
+    monkeypatch.setattr(tts_mod, "run",
+                        lambda *a, **k: ran.append("tts") or type(
+                            "E", (), {"close": lambda self: None})())
+    monkeypatch.setattr(timeline, "run", lambda *a, **k: ran.append("timeline"))
+    monkeypatch.setattr(mix_mod, "run", lambda *a, **k: ran.append("mix"))
+    monkeypatch.setattr(report_mod, "run", lambda *a, **k: ran.append("report") or {})
+    monkeypatch.setattr(cli, "_retimers", lambda *a, **k: (None, None))
+
+    done = edit.rebuild(m, tmp_workdir(), from_stage="timeline", save=lambda: None)
+    assert done == ["tts", "timeline", "mix", "report"] == ran
+    assert m["segments"][0]["text_en"] == "one two"     # the other line is untouched
+
+
+def test_rebuild_fails_when_the_report_says_the_dub_has_holes(monkeypatch):
+    from dubbing import mix as mix_mod
+    from dubbing import report as report_mod
+
+    m = two_segs()
+    monkeypatch.setattr(timeline, "run", lambda *a, **k: None)
+    monkeypatch.setattr(mix_mod, "run", lambda *a, **k: None)
+    monkeypatch.setattr(report_mod, "run", lambda *a, **k: {"unaccounted": [1]})
+    monkeypatch.setattr(tts_mod, "Engine",
+                        lambda *a, **k: type("E", (), {"close": lambda self: None})())
+    monkeypatch.setattr(cli, "_retimers", lambda *a, **k: (None, None))
+    with pytest.raises(edit.RebuildIncomplete, match="no audio"):
+        edit.rebuild(m, tmp_workdir(), from_stage="timeline", save=lambda: None)
+    # It ran to the end first: the work is marked and saved, only the verdict fails.
+    assert set(m["stages"]) >= {"timeline", "mix", "report"}
+
+
 # --------------------------------------------------------------- --force downstream
 
 def test_force_invalidates_every_downstream_stage():
