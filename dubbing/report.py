@@ -15,7 +15,7 @@ from typing import Any
 
 import numpy as np
 
-from . import audio, timeline, transcript
+from . import audio, manifest as manifest_mod, timeline, transcript
 
 SCAN_SR = 16000
 GAP_MIN_SEC = 2.0
@@ -92,6 +92,11 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
                             float(m["source"]["duration"]))
 
     report = {
+        # What this report is a report *about*. Nothing else on disk says so: an
+        # edit made a minute later changes no stage parameter, so a reader had no
+        # way to tell a current report from one the manifest had moved past hours
+        # ago — and it was served as current either way.
+        "manifest": manifest_mod.content_fingerprint(m),
         "segments": len(segments),
         "dubbed": len(dubbed),
         "kept": len(kept),

@@ -264,6 +264,17 @@ store: absolute media URLs for `place.clip` and `tts.clip`, the verification ver
 `clips/<hash>.json` (`heard`, `overlap` — the ready-made "did the voice say the right
 thing" signal), and the segment's source-audio window as a URL.
 
+### The report says what it is a report about
+
+`report.run` stamps `report["manifest"]` — `manifest.content_fingerprint(m)`, a hash of the
+segment list it counted. `GET /api/projects/{name}` still returns the file verbatim and
+adds **`report.stale`**: `true` when that stamp is missing or no longer matches the
+manifest on disk. A report is derived from decisions, and an edit changes no stage
+parameter, so nothing else on disk could tell a current report from one the manifest moved
+past hours ago. The data is served either way — the numbers were true of the run they
+described — and the UI decides whether to caption them "as of the last render". A report
+written before the stamp existed is `stale: true`: it cannot prove otherwise.
+
 ### Progress: NDJSON, one JSON object per line
 
 `GET /api/projects/{name}/events` streams `application/x-ndjson` and stays open:

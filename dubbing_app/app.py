@@ -286,7 +286,7 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
     @app.get("/api/projects/{name}")
     def get_project(name: str) -> dict[str, Any]:
         m = projects.load(name)
-        return {"name": name, "manifest": m, "report": projects.report(name),
+        return {"name": name, "manifest": m, "report": projects.report(name, m),
                 "stages": projects.stage_status(m),
                 "summary": projects.summary(name),
                 "jobs": [j.to_dict() for j in queue.list(name)]}

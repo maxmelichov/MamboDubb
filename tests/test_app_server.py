@@ -211,6 +211,35 @@ def test_get_project(client):
     assert len(body["manifest"]["segments"]) == 5
 
 
+def stamp_report(workdir):
+    """Re-stamp the fixture's report.json the way `report.run` does."""
+    m = manifest.load(workdir)
+    path = workdir / "report.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["manifest"] = manifest.content_fingerprint(m)
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_a_report_that_predates_the_stamp_is_not_served_as_current(client):
+    # It cannot prove it is about this manifest, and it was being shown as if it
+    # were: nothing in report.json referred to the segments it counted.
+    assert client.get(f"/api/projects/{NAME}").json()["report"]["stale"] is True
+
+
+def test_a_report_goes_stale_the_moment_an_edit_lands(client, outputs):
+    stamp_report(outputs / NAME)
+    body = client.get(f"/api/projects/{NAME}").json()
+    assert body["report"]["stale"] is False and body["report"]["segments"] == 5
+
+    uid = body["manifest"]["segments"][1]["uid"]
+    assert client.patch(f"/api/projects/{NAME}/segments/{uid}",
+                        json={"text_en": "A better line"}).status_code == 200
+    after = client.get(f"/api/projects/{NAME}").json()["report"]
+    # Still served — the numbers were true of the render that produced them — but
+    # no longer claimed to be about the manifest the editor is showing.
+    assert after["stale"] is True and after["segments"] == 5
+
+
 def test_uids_are_minted_once_and_persisted(client, outputs):
     first = [s["uid"] for s in client.get(f"/api/projects/{NAME}/segments").json()["segments"]]
     second = [s["uid"] for s in client.get(f"/api/projects/{NAME}/segments").json()["segments"]]

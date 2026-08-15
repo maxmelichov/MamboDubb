@@ -1057,6 +1057,24 @@ def test_force_does_not_discard_a_users_locked_work():
     assert "tts" not in other       # everything unlocked is invalidated as usual
 
 
+def test_content_fingerprint_answers_what_a_derived_artifact_was_made_from(tmp_path):
+    # `report.json` is written beside the manifest and describes the segments as
+    # they were. An edit changes no stage parameter, so a stage fingerprint cannot
+    # tell the two apart — this one can, and survives the JSON round trip a report
+    # is compared across.
+    m = two_segs()
+    before = manifest.content_fingerprint(m)
+    manifest.save(tmp_path, m)
+    assert manifest.content_fingerprint(manifest.load(tmp_path)) == before
+    edit.set_text(m, m["segments"][0]["uid"], text_en="a better line")
+    edited = manifest.content_fingerprint(m)
+    assert edited != before
+    # Stage marks are not in it: `report.run` is called before its own stage is
+    # marked, so a fingerprint that counted them could never match afterwards.
+    manifest.mark_stage(m, "report", "anything")
+    assert manifest.content_fingerprint(m) == edited
+
+
 def test_clear_downstream_is_the_shared_helper():
     m = two_segs()
     m["stages"] = {s: {"fp": "x"} for s in ("translate", "tts", "timeline")}

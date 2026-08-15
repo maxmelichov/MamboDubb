@@ -75,14 +75,33 @@ class Projects:
     def save(self, name: str, m: dict[str, Any]) -> None:
         manifest.save(self.dir_for(name), m)
 
-    def report(self, name: str) -> dict[str, Any] | None:
-        path = self.require_dir(name) / "report.json"
+    def report(self, name: str, m: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        """`report.json`, plus whether it is still about the manifest on disk.
+
+        The file is served whatever the answer — the numbers in a stale report are
+        still the numbers of the run it described, and the UI decides how to show
+        that. What it may not do is present them as current: an edit changes no
+        stage parameter, so nothing in the file itself said the manifest had moved
+        on, and a report from before a dozen corrections read exactly like a fresh
+        one. A report written before the stamp existed cannot prove it is current,
+        so it is not shown as if it were.
+        """
+        workdir = self.require_dir(name)
+        path = workdir / "report.json"
         if not path.is_file():
             return None
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             return None
+        if not isinstance(data, dict):
+            return data
+        if m is None:
+            m = manifest.load(workdir)
+        stamp = data.get("manifest")
+        data["stale"] = not (stamp and m is not None
+                             and stamp == manifest.content_fingerprint(m))
+        return data
 
     # -- derived views -----------------------------------------------------
 
