@@ -42,10 +42,12 @@ from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parent.parent
 ICONS = ROOT / "app" / "desktop" / "src-tauri" / "icons"
-# The MamboDubb logo mark (mic + wave + speech bubble), cut from the brand
-# banner, on its native near-white ground. It replaces the drawn SVG as the
-# icon's source of truth; the SVG remains only as the pre-rebrand original.
-SOURCE = ICONS / "logo-mark.png"
+# The MamboDubb badge: a full-bleed vector tile (teal ground, record disc, MD
+# monogram, wordmark). Being SVG, it goes back through the qlmanage rasterizer;
+# its own ground IS the tile, so the master is the badge scaled to the macOS
+# tile and alpha-cut to the standard silhouette (whose rounder corners trim the
+# badge's squarer ones into the native shape).
+SOURCE = ICONS / "mambodubb-badge.svg"
 
 MASTER = 1024
 # The macOS icon grid, and the geometry the SVG's tile is drawn on.
@@ -90,20 +92,28 @@ ICONSET = [
 ICO_SIZES = [16, 24, 32, 48, 64, 128, 256]
 
 
-def rasterize(mark_png: Path) -> Image.Image:
-    """Logo mark -> a 1024x1024 RGBA master: a white macOS tile with the mark
-    centered on it, alpha cut to the tile silhouette. The mark ships on a
-    near-white ground, so compositing onto a white tile needs no keying."""
-    mark = Image.open(mark_png).convert("RGBA")
-    # ~66% of the tile width reads right at every ladder size; taller-than-wide
-    # marks are bounded by height instead so nothing crowds the tile edge.
-    target_w = int(TILE_SIZE * 0.82)
-    target_h = int(TILE_SIZE * 0.66)
-    ratio = min(target_w / mark.width, target_h / mark.height)
-    mark = mark.resize((round(mark.width * ratio), round(mark.height * ratio)),
-                       Image.LANCZOS)
-    image = Image.new("RGBA", (MASTER, MASTER), (255, 255, 255, 255))
-    image.paste(mark, ((MASTER - mark.width) // 2, (MASTER - mark.height) // 2), mark)
+def rasterize(svg: Path) -> Image.Image:
+    """Badge SVG -> a 1024x1024 RGBA master, alpha cut to the tile silhouette.
+
+    qlmanage is the only SVG rasterizer every Mac ships (see the module
+    docstring); it composites onto opaque white, which is fine here — the badge
+    is full-bleed, so no white survives inside the tile cut.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp)
+        subprocess.run(
+            ["qlmanage", "-t", "-s", str(TILE_SIZE), "-o", str(out), str(svg)],
+            check=True,
+            capture_output=True,
+        )
+        rendered = out / f"{svg.name}.png"
+        if not rendered.is_file():
+            raise SystemExit(f"error: qlmanage produced no thumbnail for {svg}")
+        badge = Image.open(rendered).convert("RGBA")
+    if badge.size != (TILE_SIZE, TILE_SIZE):
+        badge = badge.resize((TILE_SIZE, TILE_SIZE), Image.LANCZOS)
+    image = Image.new("RGBA", (MASTER, MASTER), (0, 0, 0, 0))
+    image.paste(badge, (TILE_INSET, TILE_INSET))
     image.putalpha(tile_mask())
     return image
 

@@ -31,7 +31,7 @@ import {
 import { ChevronDown, TriangleAlert } from "lucide-react";
 import { cn } from "../lib/classNames";
 import { STATE_META, type SegmentState } from "../lib/segments";
-import logoMarkUrl from "../assets/logo-mark.png";
+import badgeUrl from "../assets/mambodubb-badge.svg";
 
 /* ------------------------------------------------------------------ brand */
 
@@ -76,13 +76,10 @@ export function LogoMark({ className }: { className?: string }) {
  * is the identity: the real artwork, which is a full-colour PNG on white with
  * no alpha channel.
  *
- * That is why the pill is light in **both** themes rather than following the
- * surface. A white-backed image floated on a near-black plane is a white
- * rectangle with a logo in it; put it on its own light ground and it reads the
- * way it was drawn. Dark's `--color-primary` is the near-white ink, so
- * `bg-primary`/`text-on-primary` gives a light chip with dark lettering there
- * without inventing a colour that no theme owns. `mix-blend-multiply` is what
- * makes the last hairline of the PNG's own white disappear into the pill.
+ * The artwork is the MamboDubb badge SVG — a self-contained teal tile with its
+ * own rounded corners, so it sits on either theme's pill without keying or
+ * blending; the pill stays light in both themes purely so the wordmark beside
+ * it keeps one treatment (dark's `--color-primary` is the near-white ink).
  *
  * In dark the chip's hairline takes a wash of the accent (`/25`, deliberately —
  * a saturated 1px outline reads as a focus ring, and focus rings are this same
@@ -100,12 +97,12 @@ export function BrandChip({ className }: { className?: string }) {
       )}
     >
       <img
-        src={logoMarkUrl}
+        src={badgeUrl}
         alt=""
         aria-hidden
-        width={358}
-        height={264}
-        className="h-[22px] w-auto mix-blend-multiply"
+        width={22}
+        height={22}
+        className="h-[22px] w-[22px] rounded-[5px]"
       />
       <span className="text-[11px] font-black uppercase tracking-[0.2em] text-primary dark:text-on-primary">
         MamboDubb
