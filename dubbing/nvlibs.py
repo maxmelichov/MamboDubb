@@ -1,7 +1,7 @@
 """Make the pip-bundled NVIDIA libraries win over mismatched system copies.
 
 On Linux, torch's wheels carry their own cuDNN under site-packages/nvidia/ and
-find it through RUNPATH — but RUNPATH does not propagate: when libcudnn.so.9
+find it through RUNPATH but RUNPATH does not propagate: when libcudnn.so.9
 dlopens its sub-libraries (libcudnn_cnn, libcudnn_ops, …) they resolve through
 ldconfig instead, and a system-installed cuDNN of a different version answers.
 The mix fails inside the first convolution with

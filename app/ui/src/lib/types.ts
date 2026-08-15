@@ -50,7 +50,7 @@ export type SegmentPlace = {
   clip: string;
 };
 
-/** Per-segment synthesis overrides — `feat/tts-controls` owns the field list. */
+/** Per-segment synthesis overrides `feat/tts-controls` owns the field list. */
 export type TtsOpts = {
   seed?: number | null;
   greedy?: boolean | null;
@@ -68,9 +68,9 @@ export type TtsOpts = {
  * real server. One name, both sides.
  */
 export type SegmentMedia = {
-  /** `place.clip` — the file the mix actually uses, after time-fitting */
+  /** `place.clip` the file the mix actually uses, after time-fitting */
   play: string | null;
-  /** `tts.clip` — the raw synthesis, before time-fitting */
+  /** `tts.clip` the raw synthesis, before time-fitting */
   tts: string | null;
   /** this segment's window of the source audio, as a `#t=` media fragment */
   source: string | null;
@@ -89,7 +89,7 @@ export type SegmentMedia = {
  * enrichment the UI needs and the manifest deliberately does not store.
  */
 export type Segment = {
-  /** stable across re-segmentation — every API keys on this, never on `id` */
+  /** stable across re-segmentation every API keys on this, never on `id` */
   uid: string;
   /** positional, renumbered on every re-segmentation; ordering and display only */
   id: number;
@@ -115,7 +115,7 @@ export type Segment = {
   lang?: string | null;
   /**
    * Advisory: what the language classifier heard over this span. It decides
-   * nothing — it is what an editor reads to *suggest* a passthrough.
+   * nothing it is what an editor reads to *suggest* a passthrough.
    */
   detected_lang?: string | null;
   /**
@@ -150,12 +150,12 @@ export type SegmentVerify = {
 };
 
 /**
- * Body of `PATCH /segments/{uid}` — mirrors the `dubbing/edit.py` setters.
+ * Body of `PATCH /segments/{uid}` mirrors the `dubbing/edit.py` setters.
  *
  * `null` means "not supplied", never "clear" (`app.py::PatchSegment`), which is
  * why nothing here is nullable: an omitted key is how a field is left alone.
  * The one way to *remove* a value is `src_lang`/`tgt_lang`, where the empty
- * string clears the override — a language tag has no other way out, and sending
+ * string clears the override a language tag has no other way out, and sending
  * `null` for it was a dead control.
  */
 export type SegmentPatch = {
@@ -178,7 +178,7 @@ export type SegmentPatch = {
 // --- projects -------------------------------------------------------------
 
 export type ProjectSummary = {
-  /** the run directory name — the project's id in every path */
+  /** the run directory name the project's id in every path */
   name: string;
   title: string;
   src_lang: string;
@@ -225,7 +225,7 @@ export type Report = {
    * Added by the server on read (`Projects.report`), never stored: an edit
    * changes no stage parameter, so nothing in report.json itself could tell a
    * current report from one the manifest passed hours ago. The numbers are
-   * served either way — they were true of the run they described — and this is
+   * served either way they were true of the run they described and this is
    * what lets the UI caption them instead of presenting them as now.
    */
   stale?: boolean;
@@ -239,11 +239,11 @@ export type ProjectDetail = {
   outputs: { preview?: string; dub_wav?: string; srt?: string } & Record<string, string>;
   report: Report | null;
   /**
-   * This project's jobs, oldest first — the server has always sent them and the
+   * This project's jobs, oldest first the server has always sent them and the
    * client threw them away.
    *
    * They are the only record of *why* a run stopped. The event stream replays
-   * nothing terminal (`app.py::project_events`, deliberately — a failure
+   * nothing terminal (`app.py::project_events`, deliberately a failure
    * replayed on every reconnect resurrects an error bar dismissed an hour ago),
    * so after a reload the most recent failed job's `error` and `stage` exist
    * here and nowhere else. Without them "The run stopped at fetch" is all the
@@ -254,7 +254,7 @@ export type ProjectDetail = {
 };
 
 /**
- * Body of `PATCH /api/projects/{name}` — the run options that are still a
+ * Body of `PATCH /api/projects/{name}` the run options that are still a
  * decision after the run has started.
  *
  * These three are inputs to the *translator*, so nothing already fetched,
@@ -263,7 +263,7 @@ export type ProjectDetail = {
  * changing either invalidates fetch and everything after it, which is a new
  * project wearing an old project's name.
  *
- * `context: ""` clears the note — the one field with a way to be removed.
+ * `context: ""` clears the note the one field with a way to be removed.
  */
 export type ProjectOptionsPatch = {
   context?: string;
@@ -285,7 +285,7 @@ export type RenderState = {
   stale: boolean;
   /**
    * How many lines differ from the ones that render was made of. Exact, not an
-   * estimate — but `0` when there is no stamp to compare against, so never phrase
+   * estimate but `0` when there is no stamp to compare against, so never phrase
    * "N lines changed" off a render whose `at` is null.
    */
   changed: number;
@@ -295,7 +295,7 @@ export type RenderState = {
  * A waveform overview for one timeline lane.
  *
  * `peaks` is normalized to [0, 1] and `duration` is the audio's own length in
- * seconds — which is what makes the picture time-alignable, and why the lane
+ * seconds which is what makes the picture time-alignable, and why the lane
  * must scale it by `duration` rather than assuming it covers the run.
  */
 export type PeaksFile = "source" | "dub";
@@ -322,15 +322,15 @@ export type CreateProjectRequest = {
    * force one. It was accepted by the server and unreachable from the screen,
    * so a user who knew the auto-captions were garbage had no way to say so.
    *
-   * The server also accepts `captions` — a path to a caption file to use instead
-   * of the fetched one — which stays CLI-only: it is a local path the browser
+   * The server also accepts `captions` a path to a caption file to use instead
+   * of the fetched one which stays CLI-only: it is a local path the browser
    * cannot produce and the desktop file picker does not offer.
    */
   transcript?: "auto" | "captions" | "asr" | null;
   /**
    * Translate and voice speech that is in neither the source nor the target
    * language. Off by default, which is the pipeline's own default: a third
-   * language is KEPT — played as recorded, subtitled — unless the run opts in.
+   * language is KEPT played as recorded, subtitled unless the run opts in.
    */
   dub_foreign?: boolean;
 };
@@ -359,7 +359,7 @@ export type Job = {
    * Real now: `jobs.Job.to_dict` hoists it out of the payload and the job frames
    * carry it too, live and replayed. It used to be fixture-only, which is why the
    * app marked busy rows from a local list that unrelated completions wiped after
-   * about 100 ms. `pendingUids` is derived from these instead — see `useProject`.
+   * about 100 ms. `pendingUids` is derived from these instead see `useProject`.
    */
   uids: string[];
   /**
@@ -384,7 +384,7 @@ export function isPending(job: Job): boolean {
  *
  * The nine replayed stage frames are a snapshot of all nine stages at once, not a
  * progression, so a client that pins its display to the last stage frame it saw
- * reads the ninth as the stage the run is in — which is how the editor came to
+ * reads the ninth as the stage the run is in which is how the editor came to
  * announce "Running report · 100%" the instant a re-voice started.
  */
 type Replayed = { replay?: boolean };
@@ -437,7 +437,7 @@ export type Health = { status: "ok"; version: string };
 
 /**
  * One row of `GET /api/setup`: a fast filesystem check the server can answer
- * without loading anything — ffmpeg, sox, the HF token, each model directory,
+ * without loading anything ffmpeg, sox, the HF token, each model directory,
  * free disk. `detail` is the sentence shown under the label: a size when the
  * check passes, what to install when it does not.
  */
@@ -449,7 +449,7 @@ export type SetupCheck = {
   ok: boolean;
   detail: string;
   /**
-   * What a failure of this check actually costs — `blocking` (the run fails),
+   * What a failure of this check actually costs `blocking` (the run fails),
    * `degrades` (the run works and is worse), `optional` (irrelevant until you
    * ask for it). The screen showed a single red MISSING for all three, which
    * made a gated HF token look like a broken install and a Korean checkpoint
@@ -476,16 +476,16 @@ export type SetupCheck = {
   installable?: boolean;
 };
 
-/** `ok` is the whole checklist's verdict — false means the app is not usable. */
+/** `ok` is the whole checklist's verdict false means the app is not usable. */
 export type SetupStatus = { ok: boolean; checks: SetupCheck[] };
 
 /**
- * `GET|POST /api/setup/install` — the one install slot.
+ * `GET|POST /api/setup/install` the one install slot.
  *
  * Polled, not streamed: setup has no project and therefore no event stream, and
  * a `brew install` is minutes long, so the last lines of output plus a 2 s poll
  * is the entire progress design. `check` is a freshly probed `SetupCheck`, filled
- * in when the process exits — the exit code is a claim about the package
+ * in when the process exits the exit code is a claim about the package
  * manager, not about this machine's PATH.
  */
 export type SetupInstall = {

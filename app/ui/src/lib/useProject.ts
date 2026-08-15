@@ -47,7 +47,7 @@ export type ProjectState = {
    * It used to be its own `busyUids` list, set when a request was sent and
    * cleared by two paths that both fired far too early: any `segment` frame
    * dropped that uid, and *any* job reaching a terminal state emptied the whole
-   * list — including a job about other lines entirely. Measured lifetime was
+   * list including a job about other lines entirely. Measured lifetime was
    * about 100 ms against a re-voice that runs for a minute per line, and a
    * reload cleared it outright. Derived, it lasts exactly as long as the work
    * does and survives reconnecting, because the jobs do.
@@ -63,7 +63,7 @@ export type ProjectActions = {
    *
    * The return value is not decoration: a verdict flip is a PATCH *and then* a
    * decision about what to queue, and the only honest input to that decision is
-   * what the server says the segment became — `edit.set_keep` drops the line and
+   * what the server says the segment became `edit.set_keep` drops the line and
    * the clip on the way through, so "does this segment still have a translation"
    * cannot be answered from the patch that was sent.
    */
@@ -74,7 +74,7 @@ export type ProjectActions = {
   resynthesize: (uids: string[], batch?: string) => Promise<void>;
   render: () => Promise<void>;
   /**
-   * Run the pipeline on this project again — a resume, on one that stopped.
+   * Run the pipeline on this project again a resume, on one that stopped.
    *
    * Goes through `submit` like every other model action, which is what puts the
    * refusal in the error bar: the server 409s while anything is already in
@@ -129,8 +129,8 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
    *
    * `render.stale` and `render.changed` are derived on the server from the
    * manifest, so they are as old as the last `GET /api/projects`. Nothing
-   * refetched that after a no-model edit — `patch` deliberately updates only the
-   * one segment — so the header sat quiet on "Render preview" until some job
+   * refetched that after a no-model edit `patch` deliberately updates only the
+   * one segment so the header sat quiet on "Render preview" until some job
    * happened to finish and pull the project in behind it. The user's own edit is
    * the one thing that should light it up.
    *
@@ -178,7 +178,7 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
             /*
              * A replayed frame is history, not news. The prelude sends all nine
              * stages at once as a snapshot, so pinning the display to "the last
-             * stage frame seen" read the ninth as the stage the run is in — the
+             * stage frame seen" read the ninth as the stage the run is in the
              * editor announced "Running report · 100%" the moment a re-voice
              * started, over a video that was minutes out of date. They still
              * count as a reason to re-read the project; they are not a progress
@@ -232,7 +232,7 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
             });
             /*
              * A new job is not the old job's last frame. The stage strip kept
-             * whatever the previous job left behind — "Running report", 100% —
+             * whatever the previous job left behind "Running report", 100% —
              * until the new one happened to emit its first frame, which for a
              * re-voice is after the model loads. Clearing on the transition
              * means the strip says nothing until the new job says something.
@@ -247,7 +247,7 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
              * matters most: the worker saves the partial work it did before it
              * stopped (`jobs`' journal), so a cancelled resynthesis leaves real
              * new clips on disk. Treating only done|failed as the end left the
-             * segments unread — the results were there and the screen never
+             * segments unread the results were there and the screen never
              * showed them until the run was re-opened.
              */
             if (event.status === "done" || event.status === "failed" ||
@@ -284,7 +284,7 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
        * `applyPatch` is `dubbing/edit.py`'s table, shared with the fixture
        * backend so there is one model of what a PATCH does and not three. The
        * server's answer overwrites this a moment later; this is only what the
-       * row shows in between — and what it showed before was a ◆ Dubbed badge
+       * row shows in between and what it showed before was a ◆ Dubbed badge
        * over audio of a sentence the user had just replaced.
        */
       const before = segments;
@@ -309,7 +309,7 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
     async (run: () => Promise<Segment[]>) => {
       try {
         setSegments(await run());
-        // A split or a merge is the largest edit there is — it mints new uids,
+        // A split or a merge is the largest edit there is it mints new uids,
         // so every count the render was made against moves.
         refreshProject();
       } catch (err) {
@@ -330,7 +330,7 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
   );
 
   /*
-   * The job the server just accepted is the record that the work exists — the
+   * The job the server just accepted is the record that the work exists the
    * rows it names start pulsing because it is in `jobs`, not because a separate
    * list was primed here. One source, so nothing can clear it early.
    */
@@ -361,7 +361,7 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
       // its way out is re-read. The `cancelled` frame will say the same thing a
       // moment later; this is for the moment before it arrives, and for a
       // stream that has dropped. With `batch`, the mates it stopped are marked
-      // too — they are cancelled server-side whether or not a frame arrives.
+      // too they are cancelled server-side whether or not a frame arrives.
       cancel: async (id, batch = false) => {
         try {
           await api.cancelJob(id, batch);
@@ -392,7 +392,7 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
    *
    * Only `retranslate` and `resynthesize` name lines. A `render` re-lays the
    * whole timeline and a `run` rebuilds everything, so neither marks particular
-   * rows busy — every row would pulse, which says nothing.
+   * rows busy every row would pulse, which says nothing.
    */
   const pendingUids = useMemo(() => {
     const out = new Set<string>();
@@ -428,12 +428,12 @@ export function activeJob(jobs: Job[]): Job | null {
 /**
  * The server's own words, never ours.
  *
- * A `busy` used to be rewritten as "A job is already running — this one is
+ * A `busy` used to be rewritten as "A job is already running this one is
  * queued behind it.", which is a sentence about something that never happened:
  * the model actions *do* queue and answer 202, and 409/busy is raised only for
  * the edits the server refuses outright while a job runs (a split, a merge, a
  * bounds change, a second install). Telling a user their split is queued when
- * it was rejected is worse than saying nothing — and the server's message
+ * it was rejected is worse than saying nothing and the server's message
  * already names which edit and why.
  */
 function describe(error: unknown): string {

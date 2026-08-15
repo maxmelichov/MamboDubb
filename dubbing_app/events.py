@@ -7,7 +7,7 @@ Frames, per docs/APP_ARCHITECTURE.md:
     {"type":"job","id":"...","status":"queued|running|done|failed","error":null}
     {"type":"log","level":"info","message":"..."}
 
-Plus `{"type":"heartbeat"}` every 15 s — a keepalive, not an event, so proxies
+Plus `{"type":"heartbeat"}` every 15 s a keepalive, not an event, so proxies
 and sleeping laptops do not silently drop the stream.
 
 **Errors travel as a frame.** By the time a run fails the response has been

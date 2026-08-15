@@ -1,4 +1,4 @@
-"""manifest.json — the single record every stage reads and writes.
+"""manifest.json the single record every stage reads and writes.
 
 Stage results are keyed by a fingerprint chain: each stage's fingerprint mixes in
 its predecessor's, so re-running one stage with new params invalidates everything
@@ -30,7 +30,7 @@ STAGE_TAGS = {
     # the "already target script" clause, exactly as a named span witness does —
     # nameless English lines in a he→de run were kept as "already German".
     "segments": "segments/v39",
-    # v34: a same-language pair (he→he, en→en) translates by identity — the target
+    # v34: a same-language pair (he→he, en→en) translates by identity the target
     # line is the source line and no translator loads.
     # v35: a segment translates from its OWN language (`translate.segment_langs`),
     # and a failed translation no longer overrules the user's "dub it".
@@ -44,14 +44,14 @@ STAGE_TAGS = {
     # synthesis, the cache key and verification.
     "tts": "tts/v16",
     # v14: `place` now carries the overrun it measured and why a shortening was
-    # abandoned — report.json's drift story reads from these. (v13 was claimed on
+    # abandoned report.json's drift story reads from these. (v13 was claimed on
     # a branch that never landed under that number.)
     "timeline": "timeline/v14",
     "mix": "mix/v9",
-    # v3: honest failure accounting — verify.unverified, degraded, overrun,
-    # shorten_abandoned, subtitles_failed, stale_locked_clips — alongside the
+    # v3: honest failure accounting verify.unverified, degraded, overrun,
+    # shorten_abandoned, subtitles_failed, stale_locked_clips alongside the
     # transcript-origin stamping. (v2 was claimed for the first half alone.)
-    # v4: source_mismatch — the report says when most of the heard speech is
+    # v4: source_mismatch the report says when most of the heard speech is
     # not written in the declared source language's script (wrong declaration).
     "report": "report/v4",
 }
@@ -71,7 +71,7 @@ SEGMENT_KEYS = {
     "src_lang",   # editor override: this segment's source language (falls back to `lang`)
     "tgt_lang",   # editor override: translate this segment into something else
     "detected_lang",  # advisory: what the language classifier heard over this span.
-                      # Never decides anything — it is what the editor app reads to
+                      # Never decides anything it is what the editor app reads to
                       # SUGGEST passthrough ("this one is already English").
     "passthrough",    # user override: True = play the original audio for this span,
                       # False = dub it, absent = decide automatically. The pipeline
@@ -81,7 +81,7 @@ SEGMENT_KEYS = {
     "text_mid",   # pivot runs only: the English intermediate text_en was made from
     "tts_opts",   # per-segment synthesis overrides (dubbing/ttsopts.py); user-set only
     "tts",
-    "locked",     # {field: True} for fields the user edited by hand — see `is_locked`
+    "locked",     # {field: True} for fields the user edited by hand see `is_locked`
     "place",
 }
 
@@ -95,13 +95,13 @@ SEGMENT_KEYS = {
 # one forward pass and rewrites every `place`, which is what makes non-overlap
 # provable), and re-segmentation rebuilds every span from the words, carrying only
 # `passthrough` forward by time. A lock the pipeline overwrites on the next run is
-# state that lies about the user's edit, so the API rejects it instead — see
+# state that lies about the user's edit, so the API rejects it instead see
 # `edit.set_locked`.
 LOCK_FIELDS = ("text", "text_en", "tts", "keep", "speaker")
 
 
 # Keeps whose `text_en` is written by the translate stage rather than copied from
-# the segment's own text — exactly `translate.needs_subtitle_translation`'s two
+# the segment's own text exactly `translate.needs_subtitle_translation`'s two
 # kinds. Theirs is a translation, so a translate reset must reopen it; every other
 # keep's subtitle belongs to the segments stage and is not translate's to discard.
 SUBTITLED_BY_TRANSLATE = ("foreign", "interjection")
@@ -114,7 +114,7 @@ def is_locked(seg: dict[str, Any], field: str) -> bool:
 
 # A keep the pipeline decided for itself, per stage: the verdicts a rerun of that
 # stage (or of anything upstream of it) is entitled to re-decide. One table, read
-# by `reset_stage`, `edit.invalidate` and `tts.clear_failed_keeps` alike — they
+# by `reset_stage`, `edit.invalidate` and `tts.clear_failed_keeps` alike they
 # undo the same verdict, so they cannot be allowed to disagree about which ones.
 PIPELINE_KEEPS = {"translate": ("mt_failed", "tts_failed"), "tts": ("tts_failed",)}
 
@@ -123,7 +123,7 @@ def undo_pipeline_keep(seg: dict[str, Any], reasons: tuple[str, ...]) -> bool:
     """Reopen a keep the pipeline decided for itself. True when it was undone.
 
     The single predicate every undo path shares. `locked.keep` is the user
-    answering that verdict — "yes, keep the original here" — and it outranks the
+    answering that verdict "yes, keep the original here" and it outranks the
     rerun, whichever door the rerun came through. Guarding this with any *other*
     lock (the tts record's, say) is how a user-locked keep ended up silently
     re-decided on every tts run while `reset_stage` left it alone.
@@ -132,7 +132,7 @@ def undo_pipeline_keep(seg: dict[str, Any], reasons: tuple[str, ...]) -> bool:
     one caller:
 
     * A keep the *user* asked for (`passthrough` True) is never this stage's to
-      reopen, whatever reason string is sitting on it — un-keeping it would leave
+      reopen, whatever reason string is sitting on it un-keeping it would leave
       the manifest disagreeing with itself until the next `apply_passthrough`
       flipped it back.
     * A `locked.keep` guarding a value the *pipeline* put there is not the user's
@@ -158,7 +158,7 @@ def keeps_own_subtitle(seg: dict[str, Any]) -> bool:
     A kept span still gets a subtitle. For exactly the two kinds in
     `SUBTITLED_BY_TRANSLATE` that subtitle is a translation, so a translate reset
     reopens it; every other keep's line belongs to the segments stage and
-    `translate.needs_translation` will never refill it — dropped, it is gone for
+    `translate.needs_translation` will never refill it dropped, it is gone for
     good. Shared by `reset_stage` (whole run) and `edit.invalidate` (one segment)
     so the two doors cannot drift apart.
     """
@@ -168,14 +168,14 @@ def keeps_own_subtitle(seg: dict[str, Any]) -> bool:
 def mint_uid(start: float, end: float, text: str) -> str:
     """The stable identity of a segment, derived from what created it.
 
-    Opaque to every caller — the only promise is that it is stable. Content-derived
+    Opaque to every caller the only promise is that it is stable. Content-derived
     rather than random on purpose: a run directory written before `uid` existed
     gets back-filled on load with exactly the uid a fresh re-segmentation would
     mint, so identity survives both the migration and a re-run that reproduces the
     same segment. Segments never overlap, so (start, end, text) is unique within a
     run; `ensure_uids` re-mints the rare duplicate anyway.
 
-    Minted once, at creation, and then carried unchanged through every edit — a
+    Minted once, at creation, and then carried unchanged through every edit a
     segment whose text the user rewrote keeps the uid its original text minted.
     """
     blob = f"{float(start):.3f}|{float(end):.3f}|{text or ''}"
@@ -223,7 +223,7 @@ def reset_stage(m: dict[str, Any], stage: str) -> None:
     """Drop what `stage` produced, so it can be recomputed from scratch.
 
     Stages also resume *within* themselves (per-segment), so this is only called
-    when the stage's fingerprint changed — a resumed run keeps its partial work,
+    when the stage's fingerprint changed a resumed run keeps its partial work,
     a re-parameterised one does not.
     """
     if stage == "segments":
@@ -296,7 +296,7 @@ def content_fingerprint(m: dict[str, Any]) -> str:
     """A hash of the decisions in the segment list, for artifacts written beside it.
 
     Not a stage fingerprint: those key on a stage's *parameters*, and a hand edit
-    changes no parameter at all — which is how `report.json` came to describe a
+    changes no parameter at all which is how `report.json` came to describe a
     manifest that had moved on hours ago. This keys on the segments themselves, so
     anything derived from them can say whether it is still about them.
 
@@ -316,7 +316,7 @@ def segment_digests(m: dict[str, Any]) -> dict[str, str]:
 
     `content_fingerprint` answers "did anything change"; this answers "which lines".
     An artifact that stores it alongside the fingerprint can say *how many* lines it
-    is behind by, instead of guessing from how many are unfinished — a guess that
+    is behind by, instead of guessing from how many are unfinished a guess that
     counts lines which were already unfinished when it was written and never changed.
 
     `id` is excluded where `content_fingerprint` includes it: it is positional and is
@@ -341,7 +341,7 @@ def segment_digests(m: dict[str, Any]) -> dict[str, str]:
 def digest_delta(before: dict[str, str] | None, after: dict[str, str]) -> int:
     """How many segments differ between two `segment_digests` maps.
 
-    A uid on one side only counts once — a line that was added or removed since is
+    A uid on one side only counts once a line that was added or removed since is
     one line's worth of difference, not two.
     """
     if not before:
@@ -364,7 +364,7 @@ def mark_stage(m: dict[str, Any], stage: str, fp: str) -> None:
 
 
 # Suffix on a stage mark that says "this ran, and it is not the answer that was
-# asked for" — see `mark_provisional`. Never equal to a recomputed fingerprint.
+# asked for" see `mark_provisional`. Never equal to a recomputed fingerprint.
 PROVISIONAL = "~provisional"
 
 
@@ -372,8 +372,8 @@ def mark_provisional(m: dict[str, Any], stage: str, fp: str) -> None:
     """Record what `stage` produced while saying it is not what was asked for.
 
     A transcript that fell back to captions because the ASR was unavailable is a
-    real result — everything downstream is built on it and must not be thrown
-    away — but it is not the transcript the run asked for, so the next run has to
+    real result everything downstream is built on it and must not be thrown
+    away but it is not the transcript the run asked for, so the next run has to
     try again. A mark that can never equal a recomputed fingerprint says both at
     once: this stage re-runs, and the stages after it keep their place in the
     chain for as long as the fallback keeps producing the same thing. Marked, not
@@ -392,7 +392,7 @@ def unmark_stage(m: dict[str, Any], stage: str) -> bool:
     """Drop `stage`'s "done" mark, keeping the partial work it can resume from.
 
     The weaker half of `clear_stage`. A per-segment edit hollowed out one segment
-    and left every other one intact, so the stage must *run again* — but it must
+    and left every other one intact, so the stage must *run again* but it must
     run as a resume, filling the hole, not as a restart that throws away the other
     seventy clips. `clear_stage` drops the progress mark too, which is what makes
     the next run call `reset_stage` and discard all of it.
@@ -405,7 +405,7 @@ def reopen_from(m: dict[str, Any], stage: str) -> list[str]:
 
     What an edit owes the run: deleting one segment's translation, clip or
     placement leaves eight stages still saying "done", so the next run skips them
-    all and the hole is never filled — a segment with no placement is missing from
+    all and the hole is never filled a segment with no placement is missing from
     the mix, which is the never-silent invariant broken by the back door.
 
     Per-segment work is untouched (`unmark_stage`, not `clear_stage`), so the
@@ -419,7 +419,7 @@ def clear_downstream(m: dict[str, Any], stage: str) -> list[str]:
 
     The fingerprint chain cannot do this on its own when a stage is re-run with
     unchanged parameters: `stage_fingerprint` mixes tag + params + upstream fp, all
-    three unchanged, so the recomputed fingerprint matches — and translate/tts/
+    three unchanged, so the recomputed fingerprint matches and translate/tts/
     timeline declare no output files, so `stage_done`'s `all([])` is True and they
     report "up to date". Re-running a stage genuinely does discard what came after
     it, so the record has to be dropped explicitly.

@@ -1,8 +1,8 @@
-# MamboDubb — editor UI
+# MamboDubb editor UI
 
 The web front end for the dubbing pipeline: import a video, then review and correct the
 dub segment by segment. React 19 + Vite 7 + Tailwind 4, pnpm, no state library and no
-component library — the same plainness as `MamboRambo/mamborambo-desktop`.
+component library the same plainness as `MamboRambo/mamborambo-desktop`.
 
 `docs/APP_ARCHITECTURE.md` is the contract. This app never imports the pipeline; it only
 speaks HTTP to the studio server.
@@ -11,9 +11,9 @@ speaks HTTP to the studio server.
 
 ```bash
 pnpm install
-pnpm dev:fixtures     # http://localhost:1430 — sample data, no server needed
+pnpm dev:fixtures     # http://localhost:1430 sample data, no server needed
 pnpm dev              # against a real studio server (proxied, see below)
-pnpm build            # tsc + vite build — the acceptance gate
+pnpm build            # tsc + vite build the acceptance gate
 pnpm smoke            # render the production bundle in jsdom and click through it
 pnpm check            # both
 ```
@@ -30,7 +30,7 @@ binds an OS-assigned port and prints `{"status":"ready","port":N}` on stdout, so
 
 ## Fixture mode
 
-`VITE_USE_FIXTURES=1` swaps the backend inside `src/lib/api.ts` — nothing above that file
+`VITE_USE_FIXTURES=1` swaps the backend inside `src/lib/api.ts` nothing above that file
 changes. The fixture serves a snapshot of a real 320 s Hebrew→English run: 58 segments
 with their actual translations, drift, placement rates and ASR verification transcripts,
 regenerated with
@@ -41,8 +41,8 @@ python3 scripts/make_fixture.py outputs/<run> src/lib/fixture-data.json
 
 It implements the contract, not a mock of it: the one-job rule, the NDJSON event stream
 with stage/segment/job/log frames, optimistic no-model edits, and queued model actions
-that actually mutate the segments when they finish. A/B playback works — the clips are
-synthesized buzz at the right durations, not silence — so the transport is real even
+that actually mutate the segments when they finish. A/B playback works the clips are
+synthesized buzz at the right durations, not silence so the transport is real even
 though there is no `preview.mp4` to play.
 
 The list has two more runs beside the snapshot, and opening either gives that run's own
@@ -53,11 +53,11 @@ three transport modes, and the only place they can all be seen at once.
 
 ## Editor screen
 
-Three panes and a rail. The preview is the pane that **grows** — it and the timeline are the
+Three panes and a rail. The preview is the pane that **grows** it and the timeline are the
 workspace, and everything else is sized around them. Under the timeline is the segment
 **navigator**, a fixed strip: position, state, time, one line of text, and nothing else. It
 is a `listbox`, one tab stop with a roving tabindex, and the line of text follows what will
-actually play — a kept segment shows its source, a dubbed one its translation.
+actually play a kept segment shows its source, a dubbed one its translation.
 
 The right rail is ordered by how often a reviewer touches a thing, which is not evenly:
 
@@ -68,8 +68,8 @@ The right rail is ordered by how often a reviewer touches a thing, which is not 
 | 3 | dub-or-keep, two named states with the consequence written under them |
 | 4 | re-translate / re-voice this line, each with its cost on its face |
 
-Everything else — speaker and TTS overrides and how the last take verified; the per-segment
-language tags; the transcript text, split/merge and the locks — is on one of three named
+Everything else speaker and TTS overrides and how the last take verified; the per-segment
+language tags; the transcript text, split/merge and the locks is on one of three named
 shelves (`Disclosure`) that start **shut** and remember otherwise in `sessionStorage` for the
 session. A shut shelf still shows a one-line summary of its current values, so "nothing
 overridden here" costs no click, and the voice shelf's summary carries the verification
@@ -77,16 +77,16 @@ overlap so a bad take is visible without opening it. A clone that said the wrong
 one thing that jumps to the top of the rail regardless.
 
 Chrome that is not permanent: the job strip renders only while a job runs or the event stream
-is down, and the legend and keyboard shortcuts are behind the timeline's "?" popover — both
+is down, and the legend and keyboard shortcuts are behind the timeline's "?" popover both
 are read on your first day and the day you forget, and neither ever changes. What stays in
 the toolbar is a census of *this run*, which does.
 
 ## Setup screen
 
-`/setup` renders `GET /api/setup` — the server's fast filesystem checks (ffmpeg, sox, the
+`/setup` renders `GET /api/setup` the server's fast filesystem checks (ffmpeg, sox, the
 HF token, each model directory with its size, free disk). Every row states its verdict as a
 glyph, the word *Ready* or *Missing*, and a hue, in that order: the screen reads the same in
-monochrome. The detail sentence is the server's, and it is the point of the row — it says
+monochrome. The detail sentence is the server's, and it is the point of the row it says
 what to install, not merely that something is absent.
 
 On boot the app asks once. It routes to `/setup` **only** when the server answers `ok:
@@ -99,14 +99,14 @@ demoable.
 
 `src/lib/desktop.ts` is the only file that knows Tauri exists, and every call in it degrades
 to the browser behaviour: `isDesktop()` is false, `pickVideoFile()` and `serverBaseUrl()`
-resolve to null, `revealPath()` is a no-op. The Tauri API package is not a dependency — the
+resolve to null, `revealPath()` is a no-op. The Tauri API package is not a dependency the
 module reads `window.__TAURI__` when the shell injects it and otherwise dynamic-imports a
 specifier assembled at runtime, so the browser bundle never requires it.
 
 Two things change inside the shell. *Choose file* opens a native dialog and fills in a real
 absolute path (a browser `<input type=file>` can only ever report a name). And the webview's
-origin is the Tauri asset protocol rather than the sidecar, so `initApiBase()` — awaited in
-`main.tsx` before the first render, because `mediaUrl` is called during render — resolves
+origin is the Tauri asset protocol rather than the sidecar, so `initApiBase()` awaited in
+`main.tsx` before the first render, because `mediaUrl` is called during render resolves
 `http://127.0.0.1:<port>` once and every path in `api.ts` goes through it. In a browser that
 prefix is `""` and the URLs stay relative, exactly as before.
 
@@ -119,7 +119,7 @@ uppercase widely-tracked "eyebrow" labels doing all the section titling.
 Two rules are worth knowing before you touch it.
 
 **Ink is the accent, not colour.** Primary buttons, the active nav pill, the selected table
-row and the focus ring are all `primary` — near-black on light, near-white on dark. That is
+row and the focus ring are all `primary` near-black on light, near-white on dark. That is
 the house style, and here it also buys correctness: it leaves the blue free to mean exactly
 one thing, "dubbed". Anything painted `--color-brand` or `--color-dubbed` is data, never
 chrome.
@@ -127,7 +127,7 @@ chrome.
 **Everything is a primitive.** `components/ui.tsx` holds Button, Card/CardSection, Panel,
 Field, TextInput/TextArea/NumberInput/Select, Badge, StatePill, Progress, Kbd, Empty,
 Disclosure, Popover, ErrorBlock/ErrorBar, Eyebrow/SectionLabel and Brand/LogoMark. There are
-no ad-hoc styled containers above that file — a new screen composes these or the system stops
+no ad-hoc styled containers above that file a new screen composes these or the system stops
 being one. `Disclosure` and `Popover` are the two ways something leaves the screen without
 leaving the app, and between them they are why the editor fits.
 
@@ -138,7 +138,7 @@ utility no matter the specificity, which is a bug that has already been written 
 
 **Two themes, and the OS does not get a vote.** Dark is the default; light is what you get by
 asking. The choice is one class, `.theme-dark`, on `<html>`, backed by `localStorage` under
-`dubbing-studio.theme` — and `prefers-color-scheme` appears nowhere in the app, which the
+`dubbing-studio.theme` and `prefers-color-scheme` appears nowhere in the app, which the
 smoke test asserts against the *built* bundle. Three places apply it and must agree: the
 inline boot script in `index.html` (pre-paint, so there is no flash), `applyTheme()` in
 `lib/theme.ts` called from `main.tsx` (the belt to that braces), and the header toggle. Dark
@@ -147,8 +147,8 @@ from a cast shadow to an inset top highlight, and the state hues are a separatel
 triple. The desktop shell's window `backgroundColor` has to match the dark plane, `#110e16`,
 and the smoke test reads `tauri.conf.json` to check that it does.
 
-**One accent, and it is the brand's.** `--color-accent` is ink in light — which is exactly
-what light always was, so naming it changed nothing there — and the logo's violet `#ce77f2`
+**One accent, and it is the brand's.** `--color-accent` is ink in light which is exactly
+what light always was, so naming it changed nothing there and the logo's violet `#ce77f2`
 in dark, where a near-white primary button on a near-black plane was a screen with no colour
 in it. It is spent on a closed list: the primary button, the active cell of a nav or filter
 group, the selected script row and timeline mark, the focus ring, and the brand chip. The
@@ -166,7 +166,7 @@ src/
     ndjson.ts       partial-line-tolerant NDJSON reader with reconnect
     useProject.ts   the project store: one state object + actions
     useTransport.ts one clock, whether or not there is a video
-    segments.ts     derived state — what "dubbed"/"kept"/"failed" mean
+    segments.ts     derived state what "dubbed"/"kept"/"failed" mean
     theme.ts        the light/dark choice: one class, one key, no OS preference
   components/       Timeline, SegmentList, SegmentInspector, ABPlayer, VideoPlayer …
   pages/            ImportPage, SetupPage, EditorPage
@@ -185,7 +185,7 @@ src/
 
 ## Colour
 
-Four segment states, each with a hue **and** a glyph **and** a word — colour never carries
+Four segment states, each with a hue **and** a glyph **and** a word colour never carries
 meaning alone. The hues are validated all-pairs for colour-vision deficiency in both light
 and dark (`dataviz` skill, `scripts/validate_palette.js`); light-mode "kept" sits below the
 3:1 contrast gate (2.17:1 on the card surface), which is why the segment navigator repeats

@@ -1,4 +1,4 @@
-"""The peaks endpoint — waveform summaries for the editor's timeline lanes."""
+"""The peaks endpoint waveform summaries for the editor's timeline lanes."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ NAME = "whatsapp_0809"
 
 def write_wav(path: Path, *, seconds: float = 1.0, rate: int = 8000,
               channels: int = 1, loud_tail: bool = True) -> None:
-    """Half silence, half full-scale — a waveform with a shape to assert on."""
+    """Half silence, half full-scale a waveform with a shape to assert on."""
     frames = int(seconds * rate)
     samples = array.array("h")
     for i in range(frames):

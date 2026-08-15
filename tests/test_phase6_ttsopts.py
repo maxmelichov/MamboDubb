@@ -1,4 +1,4 @@
-"""Per-segment `tts_opts` — parsing, cache keys, and the no-op guarantee.
+"""Per-segment `tts_opts` parsing, cache keys, and the no-op guarantee.
 
 Pure logic, no models. The regression guard that matters most is
 `test_defaults_reproduce_todays_cache_key`: a run with no options anywhere must
@@ -97,7 +97,7 @@ def test_merge_patches_and_clears():
     stored = {"seed": 5, "speed": 1.2}
     assert ttsopts.merge(stored, {"speed": 0.9}) == {"seed": 5, "speed": 0.9}
     assert ttsopts.merge(stored, {"speed": None}) == {"seed": 5}
-    # clearing back to the default drops the key entirely — the manifest stays small
+    # clearing back to the default drops the key entirely the manifest stays small
     assert ttsopts.merge({"speed": 1.2}, {"speed": 1.0}) == {}
     assert ttsopts.merge(None, {}) == {}
     with pytest.raises(ValueError):
@@ -251,7 +251,7 @@ def test_seed_override_wins_and_retries_stay_distinct():
 
 
 def _plan_engine(tmp_path):
-    """An Engine whose reference lookup is stubbed — `_plan` without audio."""
+    """An Engine whose reference lookup is stubbed `_plan` without audio."""
     eng = _engine(tmp_path)
     (tmp_path / "refs").mkdir(parents=True, exist_ok=True)
     (tmp_path / "refs" / "auto.wav").write_bytes(b"auto")

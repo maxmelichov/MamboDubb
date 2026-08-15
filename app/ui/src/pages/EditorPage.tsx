@@ -3,14 +3,14 @@
  *
  * Three regions, and the proportions are the argument:
  *
- *   header 44px  — where you are, and the one expensive button
- *   main row     — SCRIPT (58%, and it grows) | VIEWER (42%, fixed column)
- *   timeline     — 112px, full width, at the very bottom
+ *   header 44px  where you are, and the one expensive button
+ *   main row     SCRIPT (58%, and it grows) | VIEWER (42%, fixed column)
+ *   timeline     112px, full width, at the very bottom
  *
  * The previous shape had four stacked regions with the *video* as the pane that
  * grew and the text as a fifteen-rem drawer under the timeline. That is the
  * layout of a tool for cutting picture. This is a tool for checking a
- * translation against its original, and the artefact being checked is text — so
+ * translation against its original, and the artefact being checked is text so
  * the text takes the room, the picture is the reference beside it, and the
  * timeline is a map along the bottom. Final Cut's grammar (viewer top-right,
  * index left, timeline across the bottom), with the index promoted to the work
@@ -24,14 +24,14 @@
  *
  * 11 / 12.5 / 14, and nothing else, across every component this screen owns:
  * 11 for meta and hints, 12.5 for body and controls, 14 for the two things that
- * are the point — a translation line and a panel heading. The only exception is
+ * are the point a translation line and a panel heading. The only exception is
  * the 9px on the timeline's axis ticks, which are chart furniture and were
  * already there. A dense tool drifts into eight sizes one component at a time;
  * three is what makes the hierarchy readable rather than merely present.
  *
  * ## One keyboard listener
  *
- * There used to be two — this page's, and a second inside ABPlayer whose guard
+ * There used to be two this page's, and a second inside ABPlayer whose guard
  * only checked `INPUT|TEXTAREA|SELECT`, so typing "a" or "b" into any
  * contentEditable started playing audio at the user. There is exactly one now,
  * with exactly one guard, and every binding goes through it.
@@ -126,8 +126,8 @@ type KeptUndo = { uid: string; id: number; text_en: string | null };
  * Every shortcut the editor binds, in the order they are learned.
  *
  * `a` and `b` name the buttons they press, which now say Orig and Dub on their
- * faces. The keys did not change — a comparison tool's A and B are worth keeping
- * as *keys* — but a help list that says "play the original" next to a button
+ * faces. The keys did not change a comparison tool's A and B are worth keeping
+ * as *keys* but a help list that says "play the original" next to a button
  * labelled "Orig" is one vocabulary, and it used to be two.
  */
 const SHORTCUTS: [string[], string][] = [
@@ -135,8 +135,8 @@ const SHORTCUTS: [string[], string][] = [
   [["↑", "↓"], "previous / next line"],
   [["↵"], "edit the selected translation"],
   [["esc"], "leave the field without saving"],
-  [["a"], "play Orig — the original for this line"],
-  [["b"], "play Dub — the dubbed clip for this line"],
+  [["a"], "play Orig the original for this line"],
+  [["b"], "play Dub the dubbed clip for this line"],
   [["k"], "switch between dub and keep"],
   [["s"], "split the selection at the playhead"],
   [["+", "−"], "zoom the timeline"],
@@ -162,8 +162,8 @@ export function EditorPage() {
    * Buckets come from the window's width because the strip is full-bleed, and
    * they are fixed for the session: the picture is an SVG that stretches, so
    * zooming does not need a new one. The OUTPUT lane re-reads when a job
-   * finishes — a re-voice or a render is exactly when the mix on disk stops
-   * matching what is drawn — while the SOURCE lane never does, because
+   * finishes a re-voice or a render is exactly when the mix on disk stops
+   * matching what is drawn while the SOURCE lane never does, because
    * `source.wav` is written once by the fetch stage.
    */
   const [buckets] = useState(() =>
@@ -210,7 +210,7 @@ export function EditorPage() {
   /**
    * What the transport plays, and why.
    *
-   * `preview.mp4` is written by `mix`, at the very end of the pipeline — but
+   * `preview.mp4` is written by `mix`, at the very end of the pipeline but
    * `source.wav` is written by `fetch`, at the very start, and for the whole
    * hour in between the transport had a live play button attached to nothing:
    * "i can start playing. but because it still not ready it shown nothing". So
@@ -220,7 +220,7 @@ export function EditorPage() {
    * Both URLs are composed through the api seam rather than as `/media/…`
    * strings: the desktop shell's origin is the Tauri asset protocol, so a
    * root-relative path handed to a media element there resolves against the
-   * wrong origin and plays nothing — which is exactly the bug that killed every
+   * wrong origin and plays nothing which is exactly the bug that killed every
    * A/B button once already. `audioUrl` is the second half of that seam, and
    * the half that makes fixture mode's synthetic clip loadable.
    *
@@ -248,8 +248,8 @@ export function EditorPage() {
    *
    * `mode` alone was not the whole test. A run whose manifest names a
    * `preview.mp4` is in `preview` mode whether or not that file can actually be
-   * reached — fixture mode never can, and a deleted or half-written render is
-   * the same shape — so the clock swept a playhead across an empty strip with a
+   * reached fixture mode never can, and a deleted or half-written render is
+   * the same shape so the clock swept a playhead across an empty strip with a
    * live play button under it. The transport is silent when there is no URL,
    * and `space` is the same control as the button, so it refuses in the same
    * case rather than being a second opinion about it.
@@ -274,7 +274,7 @@ export function EditorPage() {
   }, [segments]);
 
   /**
-   * Selecting a segment also moves the playhead to it — they are one gesture.
+   * Selecting a segment also moves the playhead to it they are one gesture.
    *
    * Depends on `transport.seek` rather than on `transport`: the transport hook
    * returns a fresh object literal every render, so closing over the whole
@@ -294,7 +294,7 @@ export function EditorPage() {
   /**
    * Picking a mark on the strip is a question about a *line*: what does it say,
    * what did it become, what does it sound like. All three answers are in the
-   * script row — its two texts and its A/B buttons — so the click has to put
+   * script row its two texts and its A/B buttons so the click has to put
    * that row in front of the reviewer, in the middle of the list, rather than
    * leave them to find a row seven hundred pixels up.
    *
@@ -320,7 +320,7 @@ export function EditorPage() {
    * Selection scrolls with `block: "nearest"`, which is right for selecting: it
    * moves the list as little as it can. It is wrong for *editing*. A row at the
    * bottom of the list is "nearest" where it already is, so pressing ↵ on it
-   * opened a textarea in the last thirty pixels of the pane — and the field then
+   * opened a textarea in the last thirty pixels of the pane and the field then
    * grew downward, under the timeline strip, with the caret in the part that was
    * covered. Every route into a field goes through here (↵, a click on a
    * translation, the row menu's Correct transcript) and every one of them means
@@ -349,7 +349,7 @@ export function EditorPage() {
    * Zoom, with a floor, and one press that goes to it.
    *
    * The steps are the ladder; the floor is a measurement. `fit` is the scale at
-   * which the run is exactly as wide as the strip — below it the marks are a
+   * which the run is exactly as wide as the strip below it the marks are a
    * smear against the left edge of an otherwise empty lane, which is the one
    * zoom level that cannot answer a question, and there was no way back to a
    * useful scale except pressing + and counting. So zoom-out lands on the next
@@ -402,7 +402,7 @@ export function EditorPage() {
    * Make these lines playable: translate the ones with nothing to say, then
    * voice all of them.
    *
-   * Two jobs at most, never 2N — the one-job queue runs them FIFO, so the
+   * Two jobs at most, never 2N the one-job queue runs them FIFO, so the
    * translate lands before the voice that needs it, and only one model is
    * resident at a time either way. A line that already has a translation skips
    * the translator: it is either the pipeline's, in which case re-running it
@@ -430,7 +430,7 @@ export function EditorPage() {
        * Only this function knows that: the server sees two POSTs on two routes
        * and has no way to tell a pair from two unrelated requests a second
        * apart. Without the id, cancelling the translate left the voice job to
-       * run on lines whose translation had just been abandoned — 27 lines
+       * run on lines whose translation had just been abandoned 27 lines
        * synthesised from nothing. With it, one DELETE reaches both.
        */
       const batch = `b${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
@@ -446,8 +446,8 @@ export function EditorPage() {
   /**
    * The editor's one spoken channel.
    *
-   * Almost everything this screen says, it says by *changing* — a row's badge
-   * flips, the strip appears, the marks get wider — and a change with no text is
+   * Almost everything this screen says, it says by *changing* a row's badge
+   * flips, the strip appears, the marks get wider and a change with no text is
    * a change a screen reader cannot report. Three kinds of event were silent and
    * are the three worth saying: the verdict, because `k` is a single keystroke
    * that rewrites a line's future; the zoom, because its only readout is a
@@ -463,7 +463,7 @@ export function EditorPage() {
    *
    * A live region that keeps its last sentence is a sentence still on the page:
    * it is read again by anything that walks the document, and it makes the same
-   * announcement twice in a row impossible — the region only speaks when its
+   * announcement twice in a row impossible the region only speaks when its
    * contents *change*, so a second "Kept #17" after a first would be silent.
    * Going back to empty after a beat fixes both.
    */
@@ -473,7 +473,7 @@ export function EditorPage() {
     return () => window.clearTimeout(timer);
   }, [spoken]);
 
-  /* Skips the mount, which is not a change — otherwise every run announces its
+  /* Skips the mount, which is not a change otherwise every run announces its
      own default zoom on open. */
   const firstZoom = useRef(true);
   useEffect(() => {
@@ -484,7 +484,7 @@ export function EditorPage() {
     say(`Timeline zoom ${zoom >= 10 ? Math.round(zoom) : Math.round(zoom * 10) / 10} pixels per second`);
   }, [say, zoom]);
 
-  /** The undo behind the one destructive verdict — see `setVerdict` below. */
+  /** The undo behind the one destructive verdict see `setVerdict` below. */
   const [undoKeep, setUndoKeep] = useState<KeptUndo | null>(null);
   useEffect(() => {
     if (!undoKeep) return;
@@ -497,30 +497,30 @@ export function EditorPage() {
    *
    * `PATCH {keep:false}` on its own is what the bug was: `edit.set_keep`
    * invalidates the translate stage in both directions, so flipping a kept line
-   * to "Dub it" leaves it with no subtitle and no clip — and nothing queued to
+   * to "Dub it" leaves it with no subtitle and no clip and nothing queued to
    * make either. The line then sits in the run forever, dubbed in name only.
    * So the flip *is* the PATCH plus the work it creates, in that order, and the
    * server's answer decides which work: a hand-written translation is locked
    * and survives the flip, and re-translating over it would discard the very
    * thing the user typed.
    *
-   * The other direction queues nothing — the original audio is already on disk
-   * — and cancels nothing either: a running job belongs to whatever asked for
+   * The other direction queues nothing the original audio is already on disk
+   * and cancels nothing either: a running job belongs to whatever asked for
    * it, not to this line.
    *
    * `queue` is how a caller flipping *many* lines borrows this without
    * borrowing 2N jobs: it takes the PATCH, the lock and the optimistic predict
    * exactly as they are, and queues the work itself, once, over the lot. The
-   * saved segment comes back for that reason — the server's answer is what says
+   * saved segment comes back for that reason the server's answer is what says
    * whether the translation survived the flip.
    *
    * The *other* other direction is the one nothing guarded. `set_keep`
    * invalidates translate both ways, so flipping a line TO keep throws its
-   * translation away — and that flip is a button, a menu item, and `k`, a single
+   * translation away and that flip is a button, a menu item, and `k`, a single
    * keystroke with no modifier. A confirm on it would be the wrong control:
    * judging a run is a hundred of these decisions and a dialog on each is a tool
    * nobody uses. So the flip stays instant and leaves an undo behind, holding
-   * the *whole* of what was lost — the server drops the line a moment later and
+   * the *whole* of what was lost the server drops the line a moment later and
    * nothing else on the client remembers it.
    */
   const setVerdict = useCallback(
@@ -548,7 +548,7 @@ export function EditorPage() {
    * Undo: back to a dub, with the sentence that was there.
    *
    * One PATCH and not two, because `_apply_patch` runs `set_text` before
-   * `set_keep` and `invalidate` honours locks — so the restored line is written,
+   * `set_keep` and `invalidate` honours locks so the restored line is written,
    * locked, and then survives the very flip that is being undone. It is locked
    * afterwards, which is a real difference from the state before the keep and is
    * why the strip says so: a restored line is now the user's, and a re-run will
@@ -588,7 +588,7 @@ export function EditorPage() {
   /**
    * The same flip, over a filtered set: "dub these too".
    *
-   * The case is a run the keep rule got wrong — a video of a third language
+   * The case is a run the keep rule got wrong a video of a third language
    * read as "already the target", kept whole, and audibly the original. The
    * only way out was one line at a time, N times, and a run is two hundred
    * lines long.
@@ -613,7 +613,7 @@ export function EditorPage() {
         /*
          * Follow the lines, do not strand the user where they were.
          *
-         * The gesture only exists on the Kept filter, and it empties it — every
+         * The gesture only exists on the Kept filter, and it empties it every
          * line it flipped has left. So the screen the user was reading became
          * "Nothing matches" at the exact moment their twenty-seven lines
          * started being worked on, with no way to watch it happen. Unfinished
@@ -628,12 +628,12 @@ export function EditorPage() {
   );
 
   /**
-   * A committed edit is a PATCH — unless nothing was edited.
+   * A committed edit is a PATCH unless nothing was edited.
    *
    * Every way out of the field goes through here (blur, ⌘↵, the ⋯ menu's
    * Correct transcript), and closing a field you only opened to *read* must
    * cost nothing: no request, no lock stamped on the line, and above all no
-   * invalidation — `edit.set_text` drops the clip and the placement, so a
+   * invalidation `edit.set_text` drops the clip and the placement, so a
    * no-op save is a re-voice queued for a line nobody changed. The comparison
    * is trimmed on both sides because the editor commits a trimmed draft, and
    * `"a line "` and `"a line"` are not a translation the user rewrote.
@@ -716,7 +716,7 @@ export function EditorPage() {
         case "a":
           if (selected) {
             event.preventDefault();
-            // The source side is a window of the whole track — same contract
+            // The source side is a window of the whole track same contract
             // as the row's A button, and the same reason.
             toggleClip(selected.media?.source ?? null, selected.media?.source_window ?? null);
           }
@@ -770,7 +770,7 @@ export function EditorPage() {
   /*
    * What the video on screen is a render of.
    *
-   * `render.at === null` is a run with no stamp — old, or never mixed — where
+   * `render.at === null` is a run with no stamp old, or never mixed where
    * `changed` is 0 because there is nothing to compare against. That is why the
    * "N lines changed" phrasing is guarded on the count rather than on `stale`:
    * saying "0 lines changed" next to a Render button would be worse than quiet.
@@ -779,13 +779,13 @@ export function EditorPage() {
   const stale = render.stale;
   const changed = render.changed;
   // The button counts *lines*, because that is what it would re-render. These
-  // two count *changes*, because they are about what the user did — and "your
+  // two count *changes*, because they are about what the user did and "your
   // last 1 line" is not a phrase anybody says.
   const edits = changed === 1 ? "change" : `${changed} changes`;
   const staleNote = stale && changed > 0 ? `rendered before your last ${edits}` : null;
   const staleBand =
     stale && changed > 0
-      ? `Mixed before your last ${edits} — Update the video to hear them`
+      ? `Mixed before your last ${edits} Update the video to hear them`
       : null;
 
   /*
@@ -801,7 +801,7 @@ export function EditorPage() {
    * `edit.start_stage` deliberately backs a render up to tts or translate to
    * make the missing work, because "refusing would leave the user with a button
    * that only works on runs that did not need it". What was wrong there was the
-   * sentence — "typically a few minutes" over a job that loads two models — so
+   * sentence "typically a few minutes" over a job that loads two models so
    * that is what changes, not the button's availability.
    */
   const renderBlocked =
@@ -837,7 +837,7 @@ export function EditorPage() {
           <>
             {/*
               The finished file, one click from the run it came out of. It only
-              exists when the file does — and "the file does" is `previewUrl`,
+              exists when the file does and "the file does" is `previewUrl`,
               not `outputs.preview`. The manifest naming a preview and the app
               being able to reach one are two different facts, and while the
               button hung off the first of them it sat there offering to open a
@@ -851,7 +851,7 @@ export function EditorPage() {
             {/*
               Quiet when the video is current, loud when it is not.
               The button was permanently accented, which made "there is work
-              waiting" indistinguishable from "everything is up to date" — the
+              waiting" indistinguishable from "everything is up to date" the
               one thing this button is in a position to say. It names the
               number, because "some edits" is not a reason to spend minutes on a
               re-encode and "27 lines" is.
@@ -868,7 +868,7 @@ export function EditorPage() {
                     "clip yet, so this render backs up and makes them first: it loads the " +
                     "translator and the voice, which is model time, not the few minutes a " +
                     "re-encode takes."
-                  : "Re-render the preview. This re-runs timeline, mix and report and replaces preview.mp4 — a full video re-encode, typically a few minutes."
+                  : "Re-render the preview. This re-runs timeline, mix and report and replaces preview.mp4 a full video re-encode, typically a few minutes."
               }
               onConfirm={() => void actions.render()}
             >
@@ -885,7 +885,7 @@ export function EditorPage() {
               counts={counts}
               /*
                 The rail behind this menu is *already* the run summary whenever
-                nothing is selected — same tally, same gap list, permanently on
+                nothing is selected same tally, same gap list, permanently on
                 screen, three inches to the left. So the menu drops that half of
                 itself exactly then, and keeps the half the rail has never
                 carried: the files, the metadata and the run options.
@@ -923,7 +923,7 @@ export function EditorPage() {
       />
       {/*
         The one place this screen speaks. Off-screen, polite, never given
-        anything a sighted user is not also being shown — see `say`. It sits
+        anything a sighted user is not also being shown see `say`. It sits
         beside the strip because that is where two of the three announcements
         come from, and early in the document because a live region has to be in
         the tree before it is written to for the first write to be announced.
@@ -982,7 +982,7 @@ export function EditorPage() {
                   a band.
 
                   There is no video until `mix` has run, which is most of the
-                  time a run exists — and the empty stage kept the video's own
+                  time a run exists and the empty stage kept the video's own
                   16:9, so on a 1512px window a status board four sentences long
                   sat in 270 vertical pixels of nothing while the selection panel
                   under it scrolled a thirty-control inspector through the
@@ -1090,7 +1090,7 @@ export function EditorPage() {
 }
 
 /**
- * "Kept #17 — Undo."
+ * "Kept #17 Undo."
  *
  * The whole guard on the one destructive verdict, and deliberately not a dialog:
  * the flip has to stay a keystroke, because checking a run is a hundred of them.
@@ -1137,14 +1137,14 @@ function UndoKeepStrip({ undo, onUndo }: { undo: KeptUndo; onUndo: () => void })
  * Open a file the run produced.
  *
  * Two environments, one intent. In the desktop shell the useful thing is the
- * file itself — the user wants to play it in QuickTime, drop it into a chat,
- * put it somewhere — so it is revealed in Finder. In a browser tab there is no
+ * file itself the user wants to play it in QuickTime, drop it into a chat,
+ * put it somewhere so it is revealed in Finder. In a browser tab there is no
  * Finder and the server is already serving the run directory, so the URL opens
  * in a new tab. The shell falls back to the tab if the reveal could not
  * happen, which covers an older shell with no `workspace` in its handshake.
  *
- * It is a function rather than a hook because both callers — the header button
- * and the run menu's file list — want the same three lines and neither wants
+ * It is a function rather than a hook because both callers the header button
+ * and the run menu's file list want the same three lines and neither wants
  * to think about which environment it is in.
  */
 async function openRunFile(name: string, relPath: string): Promise<void> {
@@ -1158,7 +1158,7 @@ async function openRunFile(name: string, relPath: string): Promise<void> {
  *
  * The single most-asked question at the end of a run, and until now the answer
  * was a Finder window and a memory of the run directory's name. Header-sized
- * and labelled for the environment it is in — "Show in Finder" is a promise a
+ * and labelled for the environment it is in "Show in Finder" is a promise a
  * browser tab cannot keep, and "Open" is a weaker one than the shell can.
  */
 function OpenFileButton(
@@ -1173,7 +1173,7 @@ function OpenFileButton(
       // that does not contain the correction they just made.
       title={
         title
-          ? `${desktop ? `Show ${path} in Finder` : `Open ${path} in a new tab`} — ${title}`
+          ? `${desktop ? `Show ${path} in Finder` : `Open ${path} in a new tab`} ${title}`
           : desktop
             ? `Show ${path} in Finder`
             : `Open ${path} in a new tab`
@@ -1194,14 +1194,14 @@ function OpenFileButton(
  * What the rail says when nothing is selected.
  *
  * It used to say "No line selected", centred, in a column six hundred pixels
- * tall — an empty state that filled two fifths of the screen with an
+ * tall an empty state that filled two fifths of the screen with an
  * instruction the user had already worked out. The space is worth more than
  * that: nothing is selected exactly when a run has just been opened, which is
  * the moment "what happened here" is the only question there is.
  *
  * So it answers that question and no other: how the lines came out, why the
  * kept ones were kept, and where there is speech nothing covers. All of it is
- * derived from segments already on the client — no request, no report file —
+ * derived from segments already on the client no request, no report file —
  * and it is set as prose and a tally rather than as a dashboard, because it is
  * read once per run and then replaced by the panel for a line.
  */
@@ -1241,7 +1241,7 @@ function RunSummary({
   }, [segments]);
 
   // "Already in the target language" is a claim about *why*, so it is only made
-  // when the reasons say so — a run kept by hand or by a failure is a different
+  // when the reasons say so a run kept by hand or by a failure is a different
   // story with the same count.
   const passthrough = segments.filter(
     (seg) => seg.keep && keptAsTargetLanguage(seg.keep_reason),
@@ -1250,9 +1250,9 @@ function RunSummary({
 
   const lead =
     total === 0
-      ? "No lines yet — the segments stage is what fills this list."
+      ? "No lines yet the segments stage is what fills this list."
       : mostlyKept && passthrough >= counts.kept / 2
-        ? `This video mostly speaks ${languageName(project?.source.tgt_lang)} already — ` +
+        ? `This video mostly speaks ${languageName(project?.source.tgt_lang)} already ` +
           `${counts.kept} of ${total} lines keep their original audio.`
         : mostlyKept
           ? `${counts.kept} of ${total} lines keep their original audio.`
@@ -1289,7 +1289,7 @@ function RunSummary({
       />
 
       <p className="mt-auto pt-2 text-[11px] leading-relaxed text-muted">
-        Pick a line in the script — everything that is true about it, and cannot fit on a row,
+        Pick a line in the script everything that is true about it, and cannot fit on a row,
         is here.
       </p>
     </div>
@@ -1318,7 +1318,7 @@ function StateTally({ counts }: { counts: Record<SegmentState, number> }) {
 /**
  * Speech in the source that no segment claims, so the dub plays the original
  * over it. The highest-value readout `report.json` produces, and every row of
- * it is a button that seeks there — a list of timecodes you cannot jump to is
+ * it is a button that seeks there a list of timecodes you cannot jump to is
  * a list of homework.
  */
 function GapList({
@@ -1334,7 +1334,7 @@ function GapList({
    * Point at one and the timeline lights the hatch it is inside.
    *
    * Hover *and* focus, because half the reason this list exists is that it is
-   * reachable — a keyboard user tabbing down it gets the same map the mouse
+   * reachable a keyboard user tabbing down it gets the same map the mouse
    * does. The bounds here are the report's, and the hatch's are derived from
    * the segments on screen, so the timeline matches them by overlap rather than
    * by equality; they are two measurements of the same silence.
@@ -1350,11 +1350,11 @@ function GapList({
       {/*
         A gap list is a finding, and a finding has a date. Splitting a segment
         closes a gap and re-segmenting opens new ones, and neither shows here
-        until a render re-runs the report — so when the report is behind, the
+        until a render re-runs the report so when the report is behind, the
         eyebrow says which report these are from rather than implying "now".
       */}
       <Eyebrow className="mb-1.5">
-        Audible, uncovered — {gaps.length}
+        Audible, uncovered {gaps.length}
         {stale ? " · from the last render" : ""}
       </Eyebrow>
       <p className="mb-1.5 text-[11px] leading-relaxed text-muted">
@@ -1391,13 +1391,13 @@ function GapList({
  * Three things that are true about a run and are not per-line: how many
  * segments are in what state, where there is audible speech that nothing
  * covers, and where the files are. None of them changes while you work through
- * a line, and none of them earns permanent chrome — but the middle one is the
+ * a line, and none of them earns permanent chrome but the middle one is the
  * highest-value readout the report produces, so every gap is a button that
  * seeks to it.
  *
- * It shares its tally and its gap list with the rail's own summary — same
+ * It shares its tally and its gap list with the rail's own summary same
  * answers, one for the reviewer who has a line open and one for the reviewer
- * who does not — and that sharing is why it now *drops* them when nothing is
+ * who does not and that sharing is why it now *drops* them when nothing is
  * selected. The rail is showing the run summary at exactly that moment, three
  * inches to the left and permanently, so the menu was a second copy of a panel
  * already on screen: opening it moved nothing forward. When a line is selected
@@ -1479,12 +1479,12 @@ function RunMenu({
       {/*
         What the run produced, by name, each one a click away.
         It used to be a single desktop-only "Show preview.mp4 in Finder" button
-        that handed `reveal_path` the manifest's *run-relative* path — which
+        that handed `reveal_path` the manifest's *run-relative* path which
         the shell resolves against its own working directory and refuses,
         because nothing is there. Both rows go through `openRunFile`, which
         composes the absolute path in the shell and opens the served URL in a
-        browser, so the list is useful in both and the subtitles — the other
-        thing a finished run is for — are no longer unreachable.
+        browser, so the list is useful in both and the subtitles the other
+        thing a finished run is for are no longer unreachable.
       */}
       {preview || srt ? (
         <>
@@ -1503,7 +1503,7 @@ function RunMenu({
  * The three run options that are still a decision, editable in place.
  *
  * Genre, register and context were chosen once on the import screen and then
- * became unreachable — a `--genre documentary` picked in ten seconds before the
+ * became unreachable a `--genre documentary` picked in ten seconds before the
  * first line had been read, binding every re-translate for the rest of the
  * project's life. Nothing about them is structural: all three are inputs to the
  * *translator*, so nothing already fetched, transcribed or segmented depends on
@@ -1533,7 +1533,7 @@ function RunOptions({
   /*
    * The refusal is shown here, not swallowed and not thrown at the window.
    *
-   * The server 409s while a job runs — run options are read when a job starts,
+   * The server 409s while a job runs run options are read when a job starts,
    * so changing one mid-render would be a setting the user then watches not
    * happen. A dropdown that snapped back with no sentence would be the same
    * lie in the other direction, and the field stays open on failure so the
@@ -1585,7 +1585,7 @@ function RunOptions({
         />
       </div>
 
-      {/* Context is prose, so it gets a field and an explicit commit — a
+      {/* Context is prose, so it gets a field and an explicit commit a
           textarea that saved on blur would fire on every accidental click out
           of a note somebody was still writing. */}
       <div className="mt-2">
@@ -1638,7 +1638,7 @@ function RunOptions({
           </>
         ) : (
           <p className="mt-0.5 text-[11.5px] leading-relaxed text-secondary">
-            {context || <span className="text-muted">none — names and spellings go here</span>}
+            {context || <span className="text-muted">none names and spellings go here</span>}
           </p>
         )}
       </div>
@@ -1758,7 +1758,7 @@ function ShortcutHelp() {
           style={{ borderColor: "color-mix(in srgb, var(--color-unclaimed) 45%, transparent)" }}
         />
         The hatched blocks on the timeline are <span className="text-secondary">unclaimed
-        time</span> — no segment covers them, so the dub plays the original there.
+        time</span> no segment covers them, so the dub plays the original there.
       </p>
     </Popover>
   );
@@ -1787,12 +1787,12 @@ function lastFailure(jobs: Job[]): Job | null {
  * to be the run's status board rather than an apology. It no longer carries its
  * own Render button or its own progress bar: the header has the first and the
  * job strip has the second, both of them three inches away and both of them
- * permanent. What it keeps that nothing else has is the stage track — which of
+ * permanent. What it keeps that nothing else has is the stage track which of
  * the nine stages this run has got through.
  *
  * It is a band and not a stage. It used to be laid out as a centred column
  * inside the video's own 16:9, which on a wide window is 270 vertical pixels of
- * the right-hand rail spent on four short sentences — while the selection panel
+ * the right-hand rail spent on four short sentences while the selection panel
  * beneath it, which is where the actual work is done, scrolled thirty controls
  * through what was left. Eyebrow, one sentence, the stage track, left-aligned
  * and about 140px. The two cases that are worth more than that take more: a
@@ -1806,14 +1806,14 @@ function lastFailure(jobs: Job[]): Job | null {
  * screen said "The run stopped at fetch" and left the user with a script pane of
  * nothing, a dead play button and a Render button that would produce another
  * failure twenty minutes later. Both halves of the fix are here because both
- * halves are the same question — *what happened, and what do I press*:
+ * halves are the same question *what happened, and what do I press*:
  *
  * * **What happened** is the failed job's own error. It is only on the project
  *   (`GET /api/projects/{name}` → `jobs`); the event stream deliberately replays
  *   nothing terminal, so after a reload this is the only copy of it.
  * * **What to press** is the same `run` job that created the project. Every
  *   stage is skipped when its inputs are unchanged, so re-running *is* resuming
- *   — which is why the button is honest about naming the stage it will retry.
+ *   which is why the button is honest about naming the stage it will retry.
  */
 function PreviewPlaceholder({
   project,
@@ -1832,7 +1832,7 @@ function PreviewPlaceholder({
   onResume: () => void;
   /** The render is behind the script: the last three stage dots go hollow. */
   stale?: boolean;
-  /** The sentence, when this panel is the one carrying it — else null. */
+  /** The sentence, when this panel is the one carrying it else null. */
   staleBand?: string | null;
 }) {
   const summary = summarizeStages(project?.stages);
@@ -1841,7 +1841,7 @@ function PreviewPlaceholder({
   /*
    * A run that is not finished and has nothing in flight is stopped, whether or
    * not a stage says "failed". A job cancelled mid-fetch, a server restarted
-   * under a run, a laptop that slept — none of them leave a failed stage behind,
+   * under a run, a laptop that slept none of them leave a failed stage behind,
    * and all of them leave a project that will never move again on its own.
    */
   const stopped = project != null && !working && !summary.complete;
@@ -1890,7 +1890,7 @@ function PreviewPlaceholder({
           One sentence, not three.
           It was a paragraph explaining where preview.mp4 comes from, in a panel
           whose eyebrow and headline had already said which stage the run is on
-          — read once on the first run and then re-read on every screen for the
+          read once on the first run and then re-read on every screen for the
           rest of the project's life. What survives is the part that is news:
           what you can do *now*, which differs by mode.
         */}
@@ -1900,7 +1900,7 @@ function PreviewPlaceholder({
             : summary.complete
               ? "Render preview re-runs timeline, mix and report and writes preview.mp4."
               : mode === "source"
-                ? "Press play for the run's original audio, in step with the script — " +
+                ? "Press play for the run's original audio, in step with the script " +
                   "preview.mp4 arrives with the mix stage."
                 : "Nothing to play until fetch writes source.wav; the timeline and the script " +
                   "still work."}
@@ -1909,8 +1909,8 @@ function PreviewPlaceholder({
         {/*
           The way back in.
           The rationale sits under the button rather than above it because it is
-          the answer to the question the button raises — "will this start over?"
-          — and because a user who already knows presses it without reading.
+          the answer to the question the button raises "will this start over?"
+          and because a user who already knows presses it without reading.
         */}
         {stopped ? (
           <>

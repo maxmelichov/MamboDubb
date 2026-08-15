@@ -5,8 +5,8 @@
 # ///
 """Build tooling for the MamboDubb desktop shell (after MamboRambo's pre_build.py).
 
-The shell has no sidecar to compile — the pipeline stays a Python checkout the app
-drives with `uv` — so all this does is get the web UI into place and drive Tauri.
+The shell has no sidecar to compile the pipeline stays a Python checkout the app
+drives with `uv` so all this does is get the web UI into place and drive Tauri.
 
     uv run --script scripts/build_desktop.py check     # toolchain + a dist to point Tauri at
     uv run --script scripts/build_desktop.py ui        # pnpm build in app/ui, copy dist here

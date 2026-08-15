@@ -2,7 +2,7 @@
 
 One `python -m dubbing …` process per job. The pipeline is already resumable and
 writes its own state to the manifest, so a job needs to keep nothing but its log
-tail and exit code — a server restart loses the log, not the work.
+tail and exit code a server restart loses the log, not the work.
 """
 
 from __future__ import annotations
@@ -75,7 +75,7 @@ def dub_command(source: str, out: Path, *, src: str = "he", tgt: str = "en",
     `opts` is what the run recorded (`runs.recorded_opts`) and every one of them
     has to be passed back: an option the command omits changes that stage's
     fingerprint, and an upstream fingerprint change resets the stage rather than
-    resuming it — a `--genre movie` run re-run without `--genre` loses its
+    resuming it a `--genre movie` run re-run without `--genre` loses its
     segments, and with them every edit made in this editor.
     """
     cmd = [sys.executable, "-m", "dubbing", source, "-o", str(out), "--src", src, "--tgt", tgt]

@@ -1,7 +1,7 @@
 //! The workspace: a DubbingQwen checkout on disk that the shell runs the studio
 //! server out of.
 //!
-//! Unlike MamboRambo, the sidecar is not a bundled binary — the pipeline is a ~10 GB
+//! Unlike MamboRambo, the sidecar is not a bundled binary the pipeline is a ~10 GB
 //! Python environment plus tens of gigabytes of model weights, so it cannot ship inside
 //! a .dmg. The app instead remembers *where the checkout lives* and drives it with `uv`.
 //! Everything here is either a pure predicate over a directory or a `PATH`-style lookup,
@@ -32,7 +32,7 @@ pub struct WorkspaceReport {
     pub exists: bool,
     /// It looks like a DubbingQwen checkout: `pyproject.toml` + `dubbing_app/`.
     pub has_project: bool,
-    /// A `.venv` with an interpreter — absent is only a slow first run, not an error.
+    /// A `.venv` with an interpreter absent is only a slow first run, not an error.
     pub has_venv: bool,
     /// `uv` was found; without it there is nothing to run the server with.
     pub uv_found: bool,
@@ -78,7 +78,7 @@ pub fn venv_python(path: &Path) -> Option<PathBuf> {
 /// Find `uv`: explicit override, then Homebrew's usual spots, then `PATH`.
 ///
 /// A bundled .app inherits almost nothing of the user's shell `PATH` on macOS, so the
-/// literal Homebrew path matters more than it looks — that is the case that works when
+/// literal Homebrew path matters more than it looks that is the case that works when
 /// the app is launched from Finder.
 pub fn find_uv() -> Option<PathBuf> {
     if let Some(raw) = env::var_os(UV_PATH_ENV) {

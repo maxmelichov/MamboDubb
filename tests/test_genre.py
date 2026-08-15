@@ -1,6 +1,6 @@
 """--genre movie: mode-dependent timeline rates + rate continuity, interjection
 keeps in segments, and the movie prompt block in translate. The default genre
-("documentary") must be exactly current behavior everywhere — several tests here
+("documentary") must be exactly current behavior everywhere several tests here
 are regression pins for that.
 """
 
@@ -107,7 +107,7 @@ def test_smoothing_converges_same_speaker_neighbours():
     assert places[0]["rate"] - places[1]["rate"] > timeline.RATE_STEP_MAX
     smoothed = timeline.smooth_rates(items, places)
     assert abs(smoothed[0]["rate"] - smoothed[1]["rate"]) <= timeline.RATE_STEP_MAX + 1e-6
-    # The compressed clip was nudged down, the drawl up — toward each other.
+    # The compressed clip was nudged down, the drawl up toward each other.
     assert smoothed[0]["rate"] < places[0]["rate"]
     assert smoothed[1]["rate"] > places[1]["rate"]
     # A drawl is only ever lifted toward natural speed, never past it.
@@ -120,7 +120,7 @@ def test_smoothing_converges_same_speaker_neighbours():
 
 
 def test_smoothing_never_crosses_a_downstream_wall():
-    # Slowing the fast clip may only spend slack up to the NEXT placement — and
+    # Slowing the fast clip may only spend slack up to the NEXT placement and
     # when that next segment is a different speaker, never past its source
     # onset (the wall), even if the placement itself drifted later.
     items = [item(0, 0.0, 4.0, end=2.0, speaker="A"),
@@ -171,7 +171,7 @@ def test_interjection_keep_fires_only_in_movie_mode():
         segments.mark_keep(s, None, "en", "he", genre=genre)
         assert s[0]["keep"] is keep
         assert s[0]["keep_reason"] == ("interjection" if keep else None)
-    # Default genre is documentary — the old call signature is unchanged.
+    # Default genre is documentary the old call signature is unchanged.
     s = [seg("וולקאם")]
     segments.mark_keep(s, None, "en", "he")
     assert s[0]["keep"] is False
@@ -212,7 +212,7 @@ def test_interjection_detection_is_script_general():
     assert segments._is_interjection_token("привет", "ru", "en")
     assert segments._is_interjection_token("wow", "en", "ru")
     assert not segments._is_interjection_token("война", "ru", "en")
-    # Borrowed test needs 3+ source-script letters — קו is ambiguous, skipped.
+    # Borrowed test needs 3+ source-script letters קו is ambiguous, skipped.
     assert not segments._is_interjection_token("קו", "he", "en")
 
 

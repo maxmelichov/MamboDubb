@@ -1,7 +1,7 @@
 """Projects: a run directory under `outputs/`, read and written only via `dubbing.manifest`.
 
 The server holds no database. `manifest.json` is the source of truth, so every
-read goes to disk and every write goes through `manifest.save` — which enforces
+read goes to disk and every write goes through `manifest.save` which enforces
 the `SEGMENT_KEYS` whitelist, the reason nothing here ever writes JSON itself.
 """
 
@@ -19,7 +19,7 @@ from .errors import invalid, not_found
 
 # A project name is a single directory name under the outputs root. Anything with
 # a separator, a drive letter or a dot-segment is refused before it can become a
-# path — the same check `media` relies on.
+# path the same check `media` relies on.
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
@@ -78,7 +78,7 @@ class Projects:
     def report(self, name: str, m: dict[str, Any] | None = None) -> dict[str, Any] | None:
         """`report.json`, plus whether it is still about the manifest on disk.
 
-        The file is served whatever the answer — the numbers in a stale report are
+        The file is served whatever the answer the numbers in a stale report are
         still the numbers of the run it described, and the UI decides how to show
         that. What it may not do is present them as current: an edit changes no
         stage parameter, so nothing in the file itself said the manifest had moved
@@ -113,12 +113,12 @@ class Projects:
         is the one the user is about to watch. `mix.run` stamps `m["render"]` with the
         content fingerprint and a per-uid digest at the moment it wrote the file, so:
 
-        * `at`   — epoch seconds of that render, or `None` if the run predates the
+        * `at`   epoch seconds of that render, or `None` if the run predates the
           stamp or was never mixed;
-        * `stale` — the fingerprint no longer matches the manifest. Missing stamp
+        * `stale` the fingerprint no longer matches the manifest. Missing stamp
           counts as stale, on the same rule as `report.stale`: a file that cannot
           prove it is current is not shown as if it were;
-        * `changed` — how many lines differ from the ones that render was made of, by
+        * `changed` how many lines differ from the ones that render was made of, by
           `manifest.digest_delta`. Exact, not an estimate of it; `0` when there is no
           stamp to compare against, which is why the UI must not phrase "N lines
           changed" off a render with no `at`.
@@ -142,17 +142,17 @@ class Projects:
         Derived, never stored: the manifest's `stages` map is the only truth about
         what has *finished*, and re-deriving it keeps the server from holding a
         second copy that can drift. But the manifest cannot say what is happening
-        right now or what died — an unfinished stage looks exactly like one that
-        was never reached — so the project's jobs (as `Job.to_dict`, newest last)
+        right now or what died an unfinished stage looks exactly like one that
+        was never reached so the project's jobs (as `Job.to_dict`, newest last)
         are folded in on top:
 
         * the stage a **running** job is in is `running`;
         * the stage the most recent **failed** job died in is `failed`, unless a
-          job has succeeded since — that later success is the answer about whether
+          job has succeeded since that later success is the answer about whether
           the run gets past that stage.
 
-        Without this the whole failure treatment in the UI — the red dot, "stopped
-        at transcript" — was unreachable against the real server, which only ever
+        Without this the whole failure treatment in the UI the red dot, "stopped
+        at transcript" was unreachable against the real server, which only ever
         said done or pending.
         """
         recorded = m.get("stages") or {}
@@ -212,13 +212,13 @@ class Projects:
 
         Three additions, all derived from disk:
 
-        * `media.play` — `place.clip`, the file the mix actually uses. This is
+        * `media.play` `place.clip`, the file the mix actually uses. This is
           NOT `tts.clip`: a segment that had to be sped up to fit plays
           `clips/fit_<hash>_1.300.wav`, and playing the raw clip would show the
           user audio that is not in the video.
-        * `media.source` — the segment's own window of `source.wav`, for A/B
+        * `media.source` the segment's own window of `source.wav`, for A/B
           against the original.
-        * `verify` — the verdict `tts` already wrote to `clips/<hash>.json`
+        * `verify` the verdict `tts` already wrote to `clips/<hash>.json`
           (`heard`, `overlap`): the ready-made "did the clone say the right
           words" signal, keyed off `tts.clip`, since the fitted clip has no
           verdict of its own.
@@ -237,7 +237,7 @@ class Projects:
             # A dub-wanted line can wear an original-audio slice: tts gives an
             # unspeakable dub (no translation, failed synthesis) the universal
             # fallback rather than silence. Its "dub" then sounds exactly like
-            # the original — true, and baffling unless the UI says so. Keep
+            # the original true, and baffling unless the UI says so. Keep
             # slices are span-keyed `keep_*.wav` files, which is the seam this
             # reads; a kept line's slice is not a fallback, it is the verdict.
             "fallback": bool(not seg.get("keep")

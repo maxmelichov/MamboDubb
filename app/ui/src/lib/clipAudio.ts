@@ -4,7 +4,7 @@
  * Judging a dub is a comparison, not an audition: A and B have to be mutually
  * exclusive, and switching sides mid-listen has to be one click. The old
  * ABPlayer got that right for one segment by sharing a single element inside
- * itself — but the A/B buttons now live on two hundred script rows, and two
+ * itself but the A/B buttons now live on two hundred script rows, and two
  * hundred `<audio>` elements each holding their own idea of "playing" is two
  * hundred things that can talk over each other.
  *
@@ -21,20 +21,20 @@
  * A segment's `media.play` / `media.source` is what the *server* calls the clip,
  * and it is not always something `<audio src>` can load: fixture mode hands out
  * `fixture:tone?hz=…`, which a browser answers with ERR_UNKNOWN_URL_SCHEME.
- * `api.audioUrl` is the seam that turns one into the other — and it had no
+ * `api.audioUrl` is the seam that turns one into the other and it had no
  * callers at all, because every A/B path (the row buttons, the `a`/`b` keys)
  * came straight here and assigned the raw string. So every clip button in
  * fixture mode fired a network error and snapped back out of its pressed state.
  *
  * Resolving here rather than at each call site is what makes that unrepeatable:
  * there is one assignment to `element.src` in the app and it goes through the
- * seam. `playing` deliberately stays the caller's URL — the A/B buttons compare
+ * seam. `playing` deliberately stays the caller's URL the A/B buttons compare
  * it against `seg.media.*` to decide which side is lit.
  *
  * ## A is a window, not a file
  *
  * The dub side is a clip file: it starts where it starts and ends where it
- * ends. The source side is not — it is one segment's *window* of the whole
+ * ends. The source side is not it is one segment's *window* of the whole
  * source track, which the server names with a `#t=start,end` media fragment and
  * also states outright as `media.source_window`. Neither of them was used. The
  * element got `el.src = url` and then `el.currentTime = 0`, which fights the
@@ -75,7 +75,7 @@ function audio(): HTMLAudioElement | null {
     emit();
   });
   // The window's two edges. Registered once, on the one element, and read from
-  // module state — a listener per press would leak one per press.
+  // module state a listener per press would leak one per press.
   element.addEventListener("loadedmetadata", () => {
     if (window_ && element) element.currentTime = window_[0];
   });
@@ -98,11 +98,11 @@ export function stopClip(): void {
 /**
  * Play `url`, or stop if it is already the one playing.
  *
- * `window` is the span of the file this clip *is* — `media.source_window` for
+ * `window` is the span of the file this clip *is* `media.source_window` for
  * the source side, absent for a clip file that is already exactly the segment.
  *
  * A null url is a no-op rather than an error: the callers are buttons whose
- * clip may not exist yet, and they render disabled — this is the belt to that
+ * clip may not exist yet, and they render disabled this is the belt to that
  * pair of braces.
  */
 export function toggleClip(url: string | null, window?: [number, number] | null): void {

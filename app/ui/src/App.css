@@ -19,7 +19,7 @@
  * Four things carry the house style, and they are all here rather than
  * scattered through components:
  *
- * 1. A tinted neutral ramp — never flat grey. Light is *warm*: the plane, the
+ * 1. A tinted neutral ramp never flat grey. Light is *warm*: the plane, the
  *    borders and the ink all sit slightly yellow of neutral, which is what
  *    makes the light cards read as paper instead of as chrome. Dark is *cool*:
  *    the same ramp rotated onto the accent's own hue at C* 4–7, which is below
@@ -38,7 +38,7 @@
  *    2xl/16 for cards.
  */
 
-/* The `dark:` variant is this class and only this class — never the media
+/* The `dark:` variant is this class and only this class never the media
    query Tailwind reaches for by default. */
 @custom-variant dark (&:where(.theme-dark, .theme-dark *));
 @theme {
@@ -52,7 +52,7 @@
   /*
    * The quiet ink, and the one token in the light ramp that did not clear the
    * text gate. It was #7d7a71: 4.29:1 on the card, 3.97:1 on the plane, 3.86:1
-   * on the sunken tone — and it is what every 9–11px label in the app is set in
+   * on the sunken tone and it is what every 9–11px label in the app is set in
    * (the eyebrows, the meta line, the tallies, the hints under a field), which
    * is precisely the size that cannot afford to be under it. Nine percent
    * darker, at the same warm hue, clears 4.5:1 on all three grounds it lands on:
@@ -60,7 +60,7 @@
    *   on surface #ffffff  5.02:1     on plane  #f7f6f2  4.64:1
    *   on sunken  #f4f3ef  4.52:1
    *
-   * Dark is untouched — #98948b already measures 5.70:1 on the dark card.
+   * Dark is untouched #98948b already measures 5.70:1 on the dark card.
    * `--color-unclaimed` keeps the old value on purpose: it is a hatch and a
    * mark edge, never text, and it is measured against the 3:1 non-text gate.
    */
@@ -68,18 +68,18 @@
   --color-border: #e5e2d8;
   --color-grid: #e5e2d8;
   --color-axis: #c8c4b6;
-  /* What sits *on* an ink-filled surface — a primary button's own label. */
+  /* What sits *on* an ink-filled surface a primary button's own label. */
   --color-on-primary: #f7f6f2;
 
   /*
-   * The interaction accent — the one saturated colour that means "press this"
+   * The interaction accent the one saturated colour that means "press this"
    * rather than "this line is in this state".
    *
    * In light it is ink, which is MamboRambo's look and is what shipped: a
    * near-black Start dubbing, a near-black active nav cell, a near-black
    * selection ring. Nothing about light changes by naming it.
    *
-   * In dark, ink is a near-white — and a near-white button on a near-black
+   * In dark, ink is a near-white and a near-white button on a near-black
    * plane beside near-black cards is a screen with no colour in it at all. So
    * dark restates the accent as the violet out of the logo's magenta→violet
    * →orange mark (`src-tauri/icons/logo-mark.png`), and that is the whole of
@@ -88,7 +88,7 @@
    * "alive" comes from a few saturated moments against a calm ground and not
    * from lifting everything.
    *
-   * It is deliberately not a state hue and never encodes one — which is also
+   * It is deliberately not a state hue and never encodes one which is also
    * why nothing sets it as text. It fills, it rings, it rules.
    *
    * `--color-brand`, which used to alias `--color-dubbed` and was referenced
@@ -103,13 +103,13 @@
    * is *what the reviewer still has to do*, not what the pipeline happened to
    * call the segment:
    *
-   *   kept     nothing to do — the original plays          resolved  (green)
+   *   kept     nothing to do the original plays          resolved  (green)
    *   dubbed   done, and there is a clip to check          done      (blue)
    *   pending  waiting on the translator or the voice      awaiting  (amber)
    *   failed   the pipeline lost the line                  wrong     (red)
    *
-   * Amber used to be "kept", which is how an already-English video — every
-   * line kept, correctly, nothing wrong anywhere — rendered as seventy-three
+   * Amber used to be "kept", which is how an already-English video every
+   * line kept, correctly, nothing wrong anywhere rendered as seventy-three
    * rows of warning, an amber gutter and a hundred-mark amber barcode. Warning
    * colour now means only "this one is waiting on something", which is a set
    * that is usually empty, and the calm case is calm.
@@ -127,8 +127,8 @@
    * so the two pairs that must never merge separate in greyscale alone:
    *   kept/failed   dL* 9.8   (dE2000 50.6 normal, 26.1 deutan, 9.7 protan)
    *   kept/dubbed   dL* 12.2  (dE2000 33.1 normal, 28.6 deutan)
-   * The protan figure for kept/failed is the honest weak spot — a deep green
-   * and a mid red are nearly the same hue to a protanope — and it is why the
+   * The protan figure for kept/failed is the honest weak spot a deep green
+   * and a mid red are nearly the same hue to a protanope and it is why the
    * relief rule is unconditional: every state also carries a drawn shape and a
    * word, on every row and in the panel. Never colour alone.
    *
@@ -145,7 +145,7 @@
    * The semantic tones are the state hues under their other names, aliased
    * rather than re-picked. A setup check that is "good" in a fifth green and a
    * badge that is "warn" in a second amber is how a palette stops being one
-   * palette — and both themes then have to restate four extra values that
+   * palette and both themes then have to restate four extra values that
    * nobody measured. `--color-serious` (a lone orange, used nowhere) is gone
    * for the same reason.
    */
@@ -166,7 +166,7 @@
  * `color-scheme` is the load-bearing line in this file. It is what tells the
  * browser which way to paint the things CSS does not own: the canvas behind the
  * document, the native form widgets, the default scrollbars, and the video
- * element's own chrome. It follows the theme class and nothing else — the two
+ * element's own chrome. It follows the theme class and nothing else the two
  * declarations below are the only two in the app, and there is no third that
  * consults the OS.
  *
@@ -201,7 +201,7 @@ html.theme-dark {
 
   /*
    * How much of its hue a timeline mark's fill actually gets. The hue lives on
-   * the mark's 1px edge — that is what makes a boundary legible — and the fill
+   * the mark's 1px edge that is what makes a boundary legible and the fill
    * is a wash of the same hue, so a hundred adjacent marks read as a hundred
    * marks instead of one coloured band.
    *
@@ -211,7 +211,7 @@ html.theme-dark {
    * hues are light on near-black and sit over a drawn waveform, so they need
    * more before the mark reads as a box at all. Measured against the lane, the
    * unselected marks land 1.22:1–1.31:1 in light and 1.42:1–1.80:1 in dark —
-   * present, never loud — and the selected mark (1.71:1–2.07:1 light,
+   * present, never loud and the selected mark (1.71:1–2.07:1 light,
    * 2.46:1–4.06:1 dark) and the playhead stay the two brightest things on the
    * strip. The dark band is the wider one because the dark hues carry the
    * chroma; it is the strip the "dead colours" complaint was mostly about.
@@ -247,7 +247,7 @@ html.theme-dark {
  *   pending   #e79c25   7.53:1    unclaimed #98948b   5.70:1
  *   accent    #ce77f2   6.19:1
  * The tightest of those is `dubbed` on `raised`, the lightest ground anything
- * is drawn on, at 4.49:1 — every hue clears 3:1 everywhere with room to spare.
+ * is drawn on, at 4.49:1 every hue clears 3:1 everywhere with room to spare.
  * Red clears 4.5:1 as well
  * because `text-critical` is the one place a state hue is set as small text —
  * the old dark red (#d03b3b, 3.76:1) did not, so an error message was the
@@ -255,21 +255,21 @@ html.theme-dark {
  *
  * The lightness ordering flips with the ground, which is the point: on paper
  * "resolved" is the darkest hue on the card, on a near-black plane it is the
- * lightest. L*: dubbed 56.9, failed 61.0, pending 70.1, kept 78.0 — so the two
+ * lightest. L*: dubbed 56.9, failed 61.0, pending 70.1, kept 78.0 so the two
  * pairs that must never merge stay apart in greyscale here too:
  *   kept/failed   dL* 17.0  (dE2000 63.5 normal, 18.0 deutan, 22.8 protan)
  *   kept/dubbed   dL* 21.2  (dE2000 42.4 normal, 40.0 deutan)
- * The weak pair in dark is failed/pending (dL* 9.1, deutan dE 12.0) — red and
+ * The weak pair in dark is failed/pending (dL* 9.1, deutan dE 12.0) red and
  * amber, both of which mean "look at this one", which is the cheapest pair in
  * the set to confuse. The shape and the word tell them apart.
  *
  * ## Why these four are not the old four
  *
- * "The dark mode is too dim — the colours are dead." They were: the ramp was
+ * "The dark mode is too dim the colours are dead." They were: the ramp was
  * neutral, the accent was a near-white, and the state hues were carrying the
  * entire chromatic budget of the screen at a chroma picked for restraint. The
- * hues here are the same four hues at the same four lightnesses — nothing about
- * the encoding, the ordering or the greyscale separation moves — with the
+ * hues here are the same four hues at the same four lightnesses nothing about
+ * the encoding, the ordering or the greyscale separation moves with the
  * chroma taken up to somewhere near what the ground can actually hold:
  *
  *   kept      C* 21.8 → 40.1   a mint, not a grey; still the calmest of the four
@@ -277,7 +277,7 @@ html.theme-dark {
  *   failed    C* 54.8 → 62.1   lifted with the rest so red stays the loud one
  *   pending   C* 65.5 → 70.0   glows a little; it is the state that is waiting
  *
- * kept stays lowest on purpose — it is the hue that lands on two hundred rows
+ * kept stays lowest on purpose it is the hue that lands on two hundred rows
  * of an already-English run, and the reason amber was taken off that job.
  *
  * The shape drawn *inside* a timeline mark is the state's own hue, not an ink
@@ -294,7 +294,7 @@ html.theme-dark {
    *   border   L* 17.1 → 21.4    axis     L* 24.0 → 28.1
    *
    * Both halves of that matter. The tint is what stops a near-black plane
-   * reading as switched off — at C* 5 nobody would call it purple, and it is
+   * reading as switched off at C* 5 nobody would call it purple, and it is
    * the accent's own hue, so the ground is the quietest note of the same
    * chord. The lift is what lets a card sit *on* the plane (1.11:1, from
    * 1.07:1) and a field sit on the card (1.09:1) instead of all three merging
@@ -323,14 +323,14 @@ html.theme-dark {
   /*
    * The accent: the logo's violet, at L* 63.9 / C* 72.3 / h 318.
    *
-   * It is filled, ringed and ruled — never set as text — so the gate is 3:1
+   * It is filled, ringed and ruled never set as text so the gate is 3:1
    * and it clears 6.87:1 on the plane and 6.19:1 on the card. Its label is the
    * plane colour rather than a white, at 6.87:1, which is the same shape as the
    * near-white/near-black primary button it replaces: a bright fill with dark
    * ink on it. Only the hue changed.
    *
    * It sits dL* 7.1 off `dubbed` and 2.9 off `failed` and is a near-neighbour
-   * of the blue for a protanope (dE 0.7) — which is allowed, and only allowed,
+   * of the blue for a protanope (dE 0.7) which is allowed, and only allowed,
    * because the accent never encodes anything. It marks affordances; the four
    * hues that carry meaning also carry a shape and a word.
    *
@@ -338,10 +338,10 @@ html.theme-dark {
    *   · the primary button (Start dubbing, Render preview, Render, Continue…)
    *   · the active cell of a nav or filter group (Setup, the theme toggle,
    *     the script's All/Failed/Kept/Edited chips)
-   *   · the selected script row — its wash, its inset ring and its rule
+   *   · the selected script row its wash, its inset ring and its rule
    *   · the selected timeline mark's ring, and a mark's hover ring
    *   · the focus ring, everywhere, and a focused field's border
-   *   · the brand chip in the page header — its mark, and a /25 wash of the
+   *   · the brand chip in the page header its mark, and a /25 wash of the
    *     accent on its hairline
    * Nothing else. The playhead, the transport's play button and the stage
    * track stay ink, because the playhead has to be the brightest thing on the
@@ -351,7 +351,7 @@ html.theme-dark {
   --color-accent: #ce77f2;
   --color-on-accent: #110e16;
 
-  /* Segment-state encoding, dark — re-picked for a near-black plane, not the
+  /* Segment-state encoding, dark re-picked for a near-black plane, not the
      light four dimmed. See the chroma table above for what moved and why.
      The three aliases below follow from these, so `good`/`warning`/`critical`
      need no dark values of their own. */
@@ -362,13 +362,13 @@ html.theme-dark {
   --color-unclaimed: #98948b;
 
   /* A cast shadow is invisible against near-black, so elevation in dark is
-     carried by a hairline highlight along the top edge — light falling on the
-     lifted surface — with the spread behind it doing the separation. The
+     carried by a hairline highlight along the top edge light falling on the
+     lifted surface with the spread behind it doing the separation. The
      highlights are stronger than they were for the same reason the borders
      are: with no shadow to read, the lit edge is the whole of the cue. */
   --elevation-card: inset 0 1px 0 rgb(255 255 255 / 0.07), 0 2px 8px rgb(0 0 0 / 0.5);
   --elevation-lift: inset 0 1px 0 rgb(255 255 255 / 0.09), 0 16px 44px rgb(0 0 0 / 0.6);
-  /* `pop` is the floating one — tooltips and popovers — and it is the level
+  /* `pop` is the floating one tooltips and popovers and it is the level
      that needs the highlight most: it lands on the plane, where a black spread
      against near-black separates nothing at all and the hairline border is the
      only other cue. */
@@ -395,7 +395,7 @@ body {
 /*
  * These belong in `base`, not at the top level. An unlayered declaration beats
  * every layered one no matter the specificity, so a bare `button { color:
- * inherit }` silently overrides `text-*` on every button in the app — which is
+ * inherit }` silently overrides `text-*` on every button in the app which is
  * exactly how the primary button ended up with an invisible label.
  */
 @layer base {
@@ -412,8 +412,8 @@ body {
    *
    * The platform's default `<mark>` is a flat yellow with black ink on it,
    * which is off this palette in both themes and unreadable in one of them. A
-   * wash of the accent instead — the same hue that already means "this is the
-   * thing you asked for" on a selected row — and `color: inherit`, so the
+   * wash of the accent instead the same hue that already means "this is the
+   * thing you asked for" on a selected row and `color: inherit`, so the
    * marked word keeps the weight and colour of the sentence it belongs to and
    * only its ground changes. Nothing about the text's own contrast moves.
    *
@@ -431,11 +431,11 @@ body {
   /*
    * The focus ring is one recipe everywhere: a soft halo of the accent, never
    * a browser default outline that fights the radii. It was a halo of ink, and
-   * in light it still is — the accent resolves to `primary` there. In dark it
+   * in light it still is the accent resolves to `primary` there. In dark it
    * is the brand violet, which is the one change that makes keyboard focus
    * visible as *focus* rather than as one more near-white edge among the
    * near-white edges. The selector list is the
-   * full set of things this app makes focusable — `summary` and the roving
+   * full set of things this app makes focusable `summary` and the roving
    * tabindex on the script rows are in it because both are keyboard stops that
    * are not buttons, and both fell through before.
    *
@@ -444,7 +444,7 @@ body {
    * colour of the surface, then the ink halo outside it.
    *
    * `[role="row"]` and the `tr:focus-visible` rule under it are gone with the
-   * table they were written for — the script is a listbox of options now, and
+   * table they were written for the script is a listbox of options now, and
    * an option is a block box that takes the ring like everything else.
    */
   :where(
@@ -482,7 +482,7 @@ body {
   );
 }
 
-/* Scrollbars are ours, not the platform's — `color-scheme` already points the
+/* Scrollbars are ours, not the platform's `color-scheme` already points the
    fallback ones the right way, and these keep them quiet on top of that. Both
    rules resolve from `--color-muted`, so they follow the theme. */
 ::-webkit-scrollbar {
@@ -510,7 +510,7 @@ body {
  * Native number spinners are the one control that will not match anything else
  * on the screen: they are drawn by the platform, they are a different height
  * than the field, and they hand the field's right edge to the OS. Every number
- * input in this app steps with the keyboard and the wheel instead — the arrows
+ * input in this app steps with the keyboard and the wheel instead the arrows
  * add nothing that the field itself did not already do.
  */
 input[type="number"] {
@@ -537,12 +537,12 @@ input[type="number"]::-webkit-inner-spin-button {
  * The long script, without a virtualiser.
  *
  * `content-visibility: auto` lets the browser skip layout, style and paint for
- * any row that is off screen — which is what a windowing library does, done by
+ * any row that is off screen which is what a windowing library does, done by
  * the engine, with none of the row-measuring, scroll-anchoring or
  * find-in-page-breaking that a hand-rolled one brings. `contain-intrinsic-size`
  * is the estimate it uses for a skipped row so the scrollbar stays honest:
  * `auto` means "remember the real height once you have measured it", with 76px
- * — a two-line original over a two-line translation — as the first guess.
+ * a two-line original over a two-line translation as the first guess.
  *
  * Applied only past a few hundred rows: below that the whole list costs less
  * than the containment bookkeeping.

@@ -9,11 +9,11 @@ Tauri shell would parse:
 1. Bind the port (0 = OS-assigned), so the number printed is the number served.
 2. Print **exactly one line** of JSON to stdout and flush:
    `{"status":"ready","port":54321,"version":"0.1.0"}`
-3. Serve. Every log goes to stderr — stdout is the handshake channel and nothing
+3. Serve. Every log goes to stderr stdout is the handshake channel and nothing
    else may write to it, which is why uvicorn's logging is redirected below.
 4. Watchdog: poll `os.getppid()` once a second and exit(0) when it changes, so a
    crashed parent never leaves a pipeline running. Skipped when the parent is
-   already init (pid 1) — there is nothing to outlive.
+   already init (pid 1) there is nothing to outlive.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 WATCHDOG_INTERVAL = 1.0
 
 # Where command-line tools actually live on a Mac. A GUI-launched app inherits
-# launchd's minimal PATH (/usr/bin:/bin:...), not the shell profile's — so the
+# launchd's minimal PATH (/usr/bin:/bin:...), not the shell profile's so the
 # same checkout that works from a terminal reports ffmpeg/sox MISSING inside the
 # installed app, and every stage's shell-out would fail the same way. The server
 # is the ancestor of every job child, so widening PATH once here fixes them all.
@@ -110,7 +110,7 @@ def stdin_watchdog(stream=None, on_close=None) -> threading.Thread:
     The ppid watchdog cannot see through `uv run`: killing the shell kills the
     wrapper, but a wrapper that survives (or a shell that was SIGKILLed before
     its Drop ran) leaves this server's parent chain alive and a stray server
-    listening forever — that is exactly the leak that produced five orphaned
+    listening forever that is exactly the leak that produced five orphaned
     servers in one afternoon of app relaunches. The pipe does not lie: the shell
     holds the write end of stdin for the process's whole life, and EOF here
     means it is gone, no matter what happened to the pids in between. Blocking
@@ -173,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
     announce(port)
     served = getattr(app.state, "ui_dir", None)
     print(f"mambodubb on http://{args.host}:{port} (outputs {outputs}; "
-          f"ui {served or 'not served — API only'})", file=sys.stderr, flush=True)
+          f"ui {served or 'not served API only'})", file=sys.stderr, flush=True)
 
     server = uvicorn.Server(uvicorn.Config(app, log_config=log_config, access_log=False))
     server.run(sockets=[sock])

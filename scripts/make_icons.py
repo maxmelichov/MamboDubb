@@ -18,7 +18,7 @@ and `rsvg-convert` / Inkscape / ImageMagick are all extra installs. `cairosvg` n
 libcairo, which is one more Homebrew dependency. What every Mac *does* have is
 QuickLook, whose WebKit-backed SVG generator `qlmanage -t -s 1024` will write a
 1024x1024 PNG. Its one flaw is that it composites onto opaque white and throws the
-alpha channel away — so we re-cut the alpha ourselves from the tile silhouette, which
+alpha channel away so we re-cut the alpha ourselves from the tile silhouette, which
 we know exactly because the SVG's tile is a plain rounded rect on the macOS icon grid
 (824x824 inset in a 1024 canvas, corner radius 185). The SVG paints 4 px of bleed
 past that silhouette so the white-blended edge pixels fall outside the cut.
@@ -96,7 +96,7 @@ def rasterize(svg: Path) -> Image.Image:
     """Badge SVG -> a 1024x1024 RGBA master, alpha cut to the tile silhouette.
 
     qlmanage is the only SVG rasterizer every Mac ships (see the module
-    docstring); it composites onto opaque white, which is fine here — the badge
+    docstring); it composites onto opaque white, which is fine here the badge
     is full-bleed, so no white survives inside the tile cut.
     """
     with tempfile.TemporaryDirectory() as tmp:

@@ -1,8 +1,8 @@
 /**
  * One transport for the whole editor, whether or not there is a video to play.
  *
- * Before `mix` has run there is no preview.mp4 — and in fixture mode there
- * never is — but the timeline, the playhead and "space to play" still have to
+ * Before `mix` has run there is no preview.mp4 and in fixture mode there
+ * never is but the timeline, the playhead and "space to play" still have to
  * work, so the transport falls back to a virtual clock. Same interface either
  * way, which is what keeps the timeline free of "is there a video" branches.
  *
@@ -10,7 +10,7 @@
  *
  * A run that has not reached `mix` still has `source.wav` on disk from `fetch`,
  * and that is what the transport plays until the preview exists (see
- * EditorPage's transport mode). It is handed to the *same* media element — a
+ * EditorPage's transport mode). It is handed to the *same* media element a
  * `<video>` with a wav in it is an audio player that happens to draw nothing —
  * so there is exactly one clock, one set of listeners and one `hasMedia()` here
  * rather than a parallel audio path that would drift out of step with this one.
@@ -68,7 +68,7 @@ export function useTransport(duration: number): Transport {
      * Two moments land here: `source.wav` replaced by `preview.mp4` when a
      * render finishes, and the first file arriving under a clock that has been
      * synthetic until now. Both must leave the playhead where the reviewer put
-     * it — being thrown back to 00:00 by a background job is the same bug as
+     * it being thrown back to 00:00 by a background job is the same bug as
      * having nothing to play, one screen later. Clamped to whichever length is
      * known, because the new file may be shorter than the old one.
      */
@@ -80,7 +80,7 @@ export function useTransport(duration: number): Transport {
         el.currentTime = want;
         setCurrentTime(want);
       }
-      // A synthetic clock was standing in for this file — either because the
+      // A synthetic clock was standing in for this file either because the
       // element had not picked its source up yet when play was pressed, or
       // because there was no file at all until now. Hand playback over rather
       // than leave two clocks running or drop the playback that was asked for.

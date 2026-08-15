@@ -20,11 +20,11 @@ export default function App() {
   );
 }
 
-/** Asked once per app load, not once per mount — StrictMode double-mounts. */
+/** Asked once per app load, not once per mount StrictMode double-mounts. */
 let gateChecked = false;
 
 /**
- * Route to /setup on the first load if — and only if — the server says the
+ * Route to /setup on the first load if and only if the server says the
  * machine is not ready.
  *
  * Three things it deliberately does not do. It does not block the first paint:

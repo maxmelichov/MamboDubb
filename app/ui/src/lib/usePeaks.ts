@@ -4,7 +4,7 @@
  * One request per lane per run, and deliberately not part of `useProject`: the
  * picture is not state the editor edits, nothing upstream depends on it, and a
  * lane that never gets one still works. Keeping it out of the store is what
- * lets a 404 — `dub.wav` does not exist until the mix stage has run — be
+ * lets a 404 `dub.wav` does not exist until the mix stage has run be
  * nothing at all rather than an error banner over a working editor.
  *
  * `revision` is the caller's "go and look again" signal. The OUTPUT lane passes

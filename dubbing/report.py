@@ -1,22 +1,22 @@
-"""Stage 9 — the safety net: prove every second of source speech was handled.
+"""Stage 9 the safety net: prove every second of source speech was handled.
 
 Accounting is a hard gate (a segment is dubbed or kept, nothing else exists).
 Everything else is a warning surfaced to the human: shortened lines, drifted
 placements, and audible stretches of source audio that no transcript word and no
-placement covers — which is exactly the shape the old "dead air at 2:04" bug had.
+placement covers which is exactly the shape the old "dead air at 2:04" bug had.
 
 The other half of that job is accounting for what the run *could not do*, because
 a verdict written by a failure path is exactly the kind that never reaches the
 user otherwise. Four fields exist for it:
 
-* `verify.unverified` — clips no ASR ever heard (the verifier did not load).
+* `verify.unverified` clips no ASR ever heard (the verifier did not load).
   Never folded into `ok`; the summary says so out loud when nothing was checked.
-* `degraded` — what a stage could not load and what it fell back to
+* `degraded` what a stage could not load and what it fell back to
   (`m["health"]`, written by the stages themselves: diarization, turn
   refinement, the verify ASR, the reference validator).
-* `overrun`, `shorten_abandoned`, `subtitles_failed` — a drifted line that
+* `overrun`, `shorten_abandoned`, `subtitles_failed` a drifted line that
   nothing could rescue, and a kept span showing "…" instead of a subtitle.
-* `stale_locked_clips` — a clip the user approved for a line that has since
+* `stale_locked_clips` a clip the user approved for a line that has since
   changed. The pipeline may not replace it and may not pass it off as current.
 """
 
@@ -85,7 +85,7 @@ def declared_source_mismatch(m: dict[str, Any],
     Script is the one witness that needs no model: when most of the speech that
     was heard is not written in the source language's script, the declaration
     itself is the likeliest bug (an English video imported as Hebrew), and every
-    keep/dub verdict downstream inherits it — script-keeps then file the real
+    keep/dub verdict downstream inherits it script-keeps then file the real
     language of the video as "already the target". The report cannot fix a
     declaration; it can refuse to let it pass silently. Same-script mistakes
     (a German video declared English) are invisible to this check by nature.
@@ -135,15 +135,15 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
     rates = [s["place"]["rate"] for s in segments if s.get("place")]
     overruns = [s["place"]["overrun"] for s in segments
                 if (s.get("place") or {}).get("overrun")]
-    # A rescue that was attempted and abandoned — the missing half of the
+    # A rescue that was attempted and abandoned the missing half of the
     # shortened/drift story: this line is late because nothing could fix it.
     abandoned = [{"id": s["id"], "start": s["start"],
                   "reason": s["place"]["shorten"]}
                  for s in segments if (s.get("place") or {}).get("shorten")]
     # A kept span whose subtitle is the translate stage's "…" placeholder: the
     # translator refused and the viewer gets an ellipsis where a line should be.
-    # (The placeholder is written both by design — a passed-through span has no
-    # translation to show — and by failure; telling the two apart needs a distinct
+    # (The placeholder is written both by design a passed-through span has no
+    # translation to show and by failure; telling the two apart needs a distinct
     # marker in dubbing/translate.py, which is a follow-up. Counting them is the
     # visibility that costs nothing meanwhile.)
     subtitles_failed = [s["id"] for s in kept
@@ -161,11 +161,11 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
         # What this report is a report *about*. Nothing else on disk says so: an
         # edit made a minute later changes no stage parameter, so a reader had no
         # way to tell a current report from one the manifest had moved past hours
-        # ago — and it was served as current either way.
+        # ago and it was served as current either way.
         "manifest": manifest_mod.content_fingerprint(m),
         # Where the words came from. "captions" on a run that asked for ASR means
         # every line downstream was translated from a caption track that mangles
-        # exactly the words that matter (AGENTS.md, invariant 4) — the single most
+        # exactly the words that matter (AGENTS.md, invariant 4) the single most
         # useful thing to know when a dub reads like nonsense.
         "transcript_origin": transcript.origin(m),
         "segments": len(segments),
@@ -201,7 +201,7 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
     if verify["unverified"]:
         checked = verify["ok"] + verify["soft"]
         if not checked:
-            print(f"  WARNING: NOT ONE clip was verified — no verification ASR "
+            print(f"  WARNING: NOT ONE clip was verified no verification ASR "
                   f"loaded; {verify['unverified']} dub(s) accepted on length alone",
                   file=sys.stderr)
         else:
@@ -211,11 +211,11 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
     if report["source_mismatch"]:
         mm = report["source_mismatch"]
         print(f"  WARNING: only {mm['in_source_script']:.0%} of the speech is written "
-              f"in the declared source language ({mm['declared']}) — the declaration "
+              f"in the declared source language ({mm['declared']}) the declaration "
               "is probably wrong; re-create the project with the language the video "
               "actually speaks", file=sys.stderr)
     for name, reason in sorted(health.items()):
-        print(f"  degraded: {name} — {reason}", file=sys.stderr)
+        print(f"  degraded: {name} {reason}", file=sys.stderr)
     print(f"  drift: max {report['drift']['max']}s, {report['drift']['over_soft']} over "
           f"{timeline.DRIFT_SOFT}s | speed-up on {report['speed']['compressed']} segments "
           f"(max {report['speed']['max']}x)", file=sys.stderr)
@@ -224,14 +224,14 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
               f"speaker's onset, worst {report['overrun']['max']}s", file=sys.stderr)
     for item in abandoned:
         print(f"    seg {item['id']} @{item['start']:.1f}s shorten attempted, "
-              f"{item['reason']} — original kept, still late", file=sys.stderr)
+              f"{item['reason']} original kept, still late", file=sys.stderr)
     if subtitles_failed:
         print(f"  subtitles: {len(subtitles_failed)} kept segment(s) show the "
               f"\"…\" placeholder instead of a line: {subtitles_failed[:10]}",
               file=sys.stderr)
     for item in stale_locked:
         print(f"  CONFLICT: seg {item['id']} has a locked clip made for text that "
-              "has since changed — it speaks the old line (resynthesize it, or "
+              "has since changed it speaks the old line (resynthesize it, or "
               "release the lock)", file=sys.stderr)
     if shortened:
         print(f"  shortened for timing: {len(shortened)} segments", file=sys.stderr)

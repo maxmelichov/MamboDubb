@@ -1,8 +1,8 @@
-"""Stage 2 — Demucs stem separation.
+"""Stage 2 Demucs stem separation.
 
 The vocals stem is used ONLY as a source of voice-clone reference audio and as
 diarization input. It is never treated as an oracle for "is someone speaking
-here" — Demucs routes speech into the music stem often enough that doing so is
+here" Demucs routes speech into the music stem often enough that doing so is
 what produced the old pipeline's dead-air holes.
 """
 

@@ -1,4 +1,4 @@
-"""Phase 5 — translate-stage prompt improvements. Pure logic, no models.
+"""Phase 5 translate-stage prompt improvements. Pure logic, no models.
 
 A dialogue register mode, the rolling run-level established-names list, and the
 military-Hebrew terms note. Since translate/v24 digit→word conversion is
@@ -110,7 +110,7 @@ def test_names_note_appears_only_when_list_is_nonempty():
     assert "already established" not in bare
     p = translate._translate_instruction("שלום", "he", "en",
                                          names=("Dayan", "Golda", "Sinai"))
-    assert ("Names already established in this video's translation — use these "
+    assert ("Names already established in this video's translation use these "
             "exact spellings when the same person or place recurs: "
             "Dayan, Golda, Sinai." in p)
 
@@ -170,7 +170,7 @@ def test_hebrew_military_note_carries_the_unit_echelons():
 
 def test_translate_stage_tag_bumped():
     # v32: two parallel lines each claimed v31 (lock-aware reruns; the news
-    # register work) — the merged tag moves past both claims.
+    # register work) the merged tag moves past both claims.
     # v33: a user keep is subtitled honestly under either of its two names.
     # v34: a same-language pair translates by identity, with no model loaded.
     # v35: a segment translates from its OWN language, and a failed translation
@@ -196,7 +196,7 @@ def test_gloss_clause_included_when_its_word_is_in_the_segment():
 
 
 def test_gloss_clause_included_for_a_mis_transcription_within_one_edit():
-    # ASR wrote בלגן (a dropped א — edit distance 1 from בלאגן, not listed in
+    # ASR wrote בלגן (a dropped א edit distance 1 from בלאגן, not listed in
     # the clause itself); the gloss must still reach this segment's prompt.
     out = translate.relevant_context(_CTX, "היה שם בלגן שלם", "he")
     assert "big mess or chaos" in out
@@ -223,7 +223,7 @@ def test_empty_context_stays_empty():
 
 def test_run_gates_both_pivot_hops_against_the_source_text(monkeypatch, tmp_path):
     # Hop 2 translates the clean English intermediate, but its gloss gate must
-    # read the ORIGINAL Hebrew segment — that is how «зикит» reached Russian.
+    # read the ORIGINAL Hebrew segment that is how «зикит» reached Russian.
     calls = []
 
     def fake_generate(tok, mdl, text, *, source, target, context="", **kw):
@@ -248,7 +248,7 @@ def test_run_gates_both_pivot_hops_against_the_source_text(monkeypatch, tmp_path
     for c in calls[:2]:
         assert "chameleon" not in c["context"] and "chaos" not in c["context"]
         assert "Israeli documentary" in c["context"]
-    # Segment 1 speaks זיקית: both hops — including the en→ru one — get the gloss.
+    # Segment 1 speaks זיקית: both hops including the en→ru one get the gloss.
     for c in calls[2:]:
         assert "chameleon" in c["context"]
         assert "chaos" not in c["context"]
@@ -289,7 +289,7 @@ def test_garble_note_only_with_context_on_an_asr_hop():
     ctx = "Documentary about Ahmed al-Sharaa, known as al-Julani."
     with_ctx = translate._translate_instruction("שלום", "he", "en", context=ctx)
     assert "may mishear" in with_ctx
-    # Bare instruction was probed and fixed nothing — never emitted without context.
+    # Bare instruction was probed and fixed nothing never emitted without context.
     assert "may mishear" not in translate._translate_instruction("שלום", "he", "en")
     # The pivot's second hop reads clean model English, not ASR.
     hop2 = translate._translate_instruction("hello", "en", "ru", context=ctx,
@@ -380,7 +380,7 @@ def test_revise_run_ignores_revisions_to_the_overlap_context(monkeypatch):
     out = translate.revise_run(None, None, lines, target="en",
                                batch_size=2, overlap=1)
     # Batch 2 re-revised its context line (line 2), but only its own chunk
-    # (line 3) is applied — line 2 keeps batch 1's revision.
+    # (line 3) is applied line 2 keeps batch 1's revision.
     assert out[1] == "Rewritten in batch one as line two."
     assert out[2] == "Rewritten in batch two as line two."
 
@@ -425,7 +425,7 @@ def test_run_revises_the_finished_script_with_canonical_names(monkeypatch, tmp_p
     ]
     translate.run(m, tmp_path, source="he", target="en")
     # The entity table is canonicalised from the finished lines themselves:
-    # Jolani (1) vs Julani (1) — tie broken by earliest → Jolani.
+    # Jolani (1) vs Julani (1) tie broken by earliest → Jolani.
     assert seen["names"] == ("Jolani",)
     assert seen["lines"] == ["Then Jolani spoke first.",
                              "Later Julani replied at length."]
@@ -437,7 +437,7 @@ def test_run_revises_the_finished_script_with_canonical_names(monkeypatch, tmp_p
 # The bug this section pins: a he→de dub of a video whose speech is mostly
 # ENGLISH (an already-dubbed source). The user flips one English line from
 # "keep" to "Dub it"; the translator is asked for "the following HEBREW text" —
-# the line is English — Gemma hands the English straight back, `_echoes_source`
+# the line is English Gemma hands the English straight back, `_echoes_source`
 # correctly rejects the echo, `generate` gives up, and the segment is answered
 # with a keep that undoes the user's flip and reports success. Observed on
 # outputs/WhatsApp_Video_2026_08_10_at_14_07_11_2, segment 3.
@@ -473,7 +473,7 @@ def test_the_span_witness_and_the_editor_override_outrank_the_run():
 def test_script_only_refutes_when_it_has_something_to_say():
     # Same-script pair: no signal, so the run's claim stands.
     assert translate.segment_langs({"text": "hola mundo"}, "en", "es") == ("en", "es")
-    # Too few letters to judge — a number, an interjection, a stray glyph.
+    # Too few letters to judge a number, an interjection, a stray glyph.
     assert translate.segment_langs({"text": "330,000"}, "he", "de") == ("he", "de")
     assert translate.segment_langs({"text": "ok."}, "he", "de") == ("he", "de")
 
@@ -539,7 +539,7 @@ def test_run_leaves_a_locked_dub_untranslated_instead_of_asserting(monkeypatch,
                                                                   tmp_path):
     # The flip-flop this ends: keep=True beside passthrough=False is a manifest
     # that disagrees with itself, and the next run's `apply_passthrough` flips it
-    # back and drops the whole tail of the run — forever, never converging.
+    # back and drops the whole tail of the run forever, never converging.
     monkeypatch.setattr(translate, "load", lambda *a, **k: (None, None, None))
     monkeypatch.setattr(translate, "free", lambda mdl: None)
     monkeypatch.setattr(translate, "generate", lambda *a, **k: "")

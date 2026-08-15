@@ -1,5 +1,5 @@
 /**
- * Setup — the first-run screen, and the place to come back to when something
+ * Setup the first-run screen, and the place to come back to when something
  * on the machine changed underneath the app.
  *
  * `GET /api/setup` is a list of fast filesystem checks: the two binaries, the
@@ -7,23 +7,23 @@
  * and nothing else. Three rules it follows, all of them the editor's:
  *
  * - **Never colour alone.** Every row carries a glyph, the word "Ready" or
- *   "Missing", and a hue — in that order of importance. A monochrome screen
+ *   "Missing", and a hue in that order of importance. A monochrome screen
  *   reads exactly the same.
  * - **A failure says what it costs.** Every missing row used to be the same red
  *   X, so a gated Hugging Face token (the run works, everyone in the video
  *   becomes one speaker) looked exactly like a missing ffmpeg (nothing runs at
  *   all), which looked exactly like a Korean TTS checkpoint a Hebrew→English run
- *   will never open. The server now grades them — `severity` is `blocking`,
- *   `degrades` or `optional` — and each grade gets its own word: REQUIRED,
+ *   will never open. The server now grades them `severity` is `blocking`,
+ *   `degrades` or `optional` and each grade gets its own word: REQUIRED,
  *   DEGRADES, OPTIONAL. The hue follows the word, never the other way round.
  * - **The detail line is the whole point.** "Missing" is not actionable; "run
  *   this command to fetch it (320 MB)" is. The server writes that sentence, the
- *   UI only renders it — and every command in it is one click to the clipboard,
+ *   UI only renders it and every command in it is one click to the clipboard,
  *   because a command that has to be retyped from a screenshot is a command
  *   that gets retyped wrong.
  * - **A row the server can fix gets a button.** `installable` comes from the
  *   server (it is the key set of `install.INSTALLERS`), never from a list kept
- *   here — a copy would drift and put a button on a row whose POST is a 400.
+ *   here a copy would drift and put a button on a row whose POST is a 400.
  *   Two binaries qualify; a ten-gigabyte model does not, and its detail line
  *   stays the whole answer.
  * - **Do not nag.** The gate in App.tsx routes here only when the server says
@@ -58,7 +58,7 @@ import type { SetupCheck, SetupInstall, SetupSeverity, SetupStatus } from "../li
  * the field.
  *
  * That fallback reads `required` as blocking and everything else as optional,
- * which is the *old* two-value contract — the one reading that can understate a
+ * which is the *old* two-value contract the one reading that can understate a
  * failure but never overstate one. An unknown grade defaulting to "degrades"
  * would invent a claim about a check nobody has graded.
  */
@@ -75,7 +75,7 @@ const SEVERITY_META: Record<
   // The run works and is worse. Amber: it must not be dismissible at a glance,
   // and it must not read as broken either.
   degrades: { word: "Degrades", token: "var(--color-warning)", tone: "warn", wash: true },
-  // Irrelevant until you ask for it. No hue and no wash — an optional row that
+  // Irrelevant until you ask for it. No hue and no wash an optional row that
   // shouted was what taught users to ignore the whole list.
   optional: { word: "Optional", token: "var(--color-muted)", tone: "neutral", wash: false },
 };
@@ -93,8 +93,8 @@ function firstBlockingStage(checks: SetupCheck[]): string | null {
 /**
  * How often to ask where the install got to.
  *
- * There is no stream for this — setup has no project, so it has no event
- * stream — and a `brew install` runs for minutes, so two seconds is honest and
+ * There is no stream for this setup has no project, so it has no event
+ * stream and a `brew install` runs for minutes, so two seconds is honest and
  * cheap. Fixture mode simulates the whole thing in under a second, which is the
  * only reason it polls faster: at 2 s the demo (and the smoke test) would watch
  * a spinner for one frame and miss every state in between.
@@ -116,7 +116,7 @@ export function SetupPage() {
       setError(null);
     } catch (err) {
       // An old server has no /api/setup at all. That is not a failed check, it
-      // is no information — say so rather than inventing a red row.
+      // is no information say so rather than inventing a red row.
       setStatus(null);
       setError(String(err instanceof Error ? err.message : err));
     } finally {
@@ -187,7 +187,7 @@ export function SetupPage() {
    *
    * `ready` is the server's verdict on the *required* rows, and the footer used
    * to lump every other failure into "optional items missing for wider language
-   * pairs" — which is a specific, wrong claim about a missing HF token. Split by
+   * pairs" which is a specific, wrong claim about a missing HF token. Split by
    * grade, each sentence is about the thing it names.
    */
   const blocking = failing.filter((check) => severityOf(check) === "blocking");
@@ -202,7 +202,7 @@ export function SetupPage() {
       lede={
         <>
           Everything runs on this machine, so the machine has to have it. These are cheap
-          filesystem checks — no model is loaded to answer them.
+          filesystem checks no model is loaded to answer them.
           {isDesktop() ? null : " Re-check after installing anything."}
         </>
       }
@@ -216,7 +216,7 @@ export function SetupPage() {
                 {/* "All checks pass" is only true when they all do. `ready` is
                     the verdict on the BLOCKING rows, so it can be true with a
                     gated token and an un-downloaded cache still red above this
-                    line — and that state is "ready to run", not "all pass". */}
+                    line and that state is "ready to run", not "all pass". */}
                 {status ? (
                   ready ? (
                     failing.length === 0 ? (
@@ -297,7 +297,7 @@ export function SetupPage() {
             </Button>
           ) : (
             /*
-             * Skipping is allowed and always was — the gate never traps anyone.
+             * Skipping is allowed and always was the gate never traps anyone.
              * What it must not do is stay cheerful: with a blocking row red, the
              * next thing that happens after "Skip for now" is a run that dies,
              * and the link is the last place to say so before it does.
@@ -309,7 +309,7 @@ export function SetupPage() {
               className="rounded-md text-[12px] font-semibold text-secondary underline underline-offset-4 transition-colors hover:text-primary"
             >
               {blocking.length > 0
-                ? `Skip anyway — runs will fail${stopsAt ? ` at ${stopsAt}` : ""}`
+                ? `Skip anyway runs will fail${stopsAt ? ` at ${stopsAt}` : ""}`
                 : "Skip for now"}
             </Link>
           )}
@@ -320,12 +320,12 @@ export function SetupPage() {
                 and so does calling a gated token an "optional item for wider
                 language pairs", which is what this used to do. */}
             {blocking.length > 0
-              ? "A required tool is missing — runs will fail."
+              ? "A required tool is missing runs will fail."
               : failing.length === 0
                 ? "Nothing is missing."
                 : degraded.length > 0
                   ? `Everything required is ready. ${degraded.length} ` +
-                    `thing${degraded.length === 1 ? "" : "s"} above will still run — ` +
+                    `thing${degraded.length === 1 ? "" : "s"} above will still run ` +
                     "just worse."
                   : `Everything required is ready; ${optional.length} optional ` +
                     `item${optional.length === 1 ? " is" : "s are"} missing for wider ` +
@@ -335,7 +335,7 @@ export function SetupPage() {
       </Card>
 
       {error && status ? <ErrorBlock title="Re-check failed">{error}</ErrorBlock> : null}
-      {/* A refusal — an id the server has no argv for, a second install while
+      {/* A refusal an id the server has no argv for, a second install while
           one runs, or no Homebrew at all. It carries the sentence that says what
           to do instead, so it goes where the user can read all of it. */}
       {installError ? (
@@ -348,7 +348,7 @@ export function SetupPage() {
 }
 
 /**
- * One check. The state is spelled three ways — glyph, word, hue — because the
+ * One check. The state is spelled three ways glyph, word, hue because the
  * palette's "kept"/"failed" pair is below the contrast gate for colour-vision
  * deficiency in light mode, and because a screenshot of a checklist gets read
  * at a glance by people who never see the hue at all.
@@ -360,7 +360,7 @@ function CheckRow({
   onInstall,
 }: {
   check: SetupCheck;
-  /** This row's install, or null — the page hands each row only its own. */
+  /** This row's install, or null the page hands each row only its own. */
   install: SetupInstall | null;
   /** Any install is running. One at a time, so every other button greys out. */
   busy: boolean;
@@ -371,7 +371,7 @@ function CheckRow({
   const failed = install !== null && !install.running && install.ok === false;
   // The button is offered for exactly one state: a row the server says it can
   // fix, that is currently broken. A passing row needs nothing and a model row
-  // has no argv behind it — its detail line is the answer.
+  // has no argv behind it its detail line is the answer.
   const offerInstall = check.installable === true && !check.ok;
   const severity = severityOf(check);
   const meta = SEVERITY_META[severity];
@@ -384,7 +384,7 @@ function CheckRow({
         "flex items-start gap-3.5 px-6 py-4 sm:px-7",
         // Eight rows that look identical make the reader scan all eight to
         // find the two that need them. The failing ones get a wash and a rule
-        // so the eye lands on them first — reinforcing the word and the glyph
+        // so the eye lands on them first reinforcing the word and the glyph
         // that already say it, never replacing them. An *optional* failure gets
         // neither: it is the row the list is allowed to be quiet about, and
         // shouting it in red is what taught users to skim past the red.
@@ -416,7 +416,7 @@ function CheckRow({
           <Badge tone={check.ok ? "good" : "bad"}>{check.ok ? "Ready" : "Missing"}</Badge>
           {/* The consequence, spelled as a word beside the state. "Missing" is
               what is true; this is what it costs, and the two are different
-              facts — a screenshot read at a glance needs both. Only on a
+              facts a screenshot read at a glance needs both. Only on a
               failing row: what a passing check *would* have cost is trivia. */}
           {check.ok ? null : <Badge tone={meta.tone}>{meta.word}</Badge>}
           {!check.ok && severity === "blocking" && check.stage ? (
@@ -430,7 +430,7 @@ function CheckRow({
         ) : null}
         {/* This row's button, while it runs: one spinner, the word, and the last
             line of output. An install is minutes long and the poll is seconds
-            long, so the last line is the only honest progress there is — a bar
+            long, so the last line is the only honest progress there is a bar
             would have to invent the fraction. */}
         {installing ? (
           <p className="mt-1.5 flex items-center gap-2 text-[12px]">
@@ -456,7 +456,7 @@ function CheckRow({
         ) : null}
       </div>
       {/* The button is *replaced* by the progress line above while this row is
-          installing — two spinners on one row is one spinner too many. Every
+          installing two spinners on one row is one spinner too many. Every
           other installable row keeps its button and greys it out. */}
       {offerInstall && !installing ? (
         <Button
@@ -483,16 +483,16 @@ function lastLine(install: SetupInstall): string | null {
 }
 
 /**
- * The detail sentence, with its backticked spans set as code — and copyable.
+ * The detail sentence, with its backticked spans set as code and copyable.
  *
  * The server writes these to be read by a human and marks the parts that are
- * meant to be typed — a path, a variable, a command — the way every other tool
+ * meant to be typed a path, a variable, a command the way every other tool
  * on that machine does, with backticks. Rendering them literally put stray
  * punctuation in the middle of the one line on the screen whose whole job is
  * to be copied correctly.
  *
  * Setting them as code was half the fix. The other half is that these are
- * `uv run hf download …` commands and absolute `.env` paths — sixty characters
+ * `uv run hf download …` commands and absolute `.env` paths sixty characters
  * of exactness that a user was expected to select by dragging across a 11.5px
  * monospace span, in a *desktop shell* where there is no address bar to paste
  * into and no browser view-source to fall back on. One click is the whole

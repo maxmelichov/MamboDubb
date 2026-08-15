@@ -1,4 +1,4 @@
-"""First-run environment checks — "can this machine actually run the pipeline?".
+"""First-run environment checks "can this machine actually run the pipeline?".
 
 The desktop shell needs an answer before it shows an import form, because every
 failure mode here is undiagnosable from inside the editor: a missing `ffmpeg`
@@ -10,7 +10,7 @@ Two rules shape this module:
 * **No model is loaded and no weights are touched.** Every check is `which`,
   `os.environ` or `stat`, so `GET /api/setup` answers in milliseconds and can be
   polled. The pipeline imports here are function-local and reach only for
-  constants — none of them pulls torch or MLX into the server process.
+  constants none of them pulls torch or MLX into the server process.
 * **The paths come from the pipeline's own constants**, never restated here. If
   `translate.MODEL_PATH` moves, this check moves with it; a hardcoded copy would
   drift and then cheerfully report a green tick for a model the pipeline cannot
@@ -22,7 +22,7 @@ Report shape::
                              "severity": "blocking"|"degrades"|"optional",
                              "installable": bool, "path"?, "bytes"?}, ...]}
 
-`installable` is the server's answer to "can the app fix this for me?" — true for
+`installable` is the server's answer to "can the app fix this for me?" true for
 exactly the ids `dubbing_app.install` has an argv for. The UI needs it as a flag
 rather than a list of its own, or the two sides drift and a button appears on a
 row whose `POST /api/setup/install` is a 400.
@@ -31,18 +31,18 @@ row whose `POST /api/setup/install` is a 400.
 
 `severity` is what `required` could never say. A boolean has two values and this
 question has three, so everything that was not required was reported as one
-undifferentiated "informational" — which put a missing HF token (every speaker
+undifferentiated "informational" which put a missing HF token (every speaker
 in the video collapsed into one) on the same row as a Korean TTS checkpoint a
 Hebrew→English run will never open. Three grades, and the third is what makes
 the first two mean anything:
 
-* ``blocking`` — the run **fails** without it. The command-line tools, the
+* ``blocking`` the run **fails** without it. The command-line tools, the
   translator, the default TTS checkpoint and the English verifier. Exactly the
   ``required`` set, and `required` is derived from this so the two cannot drift.
-* ``degrades`` — the run **works and is worse**. No HF token means diarization
+* ``degrades`` the run **works and is worse**. No HF token means diarization
   falls back to a single speaker; no language-ID model means foreign speech is
   never detected. Nothing here stops a run, and nothing here is nothing.
-* ``optional`` — irrelevant until you ask for it: the per-language-pair models,
+* ``optional`` irrelevant until you ask for it: the per-language-pair models,
   the self-downloading caches, free disk.
 """
 
@@ -83,7 +83,7 @@ def git_commit(*, refresh: bool = False) -> str | None:
 
     Read once and cached: `/health` is polled, and a `git` subprocess per poll
     would be absurd. A packaged app has no `.git` at all, so the env var is the
-    baked-in path — set it at build time and the binary reports its provenance
+    baked-in path set it at build time and the binary reports its provenance
     without needing a repository, exactly as the packaged worker does.
     """
     global _commit, _commit_read
@@ -112,7 +112,7 @@ def git_commit(*, refresh: bool = False) -> str | None:
 def check(id_: str, label: str, ok: bool, detail: str, *, severity: str = BLOCKING,
           **extra: Any) -> dict[str, Any]:
     """One row. `required` is `severity == "blocking"`, computed here and nowhere
-    else — the old contract, still on the wire, now with one source of truth."""
+    else the old contract, still on the wire, now with one source of truth."""
     if severity not in SEVERITIES:
         raise ValueError(f"unknown severity {severity!r}")
     return {"id": id_, "label": label, "ok": bool(ok), "detail": detail,
@@ -129,7 +129,7 @@ def human_bytes(n: float) -> str:
 
 def dir_size(path: Path) -> int:
     """Bytes on disk under `path`. Symlinks are not followed and unreadable
-    entries are skipped — a size is a nicety, never a reason to 500."""
+    entries are skipped a size is a nicety, never a reason to 500."""
     total = 0
     try:
         for entry in path.rglob("*"):
@@ -150,12 +150,12 @@ def dir_size(path: Path) -> int:
 TOOLS: dict[str, tuple[str, str, str]] = {
     "ffmpeg": ("ffmpeg", "ffmpeg", "every stage shells out to it for audio and video"),
     "sox": ("SoX", "sox", "Qwen3-TTS text normalization needs it"),
-    # Not installable from here — `install.MANAGERS` says the same thing about
+    # Not installable from here `install.MANAGERS` says the same thing about
     # Homebrew: the tool that installs the dependencies cannot be one of them.
     # And it names no stage (see `BLOCKING_STAGE`): a server that is already
     # running has its environment, and `runner.SubprocessRunner` spawns the job
     # child with `sys.executable`, not with `uv`. What breaks without it is
-    # repairing or updating that environment — which is why it blocks and why
+    # repairing or updating that environment which is why it blocks and why
     # claiming it kills a particular stage would be the same dishonesty this
     # grading exists to remove.
     "uv": ("uv", "uv", "the pipeline's dependencies are installed and pinned with it "
@@ -167,12 +167,12 @@ TOOLS: dict[str, tuple[str, str, str]] = {
 def tool(id_: str, label: str, exe: str, why: str, *,
          severity: str = BLOCKING) -> dict[str, Any]:
     found = shutil.which(exe)
-    return check(id_, label, bool(found), found or f"{exe} not on PATH — {why}",
+    return check(id_, label, bool(found), found or f"{exe} not on PATH {why}",
                  severity=severity, path=found)
 
 
 def probe(id_: str) -> dict[str, Any] | None:
-    """One check, by id — or None if it is not one this can answer alone.
+    """One check, by id or None if it is not one this can answer alone.
 
     Only the tools are here, and that is the whole point: a check that needs the
     outputs root (`disk`) or a pipeline import (the models) is not a thing the
@@ -187,7 +187,7 @@ def probe(id_: str) -> dict[str, Any] | None:
         return None
     # Same row `report` would produce, `installable` and `stage` included: a
     # client that drops this straight into its list must not get a shape one key
-    # short — it would redraw a REQUIRED row as an untagged one.
+    # short it would redraw a REQUIRED row as an untagged one.
     row = tool(id_, *spec)
     return {**row, "installable": id_ in INSTALLERS,
             **({"stage": blocking_stage(id_)} if row["severity"] == BLOCKING else {})}
@@ -207,7 +207,7 @@ def model(id_: str, label: str, path: Path, *, severity: str = BLOCKING,
     if present:
         detail = f"{human_bytes(size)} in {path}"
     else:
-        detail = f"missing: {path}" + (f" — {note}" if note else "")
+        detail = f"missing: {path}" + (f" {note}" if note else "")
         if hub:
             detail += f". Fetch it: `uv run hf download {hub} --local-dir {path}`"
     return check(id_, label, present, detail, severity=severity, path=str(path), bytes=size)
@@ -235,14 +235,14 @@ def hf_token_check(env_file: Path | None = None) -> dict[str, Any]:
         return check("hf_token", "Hugging Face token", True, f"set in `{path}`",
                      severity=DEGRADES, source="env_file", path=str(path))
     return check("hf_token", "Hugging Face token", False,
-                 "not set — diarization falls back to a single speaker, so every line "
+                 "not set diarization falls back to a single speaker, so every line "
                  "is attributed to one voice. Accept Pyannote's model terms, then add "
                  f"`HF_TOKEN=hf_…` to `{path}`",
                  severity=DEGRADES, source=None, path=str(path))
 
 
 def env_path(env_file: Path | None = None) -> Path:
-    """The `.env` this process reads — absolute, because that is the whole point."""
+    """The `.env` this process reads absolute, because that is the whole point."""
     return (REPO_ROOT / ".env" if env_file is None else Path(env_file)).resolve()
 
 
@@ -287,7 +287,7 @@ def model_checks() -> list[dict[str, Any]]:
     One model degrades rather than blocks: language ID. Its absence does not stop
     a run, it stops the run from *noticing* a third language, and a third language
     nobody noticed is kept as recorded with no subtitle. The rest are per-language
-    pair — a Korean checkpoint has nothing to say about a Hebrew→English run — so
+    pair a Korean checkpoint has nothing to say about a Hebrew→English run so
     they are optional and stay out of the way.
     """
     from dubbing import hebrew, transcript, translate, tts
@@ -304,27 +304,27 @@ def model_checks() -> list[dict[str, Any]]:
                          severity=BLOCKING if default else OPTIONAL,
                          note=f"downloads from {spec['hub']} on first use"))
     out += [
-        model("model.asr.he", "Source ASR — Hebrew (ivrit-ai)", transcript.WHISPER_MODEL,
+        model("model.asr.he", "Source ASR Hebrew (ivrit-ai)", transcript.WHISPER_MODEL,
               severity=OPTIONAL, note="only for Hebrew sources without captions",
               hub=transcript.WHISPER_HUB),
-        model("model.asr.src", "Source ASR — multilingual", transcript.SRC_ASR_MODEL,
+        model("model.asr.src", "Source ASR multilingual", transcript.SRC_ASR_MODEL,
               severity=OPTIONAL, note="only for non-Hebrew sources without captions",
               hub=transcript.SRC_ASR_HUB),
-        model("model.asr.en", "Target ASR — English (clip verification)",
+        model("model.asr.en", "Target ASR English (clip verification)",
               transcript.EN_ASR_MODEL,
               note="without it generated clips are never verified",
               hub="Systran/faster-whisper-base.en"),
-        model("model.asr.tgt", "Target ASR — multilingual", transcript.TARGET_ASR_MODEL,
+        model("model.asr.tgt", "Target ASR multilingual", transcript.TARGET_ASR_MODEL,
               severity=OPTIONAL, note="only for non-English targets",
               hub="Systran/faster-whisper-base"),
         model("model.lid", "Language ID (VoxLingua107)", transcript.LID_MODEL,
               severity=DEGRADES, note="without it foreign-speech detection is skipped"),
-        # Hebrew is a dub TARGET only with both of these. Optional — every other
-        # target runs without them — but a Hebrew run is refused up front when
+        # Hebrew is a dub TARGET only with both of these. Optional every other
+        # target runs without them but a Hebrew run is refused up front when
         # either is missing, so the report is where a user finds out first.
         model("model.tts.he", "Hebrew TTS adapter (Qwen3-TTS LoRA)", hebrew.ADAPTER_DIR,
               severity=OPTIONAL,
-              note=f"only for Hebrew targets — {hebrew.ADAPTER_DOWNLOAD}"),
+              note=f"only for Hebrew targets {hebrew.ADAPTER_DOWNLOAD}"),
         g2p_check(),
     ]
     return out
@@ -340,7 +340,7 @@ def g2p_check() -> dict[str, Any]:
     local = hebrew.G2P_FILE.is_file()
     size = dir_size(hebrew.G2P_DIR) if local else 0
     if not hebrew.g2p_ready():
-        detail = (f"{hebrew.G2P_PACKAGE} is not installed — run `uv sync`; "
+        detail = (f"{hebrew.G2P_PACKAGE} is not installed run `uv sync`; "
                   "without it Hebrew is unavailable as a target")
     elif local:
         detail = f"{human_bytes(size)} in {hebrew.G2P_DIR}"
@@ -361,7 +361,7 @@ def demucs_check() -> dict[str, Any]:
     present = cache.is_dir() and any(cache.rglob("*.th"))
     size = dir_size(cache) if present else 0
     detail = (f"{stems.MODEL} cache: {human_bytes(size)} in {cache}" if present
-              else f"{stems.MODEL} not downloaded yet — fetched on the first stems run")
+              else f"{stems.MODEL} not downloaded yet fetched on the first stems run")
     return check("model.demucs", "Demucs stem separation", present, detail,
                  severity=OPTIONAL, path=str(cache), bytes=size)
 
@@ -384,8 +384,8 @@ BLOCKING_STAGE: dict[str, str] = {
 def blocking_stage(id_: str) -> str | None:
     """The stage a missing blocking check kills, or None when there isn't one.
 
-    `None` is a real answer, not a gap to be filled: `uv` blocks — nothing about
-    this project is installed or updated without it — but a server that is
+    `None` is a real answer, not a gap to be filled: `uv` blocks nothing about
+    this project is installed or updated without it but a server that is
     already running does not shell out to it (`runner.SubprocessRunner` uses
     `sys.executable`), so naming a stage it kills would be a guess dressed as a
     fact. A client that shows the stage must be prepared not to have one.

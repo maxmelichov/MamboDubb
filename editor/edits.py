@@ -1,9 +1,9 @@
-"""Segment edits — the pure logic behind the editor's Save button.
+"""Segment edits the pure logic behind the editor's Save button.
 
 Only the fields listed in `EDITABLE` may be written from the UI, and every one of
 them maps to the earliest pipeline stage that has to re-run for the edit to reach
 the mix. Editing a translation does *not* force `translate` (that would throw the
-edit away and regenerate the line) — it forces `tts`, the first stage that reads
+edit away and regenerate the line) it forces `tts`, the first stage that reads
 `text_en`. Asking for a different target language is the one case where the
 translator itself must run again.
 
@@ -55,7 +55,7 @@ def _flag(v: Any) -> bool:
 # merge, and one was dropped outright:
 #   lang_override    -> tgt_lang  (the studio's per-segment target language)
 #   passthrough      -> the pipeline's own `passthrough` key (True = play original,
-#                       False = force a dub, absent = automatic) — honoured by
+#                       False = force a dub, absent = automatic) honoured by
 #                       segments.apply_passthrough and carried across
 #                       re-segmentation by carry_passthrough
 #   tts_instructions -> REJECTED: Qwen3-TTS's clone path has no instruction
@@ -67,7 +67,7 @@ def _flag(v: Any) -> bool:
 EDITABLE: dict[str, tuple[Callable[[Any], Any], str]] = {
     # source transcript text: the translator's input, so translation redoes.
     "text": (_text, "translate"),
-    # the translated line the synthesiser speaks — keep it, just re-synthesise.
+    # the translated line the synthesiser speaks keep it, just re-synthesise.
     "text_en": (_text, "tts"),
     # which voice clone reference the segment is spoken with.
     "speaker": (_speaker, "tts"),
@@ -86,7 +86,7 @@ ALIASES = {"lang_override": "tgt_lang"}
 # regenerates a locked field (`manifest.reset_stage`, `manifest.is_locked`).
 # Without this the *next* re-run silently discards the correction: `--force
 # translate` after a source-text fix calls `reset_stage("translate")`, which drops
-# `text_en` on every unlocked segment — including the ones the user retyped by
+# `text_en` on every unlocked segment including the ones the user retyped by
 # hand three saves ago. Same key as the studio writes, so a run edited from either
 # front end behaves identically.
 LOCKS = {"text": "text", "text_en": "text_en", "speaker": "speaker",
@@ -105,7 +105,7 @@ assert not _UNLOCKABLE, f"not in manifest.LOCK_FIELDS: {_UNLOCKABLE}"
 REJECTED: dict[str, str] = {
     "tts_instructions": "the synthesiser has no instruction channel: "
                         "generate_voice_clone takes no instruct argument, and the "
-                        "checkpoints that do cannot clone a voice — use tts_opts "
+                        "checkpoints that do cannot clone a voice use tts_opts "
                         "(seed, greedy, ref, ref_text) instead",
 }
 
@@ -128,7 +128,7 @@ def _relock(seg: dict[str, Any], field: str) -> None:
 
 
 def earliest(stages: list[str] | set[str]) -> str | None:
-    """The stage furthest upstream in `stages` — the one to --force."""
+    """The stage furthest upstream in `stages` the one to --force."""
     known = [s for s in STAGES if s in set(stages)]
     return known[0] if known else None
 
@@ -170,7 +170,7 @@ def apply_edits(m: dict[str, Any], edits: list[dict[str, Any]]) -> dict[str, Any
                 # The pipeline's own TRI-state key: absent means "decide
                 # automatically", True means "play the original", False means "dub
                 # this span". False is therefore a real value and must not be
-                # folded into "empty" the way a blank text field is — doing that
+                # folded into "empty" the way a blank text field is doing that
                 # made "dub this foreign line after all" a silent no-op.
                 if seg.get(name) is value:
                     continue

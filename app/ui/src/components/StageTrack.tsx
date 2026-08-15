@@ -6,8 +6,8 @@
  * number you have to parse. Filled means done, ringed means in flight, hollow
  * means not yet, and a failure is the one thing that gets a hue.
  *
- * Three screens use it — the job bar, the projects list and the preview
- * placeholder — and they share it so a run cannot look 6/9 in one place and
+ * Three screens use it the job bar, the projects list and the preview
+ * placeholder and they share it so a run cannot look 6/9 in one place and
  * "mix" in another.
  */
 
@@ -29,13 +29,13 @@ export function StageTrack({
   className,
 }: {
   stages?: Partial<Record<Stage, StageStatus>>;
-  /** Overrides the stage derived from `stages` — the live one from the stream. */
+  /** Overrides the stage derived from `stages` the live one from the stream. */
   current?: Stage | null;
   showLabel?: boolean;
   /**
    * The segments have moved on since the last render, so `timeline`, `mix` and
-   * `report` are done *about something else*. They are drawn hollow — a ring
-   * where the filled dot would be — because "done" and "done, but not about
+   * `report` are done *about something else*. They are drawn hollow a ring
+   * where the filled dot would be because "done" and "done, but not about
    * this" are different facts and the track only had one mark for both.
    */
   stale?: boolean;
@@ -69,7 +69,7 @@ export function StageTrack({
           <span
             key={stage}
             aria-hidden
-            title={hollow ? `${stage} — from the last render` : stage}
+            title={hollow ? `${stage} from the last render` : stage}
             className={cn(
               "h-1.5 w-1.5 rounded-full transition-colors",
               failedHere
@@ -79,7 +79,7 @@ export function StageTrack({
                   : hollow
                     // A ring around the track's own background, so the
                     // difference from a filled dot is shape rather than
-                    // shade — it survives greyscale, and colour-blindness,
+                    // shade it survives greyscale, and colour-blindness,
                     // which a lighter fill would not.
                     ? "bg-raised ring-[1.5px] ring-primary"
                     : done

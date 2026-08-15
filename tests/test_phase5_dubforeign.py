@@ -1,4 +1,4 @@
-"""Phase 5 — --dub-foreign: dub confident third-language spans. Pure logic, no models."""
+"""Phase 5 --dub-foreign: dub confident third-language spans. Pure logic, no models."""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ def test_placeholder_text_span_keeps_even_with_dub_foreign():
 
 
 def test_target_language_span_keeps_even_with_dub_foreign():
-    # A span already in the target language is never dubbed — it IS the target.
+    # A span already in the target language is never dubbed it IS the target.
     words = [{"t": 2.0, "text": "plain"}, {"t": 2.5, "text": "english"},
              {"t": 3.0, "text": "line"}]
     segs, spans = _spliced("en", words, tgt="en")
@@ -102,7 +102,7 @@ def test_run_translates_an_english_lang_segment_in_one_hop(monkeypatch, tmp_path
     assert [(c["source"], c["target"]) for c in calls] == \
         [("he", "en"), ("en", "ru"), ("en", "ru")]
     assert calls[2]["text"] == "english aside"
-    # Its neighbour spoke a different language — no preceding context is passed.
+    # Its neighbour spoke a different language no preceding context is passed.
     assert calls[2]["preceding"] == ""
 
     seg0, seg1 = m["segments"]

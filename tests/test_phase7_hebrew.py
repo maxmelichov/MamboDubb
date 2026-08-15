@@ -1,4 +1,4 @@
-"""Phase 7 — Hebrew as a dub target, and same-language pairs. No models loaded.
+"""Phase 7 Hebrew as a dub target, and same-language pairs. No models loaded.
 
 Two features that arrived together and share one idea: the target language is no
 longer assumed to be something *other* than the source, and it is no longer
@@ -7,13 +7,13 @@ assumed to be something the base checkpoint can pronounce.
 * **Hebrew target.** Qwen3-TTS does not speak Hebrew; a LoRA over its `talker`
   does, and only from stressed IPA. So a Hebrew line is synthesized from
   `G2P(text)` while everything stored, subtitled and ASR-verified stays Hebrew
-  orthography — and the clip's cache key has to carry both the adapter and the
+  orthography and the clip's cache key has to carry both the adapter and the
   IPA, or a G2P change would replay the old pronunciation.
 * **Same-language pairs.** he→he is a dub, not a no-op: every speech segment is
   re-voiced in the cloned voice, with the source line used verbatim and no
   translator loaded at all.
 
-The G2P is stubbed throughout — it is a 300 MB ONNX model and these are unit
+The G2P is stubbed throughout it is a 300 MB ONNX model and these are unit
 tests. What is under test is the plumbing around it.
 """
 
@@ -236,7 +236,7 @@ def test_same_language_still_spells_digits_in_code(tmp_path, monkeypatch):
 
 def test_same_language_keeps_are_the_ones_that_never_depended_on_the_pair(tmp_path,
                                                                           monkeypatch):
-    """No segment is kept for "already the target language" — that is the point."""
+    """No segment is kept for "already the target language" that is the point."""
     segs = [_seg(1, "…", keep=True, keep_reason="no_text"),
             _seg(2, "שלום"),
             _seg(3, "שלום", keep=True, keep_reason="user")]
@@ -257,7 +257,7 @@ def test_same_language_keeps_are_the_ones_that_never_depended_on_the_pair(tmp_pa
     segs[2]["keep"], segs[2]["keep_reason"] = True, "user"
     m = _manifest(segs)
     translate.run(m, tmp_path, source="he", target="he")
-    # A keep's subtitle is its own line — the viewer hears exactly that.
+    # A keep's subtitle is its own line the viewer hears exactly that.
     assert segs[2]["text_en"] == "שלום"
     assert segs[0]["text_en"] == "…"
 

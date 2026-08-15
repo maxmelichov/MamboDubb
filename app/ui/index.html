@@ -13,13 +13,13 @@
       <body> exists.
 
       The rules here are a copy of the `html` rules in App.css, and the key and
-      class name are a copy of `lib/theme.ts` — an inline boot script cannot
+      class name are a copy of `lib/theme.ts` an inline boot script cannot
       import. If you change one, change the other.
 
       `theme-color` is what the desktop shell's title bar and the browser's own
       chrome sample. It carries the dark plane as its static value because dark
       is the default; the script and `applyTheme` move it when the user picks
-      light. There is deliberately no media-query variant of it — the OS does
+      light. There is deliberately no media-query variant of it the OS does
       not get a vote here either.
     -->
     <meta name="theme-color" content="#110e16" />
@@ -36,7 +36,7 @@
     <script>
       (function () {
         // Dark unless the user has explicitly stored "light". The OS
-        // preference is never consulted — see lib/theme.ts for why.
+        // preference is never consulted see lib/theme.ts for why.
         var dark = true;
         try {
           dark = localStorage.getItem("dubbing-studio.theme") !== "light";

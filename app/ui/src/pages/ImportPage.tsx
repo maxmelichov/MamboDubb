@@ -4,16 +4,16 @@
  *
  * The shape is a studio composition, not a form in a column. Three regions:
  *
- * - **New dub** — the generous card. It holds the two things you *type*: the
+ * - **New dub** the generous card. It holds the two things you *type*: the
  *   source, and the context note. The single primary action sits in a sunken
  *   band at its foot, bottom-right, so it reads as the card's conclusion.
- * - **Options** — the rail beside it. Five labelled groups, hairlined apart:
+ * - **Options** the rail beside it. Five labelled groups, hairlined apart:
  *   languages, genre, register, transcript, scope. Nothing here is typed prose;
  *   it is all picking, which is why it is a rail and not a second column of
  *   paragraphs. It ends with the sentence that says which of these choices are
- *   final — because two of them are, and a screen that does not say so is asking
+ *   final because two of them are, and a screen that does not say so is asking
  *   people to guess whether a run is a commitment.
- * - **Existing runs** — full width underneath, as cards. The only other thing
+ * - **Existing runs** full width underneath, as cards. The only other thing
  *   you can do from this screen is re-open one.
  *
  * The context note is not decoration. Translation quality moves measurably with
@@ -23,7 +23,7 @@
  * card rather than a corner of the form.
  *
  * Genre and register used to be two more dropdowns. They are two-way choices
- * whose options need a clause to be meaningful ("Documentary — narrated,
+ * whose options need a clause to be meaningful ("Documentary narrated,
  * factual"), and a clause does not fit in an `<option>`; the genre is rows that
  * invert to ink when picked, the register is a pill.
  */
@@ -81,7 +81,7 @@ import type { CreateProjectRequest, ProjectSummary } from "../lib/types";
 // handle these sources, but the synthesizer voices Qwen3-TTS's ten languages
 // plus Hebrew (a LoRA over the same checkpoint; the server refuses a Hebrew
 // target with the download command if the adapter isn't installed). Arabic is
-// still source-only — offering it as a target would create a project whose tts
+// still source-only offering it as a target would create a project whose tts
 // stage can only fail, so the two lists stay deliberately different.
 const SRC_LANGS = [
   ["he", "Hebrew"],
@@ -180,7 +180,7 @@ export function ImportPage() {
   /**
    * In the shell, a native dialog gives back the absolute path the pipeline
    * needs. In a browser the same button opens `<input type=file>`, which can
-   * only ever report a name — hence the hint telling the user to paste a path.
+   * only ever report a name hence the hint telling the user to paste a path.
    */
   const chooseFile = async () => {
     if (!desktop) {
@@ -213,7 +213,7 @@ export function ImportPage() {
       /*
        * The page is the workspace, not the form on it.
        *
-       * It was titled "New dub." — which is the name of the card at the top of
+       * It was titled "New dub." which is the name of the card at the top of
        * it, and left the nav cell saying "Runs" while the page it went to said
        * something else. Every run in `outputs/` is listed here and re-opening
        * one is at least as common a reason to be on this screen as starting
@@ -225,7 +225,7 @@ export function ImportPage() {
       lede={
         <>
           Point it at a video, say which way to translate, and it runs the whole pipeline
-          locally. A full run takes a while — cap the duration while you are iterating.
+          locally. A full run takes a while cap the duration while you are iterating.
         </>
       }
     >
@@ -240,7 +240,7 @@ export function ImportPage() {
               The only field on this screen that must be filled in, and the only
               one that said nothing about it. Every other control has a default,
               so the screen read as "all optional" right up to the moment Start
-              dubbing answered with a refusal — a rule learned by breaking it.
+              dubbing answered with a refusal a rule learned by breaking it.
             */}
             <div className="flex items-baseline gap-2">
               <SectionLabel icon={FileVideo}>Source</SectionLabel>
@@ -280,13 +280,13 @@ export function ImportPage() {
             <p className="mt-2.5 max-w-2xl text-[12px] leading-relaxed text-muted">
               {desktop ? (
                 <>
-                  A URL, or a local file — <em>Choose file</em> opens a real file dialog and fills
+                  A URL, or a local file <em>Choose file</em> opens a real file dialog and fills
                   in the full path.
                 </>
               ) : (
                 <>
                   A URL, or an absolute path to a local file. The browser cannot read a file's real
-                  path, so <em>Choose file</em> only fills in the name — paste the full path, or use
+                  path, so <em>Choose file</em> only fills in the name paste the full path, or use
                   the desktop app.
                 </>
               )}
@@ -297,26 +297,26 @@ export function ImportPage() {
 
           {/* A bordered field like every other input on the page. It was
               borderless when it filled the whole card, but at three rows an
-              edge is what says "type here" — without one it read as a caption
+              edge is what says "type here" without one it read as a caption
               under the section label. */}
           <CardSection className="flex flex-1 flex-col pb-6">
             {/*
               The label leads with the word that answers the question the field
               raises. Source is marked required in red beside its own label, so
               a second unmarked field of the same size directly under it reads as
-              the second half of one form — and a user who does not know what to
+              the second half of one form and a user who does not know what to
               write in it stops there. "Optional" first, because that is the
               part that unblocks them; the sentence under the field still says
               it is the cheapest thing on the screen.
             */}
-            <SectionLabel icon={PencilLine}>Optional — Context</SectionLabel>
+            <SectionLabel icon={PencilLine}>Optional Context</SectionLabel>
             <TextArea
               autoGrow
               rows={3}
               className="mt-2 min-h-20 resize-none rounded-xl text-[13.5px]"
               aria-label="Context"
               value={form.context ?? ""}
-              placeholder="Who and what this is about, and how names are spelled. For example: a news interview about the housing market; the host is Dana (she), the guest is Prof. Ronen Levi (he) — keep these spellings."
+              placeholder="Who and what this is about, and how names are spelled. For example: a news interview about the housing market; the host is Dana (she), the guest is Prof. Ronen Levi (he) keep these spellings."
               onChange={(event) => update({ context: event.currentTarget.value })}
             />
             <p className="mt-3 text-[11.5px] leading-relaxed text-muted">
@@ -326,13 +326,13 @@ export function ImportPage() {
 
             {/* The card's lower half. The context field above stopped
                 pretending to need the whole card, and blank card is not a
-                composition — what fills it is the answer to the question every
+                composition what fills it is the answer to the question every
                 first run asks at exactly this moment: what is that button about
                 to do, and why will it take a while. `mt-auto` parks it at the
                 card's foot, so the slack lands between it and the context note
                 rather than under the Start band. */}
             <div className="mt-auto pt-7" data-pipeline-glance>
-              <SectionLabel icon={Workflow}>What a run does — nine stages</SectionLabel>
+              <SectionLabel icon={Workflow}>What a run does nine stages</SectionLabel>
               <ol className="mt-3.5 grid gap-x-5 gap-y-3 sm:grid-cols-3">
                 {PIPELINE_GLANCE.map(([stage, does], index) => (
                   <li key={stage} className="flex gap-2.5">
@@ -422,8 +422,8 @@ export function ImportPage() {
             {/*
               A third language is the case the two selects above cannot express:
               English inside a Hebrew→German run is neither the spoken language
-              nor the dub's. The pipeline keeps such a line by default — it plays
-              as recorded, with a subtitle — and this is the one place a run can
+              nor the dub's. The pipeline keeps such a line by default it plays
+              as recorded, with a subtitle and this is the one place a run can
               say otherwise before it starts. It lives under Languages because it
               is a question about languages, not about scope.
             */}
@@ -436,8 +436,8 @@ export function ImportPage() {
               <span className="min-w-0">
                 <span className="block text-[12.5px] text-secondary">Dub foreign speech</span>
                 <span className="mt-0.5 block text-[12px] leading-relaxed text-muted">
-                  A third language inside the video is translated and voiced too — otherwise it
-                  plays as recorded, subtitled — individual lines can still be switched to dubbed
+                  A third language inside the video is translated and voiced too otherwise it
+                  plays as recorded, subtitled individual lines can still be switched to dubbed
                   later, in the editor.
                 </span>
               </span>
@@ -496,8 +496,8 @@ export function ImportPage() {
           {/*
             Where the words come from.
             The pipeline takes `--transcript auto|captions|asr` and this screen
-            had no way to say it, so a run whose auto-captions were mangled — the
-            case invariant 4 in AGENTS.md exists for — could only be fixed from
+            had no way to say it, so a run whose auto-captions were mangled the
+            case invariant 4 in AGENTS.md exists for could only be fixed from
             the CLI. `auto` is the pipeline's own answer and stays the default;
             the other two are for the user who has already heard the result.
           */}
@@ -537,7 +537,7 @@ export function ImportPage() {
                   suffix="sec"
                   value={form.duration ?? ""}
                   // An example, not an instruction. A bare "320" in an empty
-                  // field reads as a value that is already set — which is
+                  // field reads as a value that is already set which is
                   // exactly the wrong thing to think about the one control that
                   // decides whether this run is four minutes or two hours.
                   placeholder="e.g. 320"
@@ -650,7 +650,7 @@ export function ImportPage() {
  * One existing run.
  *
  * The row this replaces said the title, the run name, the language pair and the
- * duration — everything except the thing you actually came to find out, which
+ * duration everything except the thing you actually came to find out, which
  * is *where this run got to*. A half-finished run and a finished one looked
  * identical, so the only way to tell them apart was to open both. The card
  * carries the pipeline position (nine dots, the shared track), a word for it,

@@ -1,4 +1,4 @@
-"""Phase 2 — Hebrew source to any target language (pure logic, no models).
+"""Phase 2 Hebrew source to any target language (pure logic, no models).
 
 The two-script world (Latin == target, Hebrew == source) is replaced by
 `dubbing.script`, parameterized by the actual language pair. These tests pin the
@@ -170,7 +170,7 @@ FAST_QA_TURNS = [{"speaker": "S0", "start": 0.0, "end": 1.18},
 
 def test_interior_turn_boundary_splits_the_segment():
     # Fast dialogue: the handover pause (0.05s) is far below SPEAKER_GAP, so the
-    # gap-confirmed rule fuses both turns — the turn list must cut them apart.
+    # gap-confirmed rule fuses both turns the turn list must cut them apart.
     segs = segments.words_to_segments(spkwords(FAST_QA), turns=FAST_QA_TURNS)
     assert [s["text"] for s in segs] == ["aaa bbb ccc", "ddd eee fff"]
     assert [s["speaker"] for s in segs] == ["S0", "S1"]
@@ -209,7 +209,7 @@ SMEARED = [(0.0, 0.4, "aaa", "S0"), (0.5, 0.9, "bbb", "S0"), (1.0, 1.4, "ccc", "
 def test_same_speaker_gap_splits_at_midpoint_and_survives_merge():
     # Turns share a label but a 0.9s silence separates them: split at the gap's
     # midpoint (2.5). The right piece (0.8s, two words) is a stub 0.2s from a
-    # substantial same-speaker neighbour — _merge_stubs would fold it straight
+    # substantial same-speaker neighbour _merge_stubs would fold it straight
     # back in, so the split point carries a brk marker that merging never crosses.
     words = spkwords(SMEARED)
     turns = [{"speaker": "S0", "start": 0.0, "end": 2.05},
@@ -224,7 +224,7 @@ def test_same_speaker_gap_splits_at_midpoint_and_survives_merge():
 
 def test_sub_threshold_gap_does_not_split():
     # 0.7s of inter-turn silence is below TURN_GAP_SPLIT; same speaker, so no
-    # handover boundary either — the segment stays whole.
+    # handover boundary either the segment stays whole.
     turns = [{"speaker": "S0", "start": 0.0, "end": 2.2},
              {"speaker": "S0", "start": 2.9, "end": 4.0}]
     assert len(segments.words_to_segments(spkwords(SMEARED), turns=turns)) == 1
@@ -260,7 +260,7 @@ def test_micro_segment_rejoins_a_same_speaker_neighbour_across_a_pause():
 
 def test_micro_segment_with_only_other_speaker_neighbours_survives():
     # A short cross-speaker interjection must not merge (that would re-fuse two
-    # characters) and must not be dropped — it stays its own dubbable segment.
+    # characters) and must not be dropped it stays its own dubbable segment.
     words = spkwords([(0.0, 0.35, "aaa", "S0"), (0.4, 0.75, "bbb", "S0"),
                       (0.8, 1.15, "ccc", "S0"), (1.2, 1.55, "ddd.", "S0"),
                       (2.55, 2.75, "ff", "S1"), (2.85, 3.05, "gg", "S1"),
@@ -323,7 +323,7 @@ def test_uniform_high_similarity_never_splits():
 
 
 def test_block_pattern_does_not_split():
-    # AAABBB: two clean clusters but a single transition — more likely one voice
+    # AAABBB: two clean clusters but a single transition more likely one voice
     # across a scene change than two people, so the run stays whole.
     block = simmat(6, {(i, j): 0.80 for g in ((0, 1, 2), (3, 4, 5))
                        for i in g for j in g if i < j}, default=0.05)
@@ -448,7 +448,7 @@ def test_short_turn_does_not_veto_refinement_and_inherits_side(monkeypatch):
         {"speaker": "S6", "start": 55.23, "end": 56.26},
         {"speaker": "S6", "start": 57.52, "end": 58.45},
         {"speaker": "S6", "start": 59.50, "end": 60.53},
-        {"speaker": "S6", "start": 61.51, "end": 61.81},   # 0.30s — too short
+        {"speaker": "S6", "start": 61.51, "end": 61.81},   # 0.30s too short
         {"speaker": "S6", "start": 63.72, "end": 66.20},
     ]
     alt = np.array([[1.0, 0.05, 0.9, 0.05], [0.05, 1.0, 0.05, 0.9],
@@ -466,13 +466,13 @@ def test_short_turn_does_not_veto_refinement_and_inherits_side(monkeypatch):
     # embedded turns are indices 0,1,2,4; the fake matrix alternates them
     assert labs[0] != labs[1] and labs[0] == labs[2] and labs[1] == labs[4]
     # the 0.55s turn (index 3, midpoint 61.8s) inherits from its nearest
-    # embedded neighbour — the 59.5-60.5s turn (midpoint 60.0s)
+    # embedded neighbour the 59.5-60.5s turn (midpoint 60.0s)
     assert labs[3] == labs[2]
 
 
 def test_measured_six_turn_courtroom_matrix_splits():
     # The production run: same-voice linkage peaks at 0.77 distance (turn at
-    # 61.5s), cross-voice at 0.88 — the cut must sit between them.
+    # 61.5s), cross-voice at 0.88 the cut must sit between them.
     sims = [
         [1.00, 0.01, 0.33, 0.04, 0.32, 0.19],
         [0.01, 1.00, 0.00, 0.26, 0.14, 0.33],

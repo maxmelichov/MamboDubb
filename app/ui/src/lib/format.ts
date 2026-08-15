@@ -1,8 +1,8 @@
 /**
  * `1` → `1 line`, `27` → `27 lines`.
  *
- * Small, but it is said in five places about the same number — the header
- * button, two tooltips, the stale band and the queue — and "1 lines changed",
+ * Small, but it is said in five places about the same number the header
+ * button, two tooltips, the stale band and the queue and "1 lines changed",
  * in the one place a run has a single correction, is exactly where the copy
  * would be noticed.
  */

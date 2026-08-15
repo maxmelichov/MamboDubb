@@ -1,4 +1,4 @@
-/* Dubbing editor — one page, no build step.
+/* Dubbing editor one page, no build step.
  *
  * State is deliberately thin: `view` is whatever the server last told us about a
  * run, and `dirty` holds only the fields the user actually changed, keyed by
@@ -90,8 +90,8 @@ function speakerOptions(current) {
 /* Will this span play its original audio? `passthrough` is the user's own
  * tri-state override (true/false/absent) and outranks everything; with no
  * override, `keep` is whatever the pipeline decided. Reading `keep_reason ===
- * "manual"` here — as this did before the two front ends were reconciled onto one
- * schema — showed a saved passthrough as unchecked forever: the studio writes the
+ * "manual"` here as this did before the two front ends were reconciled onto one
+ * schema showed a saved passthrough as unchecked forever: the studio writes the
  * verdict as `passthrough`, and `apply_passthrough` records it as "user". */
 const isPassthrough = (s) => (s.passthrough ?? Boolean(s.keep));
 
@@ -163,7 +163,7 @@ $("#save").addEventListener("click", async () => {
     dirty = new Map();
     await showEditor(view.run);
     if (res.force) {
-      toast(`saved ${res.changed.length} segments — re-run from '${res.force}' to apply`, 6000);
+      toast(`saved ${res.changed.length} segments re-run from '${res.force}' to apply`, 6000);
       $("#rerun").dataset.force = res.force;
       $("#rerun").textContent = `Re-run from ${res.force}`;
     } else {

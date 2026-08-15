@@ -1,10 +1,10 @@
 """Local video dubbing: local ASR → translation → voice-cloned TTS → mix.
 
-The word stream comes from Whisper, not from the video's captions — see
+The word stream comes from Whisper, not from the video's captions see
 `dubbing.transcript` for why, and for the one thing captions are still trusted
 about. Stages run in order and are individually resumable; see `dubbing.cli`.
 The invariants that keep the output correct are documented in `dubbing.timeline`
-(placement) and `dubbing.tts` (never-silent) — read those before changing either.
+(placement) and `dubbing.tts` (never-silent) read those before changing either.
 """
 
 __all__ = ["STAGES", "PASSTHROUGH_REASON", "MANUAL_REASON", "USER_KEEP_REASONS"]
@@ -16,7 +16,7 @@ __all__ = ["STAGES", "PASSTHROUGH_REASON", "MANUAL_REASON", "USER_KEEP_REASONS"]
 PASSTHROUGH_REASON = "user"
 # The same verdict, written by the studio's own door: `edit.set_keep` stamps
 # `passthrough` AND this reason, which its UIs key on. Two names for one thing is
-# a historical accident, not a distinction — anything asking "did the user choose
+# a historical accident, not a distinction anything asking "did the user choose
 # this keep?" must accept both, or half the user's overrides go unrecognised.
 MANUAL_REASON = "manual"
 USER_KEEP_REASONS = (PASSTHROUGH_REASON, MANUAL_REASON)

@@ -3,7 +3,7 @@
 **At most one pipeline job runs at a time, process-wide.** Not tuning: the
 pipeline's models are sequential and never co-resident (AGENTS.md, device notes)
 and the machine has 26 GB of unified memory, so a second concurrent job would
-swap it to death. The rule is enforced structurally — there is exactly one worker
+swap it to death. The rule is enforced structurally there is exactly one worker
 thread, it takes one job off the queue at a time, and there is no code path that
 starts work anywhere else. Everything else queues.
 
@@ -50,7 +50,7 @@ class Job:
     cancelling: bool = False
     # Jobs one user gesture created. "Dub these 27" is one decision that becomes a
     # retranslate and a resynthesize, and cancelling only the first leaves the second
-    # to voice 27 lines that now have nothing to say — the audit's `tts_failed` pile.
+    # to voice 27 lines that now have nothing to say the audit's `tts_failed` pile.
     # The pair is enqueued by the client (two routes, two POSTs), so the id is minted
     # there and travels on both requests; the server's part is to remember it and to
     # let one DELETE reach everything wearing it.
@@ -168,7 +168,7 @@ class JobQueue:
         when it reaches it, so the queued members are cancelled **first**, while the
         running one still holds the worker; killing the running job first would free
         the worker to start the very job this call is trying to stop. That race is
-        not theoretical — it is the audit's disaster exactly: cancel the translate,
+        not theoretical it is the audit's disaster exactly: cancel the translate,
         the voice job starts anyway, and 27 lines are synthesised from translations
         that were never written.
 

@@ -6,7 +6,7 @@
  * The vocabulary is MamboRambo's, refitted:
  *
  * - **Card** is the page-level container: 2xl radius, hairline border, one big
- *   soft shadow. The editor does not use it — a Final-Cut-shaped screen made of
+ *   soft shadow. The editor does not use it a Final-Cut-shaped screen made of
  *   floating cards is unreadable, so its regions are plain bordered panes.
  * - **Eyebrow** is the section label everywhere: tiny, black, uppercase, widely
  *   tracked. It is the single strongest signature of the house style.
@@ -43,7 +43,7 @@ import badgeUrl from "../assets/mambodubb-badge.svg";
  */
 export function LogoMark({ className }: { className?: string }) {
   // Rendered more than once per page (header, boot screen), and an SVG <mask>
-  // is referenced by id — so the id has to be per-instance.
+  // is referenced by id so the id has to be per-instance.
   const maskId = useId();
   return (
     <svg
@@ -71,14 +71,14 @@ export function LogoMark({ className }: { className?: string }) {
 }
 
 /**
- * The brand chip — the painted mark in a pill, top-left of every page shell.
+ * The brand chip the painted mark in a pill, top-left of every page shell.
  *
  * `LogoMark` above is the *functional* mark: one path in `currentColor`, drawn
  * at 16px inside a run tile where a five-colour gradient would be mud. This one
  * is the identity: the real artwork, which is a full-colour PNG on white with
  * no alpha channel.
  *
- * The artwork is the MamboDubb badge SVG — a self-contained teal tile with its
+ * The artwork is the MamboDubb badge SVG a self-contained teal tile with its
  * own rounded corners, so it sits on either theme's pill without keying or
  * blending; the pill stays light in both themes purely so the wordmark beside
  * it keeps one treatment (dark's `--color-primary` is the near-white ink).
@@ -205,8 +205,8 @@ export function Button({
         "inline-flex shrink-0 items-center justify-center font-semibold transition-all",
         "active:scale-[0.98] disabled:pointer-events-none disabled:opacity-45",
         buttonSize[size],
-        // The one saturated control in the app. `accent` is ink in light — the
-        // near-black button that shipped — and the brand's violet in dark, where
+        // The one saturated control in the app. `accent` is ink in light the
+        // near-black button that shipped and the brand's violet in dark, where
         // a near-white button was the whole reason the theme read as dead.
         variant === "primary" && "bg-accent text-on-accent shadow-card hover:opacity-90",
         variant === "secondary" &&
@@ -224,7 +224,7 @@ export function Button({
 }
 
 /**
- * A segmented row of buttons — the zoom stepper, the dub/keep toggle. One
+ * A segmented row of buttons the zoom stepper, the dub/keep toggle. One
  * border around the group, hairlines between the children.
  */
 export function ButtonGroup({ className, ...props }: ComponentProps<"div">) {
@@ -244,7 +244,7 @@ export function ButtonGroup({ className, ...props }: ComponentProps<"div">) {
 
 /**
  * The pill. A rounded track holding two or three cells, of which exactly one is
- * filled with ink — the shell's nav and the small either/or choices on the
+ * filled with ink the shell's nav and the small either/or choices on the
  * import screen are the same control at two sizes.
  *
  * The cell is a className rather than a component because half the callers are
@@ -275,7 +275,7 @@ export function segmentedCell(active: boolean, className?: string): string {
 /**
  * A choice made of rows rather than a `<select>`.
  *
- * Worth the vertical space exactly when the option has a *second line* — a
+ * Worth the vertical space exactly when the option has a *second line* a
  * sentence saying what picking it does. "Documentary / narrated, factual" is a
  * decision; "Documentary" in a dropdown is a word you have to already know.
  * Selection inverts the row to ink, which is the strongest available "this one
@@ -381,7 +381,7 @@ export function TextInput({ className, ...props }: ComponentProps<"input">) {
  * `<input type=number>` is the one control the platform insists on decorating:
  * it hangs its own spin buttons off the right edge, drawn at the OS's size in
  * the OS's colours, which on a themed form reads as damage. The arrows are
- * suppressed in App.css and the unit goes where they were — a unit is what the
+ * suppressed in App.css and the unit goes where they were a unit is what the
  * user actually needed there, and ↑/↓ and the scroll wheel still step the
  * value for anyone who wanted the arrows.
  */
@@ -426,7 +426,7 @@ export function TextArea({
   };
   // The auto-grow ref is the component's own, so a caller that also wants the
   // node (to focus it, to place a caret) has to be merged in rather than
-  // allowed to overwrite it — `{...props}` used to do exactly that silently.
+  // allowed to overwrite it `{...props}` used to do exactly that silently.
   const attach = (el: HTMLTextAreaElement | null) => {
     fit(el);
     if (typeof ref === "function") ref(el);
@@ -449,7 +449,7 @@ export function TextArea({
 
 /**
  * The native select, with the platform arrow suppressed and ours drawn in its
- * place — a bare `<select>` is the one control that will not match anything
+ * place a bare `<select>` is the one control that will not match anything
  * else on the screen.
  */
 export function Select({ className, ...props }: ComponentProps<"select">) {
@@ -484,7 +484,7 @@ export function Checkbox({ className, ...props }: ComponentProps<"input">) {
  *
  * The inspector holds about thirty controls and a reviewer touches four of
  * them on a normal segment. The other twenty-six are not unimportant, they are
- * *infrequent* — and the fix for infrequent is a shelf with its name on it, not
+ * *infrequent* and the fix for infrequent is a shelf with its name on it, not
  * a smaller font.
  *
  * Three rules make a shelf honest, and they are all enforced here rather than
@@ -494,7 +494,7 @@ export function Checkbox({ className, ...props }: ComponentProps<"input">) {
  *    ellipsis. If you cannot name the shelf, the things on it do not belong
  *    together.
  * 2. **A shut shelf still says what is on it.** `summary` is one line of the
- *    current values, so the common case — "nothing overridden here" — is
+ *    current values, so the common case "nothing overridden here" is
  *    answered without a click. A shelf that reveals nothing until opened is
  *    just a hidden control.
  * 3. **Closed is the default, and the session remembers otherwise.** Someone
@@ -532,7 +532,7 @@ export function Disclosure({
   className,
   children,
 }: {
-  /** Stable across mounts — it is the sessionStorage key. */
+  /** Stable across mounts it is the sessionStorage key. */
   id: string;
   icon?: typeof TriangleAlert;
   label: string;
@@ -616,7 +616,7 @@ export function Disclosure({
 }
 
 /**
- * A small panel hung off a button — the reference material that used to be
+ * A small panel hung off a button the reference material that used to be
  * printed permanently across the top of the timeline.
  *
  * A legend and a shortcut list are read twice: once on the first day, and once
@@ -627,7 +627,7 @@ export function Disclosure({
 /**
  * Outside-click and Escape close an open panel, and Escape hands focus back.
  *
- * Shared rather than copied because the second panel to want it — the queue —
+ * Shared rather than copied because the second panel to want it the queue —
  * has a trigger that cannot be a `Button`, so it could not use `Popover` and
  * would otherwise have reimplemented these two listeners slightly differently.
  * The `stopPropagation` matters: without it Escape also reaches the editor's
@@ -723,21 +723,21 @@ export function Popover({
  * next to the thing being asked about.
  *
  * So it is a small panel hung off the button itself, with the consequence
- * spelled out and the confirming verb repeated on the confirm button — never
+ * spelled out and the confirming verb repeated on the confirm button never
  * "OK", which tells you nothing about what you are agreeing to. Escape and a
  * click outside both mean no, which is the default a destructive question
  * should have.
  *
  * Reserved for the genuinely destructive: re-rendering the preview, splitting
  * and merging (both discard a translation and a clip), and re-translating over
- * a line the user wrote by hand. Cheap reversible things — keep/dub, a text
- * edit — are just done.
+ * a line the user wrote by hand. Cheap reversible things keep/dub, a text
+ * edit are just done.
  *
  * ## Which side it opens on
  *
  * Downward, until downward does not fit. The panel is 72 rem-ish of prose hung
- * under a button, and the button that most needs it — Split, in the timeline's
- * control cluster — sits about thirty pixels off the bottom of the window: the
+ * under a button, and the button that most needs it Split, in the timeline's
+ * control cluster sits about thirty pixels off the bottom of the window: the
  * question opened 81px below the fold, so the only destructive gesture in the
  * strip could be armed and never confirmed with a mouse. `side="auto"` (the
  * default, so every other caller gets it for free) measures the panel once it
@@ -791,7 +791,7 @@ export function ConfirmButton({
 
   /*
    * Measured, not guessed. The panel's height depends on the message, which is
-   * a sentence a caller composes — so a fixed "flip below 200px from the bottom"
+   * a sentence a caller composes so a fixed "flip below 200px from the bottom"
    * rule would be wrong for half of them. `useLayoutEffect` runs after the panel
    * is in the DOM and before the browser paints it, which is the whole window in
    * which a position can change without the user seeing it move.
@@ -861,7 +861,7 @@ const badgeTone: Record<BadgeTone, string> = {
 };
 
 /**
- * A small labelled chip. Always carries a word — the tone is a reinforcement,
+ * A small labelled chip. Always carries a word the tone is a reinforcement,
  * never the message.
  */
 export function Badge({
@@ -885,8 +885,8 @@ export function Badge({
 /**
  * A segment state's shape, in its hue.
  *
- * One component for all five places the encoding appears — the script row's
- * meta line, the timeline mark, the dub/keep control and the run summary — so
+ * One component for all five places the encoding appears the script row's
+ * meta line, the timeline mark, the dub/keep control and the run summary so
  * the shape a reviewer learns on a row is the same shape they meet on the
  * strip. It draws at the size the caller asks for; below about 10px the two
  * outline states stop separating, so 10 is the floor.
@@ -895,8 +895,8 @@ export function StateIcon({ state, className }: { state: SegmentState; className
   const meta = STATE_META[state];
   const Icon = meta.icon;
   return (
-    // Always decoration: every place it appears — the row, the mark, the
-    // control, the tally — already carries the state as a word or an
+    // Always decoration: every place it appears the row, the mark, the
+    // control, the tally already carries the state as a word or an
     // `aria-label`, so a second announcement of it is noise.
     <Icon
       aria-hidden
@@ -945,7 +945,7 @@ export function Kbd({ children }: { children: ReactNode }) {
 
 /**
  * The page-level failure card. Big enough to hold a stack trace and quiet
- * enough not to shout — a red rule and a tinted wash, not a red slab.
+ * enough not to shout a red rule and a tinted wash, not a red slab.
  */
 export function ErrorBlock({
   title = "Something went wrong",
@@ -986,7 +986,7 @@ export function ErrorBlock({
   );
 }
 
-/** The workspace's inline failure strip — full-bleed, one line, dismissible. */
+/** The workspace's inline failure strip full-bleed, one line, dismissible. */
 export function ErrorBar({ message, onDismiss }: { message: string; onDismiss: () => void }) {
   return (
     <div
@@ -1011,7 +1011,7 @@ export function ErrorBar({ message, onDismiss }: { message: string; onDismiss: (
  *
  * An empty panel is a bug report the user has to write themselves. Every one
  * of these answers three things in order: what this space is, why there is
- * nothing in it, and what to do next — the last being the only part that is
+ * nothing in it, and what to do next the last being the only part that is
  * ever optional, and only when there is genuinely nothing to do but wait.
  */
 export function Empty({

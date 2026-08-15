@@ -1,4 +1,4 @@
-"""Run directories under `outputs/` — discovery, reading, and safe file access.
+"""Run directories under `outputs/` discovery, reading, and safe file access.
 
 The manifest is read and written through `dubbing.manifest` so the editor obeys
 the same whitelist every stage does. Nothing here imports a pipeline stage: those
@@ -26,7 +26,7 @@ UPLOADS = OUTPUTS / "_uploads"
 # Pipeline options a run can have recorded, and which a re-run has to pass back.
 # Leaving one out is not "use the default": it changes the stage fingerprint
 # (`cli.stage_params`), and a changed fingerprint on an upstream stage is not a
-# re-run of that stage — `manifest.reset_stage("segments")` empties
+# re-run of that stage `manifest.reset_stage("segments")` empties
 # `m["segments"]`, taking every translation, clip and hand-edit with it.
 OPT_KEYS = ("genre", "register", "transcript", "tts_model", "device", "captions",
             "dub_foreign")
@@ -41,8 +41,8 @@ def recorded_opts(m: dict[str, Any]) -> dict[str, Any]:
 
     Two places, because two front ends wrote them: the studio stores them under
     `source.app_opts`, and `dubbing.edit._args` reads them flat off `source`. Flat
-    wins where both exist. A run made by the headless CLI records neither — it has
-    nowhere to record them today — so a re-run of one still uses the defaults.
+    wins where both exist. A run made by the headless CLI records neither it has
+    nowhere to record them today so a re-run of one still uses the defaults.
     """
     src = m.get("source") or {}
     stored = dict(src.get("app_opts") or {})
@@ -54,7 +54,7 @@ def recorded_opts(m: dict[str, Any]) -> dict[str, Any]:
 def default_workdir(source: str) -> Path:
     """Where `python -m dubbing <source>` would put its run.
 
-    Mirrors `dubbing.cli.default_workdir` — importing that module would drag the
+    Mirrors `dubbing.cli.default_workdir` importing that module would drag the
     whole model stack into the server process.
     """
     if is_url(source):

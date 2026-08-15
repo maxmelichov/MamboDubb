@@ -14,13 +14,13 @@ rule wearing different hats:
 
 **Where progress comes from.** Two channels, on purpose:
 
-* stdout is the child's own NDJSON — authoritative, structured, per-segment.
+* stdout is the child's own NDJSON authoritative, structured, per-segment.
 * stderr is the pipeline's existing human log. `dubbing.cli` already prints
   `[stage]`, `[stage] done in Ns` and `[stage] up to date`, and `translate`/`tts`
   already print `n/N` counters. Parsing those costs nothing and works for the
   full run, where the orchestration is `dubbing.cli`'s and the app has no hook
-  inside it. The alternative — threading a progress callback through nine stage
-  functions — is a change to `dubbing/` for the app's benefit, which is the fork
+  inside it. The alternative threading a progress callback through nine stage
+  functions is a change to `dubbing/` for the app's benefit, which is the fork
   docs/APP_ARCHITECTURE.md rules out.
 
 Everything unparsed on stderr still reaches the UI as a `log` frame, so nothing
@@ -44,9 +44,9 @@ from .jobs import Emit, Job, JobCancelled
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# `[tts]`, `[tts] done in 91s`, `[tts] up to date` — dubbing/cli.py
+# `[tts]`, `[tts] done in 91s`, `[tts] up to date` dubbing/cli.py
 _STAGE_RE = re.compile(r"^\[(\w+)\](?:\s+(up to date|done in [\d.]+s))?$")
-# `  translate: 12/74`, `  tts: 30/74` — dubbing/translate.py, dubbing/tts.py
+# `  translate: 12/74`, `  tts: 30/74` dubbing/translate.py, dubbing/tts.py
 _COUNT_RE = re.compile(r"^\s+(\w+):\s+(\d+)/(\d+)$")
 
 TERM_GRACE = 8.0

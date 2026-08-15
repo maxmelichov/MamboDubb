@@ -1,4 +1,4 @@
-"""`seg["tts_opts"]` — the per-segment synthesis overrides, parsed and validated.
+"""`seg["tts_opts"]` the per-segment synthesis overrides, parsed and validated.
 
 Everything here is *pure*: no models, no filesystem. `dubbing/tts.py` honours the
 parsed options; the editor's `set_tts_opts` validates with `parse` before writing
@@ -8,7 +8,7 @@ Two rules the design follows:
 
 * **A knob that cannot work is not shipped.** Every option below reaches a real
   argument of the synthesis call (or a real post-processing step). Qwen3-TTS's
-  natural-language `instruct` is *not* here — see the module note in `tts.py`.
+  natural-language `instruct` is *not* here see the module note in `tts.py`.
 * **Unknown or out-of-range is loud.** `parse` raises `ValueError`; nothing is
   silently dropped, because a silently-ignored option looks exactly like a
   broken model to the user.
@@ -40,29 +40,29 @@ TOKENS_MIN, TOKENS_MAX = 32, 4096      # 4096 codec tokens ≈ 5.5 min at 12.5 H
 class TtsOpts:
     """One segment's synthesis overrides. Every default reproduces today's run.
 
-    * `seed` — replaces the text-derived base seed. Retry N still uses
+    * `seed` replaces the text-derived base seed. Retry N still uses
       `seed + 1000 * N`, so the bounded retries stay distinct takes; attempt 0 is
       exactly the seed given. Re-rolling a bad take = bump this by one.
-    * `greedy` — force the deterministic decode on *every* attempt instead of only
+    * `greedy` force the deterministic decode on *every* attempt instead of only
       on the last of `MAX_TRIES`. Steadier, flatter; the cure for a line that
       wanders or repeats.
-    * `ref` — a wav under the run dir to clone from, replacing the window this
+    * `ref` a wav under the run dir to clone from, replacing the window this
       stage would pick itself. This is how a wrong or ugly voice on one line gets
       fixed. A pinned reference also disables the canonical-reference escalation:
       the user's choice is final.
-    * `ref_text` — the transcript of `ref`, which switches the clone to the
+    * `ref_text` the transcript of `ref`, which switches the clone to the
       checkpoint's ICL mode (`x_vector_only_mode=False`): the model conditions on
       the reference *codes and text*, not only its speaker embedding, which is the
-      only prosody-carrying path this checkpoint has. Requires `ref` — the
+      only prosody-carrying path this checkpoint has. Requires `ref` the
       auto-picked window has no transcript the user could supply.
-    * `model` — `"1.7b"` or `"0.6b"` for this segment only.
-    * `speed` — tempo of the finished clip (ffmpeg `atempo`, pitch preserved).
+    * `model` `"1.7b"` or `"0.6b"` for this segment only.
+    * `speed` tempo of the finished clip (ffmpeg `atempo`, pitch preserved).
       Applied before verification, so what is checked is what is used; an extreme
       value can therefore fail the length guard and fall back to `keep`.
     * `temperature` / `top_p` / `top_k` / `repetition_penalty` / `max_new_tokens`
-      — the sampler, straight through to `generate_voice_clone`. The first three
+      the sampler, straight through to `generate_voice_clone`. The first three
       are rejected together with `greedy=True`, where they would do nothing.
-    * `keep_pauses` — leave long internal silences alone instead of compressing
+    * `keep_pauses` leave long internal silences alone instead of compressing
       them to `PAUSE_KEEP` (for a line whose dramatic pause is the point).
     """
 
@@ -81,7 +81,7 @@ class TtsOpts:
 
     # ------------------------------------------------------------------ output
     def to_dict(self) -> dict[str, Any]:
-        """Only the options that differ from the default — the manifest stays small."""
+        """Only the options that differ from the default the manifest stays small."""
         out: dict[str, Any] = {}
         for f in fields(self):
             v = getattr(self, f.name)
@@ -259,12 +259,12 @@ def parse(raw: Any) -> TtsOpts:
 
     opts = TtsOpts(**got)
     if opts.ref_text is not None and opts.ref is None:
-        _bad("ref_text", "needs `ref` too — ICL mode conditions on the transcript of a "
+        _bad("ref_text", "needs `ref` too ICL mode conditions on the transcript of a "
                          "reference the caller chose, and the auto-picked window has none")
     if opts.greedy:
         inert = [k for k in SAMPLING_KEYS if getattr(opts, k) is not None]
         if inert:
-            _bad("greedy", f"cannot be combined with {inert} — a greedy decode ignores "
+            _bad("greedy", f"cannot be combined with {inert} a greedy decode ignores "
                            "the sampler, and a knob that does nothing is worse than no knob")
     return opts
 

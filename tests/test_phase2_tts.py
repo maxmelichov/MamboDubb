@@ -1,4 +1,4 @@
-"""Phase 2 — Hebrew → any Qwen3-TTS target. Pure logic, no models."""
+"""Phase 2 Hebrew → any Qwen3-TTS target. Pure logic, no models."""
 
 from dubbing import mix, tts
 

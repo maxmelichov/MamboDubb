@@ -2,8 +2,8 @@
  * Everything about the selected line except the line itself.
  *
  * That exception is the design. The old inspector was 704 lines and its top
- * third was a copy of the text — an "Original" paragraph and a "Translation"
- * textarea — which meant the two places a user could read a translation
+ * third was a copy of the text an "Original" paragraph and a "Translation"
+ * textarea which meant the two places a user could read a translation
  * disagreed about which was authoritative, and the one they were looking at
  * (the list) was the one they could not type in. Now the text lives in the
  * script, where the comparison is, and it is edited in place. This panel holds
@@ -17,7 +17,7 @@
  * and remember, for the session, whether you opened them.
  *
  * One control was deleted rather than moved: the "Style" text input. Qwen3-TTS
- * has no instruct parameter — there is nowhere for "calm, urgent" to go — so
+ * has no instruct parameter there is nowhere for "calm, urgent" to go so
  * the field was a promise the pipeline cannot keep, which is worse than a
  * missing feature.
  */
@@ -128,10 +128,10 @@ export function SelectionPanel({
                 the row's badge alone cannot be trusted to say so. */}
             <span>
               {seg.keep_reason === "mt_failed"
-                ? "Translation failed for this line — the dub falls back to the original audio. " +
+                ? "Translation failed for this line the dub falls back to the original audio. " +
                   "Re-translate it, then re-voice it."
                 : state === "failed"
-                  ? "Synthesis failed for this line — the dub falls back to the original audio. " +
+                  ? "Synthesis failed for this line the dub falls back to the original audio. " +
                     "Re-voice it, or keep the original."
                   : `The clone said ${percent(seg.verify?.overlap ?? seg.tts?.overlap)} of it. ` +
                     "Re-voice it, or keep the original."}
@@ -139,12 +139,12 @@ export function SelectionPanel({
           </p>
         ) : null}
 
-        {/* 1 — the verdict. Two states, both named, neither of them jargon. */}
+        {/* 1 the verdict. Two states, both named, neither of them jargon. */}
         <section className="flex flex-col gap-1.5">
           <div className="flex overflow-hidden rounded-lg border border-border bg-raised">
             {/* Each half only acts when it is *not* already the verdict:
                 pressing the one that is already on is a no-op the user can
-                see, and it must be a no-op the server never hears — it would
+                see, and it must be a no-op the server never hears it would
                 otherwise stamp a `keep` lock on a line nobody changed. */}
             <Choice
               active={!seg.keep}
@@ -164,14 +164,14 @@ export function SelectionPanel({
             What the other half of the control will *do*, not just what it will
             mean. Flipping to a dub is not a free relabelling: `edit.set_keep`
             drops the subtitle and the clip, so the line has to be translated
-            and voiced again — two jobs, or one when the user's own translation
+            and voiced again two jobs, or one when the user's own translation
             is locked and survives the flip. Saying "synthesized speech
             replaces the source audio" and then queueing nothing is how two
             lines ended up dubbed in name only.
 
             The other direction cost nothing to say and said nothing about its
             cost. `set_keep` invalidates translate in *both* directions, so
-            pressing Keep throws the line's translation away — the one
+            pressing Keep throws the line's translation away the one
             destructive action in this app that neither asked nor warned, and
             the one `k` fires on a single keystroke. It says so now, and the
             flip itself leaves an undo behind.
@@ -181,7 +181,7 @@ export function SelectionPanel({
               <>
                 The source audio plays untouched. “Dub it”{" "}
                 {(seg.text_en ?? "").trim() && seg.locked?.text_en
-                  ? "queues voice for this line — your translation is kept."
+                  ? "queues voice for this line your translation is kept."
                   : "queues translate + voice for this line."}
               </>
             ) : (seg.text_en ?? "").trim() && seg.locked?.text_en ? (
@@ -196,10 +196,10 @@ export function SelectionPanel({
             ) : (
               <>
                 The dubbed voice replaces the source audio. Switching to “Keep original”
-                discards this line’s translation — a later re-run makes a new one.
+                discards this line’s translation a later re-run makes a new one.
               </>
             )}
-            {/* The reason in words. `keep_reason` is a manifest token — and
+            {/* The reason in words. `keep_reason` is a manifest token and
                 the user's own verdict comes back from a headless re-run spelled
                 `user`, so the panel used to tell someone "Kept because user"
                 about a button they had pressed themselves. */}
@@ -207,7 +207,7 @@ export function SelectionPanel({
           </p>
         </section>
 
-        {/* 2 — the two model actions. Both cost a model load and a place in the
+        {/* 2 the two model actions. Both cost a model load and a place in the
             queue, and both say so before you press them rather than after. */}
         <section className="flex flex-col gap-2">
           {seg.locked?.text_en ? (
@@ -237,7 +237,7 @@ export function SelectionPanel({
             />
           )}
           {/*
-            A keep has nothing to voice — except the keeps the pipeline made
+            A keep has nothing to voice except the keeps the pipeline made
             because the voice failed. `edit.resynthesize` reopens those on the
             way in (`invalidate` undoes a `tts_failed` verdict), so asking for
             the voice is exactly the right button and disabling it left the
@@ -279,7 +279,7 @@ export function SelectionPanel({
           <div className="grid grid-cols-2 gap-3">
             {/*
               "inherit" is the empty string, and the empty string is what
-              *clears* the override — `edit.set_langs` pops the key on a blank
+              *clears* the override `edit.set_langs` pops the key on a blank
               value, while `null` is "not supplied, leave it alone" for every
               field in the patch body (`app.py::PatchSegment`). Sending null was
               a control that looked like it worked and could never undo itself.
@@ -394,7 +394,7 @@ export function SelectionPanel({
             {locked.length ? (
               <>
                 <p className="text-[11px] leading-relaxed text-muted">
-                  <code className="font-mono text-secondary">{locked.join(", ")}</code> — edited
+                  <code className="font-mono text-secondary">{locked.join(", ")}</code> edited
                   here, so a re-run of the pipeline will not overwrite them.
                 </p>
                 <ConfirmButton
@@ -428,7 +428,7 @@ export function SelectionPanel({
  *
  * `PATCH` insists start and end move together (the server 400s otherwise,
  * because a half-moved span is not a span), so they are drafted locally and
- * committed as one — and the commit is guarded, because sending the values back
+ * committed as one and the commit is guarded, because sending the values back
  * unchanged would re-place the segment for nothing.
  */
 function Bounds({ seg, onPatch }: { seg: Segment; onPatch: (patch: SegmentPatch) => void }) {
@@ -522,7 +522,7 @@ function VoiceShelf({
             checked={Boolean(opts?.greedy)}
             onChange={(event) => set({ greedy: event.currentTarget.checked })}
           />
-          Greedy — repeatable, flatter
+          Greedy repeatable, flatter
         </label>
         <Field
           label="Reference clip"
@@ -562,8 +562,8 @@ function VerificationShelf({ seg, concern }: { seg: Segment; concern: "none" | "
       icon={ShieldCheck}
       label="Verification"
       /*
-       * A soft concern is a concern. The shelf read `neutral` for it — same
-       * grey shield, same muted summary as a line with nothing wrong — so a
+       * A soft concern is a concern. The shelf read `neutral` for it same
+       * grey shield, same muted summary as a line with nothing wrong so a
        * clone that said 70% of its words was indistinguishable, shut, from one
        * that said all of them. `caution` is the pending family: the shield goes
        * amber and the summary takes the weight, without putting a 3.70:1 hue
@@ -593,7 +593,7 @@ function VerificationShelf({ seg, concern }: { seg: Segment; concern: "none" | "
 
       {/*
         The bar carries the verdict too. It was blue at 70% and blue at 100% —
-        blue being the "done, there is a clip to check" hue — so the one graphic
+        blue being the "done, there is a clip to check" hue so the one graphic
         in this shelf said "fine" about the number printed above it. Three
         states, three hues, all of them the app's own: red below 0.6, amber
         below 0.9, blue above it.
@@ -639,7 +639,7 @@ function VerificationShelf({ seg, concern }: { seg: Segment; concern: "none" | "
           placed {timecode(seg.place.start)} · rate {seg.place.rate.toFixed(3)} · drift{" "}
           {seg.place.drift.toFixed(2)}s
           {placement.length ? (
-            <span className="text-secondary"> — {placement.join(", ")}</span>
+            <span className="text-secondary"> {placement.join(", ")}</span>
           ) : null}
         </p>
       ) : null}
@@ -687,8 +687,8 @@ function Choice({
  * A button that loads a model.
  *
  * Two lines, always: the verb on top and the price underneath. The price is not
- * a tooltip because the decision it informs — "is it worth waiting a minute for
- * this line" — is made *before* the click, and a tooltip arrives after you have
+ * a tooltip because the decision it informs "is it worth waiting a minute for
+ * this line" is made *before* the click, and a tooltip arrives after you have
  * already committed to hovering the thing you were going to press anyway.
  */
 function ModelActionFace({

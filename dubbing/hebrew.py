@@ -1,13 +1,13 @@
 """Hebrew as a dub TARGET: the G2P that feeds it and the LoRA that speaks it.
 
 Qwen3-TTS has ten native languages and Hebrew is not one of them. What makes it a
-target here is `notmax123/QwenTTS-he-1.7B` — a LoRA adapter over the **1.7B Base**
+target here is `notmax123/QwenTTS-he-1.7B` a LoRA adapter over the **1.7B Base**
 checkpoint that adds Hebrew *without touching a single base weight*. Two properties
 of that adapter shape this module:
 
 * It wraps the model's **`talker`** submodule, and PEFT can switch it off
   (`talker.disable_adapter()`), where the forward pass is bit-identical to the
-  unmodified base — verified in its model card across all 404 base tensors. So one
+  unmodified base verified in its model card across all 404 base tensors. So one
   loaded checkpoint serves Hebrew (adapter enabled) and the ten base languages
   (adapter disabled per call): no second model, no second load, and an English or
   Russian run whose checkpoint happens to carry the adapter sounds exactly as it
@@ -20,7 +20,7 @@ of that adapter shape this module:
 
 The G2P is **ReNikud Plus** (`renikud-plus` on PyPI, arXiv 2606.20179): one INT8
 ONNX graph that reads unvocalized Hebrew characters and predicts, per character, a
-consonant, a vowel and whether it carries the word's primary stress — straight to
+consonant, a vowel and whether it carries the word's primary stress straight to
 IPA, with no diacritization pass in between. It is the same tool the adapter's
 training data was phonemized with, and it reproduces the model card's worked
 example character for character:
@@ -63,7 +63,7 @@ G2P_DOWNLOAD = f"uv run hf download {G2P_HUB} model.onnx --local-dir models/{G2P
 G2P_PACKAGE = "renikud-plus"
 
 # The G2P is gender-conditioned: 0 unknown, 1 male, 2 female. The pipeline does not
-# classify speaker gender, so it asks as "unknown" — which is also the setting that
+# classify speaker gender, so it asks as "unknown" which is also the setting that
 # reproduces the adapter's training format exactly. The parameter stays on
 # `phonemize` for a caller that does know (Hebrew inflects several readings by the
 # addressee's gender: "ʃlomχˈa" to a man, "ʃlomˈeχ" to a woman).
@@ -83,7 +83,7 @@ def adapter_ready() -> bool:
 
 
 def g2p_ready() -> bool:
-    """The G2P is importable — its weights self-download, the package does not."""
+    """The G2P is importable its weights self-download, the package does not."""
     from importlib.util import find_spec
 
     return find_spec("renikud_onnx") is not None
@@ -148,7 +148,7 @@ def phonemize(text: str, *, speaker: int = SPEAKER_UNKNOWN) -> str:
 
 
 def free() -> None:
-    """Drop the G2P session — the Engine's `close`, and the tests."""
+    """Drop the G2P session the Engine's `close`, and the tests."""
     global _G2P
     _G2P = None
 

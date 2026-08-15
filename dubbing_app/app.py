@@ -5,7 +5,7 @@ handlers:
 
 * **No-model edits never become jobs.** `PATCH /segments/{uid}` and friends load
   the manifest, call one `ops` setter and save, on the request thread, in
-  microseconds — so the editor stays live while a render runs.
+  microseconds so the editor stays live while a render runs.
 * **Model work is always a job**, and the queue serialises it. A second request
   is queued, not refused; `busy` is reserved for the edits that genuinely cannot
   interleave with a running job.
@@ -74,7 +74,7 @@ class PatchProject(Strict):
 
     Genre, register and context change what the *translator* is told; nothing
     that has already been fetched, transcribed or segmented depends on them, so
-    they can be corrected without recreating the project — which is what the
+    they can be corrected without recreating the project which is what the
     import screen now promises. The source and the language pair are not here on
     purpose: changing either invalidates the fetch and every stage after it,
     which is a new project wearing an old project's name.
@@ -94,7 +94,7 @@ class PatchSegment(Strict):
     """Every field is optional; `None` means "not supplied", never "clear".
 
     The one exception is `src_lang`/`tgt_lang`, where the empty string clears the
-    override — a language tag has no other way to be removed.
+    override a language tag has no other way to be removed.
     """
 
     text: str | None = None
@@ -138,7 +138,7 @@ class RenderBody(Strict):
 
 
 class RunBody(Strict):
-    """Nothing. A resume takes no arguments — it re-runs *this* project, with the
+    """Nothing. A resume takes no arguments it re-runs *this* project, with the
     options this project recorded. A body that could change them would make the
     button "run it differently", which is what `PATCH /api/projects/{name}` is
     for, and the two must not be one gesture."""
@@ -209,11 +209,11 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
         """Refuse split/merge/bounds while a stage is running on this project.
 
         They renumber `seg["id"]`, which the running stage is iterating over.
-        Field edits are allowed at any time — the contract requires it.
+        Field edits are allowed at any time the contract requires it.
 
         Called **inside** `lock_for(name)`, never before it: checked outside, a job
         could start in the window between the check and the write, and the job
-        child — which loaded the manifest before the split existed — would write
+        child which loaded the manifest before the split existed would write
         its own segment list back over it (`worker.Journal`, which matches by uid
         and cannot re-apply a segment it has never seen). The lock does not stop
         the worker thread, so the journal reports what it finds as a conflict; this
@@ -239,7 +239,7 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
         Both are cheap to refuse and expensive to explain afterwards.
         """
         for job in queue.active(name):
-            raise busy(f"job {job.id} ({job.kind}) is {job.status} on {name!r} — {because}")
+            raise busy(f"job {job.id} ({job.kind}) is {job.status} on {name!r} {because}")
 
     def enqueue(kind: str, name: str, payload: dict[str, Any],
                 *, batch: str | None = None) -> dict[str, Any]:
@@ -261,7 +261,7 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
 
     @app.get("/api/setup")
     def setup_report() -> dict[str, Any]:
-        """Can this machine run the pipeline? Filesystem and env only — no model
+        """Can this machine run the pipeline? Filesystem and env only no model
         is loaded, so the desktop shell may call it before anything else."""
         return setup.report(projects.root)
 
@@ -320,7 +320,7 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
             gaps = hebrew.missing()
             if gaps:
                 raise invalid("Hebrew is not available as a target yet: "
-                              + "; ".join(g.replace("\n    ", " — ") for g in gaps))
+                              + "; ".join(g.replace("\n    ", " ") for g in gaps))
         from .projects import slugify
 
         name = projects.unique_name(body.name or slugify(source))
@@ -363,7 +363,7 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
         Written as **flat keys** on `m["source"]`, which is the spelling
         `dubbing.edit._args` reads first (`app_opts` is the app's own, older
         record and loses to it). So the change reaches every path that re-runs
-        anything — a per-line re-translate, a render, a resume — without a second
+        anything a per-line re-translate, a render, a resume without a second
         copy of the setting anywhere.
 
         No stage is invalidated and no job is enqueued: these three are inputs to
@@ -387,7 +387,7 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
 
     @app.post("/api/projects/{name}/run", status_code=202)
     def resume_run(name: str, body: RunBody = Body(default=RunBody())) -> dict[str, Any]:
-        """Run this project — which, on a project that has already run, is a resume.
+        """Run this project which, on a project that has already run, is a resume.
 
         There is no separate resume machinery and there must not be: every stage
         is skipped when its inputs and outputs are unchanged (AGENTS.md), so
@@ -524,7 +524,7 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
         # `uids`/`batch` ride along for the same reason `kind` does: a client that
         # reconnects rebuilds "which rows are busy" and "what would Cancel stop" from
         # the frames alone, and a replayed job that omitted them would come back as a
-        # job about nothing — rows stop pulsing on reload mid-render.
+        # job about nothing rows stop pulsing on reload mid-render.
         prelude += [events.job_event(j["id"], j["status"], j["error"],
                                      kind=j["kind"], project=j["project"],
                                      uids=j["uids"], batch=j["batch"], replay=True)
@@ -550,13 +550,13 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
 
     @app.delete("/api/jobs/{job_id}")
     def cancel_job(job_id: str, batch: bool = False) -> dict[str, Any]:
-        """Cancel one job, or — with `?batch=1` — the whole gesture it came from.
+        """Cancel one job, or with `?batch=1` the whole gesture it came from.
 
         `job` is always the job named in the path, so existing callers read the same
         field they always did; `cancelled` lists everything this call stopped, which
         for a batch is the job and its queued mates. Cancelling a translate while the
         voice job it feeds stays queued is the audit's disaster and is what `batch=1`
-        exists to prevent — see `JobQueue.cancel_batch` for why the order matters.
+        exists to prevent see `JobQueue.cancel_batch` for why the order matters.
         """
         if not batch:
             return {"job": queue.cancel(job_id).to_dict(), "cancelled": None}
@@ -588,7 +588,7 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
 # ---------------------------------------------------------------------------
 
 def _apply_patch(m: dict[str, Any], uid: str, fields: dict[str, Any]) -> dict[str, Any]:
-    """Route a PATCH body through the `ops` setters — never a raw dict update.
+    """Route a PATCH body through the `ops` setters never a raw dict update.
 
     Going through the setters is what applies each edit's side effects: bounds
     re-place, a manual keep locks itself, and nothing writes a key the manifest

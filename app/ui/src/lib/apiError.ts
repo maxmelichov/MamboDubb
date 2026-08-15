@@ -3,7 +3,7 @@
  *
  * It lives in a module of its own rather than in `api.ts` because both sides of
  * the seam need it: `api.request` builds one from `{"error":{code,message}}`,
- * and the fixture backend has to *throw the same thing* — a fixture that
+ * and the fixture backend has to *throw the same thing* a fixture that
  * rejects with a plain `Error` is a second, kinder server whose failures have
  * no code, no status, and none of the branching the real ones get (the 404 that
  * means "no dub.wav yet" above all). Importing it from `api.ts` would be a
@@ -24,7 +24,7 @@ export class ApiError extends Error {
   }
 
   /**
-   * `busy` is the one-job rule refusing an edit — never a queue notice.
+   * `busy` is the one-job rule refusing an edit never a queue notice.
    *
    * The server raises it for *refusals* only (a structural edit while a job
    * runs, a second install), and those are not queued behind anything; the

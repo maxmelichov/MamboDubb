@@ -1,6 +1,6 @@
 """The lightweight editor: its manifest patching, and its HTTP surface.
 
-The patching half is pure logic — a manifest dict in, what changed out. The HTTP
+The patching half is pure logic a manifest dict in, what changed out. The HTTP
 half runs against the real FastAPI app over a run directory built by hand
 (`conftest_app.make_project`), so the shapes asserted are the ones that go on the
 wire; no model is ever loaded and no pipeline process is ever spawned.
@@ -72,7 +72,7 @@ def test_tts_instructions_are_rejected_with_the_reason():
 def test_target_language_override_forces_translate():
     m = a_manifest()
     # `lang_override` is the old wire name; the canonical key is the studio's
-    # per-segment `tgt_lang` — one concept, one manifest key.
+    # per-segment `tgt_lang` one concept, one manifest key.
     res = apply_edits(m, edit(1, lang_override="es"))
     assert m["segments"][1]["tgt_lang"] == "es"
     assert "lang_override" not in m["segments"][1]
@@ -83,7 +83,7 @@ def test_target_language_override_forces_translate():
 
 def test_passthrough_lands_on_the_pipelines_own_key():
     """The pipeline owns `passthrough` (segments.apply_passthrough honours it,
-    carry_passthrough survives re-segmentation) — the editor just writes it."""
+    carry_passthrough survives re-segmentation) the editor just writes it."""
     from dubbing import segments as seg_mod
 
     m = a_manifest()
@@ -109,8 +109,8 @@ def test_unchanged_values_invalidate_nothing():
 
 
 def test_forcing_a_dub_on_a_kept_span_is_a_real_edit():
-    """`passthrough` is tri-state — absent means "decide automatically", False means
-    "dub this span" — so False is a value, not an empty field. Folding it into
+    """`passthrough` is tri-state absent means "decide automatically", False means
+    "dub this span" so False is a value, not an empty field. Folding it into
     "empty" made unchecking the box on a line the pipeline kept (a foreign span the
     user wants dubbed after all) a silent no-op: the save reported "nothing
     changed" and the next run kept the original audio."""
@@ -165,7 +165,7 @@ def test_editable_fields_survive_manifest_save(tmp_path):
 def test_hand_edits_survive_a_later_global_rerun():
     """`--force translate` calls `reset_stage("translate")`, which drops `text_en`
     on every segment it is allowed to. A correction the user typed three saves ago
-    is not the translator's to reissue, so editing has to lock it — the invariant
+    is not the translator's to reissue, so editing has to lock it the invariant
     `manifest.reset_stage` spells out and the editor never held up its end."""
     m = a_manifest()
     apply_edits(m, edit(0, text_en="Hi there"))
@@ -185,7 +185,7 @@ def test_every_hand_edit_locks_its_own_field():
 
 def test_a_language_change_releases_the_translation_it_invalidates():
     """The stored line is in the wrong language now, so the lock that would stop a
-    re-run replacing it has to come off — same rule as `dubbing.edit.set_langs`."""
+    re-run replacing it has to come off same rule as `dubbing.edit.set_langs`."""
     m = a_manifest()
     apply_edits(m, edit(0, text_en="Hi there"))
     apply_edits(m, edit(0, tgt_lang="es"))
@@ -273,7 +273,7 @@ def test_a_rerun_reproduces_the_runs_own_fingerprints(editor_client, monkeypatch
     """A run created with non-default options has to be re-run with them. Every
     option the command drops changes that stage's fingerprint, and an upstream
     fingerprint change is not "re-run that stage": `reset_stage("segments")`
-    empties `m["segments"]`, so the whole run — and every edit made here — is
+    empties `m["segments"]`, so the whole run and every edit made here is
     discarded and rebuilt from the source media."""
     from dubbing import cli
 

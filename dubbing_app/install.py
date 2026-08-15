@@ -1,7 +1,7 @@
 """Installing the missing command-line tools from inside the app.
 
 The Setup screen's job is to say what this machine is missing. For a model that
-is enough — the check's detail line carries the command, and nothing else could
+is enough the check's detail line carries the command, and nothing else could
 honestly be offered for a ten-gigabyte download that wants a Hugging Face login
 and half an hour. For `ffmpeg` and `sox` it is not: they are one `brew install`
 away, the user is looking at a red row that says so, and asking them to find a
@@ -10,7 +10,7 @@ terminal is asking them to leave the app to type a line the app already knows.
 Four rules shape this module, each of them a refusal:
 
 * **The id maps to a hardcoded argv.** Nothing the client sends is ever executed
-  or interpolated — the request body is a strict model with one field, and that
+  or interpolated the request body is a strict model with one field, and that
   field is looked up in `INSTALLERS`. An id that is not in the table is a 400
   that says how to install it by hand; a *model* id is refused the same way,
   because auto-downloading gigabytes behind a spinner is not an install button.
@@ -22,10 +22,10 @@ Four rules shape this module, each of them a refusal:
   make the user wait an hour to fix the thing that is blocking them.
 * **No streaming channel.** The event bus is per project and setup has no
   project. An install is minutes long, so `GET /api/setup/install` returning the
-  last N lines and a 2 s poll is the whole design — a second transport for a
+  last N lines and a 2 s poll is the whole design a second transport for a
   progress bar nobody watches character by character is not worth its bugs.
 * **The check is re-probed when the process exits, not trusted.** `brew` exiting
-  0 is not the same claim as "`ffmpeg` is now on PATH" — a bottle can install to
+  0 is not the same claim as "`ffmpeg` is now on PATH" a bottle can install to
   a prefix this process cannot see. The status response carries a fresh check
   row, produced by the same probe `/api/setup` uses.
 """
@@ -52,7 +52,7 @@ INSTALLERS: dict[str, tuple[str, ...]] = {
 # cannot itself be installed from here; naming the one URL is the whole answer.
 MANAGERS: dict[str, str] = {
     "brew": ("Homebrew is not on this machine, and it is what installs {tool}. "
-             "Get it from https://brew.sh, then re-check — or install {tool} by "
+             "Get it from https://brew.sh, then re-check or install {tool} by "
              "hand with `{command}` once brew is there."),
 }
 
@@ -113,13 +113,13 @@ class Installer:
         manager = argv[0]
         if shutil.which(manager) is None:
             template = MANAGERS.get(manager,
-                                    "`{manager}` is not on PATH — install `{command}` by hand.")
+                                    "`{manager}` is not on PATH install `{command}` by hand.")
             raise invalid(template.format(tool=id_, command=" ".join(argv), manager=manager))
 
         with self._lock:
             if self._running:
                 raise busy(f"an install is already running ({self._id}); "
-                           "one at a time — wait for it to finish")
+                           "one at a time wait for it to finish")
             self._running = True
             self._id = id_
             self._ok = None
@@ -155,7 +155,7 @@ class Installer:
         return (f"{id_!r} cannot be installed from the app. The only installs it "
                 f"runs are {offered or 'none'}. Everything else is by hand: the "
                 "models download themselves on first use and the command is in "
-                "that check's detail line — run it in a terminal from the repo.")
+                "that check's detail line run it in a terminal from the repo.")
 
     def _env(self) -> dict[str, str]:
         # Non-interactive, because there is no terminal to answer a prompt on and
@@ -200,7 +200,7 @@ class Installer:
             self._tail.append(text)
 
     def _finish(self, id_: str, ok: bool, error: str | None) -> None:
-        """Record the verdict — and re-probe, because the exit code is a claim
+        """Record the verdict and re-probe, because the exit code is a claim
         about the package manager, not about this machine's PATH."""
         check = None
         try:
@@ -210,7 +210,7 @@ class Installer:
         if ok and check is not None and not check.get("ok"):
             ok = False
             error = error or (f"`{' '.join(self.recipes.get(id_, ()))}` succeeded but "
-                              f"{id_} is still not there — restart the app so it picks "
+                              f"{id_} is still not there restart the app so it picks "
                               "up the new PATH.")
         with self._lock:
             self._running = False

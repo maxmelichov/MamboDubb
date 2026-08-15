@@ -1,16 +1,16 @@
 /**
- * The segment timeline — a map, not an edit surface.
+ * The segment timeline a map, not an edit surface.
  *
  * Two lanes on one shared time axis: SOURCE is where the speech is in the
  * original, OUTPUT is where the dubbed audio actually landed. They are drawn
- * separately because the gap between them *is* drift — the thing a reviewer is
- * looking for — and a single lane would hide it. Unclaimed time gets no hue at
+ * separately because the gap between them *is* drift the thing a reviewer is
+ * looking for and a single lane would hide it. Unclaimed time gets no hue at
  * all: it is an absence, so it is a neutral 135° hatch.
  *
  * Behind the marks, each lane draws its actual audio: `GET …/peaks` returns a
  * few thousand normalized amplitudes and the lane draws them mirrored about its
  * centre line. That is not decoration. A mark says a segment claims 12.4s to
- * 15.1s; the waveform says whether anybody is *talking* in it — so a mark that
+ * 15.1s; the waveform says whether anybody is *talking* in it so a mark that
  * has drifted off its speech, a kept span that is actually silent, and a gap
  * the hatch calls empty but the ear does not are all visible without pressing
  * play. The picture is scaled by the audio's own `duration`, never by the
@@ -27,18 +27,18 @@
  * ## The three things a strip of marks has to get right
  *
  * 1. **It has to fit.** The lanes used to be `calc(50% - 0.5rem)` of the strip,
- *    which added up to exactly the strip — so the second lane ended on the
+ *    which added up to exactly the strip so the second lane ended on the
  *    window's last pixel and its marks were shaved off by the screen edge. The
  *    height is a flex column now, ruler and two lanes, with padding at the
  *    bottom that belongs to the strip rather than to the lane.
  * 2. **The labels need somewhere to be.** SOURCE and OUTPUT used to float over
  *    the first few seconds of their own lane on a translucent chip, which put
- *    them on top of the marks — the ones at 0:00, which is where a reviewer
+ *    them on top of the marks the ones at 0:00, which is where a reviewer
  *    starts. They sit in a fixed gutter to the left of the scrolling area now,
  *    the way a track header does in every editor that has ever had one.
  * 3. **A mark is a shape, not a slab.** Filled at full strength, a run where
  *    every line is kept is a solid wall a hundred marks long, and the playhead
- *    — the one thing that moves — is lost in it. The fill is a wash and the
+ *    the one thing that moves is lost in it. The fill is a wash and the
  *    state hue is spent on the *edge*, which is what makes a boundary legible;
  *    hover and selection bring the fill up. Then the two brightest things on
  *    the strip are the playhead and whatever you picked, which is the correct
@@ -58,8 +58,8 @@
  * change what is placed.
  *
  * Two later additions, both of which make the strip answer a question that was
- * being asked somewhere else. Zoom has a floor — the scale at which the run is
- * exactly as wide as the strip — and a Fit button that goes straight to it,
+ * being asked somewhere else. Zoom has a floor the scale at which the run is
+ * exactly as wide as the strip and a Fit button that goes straight to it,
  * because an unbounded zoom-out ends in an empty strip with no way back but
  * counting presses. And while a search is running, the marks outside the result
  * set drop to 35%: this is the only view that shows all two hundred lines at
@@ -82,13 +82,13 @@ import type { Peaks, Segment } from "../lib/types";
 
 const TICK_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
 const MIN_MARK_PX = 3;
-/** The lane-label gutter — wide enough for "OUTPUT" at the tracked-out size. */
+/** The lane-label gutter wide enough for "OUTPUT" at the tracked-out size. */
 const GUTTER = "w-16";
 
 /**
  * The zoom readout, at both ends of the range.
  *
- * "Fit" lands on `containerWidth / total`, which is a fraction — and `3.4523px/s`
+ * "Fit" lands on `containerWidth / total`, which is a fraction and `3.4523px/s`
  * in an eleven-pixel monospace cell is not a number anybody reads. One decimal
  * below ten, whole numbers above, and never a trailing `.0`.
  */
@@ -140,7 +140,7 @@ export function Timeline({
    *
    * The strip is the one view of a run that shows every line at once, so it is
    * where "which of these two hundred is my search talking about" is actually
-   * answerable — the marks outside the set drop back rather than disappearing,
+   * answerable the marks outside the set drop back rather than disappearing,
    * because where the matches are *relative to the rest* is the answer.
    */
   matchedUids: Set<string> | null;
@@ -148,7 +148,7 @@ export function Timeline({
   highlightGap: Span | null;
   /** The original audio's envelope, or null while there is none to draw. */
   sourcePeaks: Peaks | null;
-  /** The finished mix's envelope — null until the mix stage has run. */
+  /** The finished mix's envelope null until the mix stage has run. */
   dubPeaks: Peaks | null;
   /**
    * The segments have moved on since that envelope was drawn.
@@ -158,7 +158,7 @@ export function Timeline({
    * dimming the whole lane would hide the very edits that made it stale.
    */
   stale?: boolean;
-  /** The playhead, when it is inside the selected segment — else null. */
+  /** The playhead, when it is inside the selected segment else null. */
   splitAt: number | null;
   onSelect: (uid: string) => void;
   onSeek: (time: number) => void;
@@ -173,7 +173,7 @@ export function Timeline({
   const laneRef = useRef<HTMLDivElement>(null);
 
   // Trailing room equal to the floating Split/zoom cluster, so the end of the
-  // run — exactly where drift accumulates — can always be scrolled out from
+  // run exactly where drift accumulates can always be scrolled out from
   // under it. Without this, at a zoom where the run fits the strip there is no
   // scroll range at all and the last marks are permanently covered.
   const width = Math.max(320, total * pxPerSecond) + 208;
@@ -191,7 +191,7 @@ export function Timeline({
    * The strip's own width, reported upward.
    *
    * "Fit" and the zoom-out floor are both `containerWidth / total`, and the
-   * container is this component's — but the zoom itself belongs to the page,
+   * container is this component's but the zoom itself belongs to the page,
    * which owns the keyboard's `+`/`−` as well as these buttons. So the
    * measurement travels up rather than the zoom coming down. A ResizeObserver
    * and not one read on mount: the window is resizable and the fit zoom is a
@@ -233,7 +233,7 @@ export function Timeline({
 
   /**
    * Drag-to-scrub. Pointer capture rather than window listeners so a drag that
-   * leaves the strip — which is most of them, the strip is 128px tall — keeps
+   * leaves the strip which is most of them, the strip is 128px tall keeps
    * scrubbing instead of stopping at the edge.
    *
    * A press that starts on a mark is that mark's click: selecting a segment is
@@ -252,7 +252,7 @@ export function Timeline({
         The track headers. Outside the scroll container on purpose: a label
         inside it either scrolls away from the lane it names or is pinned over
         the marks it is supposed to be labelling. Height-matched to the lanes
-        by mirroring their flex structure — one spacer for the ruler, then one
+        by mirroring their flex structure one spacer for the ruler, then one
         `flex-1` per lane.
       */}
       <div
@@ -269,7 +269,7 @@ export function Timeline({
         {/*
           The lane's waveform is the *rendered* audio, so when the render is
           behind the script the picture is of an older cut. The label says which
-          — the marks on top of it stay live, because they are drawn from the
+          the marks on top of it stay live, because they are drawn from the
           segments and are current.
         */}
         <span
@@ -331,7 +331,7 @@ export function Timeline({
                 highlightGap != null &&
                 gap.start < highlightGap.end &&
                 gap.end > highlightGap.start;
-              const label = `Unclaimed — no segment covers ${timecode(gap.start, 0)}–${timecode(
+              const label = `Unclaimed no segment covers ${timecode(gap.start, 0)}–${timecode(
                 gap.end,
                 0,
               )}`;
@@ -411,7 +411,7 @@ export function Timeline({
 
       {/*
         The strip's own controls, floated over its right edge rather than given
-        a toolbar row of their own — 128px is the whole budget and a header
+        a toolbar row of their own 128px is the whole budget and a header
         would take a fifth of it. They stop the scrub because they sit above
         the lane, which is correct: nobody means "seek" by "zoom".
       */}
@@ -429,7 +429,7 @@ export function Timeline({
             message={
               splitAt == null
                 ? ""
-                : `Split at ${timecode(splitAt)}. Both halves lose their translation and their clip — the line was written for the whole span.`
+                : `Split at ${timecode(splitAt)}. Both halves lose their translation and their clip the line was written for the whole span.`
             }
             onConfirm={() => splitAt != null && onSplit(splitAt)}
           >
@@ -439,7 +439,7 @@ export function Timeline({
           {/*
             Zoom out had no floor. Every press divided the scale again, so a
             twelve-minute run went to a two-inch smear against the left edge of
-            a strip that was otherwise empty — and nothing in the cluster could
+            a strip that was otherwise empty and nothing in the cluster could
             get back to a useful scale except pressing + the same number of
             times and counting. The floor is the zoom at which the run is
             exactly as wide as the strip, and Fit is the one press that goes
@@ -482,7 +482,7 @@ export function Timeline({
 }
 
 /**
- * One lane's plotting area. It carries no label — the gutter does that — so
+ * One lane's plotting area. It carries no label the gutter does that so
  * every pixel of it belongs to the marks, including the ones at 0:00.
  */
 function Lane({ last, children }: { last?: boolean; children: React.ReactNode }) {
@@ -497,8 +497,8 @@ function Lane({ last, children }: { last?: boolean; children: React.ReactNode })
  * One lane's audio, mirrored about its centre.
  *
  * SVG rather than canvas, and stretched rather than sampled per pixel. A lane
- * at 32px/s over a twenty-minute run is 38,000px wide — past the maximum canvas
- * dimension on Safari and a lot of memory everywhere else — while a path with a
+ * at 32px/s over a twenty-minute run is 38,000px wide past the maximum canvas
+ * dimension on Safari and a lot of memory everywhere else while a path with a
  * `viewBox` of `0 0 n 100` and `preserveAspectRatio="none"` draws once and
  * scales for free at every zoom. The width is `duration * pxPerSecond` because
  * the audio's length is the thing that maps the buckets onto the time axis; use
@@ -517,7 +517,7 @@ function Waveform({
   peaks: Peaks | null;
   lane: "source" | "dub";
   pxPerSecond: number;
-  /** Drawn from audio the script has moved past — see `Timeline`'s `stale`. */
+  /** Drawn from audio the script has moved past see `Timeline`'s `stale`. */
   faded?: boolean;
 }) {
   const path = useMemo(() => {
@@ -549,7 +549,7 @@ function Waveform({
        * The height is stated, not inherited. An absolutely-positioned SVG with
        * a width, a `top`, a `bottom` and `height: auto` is over-constrained, so
        * the browser drops `bottom` and takes the height from the viewBox ratio
-       * — which at 4px/s happened to land within a pixel of the lane and at
+       * which at 4px/s happened to land within a pixel of the lane and at
        * 32px/s was 338px tall, drawing the top eighth of the waveform in this
        * lane and the rest over the one below.
        */

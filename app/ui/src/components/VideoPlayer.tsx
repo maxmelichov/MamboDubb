@@ -1,7 +1,7 @@
 /**
  * The preview stage.
  *
- * This used to be the app's one dark island — a black surround with white
+ * This used to be the app's one dark island a black surround with white
  * transport controls, on the reasoning that video wants black around it. That
  * reasoning does not survive contact with either theme: in light the stage sat
  * in the top-left of every editor screen as a slab, and in dark a *second*,
@@ -11,7 +11,7 @@
  *
  * It is no longer the pane that grows. The script is. The picture takes the top
  * of a fixed right-hand column, at the video's own aspect ratio, and the
- * transport sits directly under it — which is also why the footer lost the
+ * transport sits directly under it which is also why the footer lost the
  * project title (the header already says it, forty pixels above) and the
  * `space` hint (a keyboard hint printed permanently is a legend, and the
  * legends went behind the "?").
@@ -19,13 +19,13 @@
  * ## Three modes, one transport
  *
  * `preview` is the finished thing. `source` is the run's own audio, which
- * `fetch` writes long before `mix` does — it is loaded into the same element
+ * `fetch` writes long before `mix` does it is loaded into the same element
  * with the picture hidden, so play, seek, the timecode, the playhead and the
  * script's follow-along all drive the file rather than a synthetic clock, and
  * the panel keeps showing the run's status board instead of a black rectangle.
  * `none` is a run that has not fetched anything yet: there is nothing to play,
  * so the play button says so and refuses, rather than running a clock over
- * silence — which is what "i can start playing. but because it still not ready
+ * silence which is what "i can start playing. but because it still not ready
  * it shown nothing" was.
  *
  * The label is only shown in `source`, because it is only true there: a chip
@@ -42,11 +42,11 @@ import type { ReactNode } from "react";
 /** What the transport is on. EditorPage decides; this draws it. */
 export type TransportMode = "preview" | "source" | "none";
 
-/** Said in the chip, and nowhere else — see the note above. */
+/** Said in the chip, and nowhere else see the note above. */
 const ORIGINAL_AUDIO = "Original audio (no preview yet)";
 
 /** Why the play button is dead. Reads as a state of the run, not a failure. */
-const NOTHING_TO_PLAY = "Nothing to play yet — the fetch stage hasn't run";
+const NOTHING_TO_PLAY = "Nothing to play yet the fetch stage hasn't run";
 
 /**
  * Why the play button is dead when the run *says* it has a file.
@@ -56,7 +56,7 @@ const NOTHING_TO_PLAY = "Nothing to play yet — the fetch stage hasn't run";
  * deleted out from under a run, a mid-render truncated mp4. "The fetch stage
  * hasn't run" is the wrong sentence for every one of those.
  */
-const NO_MEDIA = "This run's video could not be loaded — there is nothing to play";
+const NO_MEDIA = "This run's video could not be loaded there is nothing to play";
 
 export function VideoPlayer({
   src,
@@ -82,7 +82,7 @@ export function VideoPlayer({
    * The element said it could not load the file.
    *
    * Without this, a `<video>` whose `src` 404s is a black rectangle with a live
-   * transport under it — the app claiming to be playing a video it does not
+   * transport under it the app claiming to be playing a video it does not
    * have. The state is keyed to the source: a render finishing swaps the URL,
    * and the new file deserves its own attempt rather than inheriting the old
    * one's failure.
@@ -92,7 +92,7 @@ export function VideoPlayer({
 
   // The picture needs both a preview and a URL for it, and the URL has to load.
   // They come apart in fixture mode, where the manifest names a preview.mp4 that
-  // no fixture can serve — and the panel is a status board rather than a blank
+  // no fixture can serve and the panel is a status board rather than a blank
   // rectangle in exactly that case, which is the case it was written for.
   const picture = mode === "preview" && src != null && !failed;
   /*
@@ -100,7 +100,7 @@ export function VideoPlayer({
    *
    * `mode === "none"` alone left the button live over a run whose preview is
    * named but unreachable, and the transport's fallback clock then swept a
-   * playhead across the timeline with no audio anywhere — the same lie the dead
+   * playhead across the timeline with no audio anywhere the same lie the dead
    * play button was written to stop, one branch further along.
    */
   const silent = mode === "none" || src == null || failed;
@@ -191,7 +191,7 @@ function MediaError({ label }: { label?: string | null }) {
           {label ?? "The video"} could not be loaded
         </p>
         <p className="mt-1.5 text-[11px] leading-relaxed text-muted">
-          The run names the file but the player could not open it — it may have been moved or
+          The run names the file but the player could not open it it may have been moved or
           deleted, or the render may not have finished writing it. Render the preview again to
           make a new one.
         </p>
@@ -210,7 +210,7 @@ function TransportButton({
 }: {
   onClick: () => void;
   label: string;
-  /** The tooltip, when it has more to say than the label — a reason, usually. */
+  /** The tooltip, when it has more to say than the label a reason, usually. */
   title?: string;
   disabled?: boolean;
   primary?: boolean;

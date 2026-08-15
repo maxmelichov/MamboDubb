@@ -2,7 +2,7 @@
  * The theme choice: one class, one localStorage key, no OS preference.
  *
  * `prefers-color-scheme` is deliberately absent from this file and from
- * App.css. The user picks, once, in the header, and the app remembers — a
+ * App.css. The user picks, once, in the header, and the app remembers a
  * video editor whose surfaces change colour when the OS crosses sunset is
  * changing the ground the user is judging a picture against.
  *
@@ -15,7 +15,7 @@
  *      makes the app self-correcting if the boot script never ran (jsdom in
  *      the smoke test does not execute inline scripts);
  *   3. `setTheme`, from the header toggle.
- * The key and the class name are duplicated in index.html on purpose — that
+ * The key and the class name are duplicated in index.html on purpose that
  * script cannot import. If you rename either, rename it in both places.
  */
 
@@ -48,7 +48,7 @@ export function currentTheme(): Theme {
 
 /**
  * Stamp the theme on `<html>`. Also moves `theme-color`, which is what the
- * desktop shell's title bar and the browser's own chrome sample — leaving it
+ * desktop shell's title bar and the browser's own chrome sample leaving it
  * on the other theme's plane is the one seam a class cannot cover.
  */
 export function applyTheme(theme: Theme): void {

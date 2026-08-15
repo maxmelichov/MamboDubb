@@ -62,7 +62,7 @@ const url = (path: string): string => base + path;
 /**
  * The server's uniform error body, as a throwable. Defined in `./apiError` so
  * the fixture backend can throw the same class without importing this module
- * (which imports it) — re-exported here because this is where callers look.
+ * (which imports it) re-exported here because this is where callers look.
  */
 export { ApiError };
 
@@ -98,7 +98,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
    * A 200 whose body is not JSON is somebody else answering.
    *
    * It happens: the SPA fallback of a static host, a captive portal, a stale
-   * service worker — anything that hands back `index.html` for `/api/…`. The
+   * service worker anything that hands back `index.html` for `/api/…`. The
    * cast below is a lie in that case, and the lie surfaced three layers up as
    * "TypeError: Cannot read properties of null (reading 'name')" in the
    * editor's error bar, which tells the user nothing about what to do. Named
@@ -107,7 +107,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (text && body === null) {
     throw new ApiError(
       "internal_error",
-      `the studio server answered ${path} with something that is not JSON — ` +
+      `the studio server answered ${path} with something that is not JSON ` +
         "is the port serving the studio server, or something else?",
       response.status,
     );
@@ -139,7 +139,7 @@ const NO_MEDIA: SegmentMedia = { play: null, tts: null, source: null, source_win
  * segment that arrives from an older server, a hand-written test or a partially
  * enriched response must still be a legal `Segment` rather than a crash inside
  * a play button. Filling the absence in *once*, at the seam, is what lets every
- * component above read `seg.media.play` without a guard — and is where a future
+ * component above read `seg.media.play` without a guard and is where a future
  * rename of the server's field belongs, so it is one edit and not thirty.
  */
 /**
@@ -148,7 +148,7 @@ const NO_MEDIA: SegmentMedia = { play: null, tts: null, source: null, source_win
  * shell's origin is the Tauri asset protocol, so a raw path handed to
  * `new Audio()` resolves against the wrong origin and every play button dies
  * silently. The base prefix is applied here, once, for the same reason `media`
- * itself is normalized here — so no component ever has to know.
+ * itself is normalized here so no component ever has to know.
  */
 function absMedia(path: string | null | undefined): string | null {
   if (!path) return null;
@@ -175,7 +175,7 @@ export const api = {
   },
 
   /**
-   * First-run readiness. Fast filesystem checks only — the server never loads a
+   * First-run readiness. Fast filesystem checks only the server never loads a
    * model to answer this, so it is cheap enough to call on every boot.
    */
   setup(): Promise<SetupStatus> {
@@ -185,7 +185,7 @@ export const api = {
 
   /**
    * Install one missing tool. The body is an *id* from the checklist, never a
-   * command — the server maps it to a hardcoded argv and 400s anything else, so
+   * command the server maps it to a hardcoded argv and 400s anything else, so
    * the worst a bad call can do is fail.
    */
   startInstall(id: string): Promise<SetupInstall> {
@@ -246,7 +246,7 @@ export const api = {
   /**
    * Change the run options that are still a decision: genre, register, context.
    *
-   * Not a job and not a stage invalidation — the server writes them and says so.
+   * Not a job and not a stage invalidation the server writes them and says so.
    * They reach the translator the next time it runs, which is the sentence the
    * editor puts under the control.
    */
@@ -259,7 +259,7 @@ export const api = {
   },
 
   /**
-   * Run this project — a resume on one that has already run.
+   * Run this project a resume on one that has already run.
    *
    * The pipeline is stage-cached, so re-running is how it picks up where it
    * stopped; there is no second code path and there must not be. 409 while
@@ -341,7 +341,7 @@ export const api = {
    *
    * `null` rather than a throw when the file is not there yet: `dub.wav` does
    * not exist until the mix stage has run, and a lane with no waveform is a
-   * *state* of a young run, not a failure — the same reasoning that keeps the
+   * *state* of a young run, not a failure the same reasoning that keeps the
    * event stream from rejecting on a dropped connection. Everything else still
    * throws, because a 500 here is a bug and should not be silently drawn as
    * silence.
@@ -350,7 +350,7 @@ export const api = {
    *
    * The fixture call goes through the *same* catch, deliberately: it was routed
    * around it, so a missing `dub.wav` resolved to null against the server and
-   * rejected in fixture mode — the one branch this method exists for, tested in
+   * rejected in fixture mode the one branch this method exists for, tested in
    * the one mode the smoke test runs, backwards.
    */
   async peaks(name: string, file: PeaksFile, n: number): Promise<Peaks | null> {
@@ -401,7 +401,7 @@ export const api = {
 
   /**
    * Progress. Runs until `signal` aborts; reconnects on its own.
-   * Never rejects — a dropped stream is a UI state, not an exception.
+   * Never rejects a dropped stream is a UI state, not an exception.
    */
   events(
     name: string,

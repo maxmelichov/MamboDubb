@@ -1,4 +1,4 @@
-"""Phase 5 — deterministic digit→word spelling. Pure logic, no models.
+"""Phase 5 deterministic digit→word spelling. Pure logic, no models.
 
 The v22 prompt asked the *model* to write numbers as words and it obeyed
 unreliably: "ב-504" became "five zero four" on the English hop, which the ru hop

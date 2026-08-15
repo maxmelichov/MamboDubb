@@ -1,4 +1,4 @@
-"""The bug-hunt campaign's regression ledger — every measured lesson, pinned.
+"""The bug-hunt campaign's regression ledger every measured lesson, pinned.
 
 Each section pins a policy that was settled by measurement, not taste: two
 independent A/B harnesses (33-segment he→ru set, 46-segment he→en drama set,
@@ -7,13 +7,13 @@ numbers the pins protect:
 
 - Context glosses earned their keep (drama harness: 14 fixes / 0 breaks came
   from context glosses) while template-level linguistics rules measured 0 fixes
-  on target segments and regressed controls — hence the prompt-policy pins.
+  on target segments and regressed controls hence the prompt-policy pins.
 - An ENGLISH preceding line reconciles garbled names and dangling pronouns; a
   source-language one does not, and once caused the documented entity swap.
 - The established-names list self-poisons without junk filters and variant
   canonicalisation (drama run: "I'm"/"His"/"God"; he→ru run: «Его»/«Это»).
 
-Everything here is pure logic — model calls are monkeypatched. Related pins
+Everything here is pure logic model calls are monkeypatched. Related pins
 that predate the campaign live in test_phase5_translate.py and
 test_phase4_pivot.py; this file references rather than duplicates them.
 """
@@ -23,11 +23,11 @@ from __future__ import annotations
 from dubbing import manifest, translate
 
 # =============================================================================
-# 1. Prompt policy — what earns a place in the template, and what does not.
+# 1. Prompt policy what earns a place in the template, and what does not.
 #
 # Also pinned elsewhere: the garble note requires non-empty context AND an
 # asr_source hop (test_phase5_translate.py::test_garble_note_only_with_context_
-# on_an_asr_hop — measured: the bare instruction fixes nothing).
+# on_an_asr_hop measured: the bare instruction fixes nothing).
 # =============================================================================
 
 
@@ -72,7 +72,7 @@ def test_no_dative_or_idiom_instruction_in_any_prompt():
 
 
 # =============================================================================
-# 2. Preceding line — shown in the language the hop WRITES.
+# 2. Preceding line shown in the language the hop WRITES.
 #
 # The full chain (hop 1 previous English intermediate, hop 2 previous
 # text_mid) is pinned on real call flow in test_phase4_pivot.py::
@@ -84,7 +84,7 @@ def test_no_dative_or_idiom_instruction_in_any_prompt():
 def test_preceding_falls_back_to_source_when_previous_hop_failed(
         monkeypatch, tmp_path):
     """Measured: garbled-name reconciliation fires with an English preceding
-    line and not with a Hebrew one — but when no English exists yet (first
+    line and not with a Hebrew one but when no English exists yet (first
     segment, failed neighbour) the source text is still better than nothing on
     hop 1, and hop 2 gets "" rather than a wrong-language line. The historic
     "Jabhat al-Nusra" → "al-Qaeda's Front" entity swap happened with a HEBREW
@@ -111,7 +111,7 @@ def test_preceding_falls_back_to_source_when_previous_hop_failed(
     ]
     translate.run(m, tmp_path, source="he", target="ru")
     # Segment 0's English hop failed, so segment 1's first hop has no previous
-    # English intermediate — it falls back to the previous SOURCE text; its
+    # English intermediate it falls back to the previous SOURCE text; its
     # second hop passes "" rather than mislead with a wrong-language line.
     seg1_hop1 = [c for c in calls if c["text"] == "שורה שתיים"][0]
     assert seg1_hop1["preceding"] == "שורה אחת"
@@ -141,7 +141,7 @@ def test_subtitle_only_foreign_keeps_get_no_preceding(monkeypatch, tmp_path):
 
 
 # =============================================================================
-# 3. Gloss gating — length-gated matching, because both fuzz rules leaked.
+# 3. Gloss gating length-gated matching, because both fuzz rules leaked.
 #
 # The positive 5+-letter case (בלאגן matches the ASR variant בלגן at edit
 # distance 1) is pinned in test_phase5_translate.py::
@@ -173,7 +173,7 @@ def test_four_letter_gloss_token_matches_by_exact_word_only():
 
 
 # =============================================================================
-# 4. Entity table — the established-names list must not self-poison.
+# 4. Entity table the established-names list must not self-poison.
 # =============================================================================
 
 
@@ -243,7 +243,7 @@ def test_cyrillic_pronoun_capitals_never_enter_the_table():
 
 
 # =============================================================================
-# 5. Output guards — what leaves the stage is target text, once, complete.
+# 5. Output guards what leaves the stage is target text, once, complete.
 #
 # Trailing duplicated ≥4-word clause stripped / legit repetition kept is
 # pinned in test_phase5_translate.py::test_trailing_clause_repeat_stripped
@@ -285,7 +285,7 @@ def test_same_script_pairs_never_flag_a_leak():
 def test_revise_run_applies_fixes_and_rejects_script_relapses(monkeypatch):
     """The revision pass may fix spelling drift against the canonical names,
     but a revised line that fails is_target_text (e.g. a source-script
-    relapse) keeps its original — revision must never lose a translation."""
+    relapse) keeps its original revision must never lose a translation."""
     lines = ["The Jolani faction spoke.",
              "Then Julani answered them.",
              "The talks collapsed entirely."]
@@ -308,7 +308,7 @@ def test_revise_run_keeps_the_batch_on_parse_failure(monkeypatch):
 
 
 # =============================================================================
-# 6. Wiring — one run, every per-call contract at once.
+# 6. Wiring one run, every per-call contract at once.
 # =============================================================================
 
 _CTX = "Docu about Ahmed al-Sharaa; the word זיקית means chameleon."

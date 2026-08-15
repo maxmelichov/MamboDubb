@@ -1,4 +1,4 @@
-"""Per-segment editing — the only door the app has into a run.
+"""Per-segment editing the only door the app has into a run.
 
 The pipeline produces a dub; this module is how a human corrects one. Every
 function takes a loaded manifest `m`, mutates it in place and leaves saving to the
@@ -47,7 +47,7 @@ DOWNSTREAM = {"translate": ("tts", "timeline"), "tts": ("timeline",), "timeline"
 # belongs to a full `python -m dubbing` run, not to an edit.
 REBUILDABLE = ("translate", "tts", "timeline", "mix", "report")
 # `tts_opts` keys that only reach the synthesis call. A kept segment has no
-# synthesis, so on one they are inert — see `set_tts_opts`. (`speed` applies:
+# synthesis, so on one they are inert see `set_tts_opts`. (`speed` applies:
 # it is post-processing on the finished slice. `keep_pauses` asks for exactly
 # what a kept slice already is, so it is a documented no-op rather than a lie.)
 SYNTHESIS_ONLY_OPTS = ("seed", "greedy", "ref", "ref_text", "model", "temperature",
@@ -55,7 +55,7 @@ SYNTHESIS_ONLY_OPTS = ("seed", "greedy", "ref", "ref_text", "model", "temperatur
 
 
 class EditError(ValueError):
-    """An edit that cannot be applied — the caller sent something invalid."""
+    """An edit that cannot be applied the caller sent something invalid."""
 
 
 class SegmentNotFound(EditError):
@@ -128,13 +128,13 @@ def _require(m: dict[str, Any], uid: str) -> dict[str, Any]:
 def invalidate(m: dict[str, Any], uid: str, *, stages: set[str]) -> set[str]:
     """Drop this segment's results for `stages`, so a rerun regenerates them.
 
-    Downstream comes with it — a translation the clip was made from cannot be
+    Downstream comes with it a translation the clip was made from cannot be
     dropped while the clip stays. Locked fields survive: the user's text is not the
     translator's to reissue. Returns the field names actually removed.
 
     A keep this pipeline decided for itself (`mt_failed`, `tts_failed`) is undone
-    too, exactly as `manifest.reset_stage` does — through the same predicate
-    (`manifest.undo_pipeline_keep`), so the two cannot drift apart — rather than
+    too, exactly as `manifest.reset_stage` does through the same predicate
+    (`manifest.undo_pipeline_keep`), so the two cannot drift apart rather than
     the segment being stuck on a verdict about text that no longer exists. That
     predicate is where the two nuances live: a keep the user asked for
     (`passthrough` True) is theirs and stays, while a `locked.keep` guarding a
@@ -151,7 +151,7 @@ def invalidate(m: dict[str, Any], uid: str, *, stages: set[str]) -> set[str]:
     report included). Deleting a clip while nine stages still say "done" is how an
     edited segment ended up silent in a dub the CLI called up to date: nothing
     would ever refill the hole, and `report.json` went on claiming full coverage.
-    Every caller gets that for free — which is why it lives here and not in them.
+    Every caller gets that for free which is why it lives here and not in them.
     """
     seg = _require(m, uid)
     want: set[str] = set()
@@ -196,7 +196,7 @@ def set_text(m: dict[str, Any], uid: str, *, text: str | None = None,
         raise EditError("set_text needs text= and/or text_en=")
     # A committed value identical to what is stored is not an edit. Without this,
     # an editor that lets the user click into a line and click out again would
-    # invalidate the clip, stamp a lock, and queue a resynthesis — for nothing.
+    # invalidate the clip, stamp a lock, and queue a resynthesis for nothing.
     if text is not None and text.strip() == seg.get("text"):
         text = None
     if text_en is not None and text_en.strip() == seg.get("text_en"):
@@ -205,14 +205,14 @@ def set_text(m: dict[str, Any], uid: str, *, text: str | None = None,
         return seg
     if text is not None:
         if not text.strip():
-            raise EditError("text cannot be empty — use set_keep or merge instead")
+            raise EditError("text cannot be empty use set_keep or merge instead")
         seg["text"] = text.strip()
         if lock:
             _lock(seg, "text")
         invalidate(m, uid, stages={"translate"})
     if text_en is not None:
         if not text_en.strip():
-            raise EditError("text_en cannot be empty — a dubbed segment must say "
+            raise EditError("text_en cannot be empty a dubbed segment must say "
                             "something; use set_keep(keep=True) instead")
         # The clip provably says the old line, whatever the user approved about it.
         _unlock(seg, "tts")
@@ -240,8 +240,8 @@ def set_keep(m: dict[str, Any], uid: str, keep: bool,
     it locks. Either direction changes what is heard, so the clip and its placement
     go: `tts.run` gives a keep its original-audio slice and a dub its synthesis.
 
-    So does the line. A keep's `text_en` is a *subtitle* — for a foreign or
-    passed-through span it is the honest "…" placeholder — and a dub's is what the
+    So does the line. A keep's `text_en` is a *subtitle* for a foreign or
+    passed-through span it is the honest "…" placeholder and a dub's is what the
     voice says; leaving one behind across a flip is how a segment ends up speaking
     a placeholder, since `translate.needs_translation` sees a non-empty `text_en`
     and never refills it. `segments.apply_passthrough` drops it on exactly this
@@ -255,7 +255,7 @@ def set_keep(m: dict[str, Any], uid: str, keep: bool,
     # (segments.apply_passthrough) and it survives re-segmentation
     # (carry_passthrough). EVERY write through this door carries it, whatever
     # reason the caller names: the pipeline reads `passthrough`, not the reason
-    # string, so a keep written without it is reverted by the next run — the
+    # string, so a keep written without it is reverted by the next run the
     # user's verdict overruled by a rerun, which is the one thing a lock exists
     # to prevent. A stage that keeps a segment for its own reasons does not come
     # through here (it writes `keep_reason` directly).
@@ -266,7 +266,7 @@ def set_keep(m: dict[str, Any], uid: str, keep: bool,
     _unlock(seg, "tts")
     invalidate(m, uid, stages={"translate"})
     # `invalidate` protects a kept span's subtitle (it is not translate's to
-    # discard) — but this call is the flip itself, and the line it left behind was
+    # discard) but this call is the flip itself, and the line it left behind was
     # written for the other path. Same rule as `segments.apply_passthrough`: it
     # goes, minus what the user wrote by hand.
     if keep and not manifest.is_locked(seg, "text_en"):
@@ -276,7 +276,7 @@ def set_keep(m: dict[str, Any], uid: str, keep: bool,
 
 
 def set_speaker(m: dict[str, Any], uid: str, speaker: str) -> dict[str, Any]:
-    """Reassign the speaker — which is also the voice this line is cloned from."""
+    """Reassign the speaker which is also the voice this line is cloned from."""
     if not (speaker or "").strip():
         raise EditError("speaker cannot be empty")
     seg = _require(m, uid)
@@ -291,7 +291,7 @@ def set_speaker(m: dict[str, Any], uid: str, speaker: str) -> dict[str, Any]:
 def set_bounds(m: dict[str, Any], uid: str, start: float, end: float) -> dict[str, Any]:
     """Move this segment's span. Asserts it stays inside its neighbours.
 
-    Segments never overlap and never reorder — `timeline.place` relies on both, and
+    Segments never overlap and never reorder `timeline.place` relies on both, and
     a keep's clip is cut from exactly this span.
 
     No lock is stamped: nothing honours one. Re-running the segments stage rebuilds
@@ -331,7 +331,7 @@ def set_langs(m: dict[str, Any], uid: str, *, src_lang: str | None = None,
     `tgt_lang` reaches the synthesiser too (`tts.Engine.tgt_for`): the line is
     prepared, cached, spoken and verified in that language. It used to be honoured
     by the translator alone, so a French line was voiced and ASR-checked as
-    English — it failed verification every time and fell back to keep.
+    English it failed verification every time and fell back to keep.
     """
     seg = _require(m, uid)
     changed = False
@@ -364,7 +364,7 @@ def set_tts_opts(m: dict[str, Any], uid: str, **opts: Any) -> dict[str, Any]:
 
     On a segment that is currently a KEEP there is no synthesis call, so the
     options that only reach one (`SYNTHESIS_ONLY_OPTS`) are refused instead of
-    being stored where they would sit doing nothing — the same rule ttsopts
+    being stored where they would sit doing nothing the same rule ttsopts
     applies to greedy-plus-sampler, one step further out. What does apply to a
     keep is `speed`, which `tts.keep_clip` bakes into the slice.
     """
@@ -396,7 +396,7 @@ def set_locked(m: dict[str, Any], uid: str, locked: dict[str, bool]) -> dict[str
     """Replace this segment's locks outright. `{}` releases every one of them.
 
     Editing a field locks it, which is what stops a re-run overwriting the user's
-    work — so releasing is the only way to hand a line back to the pipeline after
+    work so releasing is the only way to hand a line back to the pipeline after
     changing your mind. It is deliberately a replace, not a merge: "unlock this"
     has to be expressible, and a merge could only ever add.
     """
@@ -419,7 +419,7 @@ def split(m: dict[str, Any], uid: str, at: float) -> tuple[str, str]:
     """Cut one segment into two at `at` seconds. Returns the two new uids.
 
     Every word survives: the text is divided at the word boundary nearest `at`, and
-    a segment with fewer than two words cannot be split at all — half of it would
+    a segment with fewer than two words cannot be split at all half of it would
     have nothing to say. Both halves are new segments with new uids, and everything
     generated from the old text (translation, clip, placement) is dropped: none of
     it describes either half.
@@ -447,7 +447,7 @@ def split(m: dict[str, Any], uid: str, at: float) -> tuple[str, str]:
     _renumber(m)
     # Two segments with nothing generated for them, in a run that says translate
     # onward is done. Reopened here rather than in `invalidate` (no field was
-    # dropped — the whole segment was replaced), and never earlier than translate:
+    # dropped the whole segment was replaced), and never earlier than translate:
     # re-running the segments stage would rebuild the list from the words and
     # undo the cut. `mark_keep` re-decides the halves the way it decided the whole.
     manifest.reopen_from(m, "translate")
@@ -503,7 +503,7 @@ def merge(m: dict[str, Any], uid_a: str, uid_b: str) -> str:
 def _derived(seg: dict[str, Any], *, start: float, end: float, text: str) -> dict[str, Any]:
     """A new segment carved out of `seg`: same voice and settings, no results.
 
-    Its uid is minted fresh from its own span and text — it is not the segment the
+    Its uid is minted fresh from its own span and text it is not the segment the
     old uid named, and a UI still pointing at that uid must be told so rather than
     silently shown a different piece of audio. Locks go too: they were the user's
     approval of text that no longer exists.
@@ -511,7 +511,7 @@ def _derived(seg: dict[str, Any], *, start: float, end: float, text: str) -> dic
     `passthrough` does not: it is the user's word about the SPAN, not about the
     text, and every second of the span is still covered by the pieces carved out
     of it. Dropped, it would survive as far as the next re-segmentation and no
-    further — `mark_keep` would re-decide both halves with no override left for
+    further `mark_keep` would re-decide both halves with no override left for
     `carry_passthrough` to re-attach, and the passage would be dubbed again.
     `detected_lang` rides along for the same reason: it is what the classifier
     heard over that span, so it still describes every piece of it, and it is what
@@ -537,15 +537,15 @@ def _derived(seg: dict[str, Any], *, start: float, end: float, text: str) -> dic
 # --------------------------------------------------------------- model work
 
 def _langs(m: dict[str, Any], seg: dict[str, Any]) -> tuple[str, str]:
-    """This segment's (source, target) — per-segment knowledge, then the run's.
+    """This segment's (source, target) per-segment knowledge, then the run's.
 
     One rule for both front ends: the choice is `translate.segment_langs`, which
     the pipeline stage uses too, so a line re-translated from the app takes the
-    same hops it would in a headless run — including the empty source that means
+    same hops it would in a headless run including the empty source that means
     "nothing knows what language this line is" (a Latin line inside a Hebrew run).
 
     Normalised through `cli.normalize_lang`, so "iw" and "he" are one language
-    here as they are everywhere else — the pair decides whether this segment needs
+    here as they are everywhere else the pair decides whether this segment needs
     a translation at all (`translate.same_language`).
     """
     from . import cli, translate
@@ -573,7 +573,7 @@ def _preceding(m: dict[str, Any], seg: dict[str, Any], pivot: bool, target: str,
     Same rule as `translate.run`: the previous English intermediate for a pivot's
     first hop, the previous target line for a direct one, and the previous source
     text when neither is usable. A segment off the run's own language pair stands
-    alone — its neighbour spoke a different language and carries no signal.
+    alone its neighbour spoke a different language and carries no signal.
     """
     from . import translate
 
@@ -600,8 +600,8 @@ def retranslate(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
 
     Deliberately not `translate.run`: that ends with a revision pass over the whole
     script, which would rewrite every other line the user has corrected. This is the
-    same per-segment recipe — pivot via English where the pair needs it, numbers
-    spelled in code, the run's established name spellings for consistency — applied
+    same per-segment recipe pivot via English where the pair needs it, numbers
+    spelled in code, the run's established name spellings for consistency applied
     to these segments only.
 
     Asking for a specific segment overrides its `text_en` lock (that is what the
@@ -610,7 +610,7 @@ def retranslate(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
     this span is dubbed or plays as recorded belongs to `keep`/`passthrough` and
     to `invalidate`'s rule about them, not to a new line arriving. A fresh
     translation of a kept span is a better subtitle for it; a translation that
-    fails keeps the original audio as in the pipeline — unless the user asked for
+    fails keeps the original audio as in the pipeline unless the user asked for
     a dub, which stands (`translate.mark_failed`).
 
     The returned map holds only the segments that came back translated, so its
@@ -687,7 +687,7 @@ def retranslate(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
                                           numbers_spelled=en_direct)
             text = translate._finalize_numbers(text, target)
             # The result is the machine's, so the lock the user's old text held is
-            # gone — and the clip built on that text with it.
+            # gone and the clip built on that text with it.
             _unlock(seg, "text_en")
             invalidate(m, seg["uid"], stages={"translate"})
             if translate.is_target_text(text, target):
@@ -695,8 +695,8 @@ def retranslate(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
                 if pivot:
                     seg["text_mid"] = mid
                 # The verdict is not this call's to change. `invalidate` above
-                # already reopened the one keep a new translation answers — the
-                # pipeline's own `mt_failed` — under the rule that protects the
+                # already reopened the one keep a new translation answers the
+                # pipeline's own `mt_failed` under the rule that protects the
                 # user's. Writing keep=False here reached past exactly that rule:
                 # it un-kept spans the user had kept, left their `passthrough`
                 # saying the opposite, and the next run's `apply_passthrough`
@@ -715,14 +715,14 @@ def retranslate(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
     # user is told the work is done and hears no change.
     done = f"translated {len(out)} of {asked} segment(s)"
     if failed:
-        done += (f" — {len(failed)} failed to translate "
+        done += (f" {len(failed)} failed to translate "
                  f"(seg {', '.join(str(s['id']) for s in failed)})")
     _progress(progress, 1.0, done)
     return out
 
 
 class ResynthResult(dict):
-    """`{uid: tts record}` — plus `summary`, how each one actually got there.
+    """`{uid: tts record}` plus `summary`, how each one actually got there.
 
     A dict subclass so every existing caller (and the job result the app relays,
     which is JSON) sees exactly the mapping it always did. The breakdown rides
@@ -751,7 +751,7 @@ def _resynth_message(summary: dict[str, Any],
         parts.append(f"{summary['kept']} re-sliced from the original")
     line = ", ".join(parts)
     if unvoiced:
-        line += (f" — {len(unvoiced)} still needs a translation "
+        line += (f" {len(unvoiced)} still needs a translation "
                  f"(seg {', '.join(str(s['id']) for s in unvoiced)})")
     if summary["deferred_placement"]:
         line += "; placement deferred to the next tts run"
@@ -772,7 +772,7 @@ def resynthesize(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
     One case is not a synthesis failure at all and must not be dressed as one: a
     dub with no line to speak, on a span the user asked to dub. Nothing was voiced
     because nothing was translated (`translate.mark_failed`), and answering with a
-    keep would hand back the very audio they were replacing — the second half of
+    keep would hand back the very audio they were replacing the second half of
     the bug where "Dub it" appears to do nothing. It is left unvoiced and counted,
     and the timeline is deferred rather than built over the hole.
 
@@ -826,7 +826,7 @@ def resynthesize(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
     # it) and `timeline.place` is the only thing allowed to decide the new one.
     # Re-place before returning: a segment left unplaced is missing from the mix,
     # which is the never-silent invariant broken by the back door. Rendering the
-    # preview stays an explicit action — this restores the manifest, not the video.
+    # preview stays an explicit action this restores the manifest, not the video.
     _progress(progress, 0.95, "re-placing the timeline")
     summary = {**counts, "deferred_placement": not _replace_timeline(m, workdir)}
     _progress(progress, 1.0, _resynth_message(summary, unvoiced))
@@ -839,8 +839,8 @@ def _replace_timeline(m: dict[str, Any], workdir: Path) -> bool:
     No shortening round: that would reload the translator to rewrite lines the user
     did not ask about.
 
-    Placement is all-or-nothing — `timeline.build_items` reads every segment's clip
-    to lay the whole run out in one forward pass — so it can only run when every
+    Placement is all-or-nothing `timeline.build_items` reads every segment's clip
+    to lay the whole run out in one forward pass so it can only run when every
     segment has one. Correcting several lines and re-voicing one of them is the
     ordinary studio loop and leaves the rest without a clip until they are asked
     for; there is no timeline to build over that hole, and the tts run that fills
@@ -851,7 +851,7 @@ def _replace_timeline(m: dict[str, Any], workdir: Path) -> bool:
 
     waiting = sum(1 for s in m.get("segments") or [] if not (s.get("tts") or {}).get("clip"))
     if waiting:
-        print(f"  edit: {waiting} segment(s) still without audio — placement "
+        print(f"  edit: {waiting} segment(s) still without audio placement "
               f"deferred to the next tts run", file=sys.stderr)
         return False
     timeline_mod.run(m, workdir, genre=getattr(_args(m), "genre", "documentary"))
@@ -864,7 +864,7 @@ def start_stage(m: dict[str, Any], from_stage: str) -> tuple[str, str | None]:
     A rebuild is asked for a stage; what it can *run* depends on what the segments
     hold. `timeline.build_items` reads `seg["tts"]` for every segment in one
     forward pass and `tts.run` reads `seg["text_en"]` for every dubbed one, so
-    either dies with a bare `KeyError` on the ordinary post-edit manifest — the
+    either dies with a bare `KeyError` on the ordinary post-edit manifest the
     state every corrected-but-not-yet-revoiced line leaves behind.
 
     So the missing work is *made*, not tripped over: a render that finds segments
@@ -872,7 +872,7 @@ def start_stage(m: dict[str, Any], from_stage: str) -> tuple[str, str | None]:
     starts at translate. Backing up is the honest reading of "render this run" and
     it is what `_replace_timeline` already does per call; refusing would leave the
     user with a button that only works on runs that did not need it. Never the
-    other direction — a rebuild asked for translate is not quietly narrowed.
+    other direction a rebuild asked for translate is not quietly narrowed.
     """
     idx = STAGES.index(from_stage)
     segs = m.get("segments") or []
@@ -881,11 +881,11 @@ def start_stage(m: dict[str, Any], from_stage: str) -> tuple[str, str | None]:
                         if not s.get("keep") and not (s.get("text_en") or "").strip()]
         if untranslated:
             return "translate", (f"{len(untranslated)} segment(s) have no line to "
-                                 f"speak — starting from translate")
+                                 f"speak starting from translate")
     if idx > STAGES.index("tts"):
         unvoiced = [s for s in segs if not (s.get("tts") or {}).get("clip")]
         if unvoiced:
-            return "tts", (f"{len(unvoiced)} segment(s) have no audio — starting "
+            return "tts", (f"{len(unvoiced)} segment(s) have no audio starting "
                            f"from tts")
     return from_stage, None
 
@@ -901,7 +901,7 @@ def rebuild(m: dict[str, Any], workdir: Path, *, from_stage: str,
     the CLI would compute for them, so a later `python -m dubbing` on the same run
     sees this work as done rather than redoing it.
 
-    Only the manifest-side stages can be rebuilt — anything before `translate` needs
+    Only the manifest-side stages can be rebuilt anything before `translate` needs
     the source media and belongs to a real run.
 
     What it can actually run is decided *before* anything is cleared
@@ -910,7 +910,7 @@ def rebuild(m: dict[str, Any], workdir: Path, *, from_stage: str,
     Render button found it.
 
     Raises `RebuildIncomplete` when the report it ends on finds segments with no
-    audio — the same verdict `python -m dubbing` exits 1 on, so a render job fails
+    audio the same verdict `python -m dubbing` exits 1 on, so a render job fails
     instead of reporting success over a dub with holes in it.
     """
     from . import cli, mix, report
@@ -973,7 +973,7 @@ def rebuild(m: dict[str, Any], workdir: Path, *, from_stage: str,
         raise RebuildIncomplete(
             f"{len(unaccounted)} segment(s) have no audio in the mix "
             f"({', '.join(str(i) for i in unaccounted[:8])}"
-            f"{'…' if len(unaccounted) > 8 else ''}) — see report.json")
+            f"{'…' if len(unaccounted) > 8 else ''}) see report.json")
     return todo
 
 
@@ -981,7 +981,7 @@ def _args(m: dict[str, Any], **overrides: Any):
     """CLI arguments for this run: whatever it recorded, then the CLI's defaults.
 
     The run's settings live in `m["source"]`, so a rebuild reproduces the fingerprints
-    of the run that made the manifest instead of inventing new ones — the same
+    of the run that made the manifest instead of inventing new ones the same
     resolution `cli.main` applies to a bare re-run (`cli.resolve_settings`), so the
     two paths cannot drift. A setting the run never recorded falls back to the CLI
     default; a caller that knows better passes it in.
@@ -998,7 +998,7 @@ def _args(m: dict[str, Any], **overrides: Any):
     args.context = src.get("context")
     # The CLI records settings as flat keys; the studio app records the same
     # settings under source["app_opts"]. Reading only the flat spelling made
-    # every app-created project silently fall back to CLI defaults here — a
+    # every app-created project silently fall back to CLI defaults here a
     # "movie" run re-placed its timeline with documentary timing on every
     # per-line re-voice. Flat wins when both exist (it is the older writer), and
     # `cli.resolve_settings` fills in whatever neither recorded, exactly as a bare

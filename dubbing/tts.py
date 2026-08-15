@@ -1,4 +1,4 @@
-"""Stage 6 — Qwen3-TTS zero-shot voice cloning, one clip per segment.
+"""Stage 6 Qwen3-TTS zero-shot voice cloning, one clip per segment.
 
 Two guarantees this module owns:
 
@@ -11,7 +11,7 @@ Two guarantees this module owns:
 Clips are cached on disk by content hash, which is also the resume mechanism for
 long videos: a killed run picks up at the first uncached clip. The hash covers
 the text, the reference, the options AND the target language, and the record
-carries a fingerprint of the line it was made from — a clip whose text has moved
+carries a fingerprint of the line it was made from a clip whose text has moved
 under it is re-queued rather than replayed (`clip_text_stale`).
 
 The run's language pair is a default, not a rule: a segment carrying its own
@@ -30,12 +30,12 @@ already-dubbed segment cannot replay the old clip.
 **Natural-language style instructions are not available on this path.** The
 checkpoint exposes `instruct` only through `generate_voice_design` /
 `generate_custom_voice`, which are gated on `tts_model_type` being `voice_design`
-/ `custom_voice` and take no reference audio at all — they invent a voice from
+/ `custom_voice` and take no reference audio at all they invent a voice from
 the description instead of cloning the speaker, which is the one thing this
 pipeline may not lose. The closest thing the Base checkpoint has is ICL mode
 (`tts_opts.ref_text`): conditioning on a reference's text *and* codes rather than
 only its speaker embedding, which carries the reference clip's prosody. That is
-a "sound like this take", not "sound angry" — and it is the honest limit here.
+a "sound like this take", not "sound angry" and it is the honest limit here.
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ DEFAULT_TTS_MODEL = "1.7b"
 assert set(TTS_MODELS) == set(ttsopts.MODELS), "ttsopts.MODELS is out of step with TTS_MODELS"
 CODEC_HZ = 12.5
 
-# Default sampler for a non-greedy attempt — the values `tts_opts` overrides.
+# Default sampler for a non-greedy attempt the values `tts_opts` overrides.
 SAMPLED = {"temperature": 0.55, "top_p": 0.85, "top_k": 30}
 GREEDY = {"temperature": 0.01, "top_p": 1.0, "top_k": 1}
 REPETITION_PENALTY = 1.08
@@ -137,7 +137,7 @@ def prepare_text(text: str, lang: str) -> str:
 
     Keeps runs of the TARGET script's letters plus digits and basic punctuation,
     so a Hebrew (source) word inside a Russian line is dropped without deleting
-    the line — the old Latin-only version erased entire non-Latin translations.
+    the line the old Latin-only version erased entire non-Latin translations.
     """
     bucket = script_for(lang)
     run = _run_re(bucket)
@@ -170,7 +170,7 @@ def prepare_en(text: str) -> str:
 def _tokens(text: str, lang: str = "en") -> list[str]:
     bucket = script_for(lang)
     if bucket in ("cjk", "hangul"):
-        # No reliable word boundaries — compare single characters instead.
+        # No reliable word boundaries compare single characters instead.
         return [ch for ch in (text or "").lower() if ch.isalnum()]
     if (lang or "en").lower() == "en":
         return re.findall(r"[a-z0-9']+", (text or "").lower())
@@ -262,7 +262,7 @@ def synthesis_text(speak: str, lang: str) -> str:
     Identical to `speak` for the ten languages the base model knows. Hebrew is the
     exception: its LoRA was trained on stressed IPA, and Hebrew orthography leaves
     the vowels out, so the text field gets `ʁˈeɡa` where the subtitle says רגע (see
-    `dubbing/hebrew.py`). The orthography remains the record — it is what is stored,
+    `dubbing/hebrew.py`). The orthography remains the record it is what is stored,
     subtitled and ASR-verified; the IPA never leaves this stage.
     """
     if hebrew_mod.is_hebrew(lang):
@@ -356,7 +356,7 @@ def _load_ecapa():
             source=ECAPA_MODEL, savedir=str(ECAPA_DIR), run_opts={"device": device})
     except Exception as exc:
         _ECAPA_FAILED = True
-        print(f"  tts: speaker embeddings unavailable ({exc}) — "
+        print(f"  tts: speaker embeddings unavailable ({exc}) "
               "references unvalidated", file=sys.stderr)
     return _ECAPA
 
@@ -395,10 +395,10 @@ def reject_voice_outliers(vecs, *, low: float = REF_SIM_OUTLIER,
 
     A candidate is rejected only when BOTH hold: its mean cosine similarity to the
     speaker's other windows is below `low`, and those other windows mutually average
-    at least `coherent` — i.e. the rest agree on one voice and this window doesn't
+    at least `coherent` i.e. the rest agree on one voice and this window doesn't
     match it (a diarization mislabel). A speaker whose windows are all mutually
     dissimilar (noisy/whispered material) keeps everything: there is no consensus
-    voice to reject against. Thresholds are measured — see REF_SIM_OUTLIER above.
+    voice to reject against. Thresholds are measured see REF_SIM_OUTLIER above.
     """
     vecs = np.asarray(vecs, dtype=float)
     n = len(vecs)
@@ -430,7 +430,7 @@ def choose_ref_windows(cands: list[tuple[float, float, float, float]],
     is shorter, takes the cleanest windows until their total reaches `target`
     (they are concatenated by the caller), so a speaker of short lines still gets
     a reference long enough to clone from. With too little material the result is
-    simply everything there is — possibly one short window, the old behaviour.
+    simply everything there is possibly one short window, the old behaviour.
     Returns (start, end) spans in time order.
     """
     if not cands:
@@ -470,7 +470,7 @@ def concat_ref(voc: np.ndarray, spans: list[tuple[float, float]], sr: int = REF_
 def sampling_kwargs(greedy: bool, opts: TtsOpts = ttsopts.DEFAULT) -> dict[str, Any]:
     """The decode arguments for one attempt, main talker and sub-talker in step.
 
-    A greedy attempt ignores `tts_opts`' sampler entirely — which is exactly why
+    A greedy attempt ignores `tts_opts`' sampler entirely which is exactly why
     `ttsopts.parse` refuses to store the two together instead of letting the
     values sit there doing nothing.
     """
@@ -484,13 +484,13 @@ def sampling_kwargs(greedy: bool, opts: TtsOpts = ttsopts.DEFAULT) -> dict[str, 
 
 
 def seed_id(seg: dict[str, Any]) -> str:
-    """The identity the derived seed keys on — stable across re-segmentation.
+    """The identity the derived seed keys on stable across re-segmentation.
 
     `seg["id"]` is positional: inserting one segment renumbers everything after
     it, which silently re-rolls every later line's voice take. `uid` (minted once
     per segment, see APP_ARCHITECTURE.md) does not move, so it is preferred where
     it exists. Falling back to `id` keeps every pre-uid manifest on exactly the
-    seeds — and therefore exactly the cached clips — it already had.
+    seeds and therefore exactly the cached clips it already had.
     """
     return str(seg.get("uid") or seg["id"])
 
@@ -506,7 +506,7 @@ def _verdict(clip: Path, ok: bool, ov: float, heard: str) -> dict[str, Any]:
     """One attempt's verification result, as stored in `clips/<key>.json`.
 
     Built in exactly one place because the pipelined path in `run` and the
-    sequential retry path in `clip_for` must record the same thing — including
+    sequential retry path in `clip_for` must record the same thing including
     `verified`, which is False when there was no ASR to ask. Without that flag the
     two paths both wrote "ok" and a run with no verifier looked, in the manifest
     and in report.json, exactly like a run where every clip passed.
@@ -518,7 +518,7 @@ def _verdict(clip: Path, ok: bool, ov: float, heard: str) -> dict[str, Any]:
 class Plan(NamedTuple):
     """What one segment's attempts are made from (see `Engine._plan`).
 
-    `speak` is the line in its own script — what gets stored, shown and verified.
+    `speak` is the line in its own script what gets stored, shown and verified.
     `synth` is what the checkpoint is handed, which differs only for Hebrew, where
     it is the IPA transcription of `speak` (see `synthesis_text`).
     """
@@ -532,7 +532,7 @@ class Plan(NamedTuple):
     # This segment's own language pair. Usually the run's, but `seg["tgt_lang"]`
     # is a real per-segment override (edit.set_langs writes it and the translator
     # honours it), so the synthesiser, the cache key and the verifier all have to
-    # read it too — a French line synthesised as English, keyed as English and
+    # read it too a French line synthesised as English, keyed as English and
     # verified against an English ASR failed verification every time and fell back
     # to keep, with no hint that a supported override was the cause.
     tgt: str
@@ -550,7 +550,7 @@ def clip_text_stale(seg: dict[str, Any]) -> bool:
     A clip is audio of specific words. Nothing recorded which words, so a
     translate rerun that replaced `text_en` under an existing clip left a segment
     whose voice says the old sentence while the manifest, the subtitle and the
-    editor all show the new one — and the resume test ("there is a clip, and its
+    editor all show the new one and the resume test ("there is a clip, and its
     options match") called that done.
 
     False for records written before the fingerprint existed and for keeps (whose
@@ -568,7 +568,7 @@ def stale_locked_clip(seg: dict[str, Any]) -> bool:
 
     The lock says "this take is approved"; the text says "that is not what this
     line reads any more". Regenerating silently overrules the user's approval and
-    keeping silently ships the wrong words, so neither happens — it is reported
+    keeping silently ships the wrong words, so neither happens it is reported
     (`report.json: stale_locked_clips`) and left for the user to resynthesize or
     unlock.
     """
@@ -581,7 +581,7 @@ def speakable(seg: dict[str, Any]) -> str | None:
     """The text this dubbed segment can be synthesized from, or None.
 
     None is a real state, not an error: `translate.mark_failed` honours a
-    user-locked "dub it" by leaving `keep` false with NO translation — the
+    user-locked "dub it" by leaving `keep` false with NO translation the
     failure was the translator's, and flipping the verdict would be the
     overwrite that path refused. Such a segment reaches this stage with
     nothing to speak; the stage's answer is the universal fallback
@@ -602,7 +602,7 @@ def needs_synthesis(seg: dict[str, Any], workdir: Path) -> bool:
 
     Nor is it enough once the *text* can move under a clip: the record carries a
     fingerprint of the line it was made from too, and a mismatch re-queues the
-    segment — unless the user locked that clip, in which case the conflict is
+    segment unless the user locked that clip, in which case the conflict is
     reported rather than decided (see `stale_locked_clip`).
     """
     rec = seg.get("tts")
@@ -663,7 +663,7 @@ class Engine:
         return self.synth_for(ttsopts.DEFAULT)
 
     def model_for(self, opts: TtsOpts = ttsopts.DEFAULT) -> str:
-        """Which checkpoint this segment uses — its own override, else the run's.
+        """Which checkpoint this segment uses its own override, else the run's.
 
         A Hebrew target has no choice: only the 1.7B Base checkpoint fits the LoRA,
         so a per-segment `tts_opts.model` cannot pick the 0.6B one out from under it.
@@ -681,7 +681,7 @@ class Engine:
         Only ever one is resident: `tts_opts.model` is a per-line escape hatch, and
         two Qwen3-TTS checkpoints in float32 would not fit alongside everything
         else (AGENTS.md device notes). Switching therefore frees the other one,
-        which costs a reload — fine for the handful of lines a user overrides,
+        which costs a reload fine for the handful of lines a user overrides,
         which is why it is not the run-wide default.
         """
         want = self.model_for(opts)
@@ -704,7 +704,7 @@ class Engine:
 
         Keyed by language because a segment may target its own (`seg["tgt_lang"]`):
         a French line checked against the English model reads as gibberish, fails
-        verification every time and falls back to keep — a supported override
+        verification every time and falls back to keep a supported override
         turned into a silent, permanent failure.
         """
         tgt = (tgt or self.tgt_lang or "en").lower()
@@ -713,7 +713,7 @@ class Engine:
             if self._asr[tgt] is None:
                 self.note_degraded(
                     "tts.verify_asr",
-                    f"unavailable: no faster-whisper model for {tgt!r} — "
+                    f"unavailable: no faster-whisper model for {tgt!r} "
                     "clips accepted on length alone")
         return self._asr[tgt]
 
@@ -789,14 +789,14 @@ class Engine:
         if vecs is None:
             self.note_degraded(
                 "tts.speaker_embeddings",
-                "unavailable: clone references unvalidated — a diarization "
+                "unavailable: clone references unvalidated a diarization "
                 "mislabel can clone the wrong voice")
             return cands
         keep = reject_voice_outliers(vecs)
         for c, k in zip(cands, keep):
             if not k:
                 print(f"  tts: {spk} ref window {c[0]:.2f}-{c[1]:.2f} rejected "
-                      "(voice outlier — likely another speaker)", file=sys.stderr)
+                      "(voice outlier likely another speaker)", file=sys.stderr)
         return [c for c, k in zip(cands, keep) if k]
 
     def pinned_ref(self, opts: TtsOpts) -> tuple[Path, str] | None:
@@ -822,7 +822,7 @@ class Engine:
 
     def ref_for(self, seg: dict[str, Any], opts: TtsOpts = ttsopts.DEFAULT
                 ) -> tuple[Path, str] | None:
-        """The segment's own aligned voice — whoever actually speaks in this window.
+        """The segment's own aligned voice whoever actually speaks in this window.
 
         `tts_opts.ref` short-circuits all of this: the user picked the voice.
 
@@ -838,7 +838,7 @@ class Engine:
         embedding confirms it is the same voice as the speaker's canonical
         reference, the canonical (longer, validated) reference is used instead.
         Without embeddings there is no confirmation, and the short aligned window
-        stands — the old behaviour, never a blind widen-by-label.
+        stands the old behaviour, never a blind widen-by-label.
         """
         pinned = self.pinned_ref(opts)
         if pinned is not None:
@@ -867,7 +867,7 @@ class Engine:
     def _matches_canonical(self, span: tuple[float, float], canon: Path) -> bool:
         """ECAPA says the aligned window and the canonical ref are the same voice.
 
-        False whenever embeddings are unavailable — the caller then keeps the
+        False whenever embeddings are unavailable the caller then keeps the
         segment's own audio, exactly the pre-embedding behaviour.
         """
         key = (round(span[0], 2), round(span[1], 2), str(canon))
@@ -878,7 +878,7 @@ class Engine:
             if vecs is None or cvec is None:
                 self.note_degraded(
                     "tts.speaker_embeddings",
-                    "unavailable: clone references unvalidated — short windows "
+                    "unavailable: clone references unvalidated short windows "
                     "clone truncated and nothing confirms the voice")
             got = (vecs is not None and cvec is not None
                    and float(vecs[0] @ cvec) >= REF_MATCH_MIN)
@@ -923,9 +923,9 @@ class Engine:
         A Hebrew-synthesised clip adds one more suffix, for the two things that
         make its audio: the adapter (a different adapter is a different voice
         model) and the IPA that was actually synthesized, which `speak` alone does
-        not pin down — a G2P change would otherwise replay clips of the old
+        not pin down a G2P change would otherwise replay clips of the old
         pronunciation. It hangs off the *call's* language, so an English line
-        voiced inside a Hebrew run (adapter disabled — the base model exactly)
+        voiced inside a Hebrew run (adapter disabled the base model exactly)
         keeps the key it would have had anywhere else.
         """
         # The target language is part of the key so a ru clip never collides with
@@ -955,7 +955,7 @@ class Engine:
             return False, 0.0, f"len={sec:.2f}s"
         model = self.asr_for(tgt)
         if model is None:
-            # Accepted, but not verified — and `_verdict` turns that into a
+            # Accepted, but not verified and `_verdict` turns that into a
             # verdict of its own rather than letting it read as a pass.
             return True, 1.0, NO_ASR
         try:
@@ -971,7 +971,7 @@ class Engine:
         return ov >= CLONE_MIN_OVERLAP, ov, heard[:120]
 
     def tgt_for(self, seg: dict[str, Any]) -> str:
-        """This segment's target language — its own override, else the run's.
+        """This segment's target language its own override, else the run's.
 
         Same rule as `edit._langs`, which is what the translator obeys: if the two
         disagreed, the line would be written in one language and spoken in another.
@@ -982,7 +982,7 @@ class Engine:
         return "he" if hebrew_mod.is_hebrew(tgt) else tgt
 
     def src_for(self, seg: dict[str, Any]) -> str:
-        """This segment's source language — its own override, else the run's."""
+        """This segment's source language its own override, else the run's."""
         return (seg.get("src_lang") or seg.get("lang") or self.src_lang or "he").lower()
 
     def hebrew_for(self, tgt: str | None = None) -> bool:
@@ -999,7 +999,7 @@ class Engine:
     def _plan(self, seg: dict[str, Any], text_en: str) -> Plan | None:
         """Everything an attempt needs, or None if the segment cannot be voiced.
 
-        Raises `ValueError` on an unusable `tts_opts` — a mistyped option is a
+        Raises `ValueError` on an unusable `tts_opts` a mistyped option is a
         mistake to show the user, not something to quietly synthesize around.
         """
         opts = ttsopts.parse(seg.get("tts_opts"))
@@ -1026,7 +1026,7 @@ class Engine:
         generated and still needs verifying; a dict when it was cached; and
         {"failed": True} when generation raised. Isolating this from verification
         is what lets the pipeline in `run` verify one clip while the GPU makes the
-        next — the seed/cache scheme is identical to the sequential path.
+        next the seed/cache scheme is identical to the sequential path.
         """
         greedy = opts.greedy or attempt == MAX_TRIES - 1
         seed = base_seed + 1000 * attempt
@@ -1058,7 +1058,7 @@ class Engine:
         # "unverified" is not "ok": the clip cleared the length guard and no ASR
         # ever heard it. A cached verdict from before this existed has no
         # `verified` key and was written by a run that did have an ASR, so it
-        # reads as verified — every existing record stays exactly as it was.
+        # reads as verified every existing record stays exactly as it was.
         rec = {"clip": f"clips/{clip.name}", "dur": verdict["dur"],
                "tries": attempt + 1, "overlap": verdict["overlap"],
                "verify": "ok" if verdict.get("verified", True) else "unverified"}
@@ -1086,7 +1086,7 @@ class Engine:
         # Escalation: the segment's own aligned window can be too short to clone
         # from (a ~1s reference reliably yields a ~1s truncated clip whatever the
         # text says). After the bounded tries fail, one extra attempt swaps in the
-        # speaker's canonical reference — different audio, different cache key, so
+        # speaker's canonical reference different audio, different cache key, so
         # it is a genuinely new synthesis, never a replay of a cached failure.
         # A pinned `tts_opts.ref` is exempt: the user chose that voice, and
         # escalating past it to the speaker's canonical reference would hand back
@@ -1108,7 +1108,7 @@ class Engine:
             # after it 49s late) is a failure however well it verifies.
             if clip_exceeds_slot(verdict["dur"], slot):
                 print(f"  tts: seg {seg['id']} clip {verdict['dur']:.1f}s vs "
-                      f"{slot:.1f}s slot — rejected", file=sys.stderr)
+                      f"{slot:.1f}s slot rejected", file=sys.stderr)
                 continue
             record = self._record(clip, verdict, attempt, opts, text_en)
             if verdict["ok"]:
@@ -1123,7 +1123,7 @@ class Engine:
         return None
 
     def keep_clip(self, seg: dict[str, Any]) -> dict[str, Any]:
-        """Original audio for this span — the universal fallback.
+        """Original audio for this span the universal fallback.
 
         Named by the span itself, never by segment id: ids are renumbered
         whenever segmentation changes, and an id-keyed cache then hands back a
@@ -1132,15 +1132,15 @@ class Engine:
         `tts_opts.speed` applies here too, through the same atempo path a dub
         uses: it is post-processing on finished audio, and a keep is finished
         audio. It used to be accepted on a kept segment and quietly do nothing.
-        The other options cannot apply — there is no synthesis call to send them
-        to — and `edit.set_tts_opts` refuses them on a keep rather than storing a
+        The other options cannot apply there is no synthesis call to send them
+        to and `edit.set_tts_opts` refuses them on a keep rather than storing a
         knob that does nothing (`keep_pauses` is the exception that is already
         true: a keep's silences are the original's, untouched, which is exactly
         what it asks for).
 
         The record carries the span it was cut for. The clip's *duration* is no
         longer that span once a tempo is applied, and `timeline.build_items`
-        needs to know it is looking at this segment's audio — the recorded span
+        needs to know it is looking at this segment's audio the recorded span
         is what it checks.
         """
         opts = ttsopts.parse(seg.get("tts_opts"))
@@ -1180,7 +1180,7 @@ class _Synth:
     A Hebrew target attaches the Hebrew LoRA to the loaded checkpoint's `talker`.
     That is an addition, not a swap: with the adapter disabled the forward pass is
     the unmodified base model's, so this one object still speaks all ten of the
-    checkpoint's own languages — `generate` picks per call (see `_adapter`).
+    checkpoint's own languages `generate` picks per call (see `_adapter`).
     """
 
     def __init__(self, *, device: str | None = None, model: str = DEFAULT_TTS_MODEL,
@@ -1242,7 +1242,7 @@ class _Synth:
     def _adapter(self, model, lang: str):
         """Context in which the Hebrew LoRA is enabled for `lang`, or disabled.
 
-        Disabled is the base model exactly — that is the adapter's whole contract,
+        Disabled is the base model exactly that is the adapter's whole contract,
         and it is what lets one loaded checkpoint serve a Hebrew line and an English
         one. A synth that never attached the adapter has nothing to toggle and gets
         a no-op either way.
@@ -1274,7 +1274,7 @@ class _Synth:
             got = self._qwen_langs[lang] = qwen_language_name(lang, supported)
             if got == "Auto":
                 print(f"  tts: target {lang!r} not in the checkpoint's supported "
-                      "languages — synthesising with language=Auto", file=sys.stderr)
+                      "languages synthesising with language=Auto", file=sys.stderr)
         return got
 
     def generate(self, speak: str, ref: Path, out: Path, *, seed: int, greedy: bool,
@@ -1288,7 +1288,7 @@ class _Synth:
 
         `lang` names the language of this one call; it defaults to the run's target
         and exists so a segment with its own `tgt_lang` is spoken in that language,
-        and so a Hebrew-loaded synth can also voice a base-language line — which it
+        and so a Hebrew-loaded synth can also voice a base-language line which it
         does with the adapter switched off, i.e. as the plain base model.
         """
         import torch
@@ -1355,7 +1355,7 @@ _ASR_CANDIDATES_MULTI = ("models/faster-whisper-base", "Systran/faster-whisper-b
 
 
 def _asr_candidates(tgt: str) -> tuple[str, ...]:
-    """Which ASR verifies a clip in `tgt` — the source stage's constants, reused.
+    """Which ASR verifies a clip in `tgt` the source stage's constants, reused.
 
     Hebrew gets the ivrit-ai fine-tune the transcript stage already reads Hebrew
     with. The multilingual base model transcribes Hebrew badly enough that the
@@ -1401,7 +1401,7 @@ def _load_asr(tgt: str = "en"):
             return model
         except Exception:
             continue
-    print("  tts: no verification ASR — accepting on length only", file=sys.stderr)
+    print("  tts: no verification ASR accepting on length only", file=sys.stderr)
     return None
 
 
@@ -1456,13 +1456,13 @@ def keep_needs_slice(seg: dict[str, Any], workdir: Path) -> bool:
 def pending(segments: list[dict[str, Any]], workdir: Path) -> list[dict[str, Any]]:
     """The dubbed segments this stage must synthesize.
 
-    A segment with a usable clip is done — that is the resume mechanism, and the
+    A segment with a usable clip is done that is the resume mechanism, and the
     editor's per-segment redo is the same deletion (`edit.invalidate`).
 
     That is also where a `locked` clip is safe: nothing but the user's own edit
     deletes a locked record (`manifest.reset_stage`, `clear_failed_keeps` and
     `edit.invalidate` all skip it), so a locked clip is by definition still on disk
-    and never lands here. A lock whose clip is *gone* is unhonorable — never-silent
+    and never lands here. A lock whose clip is *gone* is unhonorable never-silent
     outranks it and that segment is synthesized again.
     """
     return [s for s in segments if not s.get("keep") and needs_synthesis(s, workdir)]
@@ -1484,7 +1484,7 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
     for seg in m["segments"]:
         if stale_locked_clip(seg):
             print(f"  tts: seg {seg['id']} locked clip was made for different text "
-                  "— left alone; it still speaks the old line", file=sys.stderr)
+                  "left alone; it still speaks the old line", file=sys.stderr)
     engine.build_speaker_refs()
     todo = pending(m["segments"], workdir)
 
@@ -1504,12 +1504,12 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
             text = speakable(seg)
             if text is None:
                 # mt_failed on a user-locked dub: nothing to speak. The line
-                # plays its original slice — exactly what the editor promises
-                # of a failed translation — and stays failed until the user
+                # plays its original slice exactly what the editor promises
+                # of a failed translation and stays failed until the user
                 # re-translates it.
                 if keep_needs_slice(seg, workdir):
                     seg["tts"] = engine.keep_clip(seg)
-                print(f"  tts: seg {seg['id']} has no translation — the original "
+                print(f"  tts: seg {seg['id']} has no translation the original "
                       "plays until it is re-translated", file=sys.stderr)
                 continue
             plan = engine._plan(seg, text)
@@ -1522,7 +1522,7 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
             if verdict is not None and verdict.get("failed"):
                 retry.append(seg)
                 continue
-            if verdict is not None:                    # cache hit — no verify needed
+            if verdict is not None:                    # cache hit no verify needed
                 if verdict["ok"]:
                     seg["tts"] = engine._record(clip, verdict, 0, opts, seg["text_en"])
                 else:
@@ -1560,7 +1560,7 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
     if save:
         save()
 
-    # Every keep gets its original-audio slice — that is the never-silent floor.
+    # Every keep gets its original-audio slice that is the never-silent floor.
     for seg in m["segments"]:
         if not seg["keep"]:
             continue

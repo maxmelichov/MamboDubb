@@ -3,7 +3,7 @@
 One rule holds this file together: *a verdict written by a failure path must be
 as visible and as reversible as the user verdict it overrules.* Every test here
 pins one place where the pipeline used to overrule the user, degrade itself, or
-give up on a segment without saying so — or where two code paths disagreed about
+give up on a segment without saying so or where two code paths disagreed about
 which lock protects the same undo.
 """
 
@@ -48,8 +48,8 @@ def locked_keep(**kw):
 def test_every_path_that_undoes_a_pipeline_keep_honours_the_same_lock():
     # `manifest.reset_stage`, `edit.invalidate` and `tts.clear_failed_keeps` all
     # undo the same verdict (a keep the pipeline decided for itself). They used to
-    # disagree about which lock protects it — clear_failed_keeps guarded `tts`
-    # while the other two guarded `keep` — so a user-locked keep was silently
+    # disagree about which lock protects it clear_failed_keeps guarded `tts`
+    # while the other two guarded `keep` so a user-locked keep was silently
     # re-decided on every tts run.
     a = locked_keep()
     manifest.reset_stage({"segments": [a]}, "tts")
@@ -81,8 +81,8 @@ def test_an_unlocked_pipeline_keep_is_still_re_decided_everywhere():
 # ------------------------------------- locks nothing could honour (D-9/S-F10)
 
 def test_place_and_bounds_are_not_lockable_because_nothing_honours_them():
-    # `timeline.run` rewrites every seg["place"] in one forward pass — placement is
-    # all-or-nothing by design — and re-segmentation rebuilds every span, so a
+    # `timeline.run` rewrites every seg["place"] in one forward pass placement is
+    # all-or-nothing by design and re-segmentation rebuilds every span, so a
     # `locked.place` / `locked.bounds` was state that lied. The API rejects them
     # rather than accepting a promise it cannot keep.
     assert "place" not in manifest.LOCK_FIELDS
@@ -128,7 +128,7 @@ def test_set_keep_still_drops_the_line_the_flip_invalidated():
 
 def test_apply_passthrough_releases_the_tts_lock_it_invalidates():
     # The flip makes the clip the wrong *kind* (a synthesis for a keep), so the
-    # lock on it is answered explicitly — exactly what `edit.set_keep` does —
+    # lock on it is answered explicitly exactly what `edit.set_keep` does —
     # instead of the record being deleted with the lock left behind, claiming the
     # user approved a clip that no longer exists.
     segs = [seg(passthrough=True, text_en="Hello", locked={"tts": True},
@@ -233,7 +233,7 @@ def record(verdict, **kw):
 
 def test_a_clip_no_asr_ever_heard_is_recorded_as_unverified():
     # `_verify` accepts on length alone when there is no verification ASR. That is
-    # a verdict of its own — the record used to say "ok", so a run where nothing
+    # a verdict of its own the record used to say "ok", so a run where nothing
     # was checked read exactly like a run where everything passed.
     rec = record({"ok": True, "overlap": 1.0, "heard": tts_mod.NO_ASR, "dur": 1.0,
                   "verified": False})
@@ -267,7 +267,7 @@ def report_segments():
 
 def test_report_counts_what_the_run_could_not_do(tmp_path, monkeypatch):
     m = report_segments()
-    m["health"] = {"segments.diarization": "unavailable (no HF_TOKEN) — every "
+    m["health"] = {"segments.diarization": "unavailable (no HF_TOKEN) every "
                                            "speaker cloned as one voice"}
     rep = fake_report_run(m, tmp_path, monkeypatch)
     assert rep["verify"]["unverified"] == 1        # never folded into "ok"
@@ -283,7 +283,7 @@ def test_the_summary_says_when_nothing_was_verified(tmp_path, monkeypatch, capsy
 
 
 def test_diarization_failure_is_recorded_not_only_printed():
-    # The commonest cause is a missing HF_TOKEN — a five-second fix the user never
+    # The commonest cause is a missing HF_TOKEN a five-second fix the user never
     # hears about while the fallback (one voice for the whole file) only prints.
     from pathlib import Path
 
@@ -325,7 +325,7 @@ def test_a_locked_clip_whose_line_moved_is_a_conflict_not_a_silent_verdict(tmp_p
     clip_on_disk(tmp_path)
     s = dubbed_with_clip(locked={"tts": True})
     s["text_en"] = "Greetings, friend"
-    # Never silently regenerated — the user approved this take ...
+    # Never silently regenerated the user approved this take ...
     assert not tts_mod.needs_synthesis(s, tmp_path)
     assert tts_mod.pending([s], tmp_path) == []
     # ... and never silently kept either: it is surfaced.
@@ -353,7 +353,7 @@ def fr_engine(tmp_path):
 def test_a_segments_own_target_language_reaches_the_synthesiser(tmp_path):
     # `edit.set_langs` honours seg["tgt_lang"] for translation. The Engine read
     # only the run's target, so a French line was prepared, keyed, synthesised and
-    # ASR-verified as English — it failed verification every time and degraded to
+    # ASR-verified as English it failed verification every time and degraded to
     # tts_failed, with nothing pointing at the override as the cause.
     eng = fr_engine(tmp_path)
     fr = seg(text_en="Bonjour tout le monde", tgt_lang="fr")
@@ -398,7 +398,7 @@ def test_the_synth_is_told_which_language_to_speak(tmp_path, monkeypatch):
 # --------------------------------- tts_opts on a kept segment (D-9 / audit 9)
 
 class KeepEngine(tts_mod.Engine):
-    """A real Engine with the ffmpeg calls replaced — the bookkeeping is the point."""
+    """A real Engine with the ffmpeg calls replaced the bookkeeping is the point."""
 
     def __init__(self, tmp_path, monkeypatch):
         m = {"source": {"src_lang": "he", "tgt_lang": "en"},
@@ -493,8 +493,8 @@ class FallbackEngine:
 
 
 def test_resynthesize_does_not_call_a_keep_fallback_a_synthesis(monkeypatch, tmp_path):
-    # "synthesized 1 segment(s)" for a segment that was NOT synthesized — it fell
-    # back to its original audio — and no word about the placement that never ran.
+    # "synthesized 1 segment(s)" for a segment that was NOT synthesized it fell
+    # back to its original audio and no word about the placement that never ran.
     monkeypatch.setattr(tts_mod, "Engine", FallbackEngine)
     m = mk(seg(start=0.0, end=2.0, text_en="Hello there"),
            seg(id=1, start=2.0, end=4.0, text_en="still being edited"))

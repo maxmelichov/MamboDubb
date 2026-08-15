@@ -1,4 +1,4 @@
-"""Which segments play their original audio instead of a dub — and the user's override.
+"""Which segments play their original audio instead of a dub and the user's override.
 
 Two decisions live here, and they are the same decision reached twice. `mark_keep`
 is the pipeline's automatic verdict (span, script, speaker-prior rules); the
@@ -6,7 +6,7 @@ is the pipeline's automatic verdict (span, script, speaker-prior rules); the
 `seg["keep"]`, so tts slices the original audio, the timeline reserves the exact
 span, and mix ducks the bed away instead of laying a dub over it.
 
-Pure functions over segment dicts — no audio, no models. Split out of
+Pure functions over segment dicts no audio, no models. Split out of
 `dubbing/segments.py`, which re-exports the five entry points the pipeline and the
 front ends call as `segments.<name>`.
 """
@@ -26,10 +26,10 @@ SPEAKER_EN_RATIO = 0.60
 # ...and how sure the per-segment language witness must be to overturn that prior on
 # one segment. Well above LID_MIN_PROB: every documented mislabel of the classifier
 # sat at 0.34-0.60, and the cost of a wrong veto is dubbing over a speaker who really
-# was speaking the target language — the bug this whole class is about.
+# was speaking the target language the bug this whole class is about.
 SPEAKER_EN_VETO_PROB = 0.85
 
-# Passthrough — the editor app's per-segment override (manifest field `passthrough`).
+# Passthrough the editor app's per-segment override (manifest field `passthrough`).
 # True plays the original audio for that span, False dubs it, absent decides
 # automatically. It rides the existing keep machinery: a passthrough segment is a
 # keep, so tts slices the original audio for it, the timeline reserves its exact
@@ -54,12 +54,12 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
     Three content-free rules: the segment came out of a detected non-source-language
     span, its text is already in the target script, or its speaker is predominantly a
     target-language speaker and nothing about this one segment says otherwise (the
-    speaker prior catches the lines the per-segment script test cannot judge — text
+    speaker prior catches the lines the per-segment script test cannot judge text
     with no script majority either way, and every segment of a same-script pair).
 
     The span rule has to be structural. A span in a language no ASR here reads carries
     no text at all, and judging it by script would file it as transcript noise and drop
-    it — airing nothing where somebody is speaking.
+    it airing nothing where somebody is speaking.
 
     When source and target share a script, the two script rules are meaningless and
     stay off; only the span rule (fed by the LID path upstream) marks keeps then.
@@ -68,7 +68,7 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
     dub path instead: its language is known (not "und") and its transcription is real
     (not the "…" placeholder), so the translate stage can render it in the target and
     TTS can voice it from the segment's own audio. Anything less confident keeps its
-    original audio exactly as before — never silent.
+    original audio exactly as before never silent.
 
     The speaker rule is a PRIOR, not a verdict. It is measured over a whole speaker,
     so it also keeps the genuine source-language lines of a mostly-target speaker,
@@ -78,11 +78,11 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
     - the segment's own TEXT is dominantly in the source script (cross-script pairs
       only). A speaker who alternates languages transcribes as source script exactly
       where they spoke the source language, and that is the one witness always
-      present — it needs no model and does not depend on clip length.
+      present it needs no model and does not depend on clip length.
     - `seg_lang(seg)` returns the language classifier's verdict for that one segment
       as `(lang, prob)` (or None when it has none) and it names the source language
-      confidently. The bar is deliberately high — the classifier's documented
-      mislabels sit in the 0.34-0.60 band — so an unsure verdict changes nothing.
+      confidently. The bar is deliberately high the classifier's documented
+      mislabels sit in the 0.34-0.60 band so an unsure verdict changes nothing.
 
     The text witness is what the audio one cannot be: short source-language clips
     routinely come back from the classifier as None or as a low-probability wrong
@@ -124,7 +124,7 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
         transcript is written dominantly in the SOURCE script, which for a
         cross-script pair says this line was not spoken in the target language.
         The AUDIO witness: the language classifier confidently names the source
-        language over that span. Either alone overturns the prior — the audio
+        language over that span. Either alone overturns the prior the audio
         witness goes missing or guesses nonsense on short clips, which is how
         whole passages of genuine source speech used to ride a speaker's prior
         through the pipeline undubbed.
@@ -151,7 +151,7 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
         The mirror of the named-span rule, for witnesses the transcript left
         nameless: script cannot tell English from German, but the classifier
         can, and a confident non-target name outranks "it looks like the
-        target's script" for exactly the reason a named span does — a he→de
+        target's script" for exactly the reason a named span does a he→de
         run kept fifty lines of English as "already German" on script alone.
         Same confidence bar as the source veto: an unsure verdict changes
         nothing, and with no classifier at all nothing changes either.
@@ -173,7 +173,7 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
             # outranks the script: English inside a he→de run is Latin-script but
             # it is NOT German, and letting script overrule the name kept a whole
             # video of English marked "already the target" in a German dub. The
-            # script clause keeps its say only when the witness is nameless — a
+            # script clause keeps its say only when the witness is nameless a
             # caption span with no language label, where target-script text is
             # still the best evidence there is.
             named = lang not in ("", "und")
@@ -183,7 +183,7 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
             if (dub_foreign and not in_target and lang and lang != "und"
                     and (seg.get("text") or "").strip() not in ("", "…")):
                 # Opted in, and the span is confident: known language, real words.
-                # This one is dubbable — translate reads seg["lang"] as its source.
+                # This one is dubbable translate reads seg["lang"] as its source.
                 seg["keep"], seg["keep_reason"] = False, None
                 continue
             seg["keep"] = True
@@ -199,7 +199,7 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
             seg["keep"], seg["keep_reason"] = True, "speaker_en"
         elif genre == "movie" and is_interjection_keep(seg, src, target):
             # Movie mode: a standalone greeting/interjection beat plays in the
-            # actor's real voice — better than any clone for a one-word line.
+            # actor's real voice better than any clone for a one-word line.
             # The subtitle still shows the translation (see translate.run).
             seg["keep"], seg["keep_reason"] = True, "interjection"
         else:
@@ -209,7 +209,7 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
 def apply_passthrough(segments: list[dict[str, Any]]) -> list[int]:
     """Honour the per-segment `passthrough` override; returns the ids it flipped.
 
-    The override is the user's word, so it is applied on every run — after the
+    The override is the user's word, so it is applied on every run after the
     automatic rules in `mark_keep`, and again before any downstream stage, since
     the app writes it into a finished manifest and expects the next run to obey it.
 
@@ -223,7 +223,7 @@ def apply_passthrough(segments: list[dict[str, Any]]) -> list[int]:
     Whatever the flip invalidates goes with it: the translation, the clip and the
     placement of a flipped segment were made for the other path, and leaving them
     behind would dub a passthrough span or play original audio over a dub's slot.
-    This is what makes the function safe to call every run — it is idempotent, and
+    This is what makes the function safe to call every run it is idempotent, and
     only a real change of verdict throws work away.
     """
     flipped: list[int] = []
@@ -234,14 +234,14 @@ def apply_passthrough(segments: list[dict[str, Any]]) -> list[int]:
         if not want and not (seg.get("text") or "").strip():
             # Nothing to translate and nothing to speak: a "dub this" override on a
             # span with no words would strip the original audio and put nothing in
-            # its place. The keep stands — never silent outranks the override.
+            # its place. The keep stands never silent outranks the override.
             continue
         if want:
             seg["keep"], seg["keep_reason"] = True, PASSTHROUGH_REASON
         else:
             seg["keep"], seg["keep_reason"] = False, None
         # A hand-corrected line survives the flip: as a dub it is what gets
-        # spoken, as a keep it is the subtitle — either way it is the user's
+        # spoken, as a keep it is the subtitle either way it is the user's
         # word, and this function exists to honour exactly that.
         from . import manifest as manifest_mod
 
@@ -251,7 +251,7 @@ def apply_passthrough(segments: list[dict[str, Any]]) -> list[int]:
             seg.pop(field, None)
         # The clip is the wrong KIND now (a synthesis under a keep, or a slice of
         # the original under a dub), so a `locked.tts` on it is answered rather
-        # than left standing over a record that no longer exists — exactly what
+        # than left standing over a record that no longer exists exactly what
         # `edit.set_keep` does at the studio's own door. Leaving the lock behind
         # would tell every later run the user approved a clip that is gone.
         locked = seg.get("locked") or {}
@@ -274,7 +274,7 @@ def user_wants_dub(seg: dict[str, Any]) -> bool:
 
     The reason this needs a name: a stage that fails to dub the line answers with
     a keep (`mt_failed`, `tts_failed`), and a keep written over this verdict does
-    not merely overrule the user — it contradicts the manifest. The next run's
+    not merely overrule the user it contradicts the manifest. The next run's
     `apply_passthrough` reads `passthrough=False` beside `keep=True`, flips it
     back, drops the translation, the clip and the placement, and the whole tail of
     the run is redone to reach the same failure again, forever.
@@ -293,8 +293,8 @@ def carry_passthrough(segments: list[dict[str, Any]],
     Re-running the segments stage throws every segment away and renumbers what
     replaces it, so an override cannot be carried by id. It is carried by *time*:
     the new segment covering the same moment inherits it. Both directions must
-    agree — the new segment mostly inside the old span and the old span mostly
-    inside the new one — so a re-segmentation that merges four lines into one
+    agree the new segment mostly inside the old span and the old span mostly
+    inside the new one so a re-segmentation that merges four lines into one
     does not silently spread one line's override across all four.
     """
     stuck = 0
@@ -332,8 +332,8 @@ def stamp_detected_lang(segments: list[dict[str, Any]],
     A label is only stamped when the run it comes from covers most of the segment
     (`DETECT_MIN_COVER`); a segment straddling a language change has no one
     answer, and a half-covered label would suggest the wrong thing. A stamp that
-    is already there — from the span the segment was built out of, which knows
-    better — is never overwritten.
+    is already there from the span the segment was built out of, which knows
+    better is never overwritten.
     """
     runs = [(float(r["start"]), float(r["end"]), r.get("lang") or "")
             for r in (lang_runs or []) if (r.get("lang") or "")]

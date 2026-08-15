@@ -25,7 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Legacy ISO-639 spellings mean the same language to us, to whisper and to the script
 # table. Normalised once, at the entry point, so exactly one spelling of each language
-# reaches the manifest — otherwise `--src iw --tgt he` looks like a cross-language pair.
+# reaches the manifest otherwise `--src iw --tgt he` looks like a cross-language pair.
 LANG_ALIASES = {"iw": "he", "ji": "yi", "in": "id"}
 
 
@@ -37,13 +37,13 @@ def normalize_lang(code: str) -> str:
 def check_langs(args: argparse.Namespace) -> None:
     """Refuse a language pair this machine cannot actually dub, and say why.
 
-    Hebrew is a target only when its two local models are present — the Qwen3-TTS
+    Hebrew is a target only when its two local models are present the Qwen3-TTS
     Hebrew LoRA and the G2P that feeds it stressed IPA (see `dubbing/hebrew.py`).
     A run that discovered this at the tts stage would have already paid for stems,
     ASR, diarization and translation.
 
     A same-language pair is *not* refused: `--src he --tgt he` is a dub, not a
-    mistake — every speech segment is re-voiced in the cloned voice with no
+    mistake every speech segment is re-voiced in the cloned voice with no
     translation step (see `translate.run`).
     """
     if hebrew.is_hebrew(args.tgt):
@@ -73,10 +73,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--tgt", default="en", help="target language code (default: en)")
     p.add_argument("--duration", type=float, help="only dub the first N seconds")
     p.add_argument("--context", help="one-line note on who/what the video is about and "
-                   "the spellings of names the ASR mangles — steers the translator")
+                   "the spellings of names the ASR mangles steers the translator")
     # Every option in RECORDED_DEFAULTS defaults to None, not to its value: the
     # value is applied by `resolve_settings`, which cannot tell "the user typed the
-    # default" from "the user typed nothing" once argparse has filled one in — and
+    # default" from "the user typed nothing" once argparse has filled one in and
     # the difference is whether a re-run keeps this run's settings or overwrites
     # them with the defaults. The effective default is in RECORDED_DEFAULTS.
     p.add_argument("--register", choices=("narration", "dialogue"), default=None,
@@ -103,7 +103,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 # Files a stage must have left on disk to count as done. Empty for the stages whose
-# whole result lives in the manifest — which is why forcing one has to invalidate
+# whole result lives in the manifest which is why forcing one has to invalidate
 # the rest explicitly; see `apply_force`.
 STAGE_OUTPUTS: dict[str, list[str]] = {
     "fetch": ["source.wav"],
@@ -140,7 +140,7 @@ def resolve_settings(args: argparse.Namespace, m: dict[str, Any] | None = None) 
     Three sources, in order of authority: the flag on this command line, what the
     manifest recorded about the run being re-run, and RECORDED_DEFAULTS. Without
     the middle one a bare `python -m dubbing <input>` on an existing run was not a
-    re-run at all — argparse's defaults overwrote `m["source"]`, which flipped the
+    re-run at all argparse's defaults overwrote `m["source"]`, which flipped the
     segments/translate/timeline fingerprints, and a changed segments fingerprint
     empties `m["segments"]`: every edit, lock and passthrough in the project, gone,
     for typing the command without its flags.
@@ -178,12 +178,12 @@ def stage_params(args: argparse.Namespace, m: dict[str, Any]) -> dict[str, dict[
         "stems": {},
         # `origin` is this stage's own output (ASR, or the captions fallback when
         # ASR was unavailable), and the two produce different words for the same
-        # parameters — so a run whose transcript source changed invalidates
+        # parameters so a run whose transcript source changed invalidates
         # everything built on it, instead of caching a degraded transcript forever.
         "transcript": {"src": args.src, "tgt": args.tgt, "prefer": args.transcript,
                        "origin": m["source"].get("transcript_origin")},
         # segments reads tgt_lang from the manifest, so the pair must be in its
-        # fingerprint — with params={} changing --tgt never invalidated it.
+        # fingerprint with params={} changing --tgt never invalidated it.
         "segments": {"src": args.src, "tgt": args.tgt, "dub_foreign": args.dub_foreign,
                      "genre": args.genre},
         "translate": {"src": args.src, "tgt": args.tgt,
@@ -192,8 +192,8 @@ def stage_params(args: argparse.Namespace, m: dict[str, Any]) -> dict[str, dict[
         # Two version knobs that change the audio and are not otherwise in here:
         # the reference-building recipe (`m["speakers"]` survives a tts reset, so
         # nothing else would notice a new one) and the Hebrew LoRA's tag. Bumping
-        # either used to leave every existing clip in place — `needs_synthesis`
-        # answers by file existence — and quietly ship the old voice.
+        # either used to leave every existing clip in place `needs_synthesis`
+        # answers by file existence and quietly ship the old voice.
         "tts": {"model": args.tts_model, "tgt": args.tgt,
                 "refs": tts_mod.Engine.REF_BUILD,
                 **({"adapter": hebrew.ADAPTER_TAG} if hebrew.is_hebrew(args.tgt) else {})},
@@ -208,7 +208,7 @@ def apply_force(m: dict[str, Any], force: str | None) -> list[str]:
 
     Downstream does not fall out of the fingerprint chain here. Forcing re-runs a
     stage with the same tag, the same params and the same upstream fingerprint, so
-    every downstream fingerprint recomputes identical — and translate/tts/timeline
+    every downstream fingerprint recomputes identical and translate/tts/timeline
     declare no output files, so `stage_done`'s `all([])` is True and they print "up
     to date" and skip. The re-run really does discard what they were built on, so
     their records are dropped explicitly.
@@ -255,7 +255,7 @@ def main(argv: list[str] | None = None) -> int:
     # Honour it before anything is skipped as up to date: a flip changes what the
     # translate, tts, timeline and mix stages produced, so their "done" marks come
     # off and they run again. Their *progress* marks stay, so the stages resume
-    # rather than restart — only the flipped segments lost their work (see
+    # rather than restart only the flipped segments lost their work (see
     # segments.apply_passthrough), and every other line keeps its translation and
     # its clip. Nothing happens at all when no override changed a verdict.
     overrides = segments.saved_overrides(m.get("segments") or [])
@@ -263,7 +263,7 @@ def main(argv: list[str] | None = None) -> int:
     if flipped:
         print(f"passthrough: {len(flipped)} segment(s) re-decided by the user "
               f"({', '.join(str(i) for i in flipped[:8])}"
-              f"{'…' if len(flipped) > 8 else ''}) — redoing from translate",
+              f"{'…' if len(flipped) > 8 else ''}) redoing from translate",
               file=sys.stderr)
         manifest.reopen_from(m, "translate")
 
@@ -302,7 +302,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[{stage}] up to date", file=sys.stderr)
                 manifest.mark_stage(m, stage, fp)
                 continue
-            print(f"[translate] {len(holes)} line(s) still untranslated — re-entering",
+            print(f"[translate] {len(holes)} line(s) still untranslated re-entering",
                   file=sys.stderr)
 
         print(f"[{stage}]", file=sys.stderr)
@@ -324,12 +324,12 @@ def main(argv: list[str] | None = None) -> int:
                            prefer=args.transcript)
             # This stage's fingerprint contains its own verdict about where the
             # words came from, so the mark has to describe what it produced, not
-            # what was known before it ran — otherwise a first run would spend the
+            # what was known before it ran otherwise a first run would spend the
             # next one redoing the whole pipeline to reach the same answer.
             params = stage_params(args, m)
             fp = manifest.stage_fingerprint(m, stage, params[stage])
             if transcript.is_fallback(m, args.transcript):
-                print("  transcript: this is the captions fallback, not ASR — the "
+                print("  transcript: this is the captions fallback, not ASR the "
                       "next run will try the ASR again", file=sys.stderr)
                 manifest.mark_provisional(m, stage, fp)
                 save()
@@ -381,7 +381,7 @@ def _retimers(m, workdir: Path, engine, args):
     keeps its own device and both stay resident.
 
     A same-language run has none: `(None, None)` tells `timeline.run` not to ask,
-    and it absorbs overhang with speed-up and drift instead — which `place` still
+    and it absorbs overhang with speed-up and drift instead which `place` still
     keeps non-overlapping, so the invariant is untouched. Shortening a line here
     would mean loading Gemma to *rewrite the speaker's own words in their own
     language*, which is a rewrite, not a translation, and a same-language dub says
@@ -395,7 +395,7 @@ def _retimers(m, workdir: Path, engine, args):
             engine.close()
         processor, model, device = translate.load()
         segs = m["segments"]
-        # preceding is SOURCE-language text by convention — see translate._PRECEDING.
+        # preceding is SOURCE-language text by convention see translate._PRECEDING.
         before = {s["id"]: prev["text"] for prev, s in zip(segs, segs[1:])}
         # On a pivot run the shorten re-translates from the English intermediate
         # (the measured-good line), so its preceding context is English too.

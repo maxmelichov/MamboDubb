@@ -1,4 +1,4 @@
-"""Stage 4 — group the word stream into speakable segments.
+"""Stage 4 group the word stream into speakable segments.
 
 The splitting and merging rules are pure functions over the word list, so they
 unit-test without audio; only `diarize` and `refine_turns` touch a model, and
@@ -47,7 +47,7 @@ MAX_LEN = 10.0         # target segment length; stubs never merge past it
 # A group only reaches the length splitter if it holds no interior sentence end,
 # i.e. it is a single sentence. Splitting one mid-clause makes both halves
 # translate badly (each fragment is ambiguous) and gives them separate, clashing
-# TTS prosody — the audible "jump". Qwen voices ~13s cleanly, so a lone long
+# TTS prosody the audible "jump". Qwen voices ~13s cleanly, so a lone long
 # sentence is kept whole and only genuinely huge ones are split.
 SENTENCE_MAX = 13.0
 MIN_LEN = 1.2          # below this a segment is a stub and wants merging
@@ -84,7 +84,7 @@ TURN_GAP_SPLIT = 0.8   # silence between two diarization turns that forces a spl
 # A diarization turn shorter than this is not a speaker turn. Pyannote sprinkles
 # sub-half-second turns of a second label through one person's speech (a breath, a
 # louder syllable, a bar of music under the voice), and every one of them used to
-# cut two segment boundaries into the middle of a sentence — the fragments then
+# cut two segment boundaries into the middle of a sentence the fragments then
 # carried the wrong speaker, never re-merged (a stub only merges into a
 # same-speaker neighbour) and were voiced by a different clone. Nothing this short
 # is dubbable on its own either (MIN_SEG_SEC is 0.9), so a real interjection of
@@ -98,7 +98,7 @@ ISLAND_GAP_MAX = 0.60
 # How far a segment's start may move back to meet the diarization onset of its own
 # speaker at a handoff. Whisper's first word timestamp after a speaker change lands
 # late (the new voice's onset is inside the previous speaker's decaying tail, and
-# the decoder anchors on the first clean frame), which delays the dub — and for a
+# the decoder anchors on the first clean frame), which delays the dub and for a
 # kept segment delays the original audio against the picture. Pyannote's turn start
 # is the better estimate of when the voice actually began.
 HANDOFF_SNAP = 0.30
@@ -126,7 +126,7 @@ REFINE_MAX_TURNS = 12      # a longer same-label run is one person holding the f
                            # (a news read, a lecture) with pauses in it, not two
                            # people pyannote failed to tell apart. Cutting such a run
                            # in two renames half of the dominant speaker's turns for
-                           # the rest of the video — the worst possible outcome, since
+                           # the rest of the video the worst possible outcome, since
                            # every downstream stage then hears two speakers where the
                            # viewer sees one. Two voices genuinely fused by clustering
                            # show up as a short alternating exchange, so the evidence
@@ -135,7 +135,7 @@ REFINE_MARGIN = 1.10       # the cross-cluster linkage must also beat the widest
                            # within-cluster merge by this factor: an absolute cut
                            # alone splits one voice recorded two ways (studio vs
                            # phone line) as readily as two voices. Measured
-                           # courtroom: 0.88 against 0.77 * 1.10 = 0.85 — still splits.
+                           # courtroom: 0.88 against 0.77 * 1.10 = 0.85 still splits.
 
 
 def text_bucket(text: str, src: str = "he", tgt: str = "en") -> str | None:
@@ -144,7 +144,7 @@ def text_bucket(text: str, src: str = "he", tgt: str = "en") -> str | None:
     Script is a cheap, high-precision language signal only when the pair is
     written differently. For a same-script pair (en→es) letters carry no signal
     at all, so the answer is always None and every script-based shortcut stays
-    off — the LID callback path decides instead.
+    off the LID callback path decides instead.
     """
     if script.same_script(src, tgt):
         return None
@@ -224,11 +224,11 @@ def smooth_turns(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
     sits between two blocks that are both Y and both longer than it, at least one
     of which is a real turn, and is separated from them by no more than
     ISLAND_GAP_MAX of silence on either side, is relabelled Y. The shortest island
-    goes first, so a *flutter* — measured: 0.54/0.02/0.02/0.02/0.34s alternating
-    between two labels inside one sentence — collapses from the inside out into a
+    goes first, so a *flutter* measured: 0.54/0.02/0.02/0.02/0.34s alternating
+    between two labels inside one sentence collapses from the inside out into a
     single turn instead of surviving as six. Nothing that short is a speaker turn;
     it is a clustering blip, and left alone it cuts the sentence around it into
-    three segments, the middle one attributed — and later voiced — as somebody
+    three segments, the middle one attributed and later voiced as somebody
     else. Timings are never touched, so the audio each word belongs to does not
     move; only the label does. A genuine short interruption from a field reporter
     or an interviewee runs seconds, not milliseconds, and is left exactly as
@@ -273,7 +273,7 @@ def real_turns(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
     Word labelling and boundary cutting must read the same view of diarization,
     or a turn too short to justify a cut still steals the label of the words
     inside it and splits the segment anyway (through the word-level speaker-change
-    rule). If every turn is short — a very quiet file, a degenerate diarization —
+    rule). If every turn is short a very quiet file, a degenerate diarization —
     the filter would leave nothing to attribute to, so the full list stands.
     """
     kept = [t for t in turns if t["end"] - t["start"] >= MIN_TURN_SEC]
@@ -351,7 +351,7 @@ def _turn_boundaries(turns: list[dict[str, Any]]) -> list[tuple[float, bool]]:
     """(time, protect) pairs where diarization demands a segment cut.
 
     A speaker handover cuts at the incoming turn's start. A silence gap of at
-    least TURN_GAP_SPLIT between consecutive turns — same speaker or not — cuts
+    least TURN_GAP_SPLIT between consecutive turns same speaker or not cuts
     at the gap's midpoint, and that cut is *protected*: clustering often labels
     two different characters' turns with one speaker, so `_merge_stubs`'s
     same-speaker rule would quietly glue the halves back together. A protected
@@ -383,7 +383,7 @@ def _split_speaker_turns(segs: list[dict[str, Any]],
 
     Fast dialogue hands the floor over with no pause, so the gap-confirmed
     speaker split above misses it and two characters' turns fuse into one
-    segment — courtroom Q+A dubbed in a single cloned voice. The turn list
+    segment courtroom Q+A dubbed in a single cloned voice. The turn list
     knows where the handover happened; cut between the two words nearest it,
     with at least one word on each side, so the pieces stay non-overlapping
     and keep their word alignment. Inter-turn silence gaps cut the same way
@@ -437,8 +437,8 @@ def _merge_stubs(segs: list[dict[str, Any]], src: str = "he",
             if i + 1 < len(out) and out[i + 1]["speaker"] == seg["speaker"]:
                 cands.append((out[i + 1]["start"] - seg["end"], i + 1))
             def _allow(j: int) -> float:
-                # A lone word — or a fragment too short for TTS to voice at
-                # all — may cross a dramatic pause, but only to rejoin a
+                # A lone word or a fragment too short for TTS to voice at
+                # all may cross a dramatic pause, but only to rejoin a
                 # substantial neighbour: two stranded stubs re-merging would
                 # undo a real pause split.
                 tgt_seg = out[j]
@@ -474,7 +474,7 @@ def _embedded_target(words: list[dict[str, Any]], src: str = "he",
     A lone acronym or brand dropped into source speech (`...מממן את ISIS, את...`)
     is written in the target script but spoken by the same person in the same
     breath. Treating it as a script change would carve it into its own segment and
-    play a fraction of a second of original audio — an audible voice jump. Only a
+    play a fraction of a second of original audio an audible voice jump. Only a
     sustained run of target-script words is a real target-language passage;
     anything shorter stays with its neighbours and is dubbed like the rest of the
     sentence. For a same-script pair no word reads as target, so nothing is marked.
@@ -504,7 +504,7 @@ def words_to_segments(words: list[dict[str, Any]], src: str = "he",
         return []
     ends = word_ends(words)
     # When the transcript marks speaker changes itself those markers are exact,
-    # so diarization gets no vote on boundaries — its edges land a word or two
+    # so diarization gets no vote on boundaries its edges land a word or two
     # off and would cut sentences in half. Without markers (ASR fallback) a
     # diarization change still splits, but only when a real pause confirms it.
     has_markers = any(w.get("brk") for w in words)
@@ -515,7 +515,7 @@ def words_to_segments(words: list[dict[str, Any]], src: str = "he",
         w, prev = words[i], words[i - 1]
         gap = speech_gap(prev, w)
         # A change of script is a change of language, and the two halves get
-        # opposite treatment — one dubbed, one kept as original audio — so they
+        # opposite treatment one dubbed, one kept as original audio so they
         # can never share a segment. An embedded token (a short target-script run)
         # is not a language change and does not set or break the script context.
         this_bucket = None if embedded[i] else text_bucket(w["text"], src, tgt)
@@ -604,7 +604,7 @@ def _residues(seg: dict[str, Any],
               spans: list[dict[str, Any]]) -> list[tuple[float, float]]:
     """The stretches of a segment that no span covers, in order.
 
-    A segment can straddle several spans — a speaker interrupted twice by English —
+    A segment can straddle several spans a speaker interrupted twice by English —
     and what is left of it is then more than one piece. Subtracting the spans one at
     a time keeps every piece rather than reasoning about the aggregate.
     """
@@ -656,11 +656,11 @@ def splice_foreign_spans(segs: list[dict[str, Any]], spans: list[dict[str, Any]]
             continue
         if not pieces:
             continue                      # this segment is the captions' territory
-        if words is None:                 # no words to redistribute — keep the longest
+        if words is None:                 # no words to redistribute keep the longest
             pieces = [max(pieces, key=lambda p: p[1] - p[0])]
         for a, b in pieces:
             # Only a trimmed remnant may be discarded, and only when it is too short
-            # to hold speech or holds none — otherwise its words vanish from the output.
+            # to hold speech or holds none otherwise its words vanish from the output.
             if b - a < SPLICE_MIN_REMNANT:
                 continue
             piece = dict(seg, start=a, end=b)
@@ -702,7 +702,7 @@ def splice_foreign_spans(segs: list[dict[str, Any]], spans: list[dict[str, Any]]
             for x in made:
                 x["lang"] = s["lang"]
         # Every span segment also carries the classifier's label as an advisory
-        # stamp — including a target-language one, which `lang` deliberately does
+        # stamp including a target-language one, which `lang` deliberately does
         # not record (it means "third language" to the translate stage). The
         # editor app reads this to explain why a span plays original audio.
         for x in made:
@@ -720,7 +720,7 @@ def _absorb_trim_remnants(segs: list[dict[str, Any]], trimmed: set[int],
 
     A span edge lands where the *voice* stopped, but Whisper's last word before it
     smears seconds past that point, so subtracting the span leaves a remnant of one
-    or two words butting straight up against the span's own segment — the same
+    or two words butting straight up against the span's own segment the same
     person, mid-phrase ("The National Rabbinical Court against" | "the"). Left
     alone that remnant is a separate line: separately translated out of context,
     separately voiced, and separated on the timeline by a placement gap that the
@@ -729,7 +729,7 @@ def _absorb_trim_remnants(segs: list[dict[str, Any]], trimmed: set[int],
     It rejoins only when rejoining cannot change what is played: the two are
     contiguous, share a speaker, the span is target-language (nothing else may
     play its own audio outside its own span), and the remnant's own script says
-    target too — so the merged span is one speaker saying one thing in one
+    target too so the merged span is one speaker saying one thing in one
     language. A same-script pair, where the script test proves nothing, never
     merges. `_merge_stubs` cannot do this job: it runs before the splice exists,
     and these two pieces come from different sources.
@@ -778,7 +778,7 @@ def unsegmented_words(words: list[dict[str, Any]], segs: list[dict[str, Any]],
     exempt: those were deliberately replaced by the captions' own words.
     """
     ranges = sorted((s["start"], s["end"]) for s in segs)
-    # Span edges are approximate — they come from caption word onsets — so a word
+    # Span edges are approximate they come from caption word onsets so a word
     # just outside one is still that passage's speech and is covered by its audio.
     edge = 1.0
     span_ranges = [(s["start"] - edge, s["end"] + edge) for s in spans]
@@ -796,8 +796,8 @@ def diarize(vocals: Path, *, note: Callable[[str], None] | None = None
             ) -> list[dict[str, Any]]:
     """Pyannote turns; returns [] (single-speaker fallback) if unavailable.
 
-    The fallback is a real verdict about the run — every speaker becomes one
-    voice, so every line is cloned from one reference — and the commonest cause
+    The fallback is a real verdict about the run every speaker becomes one
+    voice, so every line is cloned from one reference and the commonest cause
     (no `HF_TOKEN`, or the model's terms not accepted) is a five-second fix the
     user never hears about if this only prints. `note` records the reason where
     `report.run` can repeat it; without one, behaviour is exactly as before.
@@ -825,9 +825,9 @@ def diarize(vocals: Path, *, note: Callable[[str], None] | None = None
             for turn, _, spk in annotation.itertracks(yield_label=True)
         ]
     except Exception as exc:
-        print(f"  segments: diarization unavailable ({exc}) — single speaker", file=sys.stderr)
+        print(f"  segments: diarization unavailable ({exc}) single speaker", file=sys.stderr)
         if note is not None:
-            note(f"unavailable ({exc}) — every speaker cloned as one voice")
+            note(f"unavailable ({exc}) every speaker cloned as one voice")
         return []
 
 
@@ -869,7 +869,7 @@ def _split_embedding_clusters(sims: Any) -> list[int] | None:
     cross = linkage(clusters[0], clusters[1])
     if cross <= max(REFINE_SPLIT_DIST, within * REFINE_MARGIN):
         # Either the cut leaves a single cluster, or the two "clusters" are no
-        # further apart than one of them is wide — one voice, two recordings.
+        # further apart than one of them is wide one voice, two recordings.
         return None
     if min(len(c) for c in clusters) < 2:
         return None                # a lone outlier turn is not a second voice
@@ -898,7 +898,7 @@ def _load_ecapa():
             source=ECAPA_MODEL, savedir=str(ECAPA_DIR), run_opts={"device": device})
     except Exception as exc:
         _ECAPA_FAILED = True
-        print(f"  segments: speaker embeddings unavailable ({exc}) — "
+        print(f"  segments: speaker embeddings unavailable ({exc}) "
               "turns left as diarized", file=sys.stderr)
     return _ECAPA
 
@@ -930,13 +930,13 @@ def refine_turns(turns: list[dict[str, Any]], vocals: Path, *,
 
     Pyannote's clustering can label two alternating speakers as one (both sides
     of a courtroom exchange dubbed in a single clone). For every maximal run of
-    one speaker's consecutive turns — no other speaker between, only silence —
+    one speaker's consecutive turns no other speaker between, only silence —
     with at least REFINE_MIN_TURNS turns each at least REFINE_MIN_TURN_SEC long,
     the turns are embedded and re-clustered; when exactly two alternating
     clusters emerge (see _split_embedding_clusters) the second cluster's turns
     get a fresh label (original + "b"), so splitting, speaker voting and clone
-    reference selection all see two speakers. On any failure — no turns, no
-    vocals, model unavailable — the turns come back unchanged; this never fails
+    reference selection all see two speakers. On any failure no turns, no
+    vocals, model unavailable the turns come back unchanged; this never fails
     the stage.
     """
     if not turns:
@@ -963,10 +963,10 @@ def refine_turns(turns: list[dict[str, Any]], vocals: Path, *,
     if not runs:
         return ordered
     if not vocals or not Path(vocals).is_file():
-        print(f"  segments: no vocals at {vocals} — turns left as diarized",
+        print(f"  segments: no vocals at {vocals} turns left as diarized",
               file=sys.stderr)
         if note is not None:
-            note(f"unavailable: no vocals at {vocals} — two voices pyannote fused "
+            note(f"unavailable: no vocals at {vocals} two voices pyannote fused "
                  "stay fused")
         return ordered
     out = [dict(t) for t in ordered]
@@ -978,15 +978,15 @@ def refine_turns(turns: list[dict[str, Any]], vocals: Path, *,
             embs = _embed_turns(vocals, embeddable)
             if embs is None:
                 if note is not None:
-                    note("unavailable: speaker embeddings could not load — two "
+                    note("unavailable: speaker embeddings could not load two "
                          "voices pyannote fused stay fused")
                 return ordered
             labels = _split_embedding_clusters(embs @ embs.T)
         except Exception as exc:
-            print(f"  segments: turn refinement failed ({exc}) — "
+            print(f"  segments: turn refinement failed ({exc}) "
                   "turns left as diarized", file=sys.stderr)
             if note is not None:
-                note(f"failed ({exc}) — turns left as diarized")
+                note(f"failed ({exc}) turns left as diarized")
             return ordered
         if labels is None:
             continue
@@ -1016,7 +1016,7 @@ def extend_keeps_to_speech_end(segs: list[dict[str, Any]], levels, hop: float,
     before an English speaker actually stops (and Whisper's word-end timestamps
     bunch early), so the segment boundary lands mid-sentence and the tail is
     clipped. Walk the vocal energy forward from the boundary, reclaiming speech
-    until a real pause or the next segment — whichever comes first. The
+    until a real pause or the next segment whichever comes first. The
     English/Hebrew boundary itself is handled precisely upstream by the language
     detector (transcript.detect_spoken_target_spans), so this never eats into a
     neighbour: it only recovers a VAD trim within a keep's own trailing silence.
@@ -1049,7 +1049,7 @@ def _judge_windows(a: float, b: float, win: float, is_target_lang) -> list[tuple
     The witness answers for one classifier window at a time, so a long gap has to be
     walked window by window: asking once, at the gap's start, decides twenty seconds
     on their first four. A remainder shorter than half a window is judged together
-    with the window before it rather than alone — the classifier's verdicts on
+    with the window before it rather than alone the classifier's verdicts on
     sub-second fragments are documented noise (a 0.9s piece came back Maori at p>=0.6).
     """
     runs: list[list[float]] = []
@@ -1070,10 +1070,10 @@ def _judge_windows(a: float, b: float, win: float, is_target_lang) -> list[tuple
 def fill_uncovered_audible(segs: list[dict[str, Any]], levels, hop: float,
                            total: float, is_target_lang=None, voice_levels=None,
                            win: float = 4.0) -> None:
-    """Keep original audio for audible stretches no segment covers — target only.
+    """Keep original audio for audible stretches no segment covers target only.
 
     A region the language detector mislabels as neither source nor target, and the
-    ASR never transcribed, otherwise plays silent — the speaker vanishes (the "1:35
+    ASR never transcribed, otherwise plays silent the speaker vanishes (the "1:35
     goes quiet" gap). Cover it with original audio so it is at least heard, as a
     real `spoken_target` keep segment the editor can see, select and correct.
 
@@ -1083,7 +1083,7 @@ def fill_uncovered_audible(segs: list[dict[str, Any]], levels, hop: float,
     the mix on top of the bed that already carries it. `is_target_lang(a, b)` runs
     VoxLingua on one `win`-second window and answers that question; the gap is
     walked window by window, and only the target-language runs inside it are kept.
-    Without the witness (no LID model) nothing is filled — the mix's vocals fill is
+    Without the witness (no LID model) nothing is filled the mix's vocals fill is
     the floor there, so an unjudged region still plays the original voice.
     """
     import numpy as np
@@ -1105,11 +1105,11 @@ def fill_uncovered_audible(segs: list[dict[str, Any]], levels, hop: float,
             j += 1
         a, b = i * hop, min(total, j * hop)
         # An uncovered stretch opens the moment the transcript stops, but the source
-        # speaker does not stop there — Whisper's word ends bunch early, so the last
+        # speaker does not stop there Whisper's word ends bunch early, so the last
         # syllable is still sounding. Playing original audio from that instant airs it:
         # the "ה" of "…באומנות רבה" was audible at 1:34 under the dub that had just
         # said the same sentence. Start at the first pause instead, if one comes soon.
-        # This one question — has the voice stopped? — is the one thing the vocals
+        # This one question has the voice stopped? is the one thing the vocals
         # stem answers better than the mix, where music never falls below the floor.
         # Audibility above still reads the mix; a stem that wrongly hears silence only
         # costs a moment of original audio, it cannot drop speech.
@@ -1120,7 +1120,7 @@ def fill_uncovered_audible(segs: list[dict[str, Any]], levels, hop: float,
             if voice_levels[head] < KEEP_TAIL_FLOOR:
                 # One frame past the pause's leading edge: these levels are RMS over
                 # the whole frame, so the first quiet frame can still open on the
-                # decaying tail of the last syllable — which is the part that was
+                # decaying tail of the last syllable which is the part that was
                 # audible. A tenth of a second of an untranscribed gap costs nothing.
                 a = min((head + 1) * hop, b)
                 break
@@ -1135,7 +1135,7 @@ def fill_uncovered_audible(segs: list[dict[str, Any]], levels, hop: float,
         i = j
     for a, b in added:
         # `spoken_target`, not a bare "uncovered": the witness named this the target
-        # language, which is why its original audio may play at all — and the editor
+        # language, which is why its original audio may play at all and the editor
         # can tell it apart from a stretch nobody could read.
         segs.append({"id": -1, "start": a, "end": b, "speaker": "SPEAKER_00",
                      "text": "", "keep": True, "keep_reason": "spoken_target"})
@@ -1209,7 +1209,7 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
             print(f"  segments: per-segment language check failed ({exc})", file=sys.stderr)
             return None
 
-    # The user's overrides survive a re-segmentation by time, not by id — this
+    # The user's overrides survive a re-segmentation by time, not by id this
     # stage renumbers everything it rebuilds. Carried before the automatic rules
     # run so `apply_passthrough` below has the last word over them.
     if overrides:
@@ -1232,7 +1232,7 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
             if sum(1 for ch in w["text"] if ch.isalpha()) >= 2]
     assert not lost, (
         f"{len(lost)} transcript words fell outside every segment, starting at "
-        f"{lost[0]['t']:.2f}s ({lost[0]['text']!r}) — they would never be heard"
+        f"{lost[0]['t']:.2f}s ({lost[0]['text']!r}) they would never be heard"
     )
     # Keep segments (original audio) must not clip a speaker mid-sentence.
     total = float(m["source"].get("duration") or 0.0)
@@ -1242,7 +1242,7 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
     # Audible stretches no segment covers: keep the original audio only where it is
     # the target language (VoxLingua confirms), so a missed English line is heard
     # again without a mislabelled Hebrew region airing its source voice. Audibility
-    # is judged from the source mix, not the vocals — Demucs sometimes routes a
+    # is judged from the source mix, not the vocals Demucs sometimes routes a
     # speaker into the music stem, and that speech must still count. Falls back to
     # no filling when the LID model is absent.
     src_levels = audio.frame_rms(audio.decode_mono(src, 16000), 16000, 0.1)
@@ -1259,8 +1259,8 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
     fill_uncovered_audible(segs, src_levels, 0.1, total or len(src_levels) * 0.1,
                            is_target_lang=is_target, voice_levels=levels,
                            win=transcript.LID_WINDOW)
-    # Advisory only: every segment that exists now — including the ones the fill
-    # just added — gets the classifier's label for the app to read.
+    # Advisory only: every segment that exists now including the ones the fill
+    # just added gets the classifier's label for the app to read.
     stamp_detected_lang(segs, lang_runs)
     # Identity is minted once, here, after every split/splice/fill has settled —
     # `id` is positional and renumbered above, so nothing outside the pipeline can

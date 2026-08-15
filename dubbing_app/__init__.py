@@ -1,4 +1,4 @@
-"""MamboDubb server — the local HTTP sidecar between the UI and `dubbing/`.
+"""MamboDubb server the local HTTP sidecar between the UI and `dubbing/`.
 
 Layering (docs/APP_ARCHITECTURE.md):
 

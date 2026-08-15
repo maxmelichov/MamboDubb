@@ -1,5 +1,5 @@
 ##
-# Isolated CUDA translation worker — NOT a member of the root uv project.
+# Isolated CUDA translation worker NOT a member of the root uv project.
 #
 # The main venv pins transformers==4.57.3 (qwen-tts breaks on 5.x), which predates
 # Gemma 4's `gemma4_unified` architecture. This subproject gets its own venv with

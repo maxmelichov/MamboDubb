@@ -4,7 +4,7 @@
                "message": "human readable"}}
 
 After MamboRambo's `write_error`: one envelope, four codes, no exceptions to the
-rule — an unhandled Python exception is turned into `internal_error` rather than
+rule an unhandled Python exception is turned into `internal_error` rather than
 leaking a stack trace or FastAPI's own `{"detail": ...}` shape.
 """
 

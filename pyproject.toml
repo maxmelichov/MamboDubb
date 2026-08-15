@@ -25,17 +25,17 @@ dependencies = [
     "huggingface-hub>=0.26.0",
     "hf>=0.0.1",
     # Hebrew as a dub target (dubbing/hebrew.py). `peft` attaches the Hebrew LoRA to
-    # the Qwen3-TTS talker and — just as importantly — switches it off again for the
+    # the Qwen3-TTS talker and just as importantly switches it off again for the
     # base checkpoint's own ten languages; the adapter is never merged. It asks for
     # `transformers` unpinned, so the 4.57.3 override still holds.
     "peft>=0.19.1",
     # ReNikud Plus: Hebrew orthography → stressed IPA, which is the only text the
     # adapter was trained on. Python 3.12+ only (the project range starts at 3.11),
-    # so it is markered rather than dropping 3.11 for everything else — without it
+    # so it is markered rather than dropping 3.11 for everything else without it
     # `dubbing.hebrew.missing()` says so and every other target is unaffected.
     "renikud-plus>=0.3.0 ; python_version >= '3.12'",
     # Gemma 4 (model_type gemma4_unified) is only supported after the June 2026 fix,
-    # which is past the last mlx-lm release — hence the git pin in [tool.uv.sources].
+    # which is past the last mlx-lm release hence the git pin in [tool.uv.sources].
     # macOS only: mlx has no Linux wheels; on Linux translation runs in the isolated
     # translator venv (see translator/) with transformers 5.x on CUDA.
     "mlx-lm ; sys_platform == 'darwin'",
@@ -74,7 +74,7 @@ packages = ["dubbing", "dubbing_app", "editor"]
 package = true
 # mlx-lm asks for transformers>=5; qwen-tts pins ==4.57.3, and the two cannot both be
 # satisfied. 4.57.3 is the one that has to win (Qwen3-TTS breaks on 5.x), and mlx-lm
-# runs fine on it for this workload — it only needs transformers for the tokenizer.
+# runs fine on it for this workload it only needs transformers for the tokenizer.
 # The one incompatibility Gemma 4 does hit there is handled in translate.load().
 override-dependencies = [
     "transformers==4.57.3",

@@ -1,6 +1,6 @@
 """Phase 2: the translation guards work for any target language, not just English.
 
-Pure logic, no models — same ground rules as tests/test_dubbing.py.
+Pure logic, no models same ground rules as tests/test_dubbing.py.
 """
 
 from __future__ import annotations

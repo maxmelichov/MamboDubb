@@ -1,15 +1,15 @@
-"""Stage 3 — a flat, time-stamped word stream for the whole video.
+"""Stage 3 a flat, time-stamped word stream for the whole video.
 
 Local ASR is the default source, not the video's own captions. Auto-captions
-mangle exactly the words that matter most — on the reference video
+mangle exactly the words that matter most on the reference video
 `שייחה מוזה … בקטאר` ("Sheikha Moza … in Qatar") is captioned `ש חמוזה … בקטב`,
-a broken name plus a non-word — and a translator cannot recover from that. The
+a broken name plus a non-word and a translator cannot recover from that. The
 dedicated Hebrew model also finds ~27% more words than the captions do.
 
 The main ASR pass runs on the separated vocals, which is measurably more accurate
 with music out of the way (`בקטר` "in Qatar" rather than `בגדה`, a non-word). But
 Demucs sometimes routes speech into the music stem, so whether anyone is speaking
-is judged from `source.wav` — the gap-recovery pass below re-listens to the full
+is judged from `source.wav` the gap-recovery pass below re-listens to the full
 mix wherever the vocals produced nothing, which is what stops those passages from
 disappearing.
 
@@ -57,7 +57,7 @@ FOREIGN_SURE_PROB = 0.95 # at this certainty the classifier outranks the ASR vet
                          # while every documented LID mislabel sat at 0.34-0.60
 FOREIGN_WINDOW = 8.0   # how much of the run to judge it on
 FOREIGN_JOIN_GAP = 1.5 # pieces of one passage this close, in the same language, are
-                       # one passage — the windows cut a long answer into runs
+                       # one passage the windows cut a long answer into runs
 FOREIGN_BACK_MAX = 3.0 # how far back a passage may reclaim utterances the classifier
                        # buried inside a majority-source run
 # FOREIGN_SRC_LOGPROB and SPAN_TAIL_LOGPROB were calibrated empirically against
@@ -68,7 +68,7 @@ FOREIGN_BACK_MAX = 3.0 # how far back a passage may reclaim utterances the class
 # this"). Asserting the opposite it lies confidently: a Hebrew fine-tune renders
 # clear English speech as Hebrew-script transliteration at -0.38, above the fail bar,
 # and that reading alone once dubbed over a man speaking English. A model that
-# actually reads the target language is the positive witness against it — but only
+# actually reads the target language is the positive witness against it but only
 # when it reads well in absolute terms, beats the source model on the same clip, and
 # returns a phrase rather than a stock hallucination.
 TARGET_READ_LOGPROB = -0.35  # target ASR read that counts as "clean target speech"
@@ -91,18 +91,18 @@ PAUSE_FRAMES = 2          # consecutive quiet frames a real pause needs, so the 
 SPAN_END_PAD = 0.25       # keep a span's end no further than this past its last English
                           # word: _extend_english_end widens the *decode* window to
                           # catch a trailing word, but the span must not then claim the
-                          # Hebrew beyond it — a keep span there plays the source voice.
+                          # Hebrew beyond it a keep span there plays the source voice.
 # VoxLingua107 reports languages by their old ISO-639 codes; map to ours.
 _LID_ALIAS = {"iw": "he", "in": "id", "ji": "yi"}
 
 GAP_MIN_SEC = 0.7      # shortest unheard stretch worth a second ASR pass. Was 1.2;
                        # lowered once GAP_MIN_LOGPROB existed to filter the extra
-                       # candidates — a 0.8s gap held "אל ג'ולאני", the name of the
+                       # candidates a 0.8s gap held "אל ג'ולאני", the name of the
                        # episode's subject, spoken clear and lost between segments
 GAP_RMS_FLOOR = 0.012  # below this the stretch is silence, not missed speech
 GAP_PAD = 0.35
 GAP_MIN_LOGPROB = -0.5  # a gap read below this is a hallucination (music sting),
-                        # not recovered speech — leave the window uncovered instead
+                        # not recovered speech leave the window uncovered instead
 
 # Caption chrome: sound tags and speaker arrows carry no speech.
 _CHROME = re.compile(r"[\[\(](?:[^\]\)]{0,40})[\]\)]")
@@ -199,7 +199,7 @@ def load_whisper(model_path: str, *, label: str = "ASR",
     """A faster-whisper model on CUDA when that actually works, else CPU.
 
     CUDA is tried first (float16), and a tiny warm-up transcribe runs before the
-    model is trusted — CTranslate2 needs cuDNN and its absence surfaces at the
+    model is trusted CTranslate2 needs cuDNN and its absence surfaces at the
     first forward pass, not at construction. Any failure falls back to CPU with
     the same settings as before (`compute_type="auto"`), so on a Mac or a box
     without CUDA the result is exactly the old behaviour. `cpu_threads` applies
@@ -219,7 +219,7 @@ def load_whisper(model_path: str, *, label: str = "ASR",
             print(f"  {label}: {model_path} (cuda, float16)", file=sys.stderr)
             return model
         except Exception as exc:
-            print(f"  {label}: cuda unusable ({exc}) — falling back to cpu",
+            print(f"  {label}: cuda unusable ({exc}) falling back to cpu",
                   file=sys.stderr)
     kwargs: dict[str, Any] = {"cpu_threads": cpu_threads} if cpu_threads else {}
     model = WhisperModel(model_path, device="cpu", compute_type="auto", **kwargs)
@@ -230,7 +230,7 @@ def load_whisper(model_path: str, *, label: str = "ASR",
 def source_asr_paths(src: str) -> tuple[Path, str]:
     """(local model dir, hub fallback) for the ASR that reads the source language.
 
-    Hebrew — including YouTube's legacy "iw" code — keeps the ivrit-ai fine-tune;
+    Hebrew including YouTube's legacy "iw" code keeps the ivrit-ai fine-tune;
     every other source uses the vanilla multilingual large-v3-turbo, which is told
     the language at transcribe time (`language=src`).
     """
@@ -255,7 +255,7 @@ def _words_of(segments, offset: float = 0.0, limit: float | None = None) -> list
             t = float(w.start) + offset
             if limit is not None and t >= limit:
                 return out
-            # Keep Whisper's measured word end — segmentation and placement need
+            # Keep Whisper's measured word end segmentation and placement need
             # real durations, not a guess from onsets alone (see segments.word_ends).
             end = float(w.end) + offset
             # Whisper's own per-word confidence rides along: hallucination analysis
@@ -266,7 +266,7 @@ def _words_of(segments, offset: float = 0.0, limit: float | None = None) -> list
     return out
 
 
-# Stock phrases Whisper injects over music and silence — subtitler credits and
+# Stock phrases Whisper injects over music and silence subtitler credits and
 # outro thanks it memorised from training data ("Субтитры сделал DimaTorzok" over
 # the Arzamas jingle; the classic Amara/"thanks for watching" family). This is a
 # fact about the ASR model, not about any one video: the phrases are stereotyped,
@@ -323,7 +323,7 @@ def drop_echo_words(words: list[dict[str, Any]]) -> list[dict[str, Any]]:
     One speaker cannot overlap themselves: an adjacent identical word whose start
     precedes its twin's end ("ומסוכנים." 445.53–446.65 then again 446.55–447.51)
     is the same utterance decoded twice, and the dub then says the word twice.
-    Genuine rhetorical repetition never overlaps — it has a pause — and is kept.
+    Genuine rhetorical repetition never overlaps it has a pause and is kept.
     """
     out: list[dict[str, Any]] = []
     for w in words:
@@ -348,7 +348,7 @@ def drop_stretched_words(words: list[dict[str, Any]], *, max_sec: float = 2.5
 
     Real word timings are monotonic. Across a chunk boundary under music the
     model once emitted "סתם" stretched over 3.1 seconds with six invented filler
-    words *inside* its span (at probability up to 0.97 — confidence does not
+    words *inside* its span (at probability up to 0.97 confidence does not
     catch this) before re-reading the real "לא סתם" at the right time. The
     stretched word and everything nested inside its span are one artifact; both
     go. A merely long word with nothing overlapping it is left alone.
@@ -364,7 +364,7 @@ def drop_stretched_words(words: list[dict[str, Any]], *, max_sec: float = 2.5
             # inside its span; the genuine re-read arrives at the span's end and
             # must survive, so only words ending clearly before it are dropped.
             # Words seamlessly attached in front (no gap to the stretched word)
-            # are the same decode event — the surviving "לא" of a false "לא סתם"
+            # are the same decode event the surviving "לא" of a false "לא סתם"
             # became a stranded half-second "No" in the dub.
             span_end = float(w.get("end", w["t"]))
             # Bounded: real speech also runs words tightly together, so at most
@@ -395,7 +395,7 @@ def collapse_repeats(words: list[dict[str, Any]], *, max_ngram: int = 4,
                      min_reps: int = 3) -> list[dict[str, Any]]:
     """Drop Whisper's back-to-back repetition hallucinations.
 
-    On silent or musical stretches the decoder sometimes loops a phrase — the
+    On silent or musical stretches the decoder sometimes loops a phrase the
     reference video's opening transcribes as `הכי גדולות הכי גדולות הכי גדולות`,
     which then "translates" to fluent nonsense. Any n-gram of up to `max_ngram`
     words repeated `min_reps` or more times in a row collapses to a single
@@ -436,7 +436,7 @@ MARK_JOIN_GAP = 0.4    # a mark-initial token further than this from the word be
 def join_split_marks(words: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Rejoin a word the ASR split at a geresh or a hyphen.
 
-    Hebrew spells foreign sounds with a geresh — ג'יהאד, אג'נדה, ג'בהת — and Whisper
+    Hebrew spells foreign sounds with a geresh ג'יהאד, אג'נדה, ג'בהת and Whisper
     emits the geresh as the start of a *new* token: `לג` + `'יהאד`, `אל` + `-קאעידה`.
     The halves reach the translator as separate words and it misreads the grammar
     that hangs on them: "שקוראת לג'יהאד" ("which calls **for** jihad") came back as
@@ -444,7 +444,7 @@ def join_split_marks(words: list[dict[str, Any]]) -> list[dict[str, Any]]:
     Rejoined, the same model and prompt render it correctly.
 
     The merged word keeps the first half's onset and the second half's end, so timing
-    is unchanged. A token after a sentence end is left alone — there the mark starts
+    is unchanged. A token after a sentence end is left alone there the mark starts
     something new rather than continuing a word.
     """
     out: list[dict[str, Any]] = []
@@ -497,7 +497,7 @@ def vad_regions(vad, source_wav: Path, *, sr: int = 16000,
     """Speech start/end from Silero VAD, joined across brief pauses.
 
     A tiny model (~a millisecond of compute per chunk) that gives real speech
-    boundaries — far cheaper than transcribing a region just to find where it
+    boundaries far cheaper than transcribing a region just to find where it
     begins and ends, and accurate enough to keep an utterance from being clipped.
     """
     import torch
@@ -529,7 +529,7 @@ def load_lid():
 def detect_language(lid, clip) -> tuple[str, float]:
     """Spoken-language code and probability for a clip, via VoxLingua107 ECAPA.
 
-    One embedding forward pass, not a transcription — this is the cheap way to ask
+    One embedding forward pass, not a transcription this is the cheap way to ask
     "what language is this?", which the Hebrew-tuned ASR cannot answer (it always
     says Hebrew, even over English speech).
     """
@@ -546,8 +546,8 @@ def language_segments(vad, lid, source_wav: Path, *, win: float = LID_WINDOW,
     """VAD speech split into maximal same-language runs (start, end, lang).
 
     Each speech region is language-ID'd in windows of at most `win` seconds, so a
-    long monologue that switches language partway — English narration into a Hebrew
-    interview — is caught rather than labelled by its majority. Adjacent windows of
+    long monologue that switches language partway English narration into a Hebrew
+    interview is caught rather than labelled by its majority. Adjacent windows of
     the same language merge back into one run with VAD-precise boundaries; a window
     the classifier is unsure about is labelled None and breaks the run.
     """
@@ -645,7 +645,7 @@ def _reclaim_leading_fragment(en_model, source_wav: Path, cand: float, a: float,
     The counterpart of `_extend_english_end`, for the same failure at the other edge:
     VAD splits a soft first word into a region of its own ("Frankly," at 270.80-271.70,
     then "I had the same concerns…" from 272.00), and the language classifier cannot
-    judge a fragment that short — it labelled that one `mi`, Maori, confidently. So the
+    judge a fragment that short it labelled that one `mi`, Maori, confidently. So the
     run started on the speaker's *second* word and the viewer heard them from the
     middle of their own sentence (4:31, "the VAD wakes up too late").
 
@@ -723,11 +723,11 @@ def _extend_foreign_start(lid, src_model, source_wav: Path, a: float, source: st
     """Carry a passage back over utterances that are not the source language either.
 
     A foreign clip can begin in the middle of a run the classifier calls the source
-    language by majority — a twenty-second Hebrew run whose last two seconds are the
+    language by majority a twenty-second Hebrew run whose last two seconds are the
     start of a Chinese report. Those seconds are then transcribed as Hebrew gibberish
     and dubbed: "-כן, תודה רבה, זה פרלטינגרס" became "Yes, thank you very much, this is
     Pirlinger" over the top of the clip. Walking back one utterance at a time, and
-    stopping the moment either witness says source language, finds the real edge — the
+    stopping the moment either witness says source language, finds the real edge the
     Hebrew before it reads at -0.21 where the clip reads at -0.79.
     """
     limit = max(floor, a - FOREIGN_BACK_MAX)
@@ -749,8 +749,8 @@ def _read_foreign_span(source_wav: Path, a: float, b: float, lang: str
     """Transcribe a confirmed third-language span for its subtitle.
 
     The vanilla multilingual turbo (the non-Hebrew source-ASR model) reads ~100
-    languages; told the confirmed language — or left to detect when the verdict
-    was "und" — it supplies the words the subtitle track needs. Loaded lazily
+    languages; told the confirmed language or left to detect when the verdict
+    was "und" it supplies the words the subtitle track needs. Loaded lazily
     and cached: most runs have no third-language span at all. On any failure the
     span falls back to the old "…" placeholder and nothing downstream changes.
     """
@@ -769,7 +769,7 @@ def _read_foreign_span(source_wav: Path, a: float, b: float, lang: str
             word_timestamps=True, condition_on_previous_text=False)
         segs = list(segs)
         # Chanting/music makes the multilingual model invent stock phrases
-        # ("اشتركوا في القناة" — "subscribe to the channel"); a low-confidence
+        # ("اشتركوا في القناة" "subscribe to the channel"); a low-confidence
         # read is that, not the passage's words. Lenient floor: foreign reads
         # legitimately score lower than source-language ones.
         if segs and sum(s.avg_logprob for s in segs) / len(segs) < -0.8:
@@ -791,7 +791,7 @@ def _reads_as_target(tgt_model, clip, target: str, src_lp: float | None) -> bool
     The one witness that can contradict a confident source-language read, since it
     is a different model with the opposite bias: on source-language audio it decodes
     low-confidence gibberish, on real target speech it decodes a fluent phrase. Three
-    conditions together, because each alone has a known failure mode — an absolute
+    conditions together, because each alone has a known failure mode an absolute
     floor (a garbage read is never clean), a margin over the source model's read of
     the *same* clip (whoever reads it better is right, and a tie is no evidence), and
     a phrase of real words that is not one of Whisper's memorised stock lines
@@ -829,7 +829,7 @@ def _sounds_foreign(lid, src_model, source_wav: Path, a: float, b: float,
     non-words, and read the stretches the classifier mislabelled `mi` and `nl` at
     -0.38/-0.34 as clean Hebrew. So it must FAIL here, always.
 
-    The classifier's job is to name the language and to veto — it is asked over the
+    The classifier's job is to name the language and to veto it is asked over the
     whole passage, since its `win`-second windows are unreliable on short ones (a 0.9s
     fragment came back Maori at p≥0.6). When it is confident, its name is used; when it
     has no opinion at all the passage is still kept, unnamed, on the ASR's word alone —
@@ -837,7 +837,7 @@ def _sounds_foreign(lid, src_model, source_wav: Path, a: float, b: float,
     Hebrew. What it may not do is contradict itself: if it says the source language
     confidently, that outranks the ASR and the passage is dubbed.
 
-    `tgt_model` — an ASR that actually reads the target language — is the positive
+    `tgt_model` an ASR that actually reads the target language is the positive
     witness against a source read that is confidently wrong. When it speaks, the
     verdict is the target language itself and the caller treats the passage as
     target-language speech (subtitle text, refined edges, a target keep) rather than
@@ -858,7 +858,7 @@ def _sounds_foreign(lid, src_model, source_wav: Path, a: float, b: float,
     # An unnamed verdict on a short span is the least trustworthy combination:
     # both witnesses are unreliable there. A 2.9s music sting under narration got
     # LID "my"@0.34 and made the Hebrew ASR hallucinate "תודה רבה" four times at
-    # logprob -0.55 — three seconds of the source language then played undubbed.
+    # logprob -0.55 three seconds of the source language then played undubbed.
     # Judged once more with ±2s of context the same audio is he@0.95 with clean
     # ASR. A *named* foreign language (the real Arabic quote, ar@0.96) never
     # reaches this retry.
@@ -908,8 +908,8 @@ def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: floa
     as gibberish and dubbing that is worse than not dubbing it at all.
 
     The target language gets the fuller treatment: an ASR that actually reads it
-    supplies the subtitle text and refines both edges. A third language — Arabic in a
-    Hebrew documentary — is kept as-is with no subtitle, since no model here can read
+    supplies the subtitle text and refines both edges. A third language Arabic in a
+    Hebrew documentary is kept as-is with no subtitle, since no model here can read
     it, and it has to clear a higher confidence bar for the same reason.
     """
     from . import audio
@@ -932,7 +932,7 @@ def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: floa
         if any(a < kb and ka < b for ka, kb in known):
             continue
         if lang != target:
-            # The span is the classifier's word alone — confirmed over the whole
+            # The span is the classifier's word alone confirmed over the whole
             # run. Its subtitle text comes from the vanilla multilingual ASR below.
             confirmed = _sounds_foreign(lid, src_model, source_wav, a, b, source,
                                         tgt_model=en_model, target=target)
@@ -944,7 +944,7 @@ def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: floa
             # in, with the voice still going to 447.30, and that last second was dubbed
             # as "And they will convert and they will be crushed." A language does not
             # change mid-utterance, so carry the span to the next real pause. Where the
-            # boundary is already a pause — as it was at both ends of the passage — the
+            # boundary is already a pause as it was at both ends of the passage the
             # scan returns it unchanged and nothing moves.
             b = _voice_pause_after(source_wav, b, min(b + SPAN_TAIL_MAX, total)) or b
             # And the same at the leading edge, where a clip can start inside a run the
@@ -953,7 +953,7 @@ def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: floa
                                       spans[-1]["end"] if spans else 0.0)
             # Read the passage with the vanilla multilingual ASR so the viewer at
             # least gets a subtitle (the source show burns its own over these).
-            # The audio still plays original — the text is subtitle-only, and the
+            # The audio still plays original the text is subtitle-only, and the
             # translate stage renders it into the target language.
             text, span_words = _read_foreign_span(source_wav, a, min(total, b), confirmed)
             spans.append({"start": round(a, 3), "end": round(min(total, b), 3),
@@ -962,15 +962,15 @@ def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: floa
         # The coarse LID window can put a short trailing word ("...children") on the
         # Hebrew side; the English-only model, by contrast, reads it as confident
         # English. Step the end forward while it keeps reading English, so the
-        # speaker finishes — bounded so it can't run into the real Hebrew.
-        # The next run is the one that starts after this passage ends — not simply
+        # speaker finishes bounded so it can't run into the real Hebrew.
+        # The next run is the one that starts after this passage ends not simply
         # `i + 1`, because a passage confirmed as the target language may have been
         # grouped out of several runs.
         nxt = next((s for s, _e, _l in lsegs if s >= b - 1e-6), total)
         b = _extend_english_end(en_model, source_wav, b,
                                 min(b + SPAN_TAIL_MAX, nxt + 0.6, total), target)
         # Same at the leading edge, when the run just before is a fragment VAD broke
-        # off this one — near enough to be the same breath, and not itself English
+        # off this one near enough to be the same breath, and not itself English
         # (that would already be a span of its own).
         prev = next(((s, e, lg) for s, e, lg in reversed(lsegs) if e <= a + 1e-6), None)
         if prev and prev[2] != target and a - prev[1] <= VAD_MERGE_GAP:
@@ -985,7 +985,7 @@ def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: floa
             # The decode window `b` was widened by _extend_english_end to catch a
             # trailing English word, but the re-transcription only emits words where
             # English is actually spoken. Clamp the span to its last English word so
-            # it never claims the Hebrew tail beyond — a keep span there plays the
+            # it never claims the Hebrew tail beyond a keep span there plays the
             # source voice (the "I can hear the Hebrew speaker" bleed) and steals
             # those seconds from the dub that should cover them.
             #
@@ -997,7 +997,7 @@ def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: floa
             # been talking since 205.04, and keeping that span airs him (3:25).
             # The voice itself is the honest boundary: end at the first real pause
             # after the last English word, and fall back to the early word timestamp
-            # when no pause is in reach — with the speakers back to back, stopping
+            # when no pause is in reach with the speakers back to back, stopping
             # early is the one that does not put the source voice on air.
             last = a + float(got[-1].end)
             stop = _voice_pause_after(source_wav, last,
@@ -1020,7 +1020,7 @@ def uncovered_windows(words: list[dict[str, Any]], levels, hop: float, total: fl
     """Audible stretches the transcript says nothing about.
 
     `known` marks ranges already accounted for by another source, so they are not
-    transcribed a second time — two overlapping versions of the same speech would
+    transcribed a second time two overlapping versions of the same speech would
     both be placed, one after the other.
     """
     import numpy as np
@@ -1063,7 +1063,7 @@ def recover_gaps(model, source_wav: Path, words: list[dict[str, Any]], lang: str
                  ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Transcribe again, in isolation, wherever audible speech went unheard.
 
-    A single pass over a whole film skips things — most often a passage in
+    A single pass over a whole film skips things most often a passage in
     another language, which Whisper drops rather than transcribes. Those seconds
     would otherwise have no segment at all, and a segment is the only way audio
     of any kind reaches the output. Recovered target-language text becomes a kept
@@ -1091,10 +1091,10 @@ def recover_gaps(model, source_wav: Path, words: list[dict[str, Any]], lang: str
         # A low-confidence read of a gap is a hallucination, not recovered speech:
         # a music sting made the model invent a whole line ("עוד לא עבר יום…") that
         # was then dubbed as nonsense. Declining leaves the window uncovered, so
-        # the original audio — for a sting, the music itself — plays, which is right.
+        # the original audio for a sting, the music itself plays, which is right.
         lp = (sum(s.avg_logprob for s in segs) / len(segs)) if segs else 0.0
         if segs and lp < GAP_MIN_LOGPROB:
-            print(f"  transcript: gap {a:.1f}-{b:.1f}s read at logprob {lp:.2f} — "
+            print(f"  transcript: gap {a:.1f}-{b:.1f}s read at logprob {lp:.2f} "
                   f"discarded as hallucination", file=sys.stderr)
             continue
         got = [w for w in _words_of(segs, offset=max(0.0, a - GAP_PAD))
@@ -1106,7 +1106,7 @@ def recover_gaps(model, source_wav: Path, words: list[dict[str, Any]], lang: str
               file=sys.stderr)
         if text_is_target(text, lang, tgt_lang):
             # Already in the target language, so it will play as original audio and
-            # the word timings do not need to be trusted — only the window does.
+            # the word timings do not need to be trusted only the window does.
             # Whisper bunches word times inside a short clip, which would otherwise
             # leave part of the passage uncovered and therefore silent.
             spans.append({"start": round(a, 3), "end": round(b, 3), "text": text,
@@ -1128,8 +1128,8 @@ def recover_gaps(model, source_wav: Path, words: list[dict[str, Any]], lang: str
 def merge_spans(spans: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Drop target-language spans already covered by an earlier one.
 
-    Two sources can describe the same speech — the captions and the gap-recovery
-    pass — and keeping both would place the same words twice, one after the other.
+    Two sources can describe the same speech the captions and the gap-recovery
+    pass and keeping both would place the same words twice, one after the other.
     """
     out: list[dict[str, Any]] = []
     for s in sorted(spans, key=lambda x: (x["start"], -(x["end"] - x["start"]))):
@@ -1147,7 +1147,7 @@ def foreign_spans(words: list[dict[str, Any]], *, min_sec: float = 0.8,
 
     Those passages are spoken in the target language, so they should play as
     original audio rather than being "translated" from a phonetic transcription
-    of themselves. Only meaningful for a cross-script pair — when source and
+    of themselves. Only meaningful for a cross-script pair when source and
     target share a script the captions cannot mark such spans, and none return.
     """
     runs: list[list[dict[str, Any]]] = []
@@ -1213,7 +1213,7 @@ def run(m: dict[str, Any], workdir: Path, *, src_lang: str, tgt_lang: str = "en"
                 lid_wav = vocals if vocals.is_file() else source_wav
                 # Computed once and kept: the spans below are only the runs that
                 # are NOT the source language, but the editor app wants the whole
-                # picture — including "this run is Hebrew, confidently" — so it can
+                # picture including "this run is Hebrew, confidently" so it can
                 # suggest passthrough on a segment the automatic rules left dubbed.
                 runs = language_segments(vad, lid, lid_wav)
                 lang_runs = [{"start": a, "end": b, "lang": lang or ""}
@@ -1226,7 +1226,7 @@ def run(m: dict[str, Any], workdir: Path, *, src_lang: str, tgt_lang: str = "en"
         except Exception as exc:
             if prefer == "asr" or not caption_words:
                 raise
-            print(f"  transcript: ASR unavailable ({exc}) — falling back to captions",
+            print(f"  transcript: ASR unavailable ({exc}) falling back to captions",
                   file=sys.stderr)
             words, origin = caption_words, "captions"
 
@@ -1236,7 +1236,7 @@ def run(m: dict[str, Any], workdir: Path, *, src_lang: str, tgt_lang: str = "en"
             "or check that the ASR model is present under models/."
         )
 
-    # VAD+LID English spans are authoritative — their boundaries are precise, so a
+    # VAD+LID English spans are authoritative their boundaries are precise, so a
     # caption or gap-recovery span (coarser, Hebrew-model or caption derived) is kept
     # only where VAD/LID found no target-language speech, never overriding it.
     others = ((foreign_spans(caption_words, src=src_lang, tgt=tgt_lang)
@@ -1267,8 +1267,8 @@ def is_fallback(m: dict[str, Any], prefer: str = "auto") -> bool:
     """True when the transcript is the captions fallback, not the one asked for.
 
     Captions are authoritative about *where* the target language is spoken and
-    nowhere else — they mangle exactly the words that matter (AGENTS.md, invariant
-    4) — so a run that asked for ASR and got captions because the model was
+    nowhere else they mangle exactly the words that matter (AGENTS.md, invariant
+    4) so a run that asked for ASR and got captions because the model was
     missing is running on a degraded transcript. It is a real result and
     everything downstream is built on it, but it is not an answer to cache: the
     next run has to try the ASR again.
@@ -1287,6 +1287,6 @@ def load_foreign_spans(workdir: Path, m: dict[str, Any]) -> list[dict[str, Any]]
 
 
 def load_lang_runs(workdir: Path, m: dict[str, Any]) -> list[dict[str, Any]]:
-    """Classifier language runs over the whole video — advisory, may be absent."""
+    """Classifier language runs over the whole video advisory, may be absent."""
     data = json.loads((workdir / m["files"]["words"]).read_text(encoding="utf-8"))
     return data.get("lang_runs") or []

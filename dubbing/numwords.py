@@ -2,8 +2,8 @@
 
 The v22 translate prompt asked the *model* to write numbers out as words, and the
 model did it unreliably: "ב-504" came back from the English hop as "five zero
-four", and the ru hop then fabricated "в две тысячи четвёртом году" — the year
-2004 — out of it. Digit→word conversion is a mechanical job, so it is done here
+four", and the ru hop then fabricated "в две тысячи четвёртом году" the year
+2004 out of it. Digit→word conversion is a mechanical job, so it is done here
 in code (num2words); the models are only trusted to translate and inflect
 number-words that already exist in their input.
 
@@ -11,7 +11,7 @@ Conversion happens on the **English layer**: the English hop translates digits a
 digits, `spell_numbers(mid, "en")` turns them into correct English words, and the
 target hop inflects those words. Source languages (Hebrew, Arabic, …) are never
 spelled here. For non-English targets `spell_numbers(text, tgt)` is only a safety
-net over digits the model passed through — a nominative cardinal reads better in
+net over digits the model passed through a nominative cardinal reads better in
 TTS than a digit with a grammatical suffix ("504-м"), even when the case is
 imperfect.
 
@@ -28,7 +28,7 @@ import re
 from num2words import num2words
 
 # The language's word for "%", appended after the spelled cardinal. Small table,
-# English fallback — general vocabulary, not per-video content.
+# English fallback general vocabulary, not per-video content.
 _PERCENT = {
     "en": "percent",
     "ru": "процентов",
@@ -67,7 +67,7 @@ def _convert(token: str, num: str, suffix: str, lang: str) -> str:
         words += " " + _PERCENT.get(lang, _PERCENT["en"])
     # Any other matched suffix (grammatical "-м", ordinal "th") is dropped: the
     # nominative cardinal is the safe spoken form, and the target-hop model
-    # inflects words — it is never asked to convert digits.
+    # inflects words it is never asked to convert digits.
     return words
 
 

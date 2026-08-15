@@ -2,7 +2,7 @@
 
 Movie mode only, and purely lexical: a fixed cross-lingual word list plus a
 transliteration test, no audio and no per-video vocabulary (invariant 7). Split
-out of `dubbing/segments.py`, which re-exports `is_interjection_keep` — this is
+out of `dubbing/segments.py`, which re-exports `is_interjection_keep` this is
 the one thing `mark_keep` needs from here.
 """
 
@@ -14,14 +14,14 @@ from . import script
 
 # Movie mode only: a standalone beat of at most this many words / seconds whose
 # words are all international interjections (or source-script borrowings of a
-# target interjection) keeps ORIGINAL audio — the actor's own "welcome!" beats
+# target interjection) keeps ORIGINAL audio the actor's own "welcome!" beats
 # any clone for a one-word line. Subtitles still show the translation.
 INTERJECTION_MAX_WORDS = 2
 INTERJECTION_MAX_SEC = 1.5
 
 # Cross-lingual greeting particles and interjections, by surface form. These are
-# INTERNATIONAL words — borrowed or shared across languages, recognisable in the
-# original voice — not any one video's vocabulary. Hebrew-script entries cover the
+# INTERNATIONAL words borrowed or shared across languages, recognisable in the
+# original voice not any one video's vocabulary. Hebrew-script entries cover the
 # common loan spellings; Latin and Cyrillic entries the same words in those scripts.
 _INTERJECTIONS = frozenset({
     # Hebrew-script loans / particles
@@ -96,7 +96,7 @@ def _is_interjection_token(token: str, src: str, tgt: str) -> bool:
         return False
     if tok in _INTERJECTIONS:
         return True
-    # Borrowed-word test: a source-script token (3+ letters — shorter ones are
+    # Borrowed-word test: a source-script token (3+ letters shorter ones are
     # ambiguous) whose transliteration skeleton is a target interjection word.
     if script.script_for(tgt) != "latin" or script.same_script(src, tgt):
         return False
@@ -104,7 +104,7 @@ def _is_interjection_token(token: str, src: str, tgt: str) -> bool:
         return False
     skels = _source_skeletons(tok)
     # Only skeletons of 3+ consonants discriminate ("wlkm"); shorter ones would
-    # false-positive on native words (הלא → "hl" = hello) — those loans' common
+    # false-positive on native words (הלא → "hl" = hello) those loans' common
     # spellings are in the literal list instead.
     return bool(skels) and any(sk in skels for w in _BORROWED_TARGET_WORDS
                                if len(sk := _latin_skeleton(w)) >= 3)
@@ -113,8 +113,8 @@ def _is_interjection_token(token: str, src: str, tgt: str) -> bool:
 def is_interjection_keep(seg: dict[str, Any], src: str, tgt: str) -> bool:
     """True when a standalone segment is a greeting/interjection beat (movie mode).
 
-    The segment must be short in both words and seconds — a one- or two-word
-    beat, its own segment rather than part of a longer sentence — and EVERY
+    The segment must be short in both words and seconds a one- or two-word
+    beat, its own segment rather than part of a longer sentence and EVERY
     word must be an international interjection or a source-script borrowing of
     a target one. Language-general by construction: a fixed cross-lingual list
     plus a script/transliteration test, never per-video vocabulary.

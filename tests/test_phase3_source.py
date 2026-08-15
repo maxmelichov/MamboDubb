@@ -1,4 +1,4 @@
-"""Phase 3 — any source language (pure logic, no models).
+"""Phase 3 any source language (pure logic, no models).
 
 The source ASR is no longer hard-wired to the ivrit-ai Hebrew fine-tune: a
 table picks the model per source, Hebrew (and its legacy "iw" spelling) keeping
@@ -69,13 +69,13 @@ def test_echoes_source_catches_untranslated_same_script_output():
     assert not echo("Lo segundo es que nos ha puesto en un lugar donde no tenemos idea", src)
     # Cross-script pairs can never overlap on tokens.
     assert not echo("They will defend her.", "יגנו עליה כי היא חשובה להם")
-    # Short sources are exempt — three words legitimately survive intact.
+    # Short sources are exempt three words legitimately survive intact.
     assert not echo("Good morning.", "Good morning.")
 
 
 def test_clip_exceeds_slot_only_fires_on_runaway():
     from dubbing import tts
-    # 71.5s for a 5.7s slot — the en→es cascade — is a rejection.
+    # 71.5s for a 5.7s slot the en→es cascade is a rejection.
     assert tts.clip_exceeds_slot(71.5, 5.7)
     # Ordinary expansion (a 9s clip in a 6s slot) is placement's business.
     assert not tts.clip_exceeds_slot(9.0, 6.0)

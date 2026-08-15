@@ -12,7 +12,7 @@ import { JSDOM } from "jsdom";
 
 const assetDir = new URL("../dist/assets/", import.meta.url);
 const bundle = readdirSync(assetDir).find((f) => f.endsWith(".js"));
-if (!bundle) throw new Error("no bundle in dist/assets — run pnpm build first");
+if (!bundle) throw new Error("no bundle in dist/assets run pnpm build first");
 
 const dom = new JSDOM(readFileSync(new URL("../dist/index.html", import.meta.url), "utf8"), {
   url: "http://localhost/",
@@ -48,7 +48,7 @@ dom.window.HTMLMediaElement.prototype.pause = function pause() {};
 dom.window.URL.createObjectURL = () => "blob:fixture";
 globalThis.URL.createObjectURL = dom.window.URL.createObjectURL;
 // jsdom ships no clipboard, and the setup screen's copy buttons only show their
-// tick when the write actually resolves — so without this the one interaction
+// tick when the write actually resolves so without this the one interaction
 // they exist for is untestable in the only mode that is ever tested.
 const clipboard = { text: null, writes: 0 };
 Object.defineProperty(dom.window.navigator, "clipboard", {
@@ -78,7 +78,7 @@ const check = (label, ok) => {
 };
 
 /*
- * The theme system. Two themes, both shipped, the user picks — and the promise
+ * The theme system. Two themes, both shipped, the user picks and the promise
  * is about the *built* artifact, not the source, so the first group reads the
  * bundle. The one thing that must never come back is the OS preference: a
  * `prefers-color-scheme` block is how a user's choice silently stops being
@@ -96,8 +96,8 @@ check("native number spinners are suppressed", /-webkit-inner-spin-button/.test(
 /*
  * The quiet ink has to clear the text gate.
  *
- * `--color-muted` is what every 9–11px label in the app is set in — the
- * eyebrows, the meta line, the tallies, the hints under a field — which is
+ * `--color-muted` is what every 9–11px label in the app is set in the
+ * eyebrows, the meta line, the tallies, the hints under a field which is
  * exactly the size that cannot afford to be under 4.5:1. Light's was #7d7a71:
  * 4.29:1 on the card and 3.86:1 on the sunken tone, both short. Measured here
  * rather than asserted as a hex, so the check survives the next re-pick.
@@ -129,7 +129,7 @@ check(
  *
  * `VITE_USE_FIXTURES=1` is inlined as a literal, so every `if (USE_FIXTURES)
  * return fixtures.x()` makes the HTTP path dead code and the bundler removes
- * `request` entirely — it is not in the artifact to assert against, and there
+ * `request` entirely it is not in the artifact to assert against, and there
  * is no fetch in this mode to drive it with. The guard is still worth pinning,
  * because what it replaced was a sentence the user had to read: a 200 whose
  * body is not JSON (an SPA fallback, a captive portal, the wrong port) was cast
@@ -146,8 +146,8 @@ check(
 /*
  * One contract, one error type, one 404 branch.
  *
- * `peaks` returns null when the file is not there yet — `dub.wav` does not
- * exist until the mix stage has run — and the fixture call was routed *around*
+ * `peaks` returns null when the file is not there yet `dub.wav` does not
+ * exist until the mix stage has run and the fixture call was routed *around*
  * the catch that does it, so the one branch this method exists for behaved one
  * way against the server and threw in the only mode that is ever tested. It is
  * the same bug the fixtures' plain `new Error(...)` rejections cause everywhere
@@ -168,7 +168,7 @@ const bundleSource = readFileSync(new URL(bundle, assetDir), "utf8");
 check("a refusal is never reported as a queued job", !/queued behind it/.test(bundleSource));
 /* One table for what a PATCH does, imported by both sides of the seam. The
    fixture used to carry its own copy, which modelled three of the seven
-   patchable fields — a speaker change kept the clip in the old voice. */
+   patchable fields a speaker change kept the clip in the old voice. */
 check(
   "the fixture applies patches through the shared prediction, not a copy",
   /import \{ applyPatch \} from "\.\/patch"/.test(fixtureSource) &&
@@ -187,9 +187,9 @@ check(
  *    `@theme` inherits into dark unnoticed, which is how a light-mode green
  *    ends up at 2:1 on a near-black plane.
  * 2. The resolved state and the waiting state are different hues. They were
- *    the same one — everything a run kept wore the warning colour, so an
+ *    the same one everything a run kept wore the warning colour, so an
  *    already-English video rendered as a wall of amber with nothing wrong in
- *    it — and "kept is not the warn colour" is the whole fix, in one line.
+ *    it and "kept is not the warn colour" is the whole fix, in one line.
  * 3. The semantic tones alias the state hues instead of adding more. A second
  *    green for `good` or a second amber for `warn` is how five hues quietly
  *    become nine, none of them measured against the other four.
@@ -213,14 +213,14 @@ check(
 );
 check("the kept hue is not the warn hue", hue("kept") !== hue("warning"));
 /* The timeline's mark wash is a theme token, because how much hue a fill can
-   take is a property of the ground it sits on — 18% of a dark hue on a white
+   take is a property of the ground it sits on 18% of a dark hue on a white
    lane and 26% of a light one over a waveform on near-black. */
 check("the mark wash is a theme token, per theme", /--mark-wash:/.test(css) && /--mark-wash:/.test(darkBlock));
 
 /*
  * The interaction accent.
  *
- * "The dark mode is too dim — the colours are dead" was a theme in which the
+ * "The dark mode is too dim the colours are dead" was a theme in which the
  * only saturated pixels on screen were the state hues, and the thing to press
  * was a near-white rectangle. The fix is one token, and the three things that
  * hold about it are structural rather than a hex:
@@ -228,9 +228,9 @@ check("the mark wash is a theme token, per theme", /--mark-wash:/.test(css) && /
  * 1. It ships in both themes. A `--color-accent` declared only in `@theme`
  *    would make dark's primary button near-white again the moment somebody
  *    edits the light value, silently.
- * 2. In light it *is* ink. That is not a placeholder — it is the promise that
+ * 2. In light it *is* ink. That is not a placeholder it is the promise that
  *    naming the accent changed nothing about the theme nobody complained
- *    about — and it is why every `bg-accent` below is safe to have replaced a
+ *    about and it is why every `bg-accent` below is safe to have replaced a
  *    `bg-primary`.
  * 3. In dark it is not ink. A dark accent that resolves back to the near-white
  *    is the bug this whole pass exists to fix, and it would pass every other
@@ -248,11 +248,11 @@ check("…with a label of its own to sit on it", hue("on-accent", darkBlock) != 
 /* The accent is a fill, a ring and a rule, and it is measured against the 3:1
    non-text gate only. There is no assertion here that it is never set as text,
    because writing one puts the class name in a file Tailwind scans and mints
-   the utility it was checking for — the check would fail on itself. */
+   the utility it was checking for the check would fail on itself. */
 
 /*
  * The desktop shell paints its window before the webview exists, so its
- * `backgroundColor` has to be the dark plane exactly — any drift is a flash of
+ * `backgroundColor` has to be the dark plane exactly any drift is a flash of
  * the wrong near-black on every launch. Three copies of that value ship (the
  * CSS token, the pre-paint canvas in index.html, the Tauri config) and this is
  * the one seam a class cannot cover, so it is checked rather than trusted.
@@ -269,7 +269,7 @@ check("…and so is the canvas painted before the bundle parses", html.includes(
 
 /*
  * And the palette stays in one file. A literal `#3b7f5c` in a component is a
- * colour that no theme can restate and no measurement covers — it is how the
+ * colour that no theme can restate and no measurement covers it is how the
  * dark theme grows a light-mode hue nobody notices until a screenshot. The one
  * pair allowed outside App.css is the canvas colour in lib/theme.ts, which has
  * to be a literal because it is written into a `<meta name="theme-color">`.
@@ -294,14 +294,14 @@ check(
 
 const root = document.getElementById("root");
 /* The home screen is titled for the workspace, not for the card at the top of
-   it — the nav cell that reaches it says "Runs" and used to land on a page
+   it the nav cell that reaches it says "Runs" and used to land on a page
    headed "New dub." The card is unchanged and still names its own action. */
 check("home screen renders, titled for the workspace", /Runs\./.test(root.textContent));
 check("…and still carries the new-dub card", root.querySelector('[data-region="new-dub"]') != null);
 check("…whose action still says what it starts", /Start dubbing/.test(root.textContent));
 /* Context is the one optional field sitting under a required one of the same
    size, and it says so in the label rather than three lines below it. */
-check("the context field leads with Optional", /Optional — Context/.test(root.textContent));
+check("the context field leads with Optional", /Optional Context/.test(root.textContent));
 
 /*
  * The toggle itself, driven through the DOM. jsdom does not run index.html's
@@ -312,7 +312,7 @@ check("the context field leads with Optional", /Optional — Context/.test(root.
  * One button, not two. A binary does not need a radio group: the pair meant two
  * tab stops for one decision and a dead cell half the time, because pressing the
  * theme you are already in does nothing. What the single button owes instead is
- * to *say* which way it goes — the ambiguity a lone sun-or-moon has — so the
+ * to *say* which way it goes the ambiguity a lone sun-or-moon has so the
  * accessible name is the destination, and that name is what these read.
  */
 const themeToggle = () => document.querySelector("[data-theme-toggle]");
@@ -326,8 +326,8 @@ check("…and names the one it would switch to", themeGoesTo() === "light");
 
 /*
  * "Each theme paints its own ground" is the one claim worth checking against a
- * real cascade rather than a regex, because the failure it guards — a theme
- * that flips the tokens but leaves the canvas on the other theme's colour — is
+ * real cascade rather than a regex, because the failure it guards a theme
+ * that flips the tokens but leaves the canvas on the other theme's colour is
  * invisible to a source grep. jsdom does not fetch the linked stylesheet, so
  * the two `html` rules are lifted out of the shipped CSS and injected.
  */
@@ -361,7 +361,7 @@ check("dark is persisted too", dom.window.localStorage.getItem("dubbing-studio.t
 check("…and one button did both directions", themeGoesTo() === "light");
 
 // An existing run's row has to answer "where did this get to" without being
-// opened — the whole point of listing it.
+// opened the whole point of listing it.
 await new Promise((resolve) => setTimeout(resolve, 200));
 const runs = root.textContent;
 check("runs say how far they got", /Complete/.test(runs) && /Running translate/.test(runs));
@@ -376,7 +376,7 @@ check("setup is reachable from the header", /Setup/.test(root.textContent));
  * The screen is three regions and not one column: the primary "new dub" card,
  * the options rail beside it, and existing runs full width underneath. jsdom
  * has no layout, so what can honestly be asserted is that all three exist and
- * hold what they claim to — a redesign that quietly drops the rail, or houses
+ * hold what they claim to a redesign that quietly drops the rail, or houses
  * the runs inside the form card, fails here rather than in a screenshot.
  */
 check("the brand chip carries the drawn mark", document.querySelector("[data-brand] img") != null);
@@ -422,7 +422,7 @@ check(
  *
  * `--transcript auto|captions|asr` was accepted by the server from the first day
  * and reachable only from the CLI, so a user who could hear that the
- * auto-captions were mangled — the case AGENTS.md's invariant 4 exists for — had
+ * auto-captions were mangled the case AGENTS.md's invariant 4 exists for had
  * no way to say so from the screen that starts the run. `auto` is the pipeline's
  * own answer and stays the default; the point is that the other two exist.
  *
@@ -474,7 +474,7 @@ check(
 /*
  * A third language is the case the two selects cannot express: English inside a
  * Hebrew→German run is neither the spoken language nor the dub's, and the
- * pipeline KEEPS it — played as recorded, subtitled — unless the run opts in.
+ * pipeline KEEPS it played as recorded, subtitled unless the run opts in.
  * That opt-in was reachable only from the CLI, so a run started here could
  * never ask for it. It is off by default, because off is what the pipeline does
  * when nobody says otherwise, and the clause under it is not decoration: the
@@ -491,7 +491,7 @@ check(
 );
 
 // Genre and register are two-way choices with a clause each, so they are rows
-// and a pill rather than two more dropdowns — but they are still one-of-N, and
+// and a pill rather than two more dropdowns but they are still one-of-N, and
 // one of each pair is always on.
 const radios = () => [...document.querySelectorAll('[role="radio"]')];
 check("genre and register are pickable without a dropdown", radios().length === 4);
@@ -549,8 +549,8 @@ check("no continue while something is missing", ![...document.querySelectorAll("
  * What a failure COSTS, not just that there is one.
  *
  * Every missing row used to be the same red X and the same word. So a gated
- * Hugging Face token — the run works, everybody in the video becomes one
- * speaker — was drawn identically to a missing ffmpeg, which was drawn
+ * Hugging Face token the run works, everybody in the video becomes one
+ * speaker was drawn identically to a missing ffmpeg, which was drawn
  * identically to a Demucs cache that downloads itself on first use. Three very
  * different situations, one alarm, and a list that teaches you to ignore it.
  *
@@ -586,19 +586,19 @@ check(
 );
 check(
   "the footer is honest while something required is missing",
-  /A required tool is missing — runs will fail\./.test(
+  /A required tool is missing runs will fail\./.test(
     document.querySelector("[data-footer]").textContent,
   ),
 );
 check(
   "…and skipping says what skipping costs",
-  /Skip anyway — runs will fail at fetch/.test(document.querySelector("[data-skip]").textContent),
+  /Skip anyway runs will fail at fetch/.test(document.querySelector("[data-skip]").textContent),
 );
 
 /*
  * The commands are copyable.
  *
- * These are `uv run hf download …` lines and absolute `.env` paths — sixty
+ * These are `uv run hf download …` lines and absolute `.env` paths sixty
  * characters of exactness, in an 11.5px monospace span, inside a desktop shell
  * with no address bar to paste into. Selecting one by dragging is not an
  * interaction, it is a transcription error waiting to happen.
@@ -619,7 +619,7 @@ check("…and says it did", /Copied/.test(tokenCopy.getAttribute("title")));
  *
  * The button exists for one state and no other: a row the *server* says it has
  * a command for (`installable`), that is currently missing. A model row is
- * missing and has no button, which is the assertion that matters most — the
+ * missing and has no button, which is the assertion that matters most the
  * alternative is a button that posts an id the server refuses, and the user
  * finds out by reading a 400.
  */
@@ -640,7 +640,7 @@ await new Promise((resolve) => setTimeout(resolve, 150));
 check("clicking starts exactly one install", fixtureCalls.install === before + 1);
 check("the row it started says so", /Installing/.test(rowOf("ffmpeg").textContent));
 // The button is replaced by the progress line, not doubled up beside it, and
-// the line carries the installer's own last words — the only honest progress a
+// the line carries the installer's own last words the only honest progress a
 // poll can show for something that takes minutes.
 check("…with its button swapped for the spinner", !installButton("ffmpeg"));
 await new Promise((resolve) => setTimeout(resolve, 250));
@@ -654,7 +654,7 @@ installButton("sox").dispatchEvent(new dom.window.MouseEvent("click", { bubbles:
 check("…and a click on it starts nothing", fixtureCalls.install === before + 1);
 
 // The simulated install ends, the server re-probes, and the page re-runs the
-// whole checklist — one row turning green is not the same claim as the machine
+// whole checklist one row turning green is not the same claim as the machine
 // being one step readier.
 await new Promise((resolve) => setTimeout(resolve, 1400));
 check("the installed row turns Ready", /Ready/.test(rowOf("ffmpeg").textContent));
@@ -665,8 +665,8 @@ check("the other row can be installed again", installButton("sox").disabled === 
 /*
  * The state the footer's kind branch was written for, reachable at last.
  *
- * `ok` is the conjunction of the BLOCKING rows only — that is the server's
- * contract — and the fixture used to compute it as "every row passes", which is
+ * `ok` is the conjunction of the BLOCKING rows only that is the server's
+ * contract and the fixture used to compute it as "every row passes", which is
  * stricter than the server and made this whole branch dead code: no fixture
  * state could ever have both `ok: true` and a failing row. With both tools
  * installed the machine IS ready, with a token still missing and a Demucs cache
@@ -675,7 +675,7 @@ check("the other row can be installed again", installButton("sox").disabled === 
 installButton("sox").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
 await new Promise((resolve) => setTimeout(resolve, 1400));
 check(
-  "with both tools in, the machine is ready — and does not claim all checks pass",
+  "with both tools in, the machine is ready and does not claim all checks pass",
   document.querySelector("[data-readiness]").textContent === "Ready to run",
 );
 check("…with the two that are still red still counted", /6\/8/.test(root.textContent));
@@ -687,7 +687,7 @@ check(
 );
 check(
   "…and the footer stops calling a gated token an optional item for wider language pairs",
-  /Everything required is ready\..*will still run — just worse\./.test(
+  /Everything required is ready\..*will still run just worse\./.test(
     document.querySelector("[data-footer]").textContent,
   ),
 );
@@ -737,7 +737,7 @@ check("…saying why the kept ones were kept", /Kept because/.test(editor));
  * …in words, not in manifest tokens.
  *
  * `keep_reason` is a pipeline enum (`latin`, `speaker_en`, `tts_failed`, and —
- * after a headless re-run of a keep made right here — `user`), and it was
+ * after a headless re-run of a keep made right here `user`), and it was
  * printed raw. So the app told the user "Kept because user" about a button they
  * had pressed themselves, while special-casing exactly two of the tokens
  * somewhere else entirely. One mapping, used by the rail and the panel both.
@@ -753,7 +753,7 @@ check("the empty rail is not an apology", !/No line selected/.test(editor));
 /*
  * …and the ⋯ menu does not say it a second time.
  *
- * The menu's first half is the run's health — the same tally and the same gap
+ * The menu's first half is the run's health the same tally and the same gap
  * list the rail is showing right now, permanently, three inches to the left. So
  * with nothing selected the menu drops that half and keeps the half the rail has
  * never carried. Select a line and the rail becomes that line's, and the menu
@@ -792,7 +792,7 @@ const rowFor = (id) => rows().find((r) => r.textContent.includes(`#${id}`));
 /*
  * The centrepiece. Segment 1 of the fixture is a real Hebrew line with a real
  * English translation, and the point of the redesign is that a reviewer can see
- * *both at once*, in one row, without selecting anything — that is what makes
+ * *both at once*, in one row, without selecting anything that is what makes
  * checking a translation possible at all. The previous list showed whichever
  * one "would play" and hid the other.
  */
@@ -809,7 +809,7 @@ check(
 );
 
 /*
- * Bidi. The row's chrome — timecode, id, buttons — is laid out left-to-right no
+ * Bidi. The row's chrome timecode, id, buttons is laid out left-to-right no
  * matter what language the run is in; each text line takes its direction from
  * its own content. Getting this wrong drags the whole row around whenever a
  * Hebrew line is on screen.
@@ -833,7 +833,7 @@ check("no composed tooltip on the row", row1.getAttribute("title") == null);
  * The other half of that claim: two lines are for a *comparison*, and there is
  * none when the two halves are the same string. A run over a video that already
  * speaks the target language passes the text through untouched, so `text_en ===
- * text` on most of it — and the row used to print the identical sentence twice,
+ * text` on most of it and the row used to print the identical sentence twice,
  * at two weights, on every one of them. Nothing in this list may ever do that.
  */
 check(
@@ -852,7 +852,7 @@ check(
 );
 
 /*
- * A kept line says WHY it was kept — once, as a clause on the meta line. It used
+ * A kept line says WHY it was kept once, as a clause on the meta line. It used
  * to be a paragraph of its own under the two texts, which on an all-kept run is
  * seventy-three identical sentences down the page; then it was one clause saying
  * "original audio plays here", which is the *consequence*, and the consequence
@@ -885,14 +885,14 @@ check(
 
 /*
  * The encoding is a drawn shape now. Two of the Unicode glyphs it used to set —
- * U+25A3 for "kept" above all — are outside the UI font, so the browser fell
+ * U+25A3 for "kept" above all are outside the UI font, so the browser fell
  * back per character and drew a lumpy square on every kept row.
  */
 check("the state shape is drawn, not set in a font", !editor.includes("▣") && !editor.includes("◆"));
 check("every row carries its state shape", rows().every((r) => r.querySelector("svg") != null));
 
 // The state is a word on every row. Light-mode "kept" is 2.17:1 against the
-// card — under the 3:1 gate — and there is no legend on screen any more.
+// card under the 3:1 gate and there is no legend on screen any more.
 check(
   "every row says its state in words",
   rows().every((r) => /Dubbed|Keep|Fail|Render|Needs voice|Needs translation/.test(r.textContent)),
@@ -900,8 +900,8 @@ check(
 /*
  * …in words that are the state, not abbreviations of it.
  *
- * "Voice" and "Text" read as nouns — a column saying "Text" beside a line of
- * text says nothing — and "Dub" was the same word as the verb on the row's own
+ * "Voice" and "Text" read as nouns a column saying "Text" beside a line of
+ * text says nothing and "Dub" was the same word as the verb on the row's own
  * button, so the state and the action shared a label. The three that lost
  * something got it back; "Keep", "Fail" and "Render" are unambiguous short and
  * stay short.
@@ -917,7 +917,7 @@ check(
 check("the legend is not permanent chrome", !editor.includes("Unclaimed time"));
 
 /*
- * The list scrolls to rows — the playhead's, the selection's, ↑/↓'s — and every
+ * The list scrolls to rows the playhead's, the selection's, ↑/↓'s and every
  * one of those landed the row flush under the filter bar, reading as text
  * sliced off by it. `scroll-padding` is the platform's inset for exactly that,
  * and the bar above has to be opaque or the row passing under shows through.
@@ -934,7 +934,7 @@ check(
 
 /*
  * The timeline's track headers live in a gutter beside the lanes, not floating
- * over the first few seconds of them — which is where every run's first mark
+ * over the first few seconds of them which is where every run's first mark
  * is, and where a reviewer starts reading.
  */
 const laneLabels = [...document.querySelectorAll("[data-lane-label]")];
@@ -958,7 +958,7 @@ check(
 );
 
 /*
- * The lanes draw the run's actual audio behind the marks — "make the audio look
+ * The lanes draw the run's actual audio behind the marks "make the audio look
  * like audio". Two claims worth pinning: the picture is there for both lanes,
  * and it is scaled by the *audio's* duration rather than the timeline's, which
  * is the difference between a waveform that lines up with the marks and one
@@ -996,7 +996,7 @@ check(
  * The hatch, named.
  *
  * It is the one mark on this strip with no row, no chip and no word anywhere in
- * the app — a 135° hatch that means "unclaimed" to whoever drew it and nothing
+ * the app a 135° hatch that means "unclaimed" to whoever drew it and nothing
  * to the reviewer looking at it. Every span carries the sentence, and the
  * shortcuts popover carries the same sentence for the reader who goes looking
  * rather than pointing.
@@ -1005,7 +1005,7 @@ const hatches = [...document.querySelectorAll("[data-hatch]")];
 check("the timeline draws unclaimed time", hatches.length > 0);
 check(
   "…and every hatch says what it is and which seconds it covers",
-  hatches.every((h) => /^Unclaimed — no segment covers \d+:\d\d–\d+:\d\d$/.test(h.getAttribute("aria-label") ?? "")),
+  hatches.every((h) => /^Unclaimed no segment covers \d+:\d\d–\d+:\d\d$/.test(h.getAttribute("aria-label") ?? "")),
 );
 check(
   "…in a tooltip as well, for the mouse",
@@ -1014,9 +1014,9 @@ check(
 /*
  * …and the rail's list of them points at the map.
  *
- * "Audible, uncovered — 0:52" is half an answer: a timecode does not say whether
+ * "Audible, uncovered 0:52" is half an answer: a timecode does not say whether
  * that is early, late, or in the middle of the one stretch that is already fine.
- * Pointing at a row lights the hatch it is inside — by focus as well as hover,
+ * Pointing at a row lights the hatch it is inside by focus as well as hover,
  * because a keyboard user gets the same map. The report's bounds and the strip's
  * are two measurements of the same silence, so they are matched by overlap.
  */
@@ -1030,7 +1030,7 @@ check("…and focusing one lights the hatch it is inside", litHatch() != null);
 check(
   "…the one that actually covers it",
   Number(gapRow.getAttribute("data-gap")) >= 0 &&
-    /Unclaimed — no segment covers/.test(litHatch().getAttribute("aria-label")),
+    /Unclaimed no segment covers/.test(litHatch().getAttribute("aria-label")),
 );
 gapRow.blur();
 await new Promise((resolve) => setTimeout(resolve, 120));
@@ -1067,7 +1067,7 @@ check(
  *
  * The server sends `seg.media = {play, tts, source, source_window}`; the UI
  * used to read `seg.source_clip_url` / `place_clip_url` / `tts_clip_url`, which
- * only the fixtures ever produced — so A/B playback was dead against the real
+ * only the fixtures ever produced so A/B playback was dead against the real
  * server and green in every test. The fixtures now speak the server's shape, so
  * a button with a URL on it proves the UI read the field the server actually
  * fills.
@@ -1092,7 +1092,7 @@ check(
  *
  * `seg.media.*` is the *server's* name for the clip, which in fixture mode is
  * `fixture:tone?hz=…`. Assigning that to `<audio src>` is ERR_UNKNOWN_URL_SCHEME
- * and the button snaps straight back out of its pressed state — which is what
+ * and the button snaps straight back out of its pressed state which is what
  * every A/B press did, because `api.audioUrl` (the seam that resolves it) had
  * no callers at all. The claim is narrow and it is the one that broke: the URL
  * that reaches the element went through the seam, and it is not the raw one.
@@ -1119,7 +1119,7 @@ check(
 press(clip(rowFor(1), "B"));
 await settle(120);
 check(
-  "pressing B stops A — one element, one clip",
+  "pressing B stops A one element, one clip",
   played.length === 2 &&
     clip(rowFor(1), "A").getAttribute("aria-pressed") === "false" &&
     clip(rowFor(1), "B").getAttribute("aria-pressed") === "true",
@@ -1133,8 +1133,8 @@ check("pressing the sounding side again stops it", clip(rowFor(1), "B").getAttri
  *
  * `media.source_window` has been on the wire since `Projects.enrich` was
  * written and had no consumers at all: the element got the URL, then
- * `currentTime = 0`, which fights the `#t=start,end` fragment's own seek — so
- * pressing A on a line an hour in could play the top of the video — and nothing
+ * `currentTime = 0`, which fights the `#t=start,end` fragment's own seek so
+ * pressing A on a line an hour in could play the top of the video and nothing
  * anywhere enforced the fragment's *end*, so it then ran on into the next
  * lines. Both edges are enforced from the numbers now, which is also the only
  * way they can be checked: jsdom loads no media, so a fragment would do nothing
@@ -1163,15 +1163,15 @@ sounding.currentTime = window9[1] + 5;
 sounding.dispatchEvent(new dom.window.Event("timeupdate"));
 await settle(120);
 check(
-  "the dub side plays the whole clip — it is not a window",
+  "the dub side plays the whole clip it is not a window",
   clip(rowFor(9), "B").getAttribute("aria-pressed") === "true",
 );
 press(clip(rowFor(9), "B"));
 await settle(120);
 
 /*
- * Inline editing. The translation is edited where it is read — that is the
- * whole point of putting it in the row — and the two hard rules are that a
+ * Inline editing. The translation is edited where it is read that is the
+ * whole point of putting it in the row and the two hard rules are that a
  * commit locks the line and an empty commit is refused outright (the server
  * 400s: "text_en cannot be empty").
  */
@@ -1240,7 +1240,7 @@ check(
   "a hand-edited line is locked against the pipeline",
   rowFor(2).querySelector('[aria-label^="Hand-edited"]') != null,
 );
-// Saving the text drops the clip that says the old words — the row must say so
+// Saving the text drops the clip that says the old words the row must say so
 // rather than keep a "Dubbed" badge and a live B button over stale audio.
 check(
   "the invalidated clip is modelled locally, not left stale",
@@ -1252,12 +1252,12 @@ check(
  *
  * `edit.set_text` invalidates the clip and the placement and stamps a lock, so
  * a PATCH that carries the text back unchanged is a re-voice queued against a
- * line nobody edited — which is exactly what "I don't want the retranscription
+ * line nobody edited which is exactly what "I don't want the retranscription
  * to happen without any change" is about. Fixture mode counts its own calls
  * because a no-op save is invisible from the DOM: it looks the same as no save.
  */
 // The bundle is imported into *this* module's realm, so its `globalThis` is
-// Node's, not jsdom's `window` — the counter lands on whichever one the fixture
+// Node's, not jsdom's `window` the counter lands on whichever one the fixture
 // module saw.
 const calls = () => globalThis.__DUBBING_FIXTURE_CALLS__ ?? dom.window.__DUBBING_FIXTURE_CALLS__;
 check("fixture mode counts its own round trips", calls() != null);
@@ -1273,7 +1273,7 @@ check(
   rowFor(3).querySelector('[aria-label^="Hand-edited"]') == null,
 );
 
-// Whitespace is not an edit either — the editor commits a trimmed draft, so
+// Whitespace is not an edit either the editor commits a trimmed draft, so
 // the comparison it is refused by has to be trimmed too.
 clickIt(rowFor(3).querySelector('[data-line="text_en"]'));
 await settle(150);
@@ -1290,7 +1290,7 @@ check("re-spacing a line is not an edit", calls().patch === patchesBefore);
  */
 const chip = (label) =>
   [...document.querySelectorAll("button")].find((b) => b.textContent.startsWith(label));
-/** The confirm panel's own buttons — every bulk action opens one now. */
+/** The confirm panel's own buttons every bulk action opens one now. */
 const dialogButton = (label) =>
   [...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent === label);
 check(
@@ -1305,13 +1305,13 @@ check("the Edited chip counts the line just edited", /Edited\s*3/.test(chip("Edi
 /*
  * What "failed" is.
  *
- * It used to be `tts.verify === "failed"` — a value `dubbing/tts.py` has never
+ * It used to be `tts.verify === "failed"` a value `dubbing/tts.py` has never
  * written; its verdicts are ok / soft / keep. A real failure is a keep the
  * pipeline decided *against itself*: the voice could not say the line
  * (`tts_failed`) or the translator could not produce the target language
  * (`mt_failed`), and either way the segment is stored as a keep with a slice of
  * the original attached so the mix is never silent. Which the UI drew as a calm
- * green "Kept original" — the pipeline's own losses, reported as resolved, with
+ * green "Kept original" the pipeline's own losses, reported as resolved, with
  * a Failed chip that could only ever count zero.
  */
 clickIt(chip("Failed"));
@@ -1328,7 +1328,7 @@ const bulk = [...document.querySelectorAll("button")].find((b) =>
 check("a filtered set can be fixed in one job", bulk != null);
 // The bulk set used to be `visible.filter(seg => !seg.keep)`, which is every
 // row on this screen removed: both buttons offered a job for nobody. And the
-// two buttons are not two ways to do one thing — an `mt_failed` line's
+// two buttons are not two ways to do one thing an `mt_failed` line's
 // `text_en` is the source line the translator copied in when it gave up, so
 // re-voicing it would synthesize the wrong language.
 check("…over the lines the chip actually found", /Re-voice this line/.test(bulk.textContent));
@@ -1347,8 +1347,8 @@ check("…or promising one job instead of one job", !/One job, not 1\./.test(roo
 /*
  * And the price, before the click.
  *
- * Every one of these buttons is minutes of model time per line — "Re-voice these
- * 27" is half an hour of GPU — and each was one unguarded click that asked for
+ * Every one of these buttons is minutes of model time per line "Re-voice these
+ * 27" is half an hour of GPU and each was one unguarded click that asked for
  * the work and started it in the same gesture.
  */
 const beforeAsking = calls().log.length;
@@ -1362,7 +1362,7 @@ check(
  * …and the question has to be on screen to be answered.
  *
  * Every confirm hung its panel under its trigger unconditionally, which is fine
- * until the trigger is thirty pixels off the bottom of the window — the
+ * until the trigger is thirty pixels off the bottom of the window the
  * timeline's Split, whose panel opened 81px below the fold, so the strip's one
  * destructive gesture could be armed and never confirmed with a mouse. The panel
  * measures itself and flips above the trigger when it must; the side it chose is
@@ -1409,15 +1409,15 @@ await settle(200);
  *
  * `PATCH {keep:false}` invalidates the translate stage, so a "Dub it" that
  * queued nothing left the line with no translation, no clip and no job coming
- * — invisible in a list of two hundred rows and unreachable by every other
+ * invisible in a list of two hundred rows and unreachable by every other
  * chip. The fixture carries one of each unfinished shape (no translation, no
  * voice) and the chip has to find both and offer the one click that fixes them.
  */
 clickIt(chip("Unfinished"));
 await settle(200);
 const stuck = rows();
-// Three from the fixture — one stranded by a verdict flip, one never voiced,
-// one voiced and never placed — plus the line whose translation was rewritten
+// Three from the fixture one stranded by a verdict flip, one never voiced,
+// one voiced and never placed plus the line whose translation was rewritten
 // by hand a few checks above, which dropped the clip that said the old words.
 check("the Unfinished chip finds the stranded lines", stuck.length === 4);
 const stranded = stuck.find((r) => r.textContent.includes("not translated yet"));
@@ -1432,7 +1432,7 @@ check(
  * A line with a clip and no placement is the ordinary state of a segment
  * between a re-voice and the render that lays it down. It read as "Needs
  * voice", so the one-click fix swept it up and queued a minute of synthesis to
- * reproduce a clip that already existed — and left it exactly as unplaced as it
+ * reproduce a clip that already existed and left it exactly as unplaced as it
  * found it, because only `timeline.place` can finish it.
  */
 const unplaced = stuck.filter((r) => /Render/.test(r.textContent));
@@ -1519,7 +1519,7 @@ check(
 );
 check(
   "…with the bar itself accounting for the four it will not touch",
-  /29 lines play as recorded, subtitled — 4 with no transcript to translate/.test(
+  /29 lines play as recorded, subtitled 4 with no transcript to translate/.test(
     bulkBar().textContent,
   ),
 );
@@ -1534,7 +1534,7 @@ check(
 );
 check(
   "…and names the four it is leaving out, and why",
-  /\(4 skipped — no transcript to translate\)/.test(dubDialog),
+  /\(4 skipped no transcript to translate\)/.test(dubDialog),
 );
 check(
   "…and still says what the flip does",
@@ -1561,7 +1561,7 @@ check("…and the button counts the rows on screen", /Dub these 2/.test(dubTrigg
  *
  * It used to say nothing at all: you typed, rows disappeared, and the only way
  * to learn whether the word matched eleven lines or none was to scroll and
- * count — with the All chip two inches away still confidently reading 73. The
+ * count with the All chip two inches away still confidently reading 73. The
  * chip counts the hits against the run, every hit is marked inside its own line,
  * and the timeline drops the marks that are not in the set.
  */
@@ -1614,7 +1614,7 @@ check(
 /*
  * …and the screen follows the lines instead of emptying under the user.
  *
- * The gesture only exists on the Kept filter and it empties it — every line it
+ * The gesture only exists on the Kept filter and it empties it every line it
  * flipped has left. The user was left reading "Nothing matches" at the exact
  * moment their lines started being worked on. Unfinished is where they now are.
  */
@@ -1640,7 +1640,7 @@ check("…and never the old count-with-no-name", !/\+\d+ queued/.test(stripText(
  * The rows pulse for as long as the work does.
  *
  * `busyUids` was a local list wiped by any job's completion and by every
- * `segment` frame — measured lifetime about 100 ms against a job that runs for
+ * `segment` frame measured lifetime about 100 ms against a job that runs for
  * a minute a line. Derived from the queue, the mark lasts exactly as long as
  * the job naming those uids does.
  */
@@ -1695,9 +1695,9 @@ await settle(2400);
 /*
  * The strip used to vanish on the frame the last job ended, which made a
  * successful job's only report its own disappearance. It holds for six seconds
- * in a still, quiet version of itself — same height, same trigger, so the queue
+ * in a still, quiet version of itself same height, same trigger, so the queue
  * is still reachable for as long as the question "what did that just do" is
- * live — and then goes.
+ * live and then goes.
  */
 check(
   "the two jobs it queued drain",
@@ -1711,20 +1711,20 @@ await settle(6400);
 check("…then it goes on its own", document.querySelector("[data-job-strip]") == null);
 
 /*
- * Cancelling the gesture, not the step — the audit's disaster, made unreachable.
+ * Cancelling the gesture, not the step the audit's disaster, made unreachable.
  *
  * Cancel the running re-translate and the re-voice queued behind it used to run
  * anyway, on lines whose translation had just been abandoned: 27 lines
  * synthesised from nothing, each landing as a `tts_failed` keep. One click, and
  * the user had said "stop dubbing these". The strip's Cancel could only ever
- * reach the running job, so the second half was not merely missed — it was
+ * reach the running job, so the second half was not merely missed it was
  * unreachable.
  */
 clickIt(chip("Kept"));
 await settle(200);
 /* The last kept line that there is something to dub. The four no-transcript
    lines sort to the end of this filter and "Dub it" on one of them is a verdict
-   flip and nothing else — correctly, there is no source text to translate — so
+   flip and nothing else correctly, there is no source text to translate so
    taking the last row outright would be asserting a batch on a line that cannot
    have one. Same marker the no-transcript check above reads. */
 const batchRow = rows()
@@ -1779,7 +1779,7 @@ await settle(200);
  * muted grey as the timecode next to it and the shelf's summary was the same
  * grey as a line with nothing wrong, so a clip that said four fifths of its
  * sentence looked exactly like one that said all of it. Both join the pending
- * family — amber, this app's hue for "still outstanding" — with red kept for
+ * family amber, this app's hue for "still outstanding" with red kept for
  * the hard failure. All of it is icons and a bar, never text: `--color-pending`
  * is 3.70:1 in light, which clears the 3:1 non-text gate and not the text one.
  */
@@ -1811,11 +1811,11 @@ await settle(150);
 
 /*
  * The selection panel. It holds everything true *about* a line and no text
- * field for the line itself — the text is in the script, where the comparison
+ * field for the line itself the text is in the script, where the comparison
  * is. Four shelves, all shut, all named for what is on them.
  */
 // Segment 2 is the one just edited by hand, so its Advanced shelf has locks on
-// it — which is the only state in which "Release locks" exists to be found.
+// it which is the only state in which "Release locks" exists to be found.
 clickIt(rowFor(2).querySelector('[aria-label^="Select segment"]'));
 await settle(200);
 const panel = root.textContent;
@@ -1867,8 +1867,8 @@ const click = (label) => {
 /*
  * The verdict, and what it costs.
  *
- * "Keep original" is the direction that needs no work — the original audio is
- * already on disk — so it applies instantly and queues nothing. "Dub it" is the
+ * "Keep original" is the direction that needs no work the original audio is
+ * already on disk so it applies instantly and queues nothing. "Dub it" is the
  * direction that needs all of it: `edit.set_keep` invalidates the translate
  * stage, so the line loses its subtitle and its clip on the way through, and a
  * flip that sent the PATCH and stopped there left the segment with nothing to
@@ -1880,7 +1880,7 @@ const click = (label) => {
  * …and the direction that had neither a cost nor a guard.
  *
  * `edit.set_keep` invalidates translate in BOTH directions, so pressing Keep
- * throws the line's translation away — and Keep is a button, a menu item, and
+ * throws the line's translation away and Keep is a button, a menu item, and
  * `k`, a bare keystroke. It was the only unguarded destructive action in the
  * app, and it said nothing at all about what it destroyed.
  */
@@ -1892,7 +1892,7 @@ check(
 );
 // The lead sentence describes the CURRENT verdict. A dubbed line that opened
 // with "the source audio plays untouched" read as the opposite of the button
-// that was lit — the exact inversion the user kept reporting.
+// that was lit the exact inversion the user kept reporting.
 check(
   "a dubbed line's panel says the dub replaces the source audio",
   /The dubbed voice replaces the source audio/.test(root.textContent),
@@ -1902,7 +1902,7 @@ const keptBefore = rows().filter((r) => r.textContent.includes("you chose this")
 clickIt(rowFor(2).querySelector('[aria-label^="Select segment"]'));
 await settle(250);
 // Segment 2's translation was typed by hand a few checks above, and a lock is
-// honoured by `invalidate` — so this one survives the flip, and warning about a
+// honoured by `invalidate` so this one survives the flip, and warning about a
 // loss that cannot happen is the same failure as staying silent about one that
 // can.
 check(
@@ -1918,7 +1918,7 @@ check(
   rows().filter((r) => r.textContent.includes("you chose this")).length > keptBefore,
 );
 check("keeping the original queues nothing", calls().log.slice(sinceKeep).join() === "patch");
-// The whole guard: no dialog — judging a run is a hundred of these — but an
+// The whole guard: no dialog judging a run is a hundred of these but an
 // undo, for as long as anyone would notice they had pressed the wrong thing.
 const keepToast = document.querySelector("[data-undo-toast]");
 check("…but it leaves an undo behind, naming the line", keepToast != null &&
@@ -1930,8 +1930,8 @@ check(
 /*
  * …and it is said out loud as well.
  *
- * Almost everything this screen says it says by *changing* — a badge flips, a
- * strip appears, the marks get wider — and a change with no text is a change a
+ * Almost everything this screen says it says by *changing* a badge flips, a
+ * strip appears, the marks get wider and a change with no text is a change a
  * screen reader cannot report. One polite region carries the three events that
  * happen without a sentence anywhere: the verdict, the zoom, and a job starting
  * or ending.
@@ -1966,7 +1966,7 @@ check(
 );
 
 // The general case: a kept line whose translation the pipeline wrote loses it
-// on the flip, so the translator has to run before the voice does — and the
+// on the flip, so the translator has to run before the voice does and the
 // one-job queue is FIFO, so enqueueing in that order *is* running in it.
 const sinceDub = calls().log.length;
 clickIt(rowFor(0).querySelector('[aria-label^="Select segment"]'));
@@ -1986,8 +1986,8 @@ check(
  * And the undo, driven from the key that makes the guard necessary.
  *
  * `k` is one keystroke with no modifier and it destroys a translation. The undo
- * has to put back exactly the sentence that was there — nothing else on the
- * client remembers it once the server has answered — and it has to put the
+ * has to put back exactly the sentence that was there nothing else on the
+ * client remembers it once the server has answered and it has to put the
  * verdict back with it, and queue the voice the flip destroyed, or the line is
  * left in the same limbo a "Dub it" used to create.
  */
@@ -2010,12 +2010,12 @@ check(
 );
 check("…and the verdict with it", !rowFor(1).textContent.includes("you chose this"));
 check(
-  "…in one PATCH, and queues the voice the flip destroyed — never the limbo again",
+  "…in one PATCH, and queues the voice the flip destroyed never the limbo again",
   calls().log.slice(sinceUndo).join() === "patch,patch,resynthesize",
 );
 check("…and the strip goes when it is used", document.querySelector("[data-undo-toast]") == null);
 
-// Let the jobs those flips queued drain — and then let the finished strip time
+// Let the jobs those flips queued drain and then let the finished strip time
 // itself out, so the next assertions are about the job they ask for and not
 // about the tail of one of these.
 await settle(3500);
@@ -2027,8 +2027,8 @@ await settle(6400);
 check("…and the finished strip lets go", document.querySelector("[data-job-strip]") == null);
 
 /*
- * A mark on the strip is a question about a line — what does it say, what did
- * it become, what does it sound like — and all three answers are in the script
+ * A mark on the strip is a question about a line what does it say, what did
+ * it become, what does it sound like and all three answers are in the script
  * row. So the click has to *bring that row to the reviewer*, centred, whether
  * or not the video is playing. Recorded rather than measured because jsdom has
  * no layout: what matters is that the list was told to centre the right row.
@@ -2065,8 +2065,8 @@ check(
 
 /*
  * The chrome that is not permanent. The keyboard map lives behind "?", and the
- * run's health — the uncovered-speech list, which is the highest-value thing
- * report.json produces — lives behind "⋯". Neither of them changes while you
+ * run's health the uncovered-speech list, which is the highest-value thing
+ * report.json produces lives behind "⋯". Neither of them changes while you
  * work through a line, so neither of them rents a row of the screen.
  */
 const byLabel = (label) =>
@@ -2110,14 +2110,14 @@ check("run health counts the states", /Kept original/.test(root.textContent));
  */
 check(
   "the gap list says which render found them",
-  /Audible, uncovered — \d+ · from the last render/.test(root.textContent),
+  /Audible, uncovered \d+ · from the last render/.test(root.textContent),
 );
 
 /*
  * "I can't easily open the ready file." Both of the things a finished run is
  * for are one click away and named: the video in the header, the subtitles in
  * this menu. Each one goes through `openRunFile`, which reveals the file in
- * Finder inside the shell and opens the served URL in a browser — the old
+ * Finder inside the shell and opens the served URL in a browser the old
  * button was desktop-only *and* handed the shell a run-relative path it always
  * refused.
  */
@@ -2135,14 +2135,14 @@ check(
 /*
  * The run options that are still a decision, editable where the run is read.
  *
- * Genre, register and context were picked once on the import screen — in ten
- * seconds, before a single line had been read — and then became unreachable for
+ * Genre, register and context were picked once on the import screen in ten
+ * seconds, before a single line had been read and then became unreachable for
  * the life of the project. Nothing about them is structural: all three are
  * inputs to the translator, which is exactly why they can change and the source
  * and the language pair cannot.
  *
  * Everything asserted here is about the *request*, because the screen shows no
- * consequence of any of them until translation runs again — the same reason the
+ * consequence of any of them until translation runs again the same reason the
  * import screen's switches are judged on `calls.created`.
  */
 check("the run's options are on the screen at last", document.querySelector("[data-run-options]") != null);
@@ -2196,7 +2196,7 @@ await settle(120);
  *
  * The header offered "Open preview" whenever the *manifest* named one, while
  * the panel three inches below it decides on whether the file can actually be
- * reached — so this run, whose preview.mp4 no fixture can serve, showed a
+ * reached so this run, whose preview.mp4 no fixture can serve, showed a
  * button offering to open a video directly beside a panel saying there is no
  * video. Both now read the same fact, which is the URL and not the manifest
  * key: no reachable file, no offer to open one.
@@ -2219,7 +2219,7 @@ check("the preview shows the pipeline position", /stages done/.test(root.textCon
 /*
  * What the transport is on, said in the DOM.
  *
- * Three modes — the preview, the run's original audio, nothing — and the chip
+ * Three modes the preview, the run's original audio, nothing and the chip
  * that names the middle one must not appear in the other two, because a label
  * reading "Original audio" over the finished dub is worse than no label. This
  * run's manifest names a preview.mp4 (which is what the mode is decided on;
@@ -2236,8 +2236,8 @@ check(
 /*
  * …and a preview that is named is not a preview that plays.
  *
- * The silent guard was `mode === "none"` alone, so this run — preview mode, no
- * reachable file — kept a live play button, and pressing it started the
+ * The silent guard was `mode === "none"` alone, so this run preview mode, no
+ * reachable file kept a live play button, and pressing it started the
  * transport's fallback clock: a playhead sweeping the strip with no audio
  * anywhere, which is the exact lie the dead play button was written to stop.
  * Nothing attached is nothing to play, whatever the mode says.
@@ -2268,16 +2268,16 @@ check(
 );
 check(
   "the video area says the same thing in words",
-  /Mixed before your last \d+ changes — Update the video to hear them/.test(root.textContent),
+  /Mixed before your last \d+ changes Update the video to hear them/.test(root.textContent),
 );
 /*
- * The three stages a render re-runs are drawn hollow — done, but done about
+ * The three stages a render re-runs are drawn hollow done, but done about
  * something else. A ring rather than a lighter fill, so the difference is shape
  * and survives greyscale and colour-blindness.
  */
 check(
   "timeline, mix and report are drawn hollow, not simply done",
-  [...document.querySelectorAll('[title$="— from the last render"]')].length === 3,
+  [...document.querySelectorAll('[title$="from the last render"]')].length === 3,
 );
 check(
   "the output lane is labelled as the last render",
@@ -2289,7 +2289,7 @@ check(
 );
 
 /*
- * Confirmation is themed and local, never `window.confirm` — which is drawn by
+ * Confirmation is themed and local, never `window.confirm` which is drawn by
  * the OS, blocks the main thread and stops the playhead.
  */
 click("Update the video");
@@ -2327,7 +2327,7 @@ check("editor still interactive during a job", rows().length > 40);
 
 /*
  * The strip is one line high, always. With `flex-wrap` a long stage message
- * wrapped to a second row and moved the whole editor down mid-job — the script
+ * wrapped to a second row and moved the whole editor down mid-job the script
  * under the cursor jumping while you read it. And the bar and the number are
  * one value read once: they used to disagree, the bar moving while the
  * percentage sat on "—".
@@ -2355,8 +2355,8 @@ check("job clears when done", !/Re-voicing/.test(root.textContent));
 /*
  * A subscriber that joins late still learns what is running.
  *
- * The editor mounts and subscribes *after* the job is created — that is the
- * order "Start dubbing" happens in, project first, editor second — so a stream
+ * The editor mounts and subscribes *after* the job is created that is the
+ * order "Start dubbing" happens in, project first, editor second so a stream
  * that only forwards frames from the moment you connect tells a freshly created
  * run nothing at all: no job strip, and a preview stage sitting on "Nothing has
  * run yet" for the whole run. The server opens every stream with a prelude
@@ -2375,14 +2375,14 @@ await go("/", 300);
 check("leaving the run leaves its strip behind", document.querySelector("[data-job-strip]") == null);
 await go("/editor/kan11_v3", 700);
 check(
-  "re-opening a run mid-job finds the job again — the stream replays it",
+  "re-opening a run mid-job finds the job again the stream replays it",
   /Rendering preview/.test(root.textContent),
 );
 /*
  * Cancelling is an ending, not a pause.
  *
  * The worker's journal saves whatever the job finished before it stopped, so a
- * cancelled run has real results on disk — and the editor only treated
+ * cancelled run has real results on disk and the editor only treated
  * done|failed as terminal, so the stage strip and every per-segment spinner
  * stayed up and the partial work was never re-read. The refetch is the claim
  * worth counting: it is invisible in the DOM (the segments come back looking
@@ -2395,17 +2395,17 @@ check(
   "…and it is the same job, cancellable from here",
   /Rendering preview cancelled/.test(root.textContent),
 );
-check("a cancel is terminal — the partial work is read back", calls().segments > readsBeforeCancel);
+check("a cancel is terminal the partial work is read back", calls().segments > readsBeforeCancel);
 
 /*
  * "Inherit" has to be able to undo an override.
  *
  * The per-segment language pair is the one field in the patch body where the
- * empty string means *clear* — `null` is "not supplied, leave it alone" for
+ * empty string means *clear* `null` is "not supplied, leave it alone" for
  * everything (`app.py::PatchSegment`), and the select was sending `value ||
  * null`. So picking "inherit" sent a patch the server correctly ignored: an
  * override could be set and never taken off. And clearing it is a translate
- * invalidation like any other — the line was translated under the old pair.
+ * invalidation like any other the line was translated under the old pair.
  */
 clickIt(rowFor(23).querySelector('[aria-label^="Select segment"]'));
 await settle(250);
@@ -2436,7 +2436,7 @@ check(
  * "i can start playing. but because it still not ready it shown nothing": for
  * the whole hour between `fetch` and `mix` the play button was live and there
  * was no preview.mp4 behind it. `source.wav` is on disk from the very first
- * stage, so that is what the transport plays until the preview exists — and
+ * stage, so that is what the transport plays until the preview exists and
  * when even that is missing the button is honestly dead rather than a clock
  * ticking over silence.
  *
@@ -2507,7 +2507,7 @@ check("…and no chip claims otherwise", document.querySelector("[data-transport
 const stopped = clock();
 pressSpace();
 await settle(250);
-check("…space does nothing either — the key is the same control", clock() === stopped);
+check("…space does nothing either the key is the same control", clock() === stopped);
 // …and the run is its own: opening it used to show the finished snapshot's
 // fifty-eight lines, which is a kinder server than the real one.
 check(
@@ -2521,7 +2521,7 @@ check(
  * This screen was the end of the road: a run that fell over at fetch had an
  * empty script, a dead play button, a Render button that could only produce a
  * second failure, and nothing anywhere in the app that could start the pipeline
- * again. Two things fix it, and they are two halves of one question — what
+ * again. Two things fix it, and they are two halves of one question what
  * happened, and what do I press.
  *
  * The error is the *pipeline's own last words*, read off the project's job list
@@ -2548,7 +2548,7 @@ check(
 
    `renderButton()` is the staleness section's helper, re-queried rather than
    captured: this is a different project on a different screen, and on a run that
-   never mixed the label is the quiet "Render preview" — a run with no render
+   never mixed the label is the quiet "Render preview" a run with no render
    cannot be behind one. */
 check("Render is refused before the click, not by a job that dies",
       renderButton().disabled === true);
@@ -2569,8 +2569,8 @@ check(
 /*
  * …naming the stage, and where it sits in the nine.
  *
- * A whole-run job's progress bar is the *stage's* fraction — the only one the
- * pipeline reports — so "62%" over a nine-stage run meant "62% through
+ * A whole-run job's progress bar is the *stage's* fraction the only one the
+ * pipeline reports so "62%" over a nine-stage run meant "62% through
  * transcript" and read as "62% through the dub". It says which stage and which
  * of nine, so the percentage is understood as the thing it is. Edit jobs keep
  * their naming: one is one stage by construction.
@@ -2578,7 +2578,7 @@ check(
 await settle(700);
 check(
   "a whole-run job says which stage it is on, and which of nine",
-  /^\w+ — stage [1-9] of 9$/.test(
+  /^\w+ stage [1-9] of 9$/.test(
     document.querySelector("[data-job-stage]")?.textContent?.trim() ?? "",
   ),
 );
@@ -2587,7 +2587,7 @@ check(
  * The import screen's switches only exist to be *sent*: the screen shows no
  * consequence of any of them, so the request body is the only place their
  * correctness is observable. "Dub foreign speech" is the one that had no way to
- * reach a run at all — the pipeline takes `--dub-foreign`, the server's
+ * reach a run at all the pipeline takes `--dub-foreign`, the server's
  * CreateProject has always accepted it, and the screen never put it in the
  * body, so a run started here could only ever keep a third language.
  *

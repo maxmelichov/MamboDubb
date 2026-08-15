@@ -4,7 +4,7 @@ The UI seeks in `preview.mp4` and scrubs clip wavs, so a plain whole-file
 response is not enough: `<video>` will not seek without `Accept-Ranges`, and
 Safari refuses to start playback at all unless the first request is answered with
 a 206. Everything served is resolved and checked against the run directory first
-— a project name and a relative path both arrive from the network.
+a project name and a relative path both arrive from the network.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ def parse_range(header: str | None, size: int) -> tuple[int, int] | None:
     """(start, end) inclusive, or None for "serve the whole thing".
 
     A syntactically odd header, or more than one range, is answered with the
-    whole file rather than an error — that is what RFC 9110 allows and what keeps
+    whole file rather than an error that is what RFC 9110 allows and what keeps
     an exotic client playing instead of failing.
     """
     if not header:

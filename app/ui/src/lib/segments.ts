@@ -18,7 +18,7 @@ export type SegmentState =
 /**
  * The two things the pipeline calls a failure, and it never calls them that.
  *
- * "failed" used to be `tts.verify === "failed"` — a value `dubbing/tts.py` does
+ * "failed" used to be `tts.verify === "failed"` a value `dubbing/tts.py` does
  * not write and never has: the record's `verify` is `"ok"`, `"soft"` or
  * `"keep"`, and nothing else is in the corpus of a real run. So the Failed chip
  * counted zero on a run with real failures in it.
@@ -27,7 +27,7 @@ export type SegmentState =
  * itself*: `tts.run` cannot get a usable clip and falls back to the original
  * audio (`keep_reason="tts_failed"`), or the translator hands back something
  * that is not the target language (`keep_reason="mt_failed"`). Both are stored
- * as `keep=true` with the original-audio slice attached — which the UI drew as
+ * as `keep=true` with the original-audio slice attached which the UI drew as
  * a calm green "Kept original", indistinguishable from a line the reviewer
  * chose to keep. The pipeline's own losses, reported as resolved.
  *
@@ -43,7 +43,7 @@ export function pipelineFailed(seg: Segment): boolean {
 
 /**
  * Invariant 1 (AGENTS.md) says every segment is either dubbed or plays its
- * original audio — so "failed" is not a normal outcome, it is the pipeline
+ * original audio so "failed" is not a normal outcome, it is the pipeline
  * having lost a segment, and it is the thing the reviewer must see first.
  *
  * Two of the last three used to be one state called "pending", returned by a
@@ -51,7 +51,7 @@ export function pipelineFailed(seg: Segment): boolean {
  * They are not one situation and they do not have one fix: a line with no
  * translation needs the *translator*,
  * a line with a translation and no clip needs the *voice*, and a line with a
- * clip and no placement needs neither — it needs a *render*. That last one is
+ * clip and no placement needs neither it needs a *render*. That last one is
  * the ordinary state of a studio segment between a re-voice and the render
  * that lays it down, and calling it "Needs voice" sent the bulk button off to
  * re-synthesize work that was already done.
@@ -67,7 +67,7 @@ export function segmentState(seg: Segment): SegmentState {
 /**
  * Has this segment been hand-edited?
  *
- * `seg.locked` is an object, and `{}` is truthy — so `seg.locked ? …` painted a
+ * `seg.locked` is an object, and `{}` is truthy so `seg.locked ? …` painted a
  * padlock on every segment the server had ever sent an empty lock map for. The
  * question is always "are any locks *on*", never "is there a lock map".
  */
@@ -85,7 +85,7 @@ export function hasLocks(seg: Segment): boolean {
  * A line that is meant to be dubbed and has nothing in the mix.
  *
  * The three unfinished states, together, because they are one situation from
- * the reviewer's side — "this line will be silent in the output" — and they are
+ * the reviewer's side "this line will be silent in the output" and they are
  * found the same way. It is also the shape a segment is left in by a verdict
  * flip that queued no work: `keep=false`, no `text_en`, no clip, waiting for a
  * job nobody enqueued.
@@ -103,7 +103,7 @@ export function unfinished(seg: Segment): boolean {
  *
  * The bulk fix's work set. A synthesized-but-unplaced line answers no: its clip
  * exists and says the right words, and re-voicing it is a minute of model time
- * to arrive back where it started — with the placement still missing, because
+ * to arrive back where it started with the placement still missing, because
  * only a render lays it down. It is the ordinary state after a re-voice with
  * the render deferred, and it used to be swept into "Needs voice" and redone.
  */
@@ -114,7 +114,7 @@ export function needsModelWork(seg: Segment): boolean {
 /**
  * Is there anything here to translate or to say?
  *
- * `segments.fill_uncovered_audible` writes spans with `text: ""` — audible
+ * `segments.fill_uncovered_audible` writes spans with `text: ""` audible
  * stretches the transcript never claimed, kept so the original at least plays.
  * They are keeps with nothing in them, and a bulk "dub these" that swept them up
  * asked the translator to translate an empty string and the voice to say the
@@ -129,7 +129,7 @@ export function hasTranscript(seg: Segment): boolean {
  * What a bulk action costs, in the only unit that matters here.
  *
  * The numbers are the ones the selection panel already prints for a single line
- * — `~20 s` for a translate, `~1 min` for a voice — so a bar that offers to do
+ * `~20 s` for a translate, `~1 min` for a voice so a bar that offers to do
  * twenty-seven of them says half an hour rather than "queues behind any running
  * job", which is what "Dub these 27" used to say about thirty minutes of GPU.
  */
@@ -146,8 +146,8 @@ export function modelCost(work: { translate?: number; voice?: number }): string 
 /**
  * A kept line carrying a translation the user typed.
  *
- * `edit.set_text` stores it and does *not* reopen the verdict — a keep the user
- * or the span decided is not overturned by a subtitle — so the line still plays
+ * `edit.set_text` stores it and does *not* reopen the verdict a keep the user
+ * or the span decided is not overturned by a subtitle so the line still plays
  * its original audio. True on screen, invisible on screen: the row shows an
  * English sentence under a Hebrew one and nothing says it will never be spoken.
  */
@@ -159,7 +159,7 @@ export function subtitleOnly(seg: Segment): boolean {
 /**
  * Colour is never the only channel: every state carries a shape and a word.
  *
- * The shape used to be a Unicode glyph — `◆ ▣ ✕ ◇ ○` — set in the UI font.
+ * The shape used to be a Unicode glyph `◆ ▣ ✕ ◇ ○` set in the UI font.
  * Two of those (U+25A3 especially) are outside Inter's coverage, so the browser
  * fell back per-character and drew "Keep" with a lumpy filled square that read,
  * seventy-three rows in a row, as a rendering fault. A drawn icon has no
@@ -173,8 +173,8 @@ export function subtitleOnly(seg: Segment): boolean {
  * The hues are grouped by *what is left to do*, which is the only question the
  * colour is there to answer (see the palette note in App.css):
  *
- *   kept                     resolved — the original plays   green
- *   dubbed                   done — there is a clip to check  blue
+ *   kept                     resolved the original plays   green
+ *   dubbed                   done there is a clip to check  blue
  *   unvoiced, untranslated   waiting on a model               amber
  *   failed                   the pipeline lost the line       red
  *
@@ -189,8 +189,8 @@ export function subtitleOnly(seg: Segment): boolean {
  * than `label` where the shortening loses nothing.
  *
  * Three of them lost the sentence. "Voice" and "Text" were abbreviations of
- * "Needs voice" and "Needs translation" that read as nouns — a column that says
- * "Text" next to a line of text is saying nothing — and "Dub" was the same word
+ * "Needs voice" and "Needs translation" that read as nouns a column that says
+ * "Text" next to a line of text is saying nothing and "Dub" was the same word
  * as the *verb* on the row's own button, so the state and the action shared a
  * label. The full phrases cost a few pixels on a row that has room for them.
  * "Keep", "Fail" and "Render" stay short: each is unambiguous on its own.
@@ -222,7 +222,7 @@ export const STATE_META: Record<
   },
   // Waiting on the *timeline*, not on a model: the clip exists and says the
   // right words, and the only thing between it and the mix is a render. Same
-  // pending hue as the other two — what is outstanding is still outstanding —
+  // pending hue as the other two what is outstanding is still outstanding —
   // and a distinct word, because the button is a different button.
   unplaced: {
     label: "Needs render",
@@ -283,7 +283,7 @@ export function totalDuration(segments: Segment[], hint: number | null): number 
 /**
  * Verification worth surfacing: a clone that did not say the right words.
  *
- * A keep has nothing to verify — its "clip" is a slice of the original — so the
+ * A keep has nothing to verify its "clip" is a slice of the original so the
  * check short-circuits on it. Except for the two keeps the pipeline decided
  * against itself: a `tts_failed` line's low overlap is *why* it is a keep, and
  * suppressing it hid the evidence for the one verdict a reviewer most needs to
@@ -312,17 +312,17 @@ export function placementConcern(seg: Segment): string[] {
  * Why a line keeps its original audio, in words a reviewer can read.
  *
  * The reasons are `keep_reason` as the pipeline writes it, and the UI used to
- * print them raw — "Kept because `speaker_en`" — while special-casing exactly
+ * print them raw "Kept because `speaker_en`" while special-casing exactly
  * two of them somewhere else. The one that reads worst is the user's own: a
  * keep made in this app is stored as `manual`, and after a headless re-run the
- * same decision comes back as `user` (`PASSTHROUGH_REASON` — one concept, one
+ * same decision comes back as `user` (`PASSTHROUGH_REASON` one concept, one
  * manifest key), so the app told a user "Kept because user" about a button they
  * had pressed themselves. Both spellings mean the same thing and it is said
  * once, here, so the panel and the run summary cannot drift apart again.
  *
  * An unknown reason falls through to itself. Inventing a phrase for a value
  * this file has never seen would be inventing a vocabulary the run's own report
- * does not use — the raw token is at least searchable.
+ * does not use the raw token is at least searchable.
  */
 const KEEP_REASONS: Record<string, string> = {
   // The user's verdict, in both spellings the manifest can hold.
@@ -352,11 +352,11 @@ export function keepReason(reason: string | null | undefined): string {
 /**
  * Does this file have a real phrase for the reason, or is it falling through?
  *
- * The row's meta line prints the reason where it used to print "— original audio
+ * The row's meta line prints the reason where it used to print "original audio
  * plays here", so the reviewer judging a keep can see *why* without opening the
  * panel. But the fallthrough is a raw manifest token or "no reason recorded",
  * and neither of those is worth the space the sentence they replaced was
- * earning — so those rows keep the sentence.
+ * earning so those rows keep the sentence.
  */
 export function hasKeepPhrase(reason: string | null | undefined): boolean {
   return Boolean(KEEP_REASONS[(reason ?? "").trim()]);

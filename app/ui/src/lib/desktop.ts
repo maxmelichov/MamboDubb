@@ -1,5 +1,5 @@
 /**
- * The Tauri seam — the only file in the app that knows a desktop shell exists.
+ * The Tauri seam the only file in the app that knows a desktop shell exists.
  *
  * Everything here is best-effort by construction: in a plain browser tab there
  * is no `window.__TAURI__` and no `@tauri-apps/api` on disk, so every call falls
@@ -11,14 +11,14 @@
  * The Tauri API package is deliberately not a dependency. It is reached through
  * the `withGlobalTauri` global when present, and otherwise through a dynamic
  * import whose specifier is assembled at runtime so the bundler leaves it alone
- * — the browser bundle must not require a package that only the shell ships.
+ * the browser bundle must not require a package that only the shell ships.
  *
  * Commands, as the desktop shell (`app/desktop`, branch desk/tauri-shell)
  * exposes them:
  *
  *   get_server_url()            -> ServerInfo { base_url, port, version, workspace }
  *                                  (never starts a server; null-ish when none runs)
- *   start_server()              -> ServerInfo — idempotent, blocks on the ready line
+ *   start_server()              -> ServerInfo idempotent, blocks on the ready line
  *   pick_video_file()           -> string | null   native open dialog
  *   reveal_path({ path })       -> void     show the file in Finder
  *   get_workspace()             -> string
@@ -81,7 +81,7 @@ function getInvoke(): Promise<Invoke | null> {
 
 /**
  * Call a shell command. Returns `fallback` in a browser, and also when the
- * command is missing or throws — the shell is built in parallel with this file,
+ * command is missing or throws the shell is built in parallel with this file,
  * so "the command is not there yet" must degrade, not crash the page.
  */
 async function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: T): Promise<T> {
@@ -97,7 +97,7 @@ async function call<T>(cmd: string, args: Record<string, unknown> | undefined, f
 
 /**
  * `call` for the commands that return nothing, where the only interesting
- * answer is whether it worked — `call` cannot say, because a command that
+ * answer is whether it worked `call` cannot say, because a command that
  * resolves with `null` and a command that threw both come back as the
  * fallback. The caller needs the difference: "the shell revealed the file" and
  * "the shell could not" lead to different affordances.
@@ -119,13 +119,13 @@ let serverInfoPromise: Promise<unknown> | null = null;
 /**
  * Where the studio server is listening, or null when the app should just use
  * relative URLs. In the shell the webview's origin is the Tauri asset protocol
- * — not the sidecar — so every request has to be prefixed with this; in a
+ * not the sidecar so every request has to be prefixed with this; in a
  * browser the server serves the UI itself and relative URLs are already right.
  *
  * Cached: the sidecar's port does not change while the app is open.
  */
 /** The shell answers with `ServerInfo { base_url, port, ... }`; older sketches
- *  of the contract said a bare string. Accept both — the seam exists precisely
+ *  of the contract said a bare string. Accept both the seam exists precisely
  *  so a shape drift lands here and nowhere else. */
 function baseUrlOf(info: unknown): string | null {
   if (typeof info === "string") return info.replace(/\/+$/, "") || null;
@@ -137,7 +137,7 @@ function baseUrlOf(info: unknown): string | null {
 }
 
 /**
- * The whole `ServerInfo`, cached — not just its URL.
+ * The whole `ServerInfo`, cached not just its URL.
  *
  * `workspace` comes back in the same handshake and is the only way the UI can
  * turn a run-relative path (`preview.mp4`, which is all the manifest stores)
@@ -174,7 +174,7 @@ export async function workspaceDir(): Promise<string | null> {
 }
 
 /**
- * A native open dialog, returning an **absolute path** — the thing a browser
+ * A native open dialog, returning an **absolute path** the thing a browser
  * `<input type=file>` cannot give us and the pipeline actually needs. Null when
  * the user cancelled, and null in a browser so the caller falls back.
  */
@@ -185,7 +185,7 @@ export function pickVideoFile(): Promise<string | null> {
 
 /**
  * Show a produced file in Finder. False in a browser, and false when the shell
- * refused — `reveal_path` errors on a path that does not exist, which is the
+ * refused `reveal_path` errors on a path that does not exist, which is the
  * one failure the caller must not paper over: it means the file the button
  * offered is not there.
  */
@@ -198,14 +198,14 @@ export function revealPath(path: string): Promise<boolean> {
  * Reveal a file *inside a run*, given the run-relative path the manifest
  * stores (`preview.mp4`, `preview_en.srt`).
  *
- * The manifest never records absolute paths — it is copied between machines —
+ * The manifest never records absolute paths it is copied between machines —
  * and `reveal_path` takes nothing else, so the composition has to happen
  * somewhere. Here, because this is the file that already knows both halves:
  * the workspace comes from the shell's own handshake and every run lives at
  * `<workspace>/outputs/<name>/`, which is the layout the shell itself starts
  * the server with (`--outputs <workspace>/outputs`).
  *
- * False means "could not" — no shell, no workspace, or no such file — and the
+ * False means "could not" no shell, no workspace, or no such file and the
  * caller should fall back to opening the URL instead of failing silently.
  */
 export async function revealRunFile(project: string, relPath: string): Promise<boolean> {

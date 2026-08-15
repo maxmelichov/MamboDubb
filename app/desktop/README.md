@@ -1,4 +1,4 @@
-# MamboDubb — desktop shell
+# MamboDubb desktop shell
 
 A Tauri 2 shell around the studio server. It is the third layer of the stack in
 [docs/APP_ARCHITECTURE.md](../../docs/APP_ARCHITECTURE.md), and it changes nothing about
@@ -8,7 +8,7 @@ the other two: the UI still speaks HTTP to the server, the server still owns the
 
 MamboRambo ships its engine as a compiled binary inside the .app. Ours cannot: the
 pipeline is a ~10 GB Python environment plus tens of gigabytes of model weights. So the
-shell holds a **workspace** — the path to a DubbingQwen checkout — and runs the server
+shell holds a **workspace** the path to a DubbingQwen checkout and runs the server
 out of it:
 
 ```
@@ -35,7 +35,7 @@ from Finder inherits almost none of the user's shell `PATH`.
 | `set_workspace(path)` | `WorkspaceReport` | refuses a directory that is not a checkout |
 | `start_server()` | `ServerInfo` | idempotent; starts or returns the running one |
 | `stop_server()` | `()` | |
-| `get_server_url()` | `ServerInfo \| null` | never starts one — poll this to pick a screen |
+| `get_server_url()` | `ServerInfo \| null` | never starts one poll this to pick a screen |
 | `get_server_log()` | `string` | tail of the server's stderr, for the error panel |
 | `reveal_path(path)` | `()` | Finder / Explorer |
 | `pick_video_file()` | `string \| null` | native open dialog; `null` is a cancel |
@@ -46,10 +46,10 @@ type WorkspaceReport = {
   path: string;
   exists: boolean;      // the directory is there
   has_project: boolean; // pyproject.toml + dubbing_app/
-  has_venv: boolean;    // .venv/bin/python — absent is only a slow first run
+  has_venv: boolean;    // .venv/bin/python absent is only a slow first run
   uv_found: boolean;
   uv_path: string | null;
-  ready: boolean;       // has_project && uv_found — start_server can work
+  ready: boolean;       // has_project && uv_found start_server can work
 };
 
 type ServerInfo = {
@@ -67,7 +67,7 @@ type ServerInfo = {
 
 The window loads the **bundled UI** (Tauri `frontendDist`), not the server's own
 `--ui-dir`. The server is a subprocess that may take minutes to come up on a first run,
-may fail, or may have no workspace to run from at all — a window pointed at its URL would
+may fail, or may have no workspace to run from at all a window pointed at its URL would
 be blank in every one of those cases, with nowhere to render the setup screen. Loading
 the bundled assets means the UI is up immediately and the server is something it reports
 on. The UI gets the base URL from `get_server_url()` / `start_server()` and does plain
@@ -85,7 +85,7 @@ uv run --script scripts/make_icons.py            # rewrite the ladder from the S
 uv run --script scripts/make_icons.py --check    # non-zero if the rasters are stale
 ```
 
-The mark is two overlapping speech bubbles on a deep indigo-violet tile — the faint one
+The mark is two overlapping speech bubbles on a deep indigo-violet tile the faint one
 behind is the original track, the solid one in front is the dub and it carries the
 waveform. Violet rather than blue because a Dock is mostly blue. The tile sits on the
 macOS icon grid (824×824 inset in a 1024 canvas, corner radius 185) so the Dock draws it
@@ -95,8 +95,8 @@ The generator uses `qlmanage -t -s 1024` for the master, because it is the only 
 rasteriser a stock Mac has: `sips` cannot read SVG, and `rsvg-convert` / Inkscape /
 ImageMagick / `cairosvg` are all extra installs (`cairosvg` additionally needs libcairo
 from Homebrew). QuickLook's one flaw is that it composites onto opaque white and drops
-the alpha channel, so the script re-cuts the alpha from the tile silhouette — which it
-knows exactly, the tile being a plain rounded rect — and the SVG paints 4 px of bleed
+the alpha channel, so the script re-cuts the alpha from the tile silhouette which it
+knows exactly, the tile being a plain rounded rect and the SVG paints 4 px of bleed
 past that silhouette so the white-blended edge pixels land outside the cut. Everything
 below 1024 is a Pillow/Lanczos downscale, which is sharper at 16–32 px than
 re-rasterising would be; `iconutil -c icns` assembles the `.icns` from a standard
@@ -110,7 +110,7 @@ and the alpha re-cut can go away with it.
 The window ships a **standard macOS title bar** (`titleBarStyle: "Visible"`), 1280×820,
 centred, floored at 1024×680.
 
-The prettier option is the frameless one — `titleBarStyle: "Overlay"` with
+The prettier option is the frameless one `titleBarStyle: "Overlay"` with
 `hiddenTitle: true`, which drops the traffic lights straight onto the web content and
 lets the app's own header act as the title bar. It is deliberately **not** enabled,
 because with the header as it stands today the traffic lights would land on top of the
@@ -127,7 +127,7 @@ To turn it on, both halves have to land together. The shell half:
 "trafficLightPosition": { "x": 16, "y": 14 }   // centres 12 px dots in a 40 px header
 ```
 
-The UI half — **not made here; `app/ui` belongs to someone else** — is:
+The UI half **not made here; `app/ui` belongs to someone else** is:
 
 1. Stamp the platform on the root element once at boot (`app/ui/src/main.tsx`), e.g.
    `document.documentElement.dataset.os = await platform();` from
@@ -161,8 +161,8 @@ them optically centred.
 ## Bundle metadata
 
 `bundle.macOS.dmg` fixes the installer window at 700×460 with the .app at (180, 220) and
-the Applications alias at (520, 220) — symmetric about the centre, with room above for
-the volume name — so the drag reads as an instruction rather than two icons that happened
+the Applications alias at (520, 220) symmetric about the centre, with room above for
+the volume name so the drag reads as an instruction rather than two icons that happened
 to land somewhere. There is deliberately no `background` image: Tauri only accepts a
 single PNG/JPG/GIF for it, with no way to supply a `@2x` representation, so any type or
 edge in it is visibly soft on a Retina display. A clean window with deliberate positions

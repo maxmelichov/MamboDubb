@@ -3,12 +3,12 @@
 Three things are pinned here, because each one is what makes a human correction
 survive contact with the pipeline:
 
-* `uid` — stable identity. `id` is positional and renumbered on every
+* `uid` stable identity. `id` is positional and renumbered on every
   re-segmentation, so a UI keyed on it would follow the wrong audio.
-* `locked` — a hand-edited field is never regenerated. A whole-run re-translate,
+* `locked` a hand-edited field is never regenerated. A whole-run re-translate,
   the run-global revision pass, a tts rerun, and the timeline's shortening round
   all have to leave it alone.
-* `--force <stage>` — really invalidates downstream, as its docstring has always
+* `--force <stage>` really invalidates downstream, as its docstring has always
   claimed.
 
 The model-driven halves of `dubbing.edit` (retranslate / resynthesize / rebuild)
@@ -186,7 +186,7 @@ def test_translate_subtitle_pass_skips_a_locked_keep():
 
 def test_translate_revision_pass_excludes_locked_lines():
     # The run-global revision pass rewrites every dubbed line whenever anything was
-    # translated — the exact path that would undo a user's corrections.
+    # translated the exact path that would undo a user's corrections.
     m = mk(seg(text_en="mine", locked={"text_en": True}),
            seg(id=1, start=2.0, end=4.0, text_en="theirs"))
     rev = [s for s in m["segments"]
@@ -225,7 +225,7 @@ def test_tts_does_not_reopen_a_locked_failed_keep():
 
 def test_timeline_does_not_shorten_a_locked_line(monkeypatch):
     # A dub far too long for its slot: the shortening round would re-translate and
-    # re-voice it. Locked, it must drift instead — and still place legally.
+    # re-voice it. Locked, it must drift instead and still place legally.
     m = mk(seg(start=0.0, end=2.0, text_en="one two three four five six seven eight",
                tts={"clip": "clips/a.wav", "dur": 9.0}, locked={"text_en": True}),
            seg(id=1, start=2.0, end=4.0, text_en="nine ten",
@@ -281,7 +281,7 @@ def test_invalidate_drops_downstream_too():
     uid = m["segments"][0]["uid"]
     edit.invalidate(m, uid, stages={"translate"})
     s = m["segments"][0]
-    # A new line means a new clip means a new placement — none of it can be kept.
+    # A new line means a new clip means a new placement none of it can be kept.
     assert "text_en" not in s and "tts" not in s and "place" not in s
     assert m["segments"][1]["text_en"] == "three four"      # neighbours untouched
 
@@ -424,7 +424,7 @@ def test_set_text_en_reopens_the_keep_the_failed_translation_caused():
     # `mt_failed` is the pipeline's own verdict about text that no longer exists:
     # the translator gave up, so the span fell back to its original audio. Writing
     # the translation by hand is the user answering exactly that, and leaving the
-    # keep standing means their line is only ever a subtitle — never spoken.
+    # keep standing means their line is only ever a subtitle never spoken.
     m = mk(seg(keep=True, keep_reason="mt_failed", text_en="aa bb cc dd",
                tts={"clip": "clips/keep_x.wav", "dur": 2.0}))
     uid = m["segments"][0]["uid"]
@@ -490,7 +490,7 @@ def test_set_keep_locks_so_mark_keep_cannot_re_decide_it():
 
 
 def test_set_keep_drops_the_line_that_was_written_for_the_other_path():
-    # A keep's `text_en` is a SUBTITLE — for a foreign or passed-through span it is
+    # A keep's `text_en` is a SUBTITLE for a foreign or passed-through span it is
     # the honest placeholder, not something anyone should say out loud. Un-keeping
     # while leaving it behind hands that placeholder to the tts stage as the line to
     # speak, and `needs_translation` (text_en non-empty) never refills it. The
@@ -574,7 +574,7 @@ def test_set_tts_opts_merges_removes_and_invalidates():
 
 
 def test_set_tts_opts_refuses_what_the_synthesiser_could_never_honour():
-    # `ttsopts` is loud on purpose — a silently-ignored option looks exactly like a
+    # `ttsopts` is loud on purpose a silently-ignored option looks exactly like a
     # broken model. Storing one unvalidated only moves the ValueError to the middle
     # of the next run (`Engine._plan`), where it takes the whole stage down instead
     # of failing the edit that caused it.
@@ -690,7 +690,7 @@ def test_a_split_carries_the_users_verdict_about_the_span():
     # split leaves every second of that span covered. Dropped, the halves' `keep`
     # survives only until the next `python -m dubbing`: the segments stage rebuilds
     # from scratch, `mark_keep` re-decides both halves, and there is no override
-    # left for `carry_passthrough` to re-attach — the passage is dubbed again.
+    # left for `carry_passthrough` to re-attach the passage is dubbed again.
     m = mk(seg(start=0.0, end=4.0, text="aa bb cc dd", keep=True,
                keep_reason="user", passthrough=True))
     edit.split(m, m["segments"][0]["uid"], 2.0)
@@ -707,7 +707,7 @@ def test_a_merge_carries_an_override_only_when_both_halves_agreed():
     edit.merge(both, a, b)
     assert both["segments"][0]["passthrough"] is True
 
-    # Disagreement has no answer, so the merged span carries none — same rule the
+    # Disagreement has no answer, so the merged span carries none same rule the
     # language and synthesis overrides already follow.
     split_minds = mk(seg(start=0.0, end=2.0, text="aa", keep=True,
                          keep_reason="user", passthrough=True),
@@ -757,7 +757,7 @@ def test_retranslate_calls_generate_per_segment_and_never_the_revision_pass(monk
     assert out == {a: "fresh line"}
     assert m["segments"][0]["text_en"] == "fresh line"
     assert [s for _, s, _ in seen] == ["he"]          # one hop: he→en is not a pivot
-    # The other segment's correction is untouched — the whole point.
+    # The other segment's correction is untouched the whole point.
     assert m["segments"][1]["text_en"] == "my own corrected line"
 
 
@@ -811,7 +811,7 @@ def test_retranslate_falls_back_to_keep_when_the_model_fails(monkeypatch):
 def test_retranslate_translates_a_foreign_line_from_its_own_language(monkeypatch):
     # A he→de run of a video whose speech is mostly English. `--src` is a claim
     # about the video; this line's own Latin script refutes it, so the prompt
-    # asserts no source at all and goes straight to German — one hop, not the
+    # asserts no source at all and goes straight to German one hop, not the
     # he→en→de pivot whose first hop can only produce an echo.
     m = mk(seg(start=0.0, end=2.0, text="around this table, after the elections."),
            src_lang="he", tgt_lang="de")
@@ -832,7 +832,7 @@ def test_retranslate_translates_a_foreign_line_from_its_own_language(monkeypatch
 def test_retranslate_leaves_a_locked_dub_it_unfinished_and_says_so(monkeypatch):
     # The user pressed "Dub it", which locks `keep` and writes `passthrough`.
     # When the translation fails, reverting them restores the audio they were
-    # replacing — so the button appears to do nothing, twice over, since the job
+    # replacing so the button appears to do nothing, twice over, since the job
     # still reported a success. Their verdict stands and the message is honest.
     m = mk(seg(start=0.0, end=2.0, text="around this table, after the elections.",
                text_en="stale", keep=True, keep_reason="latin",
@@ -850,13 +850,13 @@ def test_retranslate_leaves_a_locked_dub_it_unfinished_and_says_so(monkeypatch):
     assert s["keep"] is False and s["passthrough"] is False   # manifest agrees
     assert not s.get("text_en")                 # the editor's "untranslated" state
     assert out == {}                            # nothing translated, nothing claimed
-    assert seen[-1] == (1.0, "translated 0 of 1 segment(s) — 1 failed to translate (seg 0)")
+    assert seen[-1] == (1.0, "translated 0 of 1 segment(s) 1 failed to translate (seg 0)")
 
 
 def test_retranslate_leaves_a_kept_spans_verdict_alone(monkeypatch):
     # Retranslating a keep improves its SUBTITLE. Un-keeping it would strand the
     # user's `passthrough=True` beside `keep=False`, and the next headless run's
-    # `apply_passthrough` would flip it back and delete this translation — an
+    # `apply_passthrough` would flip it back and delete this translation an
     # 11 GB model load thrown away without a word.
     m = mk(seg(start=0.0, end=2.0, text="גדי איזנקוט", keep=True,
                keep_reason="manual", passthrough=True, locked={"keep": True}))
@@ -937,7 +937,7 @@ def test_resynthesize_does_not_voice_a_locked_dub_that_has_no_line(monkeypatch):
     s = m["segments"][0]
     assert out == {} and "tts" not in s
     assert s["keep"] is False and s["passthrough"] is False
-    # This exact shape — meant to be dubbed, no translation, no clip — is what the
+    # This exact shape meant to be dubbed, no translation, no clip is what the
     # editor's `segmentState` reads as "untranslated" and the Unfinished chip counts.
     # Left as a `tts_failed` keep instead (which is what a cancelled translate used
     # to produce) the line would sit in Kept, looking like a decision someone made.
@@ -945,7 +945,7 @@ def test_resynthesize_does_not_voice_a_locked_dub_that_has_no_line(monkeypatch):
     # The message states what happened (`edit._resynth_message`): nothing was
     # synthesized, one line has no translation to speak, and the placement that
     # could not run over the hole is said out loud rather than left implied.
-    assert seen[-1][1] == ("synthesized 0 — 1 still needs a translation (seg 0); "
+    assert seen[-1][1] == ("synthesized 0 1 still needs a translation (seg 0); "
                            "placement deferred to the next tts run")
 
 
@@ -1019,7 +1019,7 @@ def test_resynthesize_overrides_a_tts_lock_when_asked_for_that_segment(monkeypat
 
 
 def test_the_run_records_its_own_settings_so_the_studio_reproduces_them():
-    # `edit._args` rebuilds the CLI arguments from `m["source"]` — it is what tells
+    # `edit._args` rebuilds the CLI arguments from `m["source"]` it is what tells
     # `_replace_timeline` which tempo policy this run uses and what `rebuild` marks
     # its stages with. A setting the run never wrote down falls back to argparse's
     # default, so a --genre movie run got re-placed at documentary rates after any
@@ -1065,8 +1065,8 @@ def test_resynthesize_defers_placement_while_another_segment_awaits_its_clip(mon
     monkeypatch.setattr(tts_mod, "Engine", FakeEngine)
     out = edit.resynthesize(m, tmp_workdir(["clips/new.wav", "clips/a.wav"]), [a])
     assert out[a]["clip"] == "clips/new.wav"
-    # Nothing coherent to place yet — the tts run that fills the hole re-places
-    # everything — but the synthesis the user asked for is recorded, not lost.
+    # Nothing coherent to place yet the tts run that fills the hole re-places
+    # everything but the synthesis the user asked for is recorded, not lost.
     assert "place" not in m["segments"][0] and "place" not in m["segments"][1]
 
 
@@ -1131,7 +1131,7 @@ def test_start_stage_backs_up_to_translate_for_a_line_that_was_never_made():
 def test_rebuild_fills_the_hole_instead_of_clearing_and_dying(monkeypatch):
     """The Render button on the state an ordinary text edit leaves behind. It used
     to clear timeline/mix/report first and only then hit `KeyError: 'tts'` inside
-    `timeline.build_items` — leaving the run strictly worse than it found it."""
+    `timeline.build_items` leaving the run strictly worse than it found it."""
     from dubbing import mix as mix_mod
     from dubbing import report as report_mod
 
@@ -1226,7 +1226,7 @@ def params_for(m, argv=("in.mp4",)):
 
 def test_the_tts_fingerprint_carries_the_reference_recipe(monkeypatch):
     # `m["speakers"]` survives a tts reset, so a new canonical-reference recipe
-    # would otherwise keep cloning from the old references forever — and
+    # would otherwise keep cloning from the old references forever and
     # `needs_synthesis` answers by file existence, so nothing else would notice.
     m = manifest.new({"input": "in.mp4", "src_lang": "he", "tgt_lang": "en"})
     before = params_for(m)["tts"]
@@ -1269,7 +1269,7 @@ def test_a_captions_fallback_is_recorded_as_not_the_answer_that_was_asked_for():
     assert not transcript_mod.is_fallback(m, "auto")
 
     # A provisional mark can never equal a recomputed fingerprint, so the stage
-    # runs again — while everything downstream keeps its place in the chain for
+    # runs again while everything downstream keeps its place in the chain for
     # as long as the fallback keeps producing the same words.
     fp = manifest.stage_fingerprint(m, "transcript", params_for(m)["transcript"])
     manifest.mark_provisional(m, "transcript", fp)
@@ -1282,7 +1282,7 @@ def test_a_captions_fallback_is_recorded_as_not_the_answer_that_was_asked_for():
 def test_a_bare_rerun_reproduces_the_run_instead_of_overwriting_it():
     """`python -m dubbing <input>` on an existing run is a *re-run*. It used to
     overwrite `m["source"]` with argparse's defaults, which changed the segments,
-    translate and timeline fingerprints — and a changed segments fingerprint empties
+    translate and timeline fingerprints and a changed segments fingerprint empties
     `m["segments"]`, taking every edit, lock and passthrough in the project with it."""
     made = cli.parse_args(["in.mp4", "--genre", "movie", "--register", "dialogue",
                            "--dub-foreign"])
@@ -1327,7 +1327,7 @@ def test_the_studio_resolves_a_runs_settings_the_way_the_cli_does():
 def test_content_fingerprint_answers_what_a_derived_artifact_was_made_from(tmp_path):
     # `report.json` is written beside the manifest and describes the segments as
     # they were. An edit changes no stage parameter, so a stage fingerprint cannot
-    # tell the two apart — this one can, and survives the JSON round trip a report
+    # tell the two apart this one can, and survives the JSON round trip a report
     # is compared across.
     m = two_segs()
     before = manifest.content_fingerprint(m)

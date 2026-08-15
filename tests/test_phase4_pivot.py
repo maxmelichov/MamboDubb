@@ -1,4 +1,4 @@
-"""Phase 4 — English-pivot translation (src→en→tgt). Pure logic, no models."""
+"""Phase 4 English-pivot translation (src→en→tgt). Pure logic, no models."""
 
 from __future__ import annotations
 

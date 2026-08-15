@@ -6,7 +6,7 @@ import { initApiBase } from "./lib/api";
 import { applyTheme, currentTheme } from "./lib/theme";
 
 // Before anything renders. index.html's boot script has normally already done
-// this — but it is an inline script, and an inline script is exactly the thing
+// this but it is an inline script, and an inline script is exactly the thing
 // a CSP, an extension or a headless renderer can decline to run. Applying it
 // again here costs one class toggle and removes the whole failure mode.
 applyTheme(currentTheme());

@@ -1,7 +1,7 @@
 """The single seam between the server and the pipeline.
 
 Nothing else in `dubbing_app` imports `dubbing.*`. The server calls only the
-functions below, which are thin adapters over `dubbing/edit.py` — the pipeline's
+functions below, which are thin adapters over `dubbing/edit.py` the pipeline's
 own edit API. Two things genuinely live here, and nothing else does:
 
 * **Progress shape.** `dubbing.edit` reports `(fraction, message)`; the server
@@ -9,14 +9,14 @@ own edit API. Two things genuinely live here, and nothing else does:
 * **Run options.** The app records the pipeline parameters a project was created
   with under `m["source"]["app_opts"]`, which is the app's own convention;
   `dubbing.edit` reads flat keys and otherwise falls back to the CLI defaults. So
-  every call that re-runs a stage passes what the project recorded — a render of a
+  every call that re-runs a stage passes what the project recorded a render of a
   `--genre movie` project must be a movie render, and must stamp the fingerprints
   a `--genre movie` CLI run would stamp, or the next headless run redoes
   everything.
 
 The model-loading functions (`retranslate`, `resynthesize`, `rebuild`,
 `full_run`) are only ever called from the job child process
-(`dubbing_app.worker`), never from the server process — see `dubbing_app.runner`
+(`dubbing_app.worker`), never from the server process see `dubbing_app.runner`
 for why. Their pipeline imports are therefore function-local: importing this
 module must not drag torch/MLX into the server.
 """
@@ -53,7 +53,7 @@ def ensure_uids(m: dict[str, Any]) -> bool:
 
     `seg["id"]` is positional and is renumbered whenever segmentation changes, so
     it cannot key the UI across a re-run. Runs made by the headless CLI have no
-    uids at all; this is where they acquire them, once, on first read — by the
+    uids at all; this is where they acquire them, once, on first read by the
     pipeline's own content-derived rule (`manifest.mint_uid`), so the uid survives
     a re-segmentation that reproduces the same span.
     """
@@ -72,7 +72,7 @@ def _need(m: dict[str, Any], uid: str) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------
-# no models, instant — safe to run while a job holds the model slot
+# no models, instant safe to run while a job holds the model slot
 # --------------------------------------------------------------------------
 
 def set_text(m: dict[str, Any], uid: str, *, text: str | None = None,
@@ -100,7 +100,7 @@ def set_langs(m: dict[str, Any], uid: str, *, src_lang: str | None = None,
 def set_tts_opts(m: dict[str, Any], uid: str, **opts: Any) -> dict[str, Any]:
     """Per-segment synthesis overrides, validated before they reach the manifest.
 
-    `dubbing.ttsopts` is the schema and it is deliberately loud — but `tts.run` is
+    `dubbing.ttsopts` is the schema and it is deliberately loud but `tts.run` is
     where it is read, minutes into a job. An unknown key or an out-of-range value
     stored here is a `ValueError` raised inside every future run of the tts stage,
     on a manifest the user is not allowed to hand-edit back. So the patch is parsed
@@ -129,7 +129,7 @@ def set_locked(m: dict[str, Any], uid: str, locked: dict[str, bool]) -> dict[str
 def invalidate(m: dict[str, Any], uid: str, *, stages: set[str]) -> dict[str, Any]:
     """Drop one segment's output for `stages`, so the stage remakes it.
 
-    Returns the segment — `dubbing.edit.invalidate` returns the field names it
+    Returns the segment `dubbing.edit.invalidate` returns the field names it
     removed, which is not what the routes want to hand back.
     """
     _edit.invalidate(m, uid, stages=set(stages))
@@ -162,7 +162,7 @@ def recorded_opts(m: dict[str, Any]) -> dict[str, Any]:
     This resolves it the same way, and it has to: reading only `app_opts` here
     meant a genre the user changed after creation was honoured by every per-line
     re-translate (which goes through `edit._args`) and silently ignored by a full
-    run or a resume (which comes through this module) — the same project rendered
+    run or a resume (which comes through this module) the same project rendered
     two ways depending on which button was pressed.
     """
     src = m.get("source") or {}
@@ -201,13 +201,13 @@ def _opts(m: dict[str, Any]) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------
-# models — these need the job slot, and only ever run in the job child process
+# models these need the job slot, and only ever run in the job child process
 # --------------------------------------------------------------------------
 
 def _edit_progress(progress: Progress | None, stage: str):
     """Adapt this module's event callback to `dubbing.edit`'s (fraction, message).
 
-    The two halves were specified with different progress shapes — the pipeline
+    The two halves were specified with different progress shapes the pipeline
     reports how far along it is, the server needs a frame it can put on the wire —
     so the translation lives here, at the seam, rather than either side bending.
     """

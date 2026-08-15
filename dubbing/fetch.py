@@ -1,4 +1,4 @@
-"""Stage 1 — get the video, its audio, and (if available) its own captions."""
+"""Stage 1 get the video, its audio, and (if available) its own captions."""
 
 from __future__ import annotations
 
@@ -14,9 +14,9 @@ def localize(video: Path, workdir: Path) -> Path:
     """Copy an outside-the-run input into the run directory, once.
 
     A run that keeps pointing at the original file depends on it forever: the mix
-    stage re-reads the video to mux the preview, so moving the file — or macOS
+    stage re-reads the video to mux the preview, so moving the file or macOS
     denying the app access to its folder (a new TCC identity after a rename did
-    exactly this) — kills a job forty minutes in, at the last stage, with an error
+    exactly this) kills a job forty minutes in, at the last stage, with an error
     that looks like anything but its cause. One copy at fetch time makes the run
     self-contained; the disk cost is the price of a run that always finishes.
     """
@@ -78,7 +78,7 @@ def _download_captions(url: str, workdir: Path, lang: str) -> Path | None:
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.extract_info(url, download=True)
-    except Exception as exc:  # captions are optional — ASR is the fallback
+    except Exception as exc:  # captions are optional ASR is the fallback
         print(f"  fetch: caption download failed ({exc})", file=sys.stderr)
         return None
 
@@ -146,6 +146,6 @@ def run(
     m["source"]["duration"] = round(audio.duration(source_wav), 3)
     print(
         f"  fetch: {m['source']['duration']:.1f}s audio"
-        f"{' + captions' if caps else ' (no captions — will use ASR)'}",
+        f"{' + captions' if caps else ' (no captions will use ASR)'}",
         file=sys.stderr,
     )

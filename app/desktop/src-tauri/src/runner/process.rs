@@ -187,7 +187,7 @@ impl RunnerProcess {
 }
 
 /// The child is ours; nothing outlives the shell. The server also watches its own
-/// parent pid (docs/APP_ARCHITECTURE.md) — belt and braces, same as MamboRambo.
+/// parent pid (docs/APP_ARCHITECTURE.md) belt and braces, same as MamboRambo.
 impl Drop for RunnerProcess {
     fn drop(&mut self) {
         self.kill();
@@ -301,8 +301,8 @@ mod tests {
         assert!(err.contains("failed to spawn the studio server"), "{err}");
     }
 
-    /// A stub standing in for `uv`, so the whole spawn path — pipes, handshake, stderr
-    /// pump, kill — is exercised without a 10 GB venv.
+    /// A stub standing in for `uv`, so the whole spawn path pipes, handshake, stderr
+    /// pump, kill is exercised without a 10 GB venv.
     #[cfg(unix)]
     fn stub_uv(tag: &str, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;

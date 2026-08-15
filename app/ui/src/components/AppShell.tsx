@@ -1,13 +1,13 @@
 /**
  * The two shells.
  *
- * `PageShell` is the roomy one — a brand chip, a segmented nav, a display title
+ * `PageShell` is the roomy one a brand chip, a segmented nav, a display title
  * and cards on the plane. Import and Setup use it, because both are "arrive,
  * read, decide" screens where breathing room *is* the affordance.
  *
  * It comes in two widths. `default` is the reading column Setup is written for:
  * a checklist is a list of sentences and a sentence has a comfortable measure.
- * `wide` is the composition width — the import screen lays a primary card, an
+ * `wide` is the composition width the import screen lays a primary card, an
  * options rail and a full-width runs region across it, and on a maximised
  * window the old 56rem column left two thirds of the display empty with a
  * phone-shaped form marooned in the middle of it. The width is a prop rather
@@ -54,7 +54,7 @@ export function PageShell({
       >
         <header className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
-            <Link to="/" className="rounded-full" aria-label="MamboDubb — projects">
+            <Link to="/" className="rounded-full" aria-label="MamboDubb projects">
               <BrandChip />
             </Link>
             <ShellNav />
@@ -108,7 +108,7 @@ export function PageShell({
  * The shell's navigation: two cells in a pill, one filled with ink.
  *
  * It is two links and not three because there are exactly two places this shell
- * goes — the runs and the machine's readiness. The editor is not on it: you get
+ * goes the runs and the machine's readiness. The editor is not on it: you get
  * there by opening a run, and a nav cell for "the run you are not in" is a dead
  * control on both screens that show this bar.
  */
@@ -172,7 +172,7 @@ export function AppHeader({
 /**
  * The theme control. One button, two glyphs.
  *
- * It was a segmented pair — two buttons, `aria-pressed` on each — on the
+ * It was a segmented pair two buttons, `aria-pressed` on each on the
  * argument that a lone sun-or-moon never says whether the glyph is the state or
  * the destination. The argument holds; the pair was the wrong answer to it. Two
  * radio-shaped controls for a binary is two tab stops, two things to hit, and a
@@ -229,7 +229,7 @@ function ThemeToggle() {
 }
 
 /**
- * The theme toggle, the fixtures badge and the Setup link — permanent tools.
+ * The theme toggle, the fixtures badge and the Setup link permanent tools.
  *
  * `withSetup` is off in `PageShell`, where the nav pill beside the brand chip
  * already carries Setup and a second link to it two inches away is one control
@@ -240,7 +240,7 @@ function HeaderTools({ withSetup = true }: { withSetup?: boolean }) {
   return (
     <div className="flex shrink-0 items-center gap-2">
       {USE_FIXTURES ? (
-        <Badge title="VITE_USE_FIXTURES=1 — sample data, no server, no models">fixtures</Badge>
+        <Badge title="VITE_USE_FIXTURES=1 sample data, no server, no models">fixtures</Badge>
       ) : null}
       <ThemeToggle />
       {withSetup ? (

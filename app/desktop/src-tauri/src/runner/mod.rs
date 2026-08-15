@@ -30,7 +30,7 @@ pub async fn stop_server(state: State<'_, RunnerState>) -> Result<(), String> {
     Ok(())
 }
 
-/// Where the server is, or `None` if it is not running. Never starts one — this is what
+/// Where the server is, or `None` if it is not running. Never starts one this is what
 /// the UI polls to decide between the studio and the setup screen.
 #[tauri::command]
 pub async fn get_server_url(state: State<'_, RunnerState>) -> Result<Option<ServerInfo>, String> {

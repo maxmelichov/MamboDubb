@@ -1,7 +1,7 @@
 """Which writing system a language uses, and whether text is written in it.
 
-The pipeline's original form hardcoded a two-script world — Latin meant "target
-(English)" and the Hebrew block meant "source" — in half a dozen places. This
+The pipeline's original form hardcoded a two-script world Latin meant "target
+(English)" and the Hebrew block meant "source" in half a dozen places. This
 module is the single replacement: every "is this text in the target language's
 script?" question goes through `is_script` / `script_ratio` with an explicit
 language code, so a Russian or Arabic target works the same way English did.
@@ -73,7 +73,7 @@ def count_letters(text: str, script: str) -> int:
 def script_ratio(text: str, lang: str) -> float:
     """Fraction of the letters of `text` written in `lang`'s script.
 
-    0.0 when the text has no letters at all — the caller decides what "no
+    0.0 when the text has no letters at all the caller decides what "no
     evidence" means, exactly as the old `latin_ratio` did.
     """
     script = script_for(lang)

@@ -1,4 +1,4 @@
-"""Stage 8 — assemble the final audio and mux the preview.
+"""Stage 8 assemble the final audio and mux the preview.
 
 Speech is *added* into the output, never written over it. Because the timeline
 guarantees non-overlapping placements, the occupancy check below can only fail
@@ -11,7 +11,7 @@ gain, into every span the placements left empty. Wherever detection upstream
 missed a speaker entirely (no segment, so no clip), the viewer hears the
 original voice over the bed instead of a voice-stripped mute. Silent vocals
 add silence, which is harmless. This does NOT use the vocals stem as a
-speech-presence oracle — no decision keys off it; it is used as audio,
+speech-presence oracle no decision keys off it; it is used as audio,
 unconditionally, in all unclaimed time.
 
 Audio is streamed in blocks so a 40-minute video does not need a 40-minute
@@ -37,7 +37,7 @@ DUCK_KEEP = 0.0        # original audio already contains its own bed
 SPEECH_GAIN = 1.2
 SPEECH_RMS = 0.085     # per-clip loudness target for dubbed speech
 # Kept original audio carries its own background (the bed is ducked away under
-# it), so it is levelled as a finished mix — against dub+bed, not against the dub
+# it), so it is levelled as a finished mix against dub+bed, not against the dub
 # alone. Without this the original-language passages sit ~7dB below the dubs and
 # sound muted. Its gain cap is looser because source recordings vary far more
 # than the synthesiser's output does.
@@ -226,7 +226,7 @@ def assemble(m: dict[str, Any], workdir: Path, raw: Path) -> float:
                 if b > a:
                     lo, hi = a - pos, b - pos
                     assert not occupied[lo:hi].any(), (
-                        "speech overlap in mix — timeline invariant violated near "
+                        "speech overlap in mix timeline invariant violated near "
                         f"{a / sr:.2f}s"
                     )
                     speech[lo:hi] += clip[a - start : b - start]
@@ -237,7 +237,7 @@ def assemble(m: dict[str, Any], workdir: Path, raw: Path) -> float:
 
             # Designed final pass: original vocals into every unclaimed span.
             # Runs after all placed clips, so an overlap here would mean the
-            # complement above disagrees with the placements — a real bug.
+            # complement above disagrees with the placements a real bug.
             for t0, t1 in fill:
                 s0, s1 = int(t0 * sr), int(t1 * sr)
                 a = max(s0, pos)
@@ -250,10 +250,10 @@ def assemble(m: dict[str, Any], workdir: Path, raw: Path) -> float:
                 # span (clip files are not sample-exact to the manifest), so the
                 # complement may brush a clip's tail. Trim those samples from the
                 # fill rather than double them; anything beyond ~0.1s means the
-                # complement truly disagrees with the placements — a real bug.
+                # complement truly disagrees with the placements a real bug.
                 overlap = int(occ.sum())
                 assert overlap <= int(0.1 * sr), (
-                    "vocals fill overlaps a placed clip — unclaimed-span "
+                    "vocals fill overlaps a placed clip unclaimed-span "
                     f"computation is wrong near {a / sr:.2f}s"
                 )
                 piece = _read_mono(vf, a, b - a)
@@ -305,7 +305,7 @@ def write_srt(m: dict[str, Any], path: Path) -> None:
         p = seg["place"]
         text = (p.get("spoken") or seg.get("text_en") or "").strip()
         if text == "…":
-            continue   # placeholder for an unreadable foreign span — not a subtitle
+            continue   # placeholder for an unreadable foreign span not a subtitle
         if not text:
             continue
         lines += [str(n), f"{_ts(p['start'])} --> {_ts(p['end'])}", text, ""]
@@ -352,13 +352,13 @@ def mux(video: Path, track: Path, srt: Path, out: Path, duration: float,
 
 
 def video_path(m: dict[str, Any], workdir: Path) -> Path:
-    """The video to mux from — the run's own copy whenever there is one.
+    """The video to mux from the run's own copy whenever there is one.
 
     Runs made before `fetch.localize` existed record the original's absolute
     path, which may have moved or sit in a folder macOS no longer lets this
     process read (TCC denies at open(), not at stat(), so only opening tells the
-    truth). Readable originals outside the run are copied in now — healing the
-    old run — and a truly unreachable one fails here, in words, instead of as a
+    truth). Readable originals outside the run are copied in now healing the
+    old run and a truly unreachable one fails here, in words, instead of as a
     bare ffmpeg 'Operation not permitted' at the end of a forty-minute job.
     """
     from . import fetch
@@ -373,7 +373,7 @@ def video_path(m: dict[str, Any], workdir: Path) -> Path:
     for candidate in sorted(workdir.glob("input.*")):
         return candidate
     raise SystemExit(
-        f"mix: cannot read the source video {recorded} — it moved, or macOS denied "
+        f"mix: cannot read the source video {recorded} it moved, or macOS denied "
         f"access to its folder. Copy the file somewhere this app can read (or grant "
         f"access in System Settings → Privacy & Security → Files and Folders) and "
         f"re-run; new runs keep their own copy and cannot hit this."

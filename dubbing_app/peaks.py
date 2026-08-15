@@ -1,13 +1,13 @@
 """Waveform peaks for the timeline lanes.
 
-The editor draws the run's audio as audio — two lanes of amplitude, source over
-output — and a lane needs a few hundred numbers, not forty megabytes of PCM. So
+The editor draws the run's audio as audio two lanes of amplitude, source over
+output and a lane needs a few hundred numbers, not forty megabytes of PCM. So
 the downsampling happens here, next to the files, and the wire carries the
 summary.
 
 The reader is deliberately cheap: it seeks to each bucket and inspects a small
 window of frames instead of decoding the whole file. A waveform overview is a
-picture, not a measurement — sampling ~256 frames out of every bucket draws the
+picture, not a measurement sampling ~256 frames out of every bucket draws the
 same picture as an exact per-bucket max, and it keeps the endpoint instant on an
 hour-long run. Only mono-ized 16-bit PCM is understood, which is what every
 stage of the pipeline writes; anything else is a 4xx, not a guess.

@@ -1,4 +1,4 @@
-"""The job child process — JSON spec on stdin, NDJSON progress on stdout, logs on stderr.
+"""The job child process JSON spec on stdin, NDJSON progress on stdout, logs on stderr.
 
 Same shape as `translator/worker.py`: structured lines on stdout, human noise on
 stderr, one line per message, flushed. Nothing here decides anything; it is the
@@ -42,7 +42,7 @@ class Journal:
 
     The child loads the manifest once and then works on its own copy for minutes.
     The server keeps answering `PATCH /segments/{uid}` against the same file the
-    whole time — that is the contract, no-model edits never wait for a job — so a
+    whole time that is the contract, no-model edits never wait for a job so a
     plain `manifest.save` at the end silently throws away every edit made while
     the job ran.
 
@@ -53,8 +53,8 @@ class Journal:
     a *release* (`PATCH {"locked": {}}`, which deletes keys) replay too.
 
     Matching by `uid` is enough for field edits, which is what the server allows
-    while a job runs. A *structural* edit is a different thing — a split retires
-    the uid this child holds a clip for and makes two it has never seen — and the
+    while a job runs. A *structural* edit is a different thing a split retires
+    the uid this child holds a clip for and makes two it has never seen and the
     merge cannot re-apply one: it would silently keep its own list and undo the
     split. `guard_structural` refuses those edits while a job runs, but the check
     and the job's start are not one atomic act, so `conflict` says what it found
@@ -79,7 +79,7 @@ class Journal:
 
         Field edits merge cleanly; a *structural* edit does not. A split makes two
         segments this child has never seen and retires the one it is holding a
-        clip for, and `merge` matches by uid — so it silently keeps its own list
+        clip for, and `merge` matches by uid so it silently keeps its own list
         and the save undoes the split without a word. `guard_structural` refuses
         those edits while a job runs, but it cannot be atomic against a job that
         starts in the same instant, so the last line of defence is to say so
@@ -98,7 +98,7 @@ class Journal:
                 f"({len(clash)} segment(s): {', '.join(clash[:6])}"
                 f"{'…' if len(clash) > 6 else ''}). This job is working from the "
                 f"list as it was, so that structural edit is not in what it is "
-                f"about to write — redo it, or re-run the affected segments.",
+                f"about to write redo it, or re-run the affected segments.",
                 "error")
         mine = {seg["uid"]: seg for seg in (self.m.get("segments") or []) if seg.get("uid")}
         touched: list[str] = []
@@ -154,14 +154,14 @@ def execute(spec: dict[str, Any]) -> Any:
             result = ops.resynthesize(m, workdir, uids, progress=emit)
         elif kind == "render":
             # `rebuild` saves after every stage, and each of those writes is a
-            # chance to clobber a live edit — so it gets the journal, not `save`.
+            # chance to clobber a live edit so it gets the journal, not `save`.
             ops.rebuild(m, workdir, from_stage="timeline", progress=emit,
                         save=journal.save)
             result = {"preview": "preview.mp4"}
         else:
             raise RuntimeError(f"unknown job kind {kind!r}")
     finally:
-        # Whatever happened, persist what got done — the pipeline resumes from the
+        # Whatever happened, persist what got done the pipeline resumes from the
         # manifest, so a half-finished job must not throw its work away.
         journal.save()
     return result

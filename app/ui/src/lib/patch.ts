@@ -1,10 +1,10 @@
 /**
- * What a `PATCH /segments/{uid}` does to the segment — once, for everyone.
+ * What a `PATCH /segments/{uid}` does to the segment once, for everyone.
  *
  * `dubbing/edit.py` is the truth: every setter both writes a field *and* drops
  * what was built from it, because redo is deletion (`invalidate`). Three copies
- * of that table lived in this app — the editor's optimistic merge, the fixture
- * backend's "server", and whatever a component assumed — and each one modelled a
+ * of that table lived in this app the editor's optimistic merge, the fixture
+ * backend's "server", and whatever a component assumed and each one modelled a
  * different subset. The editor knew about `text` and `keep`; the fixtures knew
  * about `text`, `text_en` and `keep`; neither knew that a speaker change drops
  * the clip, that moving the bounds drops it too, or that a language override
@@ -19,9 +19,9 @@
  *   keep             text_en, text_mid, tts, place  keep         tts
  *   speaker          tts, place                     speaker      tts
  *   start / end      tts, place                     bounds       tts
- *   src/tgt_lang     text_en, text_mid, tts, place  —            text_en
- *   tts_opts         tts, place                     —            tts
- *   locked           —                              (replaces every lock)
+ *   src/tgt_lang     text_en, text_mid, tts, place             text_en
+ *   tts_opts         tts, place                                tts
+ *   locked                                        (replaces every lock)
  *
  * Locks are honoured on the way through, as `invalidate` honours them: a
  * translation the user wrote is not the translator's to discard, so a `text`
@@ -29,7 +29,7 @@
  *
  * The result is the *predicted* segment: the server's answer overwrites it a
  * moment later in the editor, and in fixture mode this IS the answer. Nothing
- * here is speculative — every line of it is a line of `edit.py`.
+ * here is speculative every line of it is a line of `edit.py`.
  */
 
 import type { Segment, SegmentPatch, TtsOpts } from "./types";
@@ -44,7 +44,7 @@ const NO_MEDIA = { play: null, tts: null, source: null, source_window: null };
  * removed, and a set that only restates the defaults removes the whole record.
  * The server merges the patch over what is stored and strips the defaults, so a
  * predictor that wrote the raw patch as the whole object would report an
- * override the segment does not have — and would drop the seed the user set
+ * override the segment does not have and would drop the seed the user set
  * last week the moment they ticked "greedy".
  */
 export function mergeTtsOpts(current: TtsOpts | null | undefined, patch: TtsOpts): TtsOpts | null {
@@ -130,7 +130,7 @@ export function applyPatch(seg: Segment, patch: SegmentPatch): Segment {
       const raw = patch[key];
       if (raw == null) continue;
       const value = normalizeLang(raw);
-      // "" clears the override — the only way a language tag can be removed.
+      // "" clears the override the only way a language tag can be removed.
       if (!value) changed = (next[key] ?? null) !== null || changed;
       else changed = next[key] !== value || changed;
       next[key] = value || null;

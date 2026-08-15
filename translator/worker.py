@@ -1,4 +1,4 @@
-"""Gemma 4 CUDA translation worker — JSON lines on stdin/stdout, logs on stderr.
+"""Gemma 4 CUDA translation worker JSON lines on stdin/stdout, logs on stderr.
 
 Runs in its own uv venv (see translator/pyproject.toml) because the main venv pins
 transformers==4.57.3, which predates Gemma 4's `gemma4_unified` architecture.
@@ -87,7 +87,7 @@ def main() -> None:
             rid = req["id"]
             user_text = req["user_text"]
             max_new_tokens = int(req.get("max_new_tokens", 400))
-        except Exception as exc:  # malformed line — report and keep serving
+        except Exception as exc:  # malformed line report and keep serving
             emit({"id": None, "error": f"bad request: {exc}"})
             continue
         try:

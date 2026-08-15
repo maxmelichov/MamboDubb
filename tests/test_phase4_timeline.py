@@ -1,4 +1,4 @@
-"""Phase 4 — clips are anchored to their own segment's end, not the next start.
+"""Phase 4 clips are anchored to their own segment's end, not the next start.
 
 The fitter used to slow a short dub toward the *next* segment's start, so a
 clip whose speaker had long stopped kept talking into the silence (and, across
@@ -37,7 +37,7 @@ def test_short_clip_is_not_stretched_past_its_own_end():
     assert places[0]["end"] <= own_end(items[0]) + 1e-6
     assert places[0]["rate"] >= timeline.RATE_MIN
 
-    # Gently slowing to fill the segment's *own* span is still wanted — that
+    # Gently slowing to fill the segment's *own* span is still wanted that
     # fights dead air without outliving the speaker.
     items = [item(0, 0.0, 3.5, end=4.0), item(1, 20.0, 1.0)]
     places = timeline.place(items)
@@ -50,7 +50,7 @@ def test_last_segment_is_not_slowed_to_fill_infinity():
     # anchored to its own end, not drawled at RATE_MIN into the credits.
     items = [item(0, 0.0, 3.0, end=4.0)]
     places = timeline.place(items)
-    # 3.0/4.0 is below RATE_MIN, so the slow-down floors there — and the clip
+    # 3.0/4.0 is below RATE_MIN, so the slow-down floors there and the clip
     # still ends inside its own segment, not at some point in the open tail.
     assert places[0]["rate"] == pytest.approx(timeline.RATE_MIN)
     assert places[0]["end"] <= own_end(items[0]) + 1e-6
@@ -90,7 +90,7 @@ def test_long_clip_spills_at_most_tail_max_into_same_speaker_gap():
 
 def test_speaker_change_gets_no_deliberate_tail():
     # Same 3.9s-on-3s clip as above, but the next segment is a different
-    # speaker: no tail allowance — compress to end at the segment's own end.
+    # speaker: no tail allowance compress to end at the segment's own end.
     items = [item(0, 0.0, 3.9, end=3.0, speaker="A"),
              item(1, 10.0, 1.0, speaker="B")]
     places = timeline.place(items)
@@ -101,7 +101,7 @@ def test_speaker_change_gets_no_deliberate_tail():
 def test_speaker_change_prefers_pushing_next_over_overlap():
     # Even RATE_MAX cannot fit 5s of dub into a 3s segment. The remainder
     # spills, the next (different-speaker) segment is pushed later, and the
-    # placements never overlap — nothing is truncated.
+    # placements never overlap nothing is truncated.
     items = [item(0, 0.0, 5.0, end=3.0, speaker="A"),
              item(1, 3.2, 1.0, end=4.2, speaker="B")]
     places = timeline.place(items)
@@ -147,7 +147,7 @@ def test_drift_bounds_and_invariants_still_hold():
 def test_cross_speaker_wall_respected_via_earlier_start():
     # 4.5s of dub on a 3s segment: even RATE_MAX leaves 3.46s of audio, which
     # used to spill 0.26s past the next speaker's onset at 8.2. With 5s of free
-    # timeline before the segment, the clip now starts early instead — the wall
+    # timeline before the segment, the clip now starts early instead the wall
     # holds, and the next speaker begins exactly on time (no cascade).
     items = [item(0, 5.0, 4.5, end=8.0, speaker="A"),
              item(1, 8.2, 1.0, speaker="B")]
@@ -162,8 +162,8 @@ def test_cross_speaker_wall_respected_via_earlier_start():
 
 
 def test_cross_speaker_wall_respected_via_compression_within_cap():
-    # 3.6s of dub on a 3s segment, next speaker at 3.2: a 1.2x squeeze — well
-    # under RATE_MAX — lands the clip at its own end, inside the wall, with no
+    # 3.6s of dub on a 3s segment, next speaker at 3.2: a 1.2x squeeze well
+    # under RATE_MAX lands the clip at its own end, inside the wall, with no
     # early start needed.
     items = [item(0, 0.0, 3.6, end=3.0, speaker="A"),
              item(1, 3.2, 1.0, speaker="B")]
@@ -192,7 +192,7 @@ def test_impossible_fit_overruns_without_truncation_and_is_recorded():
     assert places[0]["overrun"] == pytest.approx(
         places[0]["end"] - items[1]["source_start"], abs=2e-3)
 
-    # An unstretchable clip against a wall cannot compress either — it must
+    # An unstretchable clip against a wall cannot compress either it must
     # still place cleanly, with the overrun recorded rather than hidden.
     items = [item(0, 0.0, 3.0, end=2.0, speaker="A", stretchable=False),
              item(1, 2.3, 1.0, speaker="B")]
@@ -218,8 +218,8 @@ def test_late_start_past_the_wall_still_compresses_to_rate_max():
 
 def test_cascade_is_damped_at_a_wall_with_slack():
     # The first clip overruns hard (unstretchable, 2s over), pushing the
-    # second 1.9s late. The second still fits inside its own wall — the gap
-    # before speaker C has slack — so the lateness dies there: C starts
+    # second 1.9s late. The second still fits inside its own wall the gap
+    # before speaker C has slack so the lateness dies there: C starts
     # exactly on its source onset instead of inheriting the drift.
     items = [item(0, 0.0, 4.0, end=2.0, speaker="A", stretchable=False),
              item(1, 2.2, 2.3, end=4.2, speaker="B"),
@@ -283,7 +283,7 @@ def test_media_end_default_is_unbounded():
 
 
 def test_media_end_never_truncates_audio():
-    """A clip too long for the remaining media still overruns — never cut."""
+    """A clip too long for the remaining media still overruns never cut."""
     item = {"id": 0, "source_start": 9.0, "source_end": 10.0, "dur": 6.0,
             "clip": "c.wav", "speaker": "A", "stretchable": True}
     p = timeline.place([dict(item)], media_end=10.0)[0]

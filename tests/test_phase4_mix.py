@@ -1,4 +1,4 @@
-"""Phase 4 — unclaimed time carries the original vocals (invariant 1 at the mix).
+"""Phase 4 unclaimed time carries the original vocals (invariant 1 at the mix).
 
 A real run muted an on-screen speaker: an English interviewee inside a he→ru
 video slipped past every detection layer, no segment was created, and the mix
@@ -6,8 +6,8 @@ played only the background stem over 10 seconds of a person visibly talking.
 Per-detector fixes are whack-a-mole; the structural fix is here. Any span of
 the output no placed clip claims now gets the matching slice of the vocals
 stem at unity gain, so a detection failure degrades to "original audio plays"
-instead of "speaker muted". No decision keys off the vocals stem — it is used
-as audio, unconditionally, in all unclaimed time — so invariant 3 stands.
+instead of "speaker muted". No decision keys off the vocals stem it is used
+as audio, unconditionally, in all unclaimed time so invariant 3 stands.
 """
 
 from __future__ import annotations

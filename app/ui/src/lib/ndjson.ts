@@ -19,7 +19,7 @@ const BACKOFF_MS = [500, 1000, 2000, 4000, 8000];
 
 /**
  * Consume `url` until `signal` aborts. Resolves when aborted or when the caller
- * is told to stop; never rejects — transport failures are retried.
+ * is told to stop; never rejects transport failures are retried.
  */
 export async function readNdjson<T>(
   url: string,

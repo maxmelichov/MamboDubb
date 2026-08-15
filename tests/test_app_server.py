@@ -1,4 +1,4 @@
-"""Studio server tests — routing, the error envelope, media, jobs, NDJSON.
+"""Studio server tests routing, the error envelope, media, jobs, NDJSON.
 
 No models and no real pipeline: the run directory is built by hand
 (`conftest_app.make_project`) and every job runs through an injected fake runner,
@@ -93,7 +93,7 @@ def live_server(app):
     """A real uvicorn on a real loopback socket.
 
     The NDJSON stream never ends, and both `TestClient` and `httpx.ASGITransport`
-    buffer a response to completion before handing it back — so an endless body
+    buffer a response to completion before handing it back so an endless body
     deadlocks them. Only a real socket can be read frame by frame, which is
     exactly the property being tested.
     """
@@ -172,7 +172,7 @@ def test_create_project_reaches_the_cli_with_every_option(client, outputs, fake)
 
 def test_create_project_refuses_an_option_the_cli_cannot_take(client, outputs):
     """argparse would reject it, but only in the job child, minutes later, as a
-    usage dump — after the project directory and its manifest already exist. There
+    usage dump after the project directory and its manifest already exist. There
     is no way back from that project: its one job can never succeed."""
     r = client.post("/api/projects", json={"source": "x.mp4", "genre": "banana"})
     assert r.status_code == 400 and envelope_of(r)["code"] == "invalid_request"
@@ -186,7 +186,7 @@ def test_create_project_refuses_an_option_the_cli_cannot_take(client, outputs):
     ("--tts-model", "tts_model", app_mod.TtsModel),
 ])
 def test_create_project_options_are_exactly_the_cli_choices(flag, dest, literal, capsys):
-    """`dubbing.cli` cannot be imported here — it drags in torch — so the choice
+    """`dubbing.cli` cannot be imported here it drags in torch so the choice
     lists are restated in `dubbing_app.app`. This is what keeps the copy honest."""
     import re
     from typing import get_args
@@ -200,7 +200,7 @@ def test_create_project_options_are_exactly_the_cli_choices(flag, dest, literal,
     tail = capsys.readouterr().err.split("choose from")[-1]
     # Superset, not equality: the CLI may accept retired values (0.6b) so an old
     # run's recorded options still re-run, but the API must never OFFER a value
-    # the CLI would reject — that direction makes an unrunnable project.
+    # the CLI would reject that direction makes an unrunnable project.
     assert set(re.findall(r"[\w.\-]+", tail)) >= set(get_args(literal))
 
 
@@ -218,7 +218,7 @@ def test_get_project(client):
 def test_resume_reruns_the_project_with_what_it_recorded(client, outputs, fake):
     """A stopped run had no way back in: the app could create a project and edit
     one, and nothing in it could start the pipeline again. There is no separate
-    resume machinery — every stage is skipped when its inputs are unchanged, so
+    resume machinery every stage is skipped when its inputs are unchanged, so
     the same `run` job *is* the resume, and its payload is the manifest's own
     source record read back."""
     from dubbing import cli
@@ -304,7 +304,7 @@ def test_patch_project_writes_the_spelling_the_pipeline_reads_first(client, outp
 def test_patch_project_beats_the_app_opts_recorded_at_creation(client, outputs, fake):
     """The bug this closes: `app_opts` was the only place `ops` looked, so an
     option changed here was honoured by a per-line re-translate and ignored by a
-    resume — the same project rendered two ways depending on the button."""
+    resume the same project rendered two ways depending on the button."""
     from dubbing import cli
 
     m = manifest.load(outputs / NAME)
@@ -416,7 +416,7 @@ def test_a_report_goes_stale_the_moment_an_edit_lands(client, outputs):
     assert client.patch(f"/api/projects/{NAME}/segments/{uid}",
                         json={"text_en": "A better line"}).status_code == 200
     after = client.get(f"/api/projects/{NAME}").json()["report"]
-    # Still served — the numbers were true of the render that produced them — but
+    # Still served the numbers were true of the render that produced them but
     # no longer claimed to be about the manifest the editor is showing.
     assert after["stale"] is True and after["segments"] == 5
 
@@ -453,7 +453,7 @@ def test_the_render_counts_the_lines_that_changed_since_it(client, outputs):
         assert client.patch(f"/api/projects/{NAME}/segments/{uid}",
                             json={"text_en": f"new words for {uid}"}).status_code == 200
     render = client.get(f"/api/projects/{NAME}").json()["render"]
-    # Two lines were edited, so two lines differ — not "every unfinished line", and
+    # Two lines were edited, so two lines differ not "every unfinished line", and
     # not the whole list. The count is what the header offers to re-render.
     assert render["stale"] is True and render["changed"] == 2
 
@@ -489,7 +489,7 @@ def test_uids_are_minted_once_and_persisted(client, outputs):
 def test_segments_are_enriched(client):
     segs = client.get(f"/api/projects/{NAME}/segments").json()["segments"]
     dubbed = segs[1]
-    # `place.clip` is what plays — the fitted clip, not the raw tts clip.
+    # `place.clip` is what plays the fitted clip, not the raw tts clip.
     assert dubbed["media"]["play"].startswith(f"/media/{NAME}/clips/fit_")
     assert dubbed["media"]["tts"] != dubbed["media"]["play"]
     assert dubbed["media"]["source"] == f"/media/{NAME}/source.wav#t=0.340,2.200"
@@ -817,7 +817,7 @@ def test_cancelling_a_batch_stops_the_voice_job_the_translate_was_feeding(output
     """The audit's disaster, made impossible.
 
     Cancel the running re-translate and the queued re-voice used to run anyway, on
-    lines whose translation had just been abandoned — 27 `tts_failed` keeps from one
+    lines whose translation had just been abandoned 27 `tts_failed` keeps from one
     click. `?batch=1` cancels the decision, not the step.
     """
     hold = threading.Event()
@@ -926,7 +926,7 @@ def test_no_model_edits_stay_responsive_while_a_job_runs(outputs):
 
 def test_a_queued_job_does_not_block_a_structural_edit(outputs, fake):
     """Only a *running* job is renumbered under. A queued one has not read the
-    manifest yet — the child loads it when it starts, not when it is enqueued — so
+    manifest yet the child loads it when it starts, not when it is enqueued so
     refusing here would block edits behind a queue that may be minutes deep."""
     client = TestClient(create_app(outputs, runner=fake, ui_dir=""))   # no lifespan:
     uid = uids(client)[2]                                             # the worker
@@ -1069,7 +1069,7 @@ PRELUDE = 1 + 9          # the "watching" log, then one frame per pipeline stage
 
 
 class Frames:
-    """One reader over a live NDJSON body — `iter_lines()` is single-use."""
+    """One reader over a live NDJSON body `iter_lines()` is single-use."""
 
     def __init__(self, response):
         self.lines = response.iter_lines()
@@ -1349,7 +1349,7 @@ def test_subprocess_runner_cancel_kills_the_child(stub_runner):
     def go():
         try:
             stub_runner.run(job, lambda e: None)
-        except BaseException as exc:                 # noqa: BLE001 — recorded, not swallowed
+        except BaseException as exc:                 # noqa: BLE001 recorded, not swallowed
             result.append(exc)
 
     thread = threading.Thread(target=go, daemon=True)
@@ -1363,7 +1363,7 @@ def test_subprocess_runner_cancel_kills_the_child(stub_runner):
 
 
 def test_worker_rejects_an_unknown_kind(outputs):
-    """The real child, end to end — spec on stdin, error frame out, non-zero exit."""
+    """The real child, end to end spec on stdin, error frame out, non-zero exit."""
     from dubbing_app.jobs import Job
 
     real = runner_mod.SubprocessRunner(python=sys.executable,
@@ -1389,7 +1389,7 @@ def edit_on_disk(workdir, uid, **fields):
 
 def test_a_job_does_not_overwrite_edits_made_while_it_ran(outputs, monkeypatch):
     """The job child holds its own copy of the manifest for minutes while the
-    server keeps answering PATCHes against the same file — the contract says
+    server keeps answering PATCHes against the same file the contract says
     no-model edits never wait for a job. Saving that copy at the end used to throw
     every one of those edits away."""
     from dubbing_app import worker
@@ -1436,7 +1436,7 @@ def test_a_job_replays_a_lock_release_made_while_it_ran(outputs, monkeypatch):
 
 def test_a_render_merges_at_every_stage_save(outputs, monkeypatch):
     """`dubbing.edit.rebuild` writes after each stage, so the end-of-job merge is
-    not enough — every one of those writes is a chance to clobber a live edit."""
+    not enough every one of those writes is a chance to clobber a live edit."""
     from dubbing_app import worker
 
     workdir = outputs / NAME
@@ -1457,7 +1457,7 @@ def test_a_render_merges_at_every_stage_save(outputs, monkeypatch):
 def test_a_journal_reports_a_split_that_landed_under_it(outputs, capsys):
     """`guard_structural` refuses a split while a job runs, but the check and the
     job's start are not one atomic act. When one does land, the child's list is
-    stale — it has never seen either half — and `merge` matches by uid, so it
+    stale it has never seen either half and `merge` matches by uid, so it
     would keep its own list and undo the split without a word."""
     from dubbing_app.worker import Journal
 
@@ -1510,7 +1510,7 @@ def test_a_job_carries_the_segments_it_is_about(client, fake):
 
 
 def test_a_job_keeps_its_own_work_when_nothing_else_changed(outputs):
-    """The merge must only replay what actually moved on disk — re-applying an
+    """The merge must only replay what actually moved on disk re-applying an
     untouched disk copy wholesale would revert the job itself."""
     from dubbing_app.worker import Journal
 
@@ -1665,7 +1665,7 @@ def test_full_run_argv_matches_the_cli(tmp_path):
 def test_rebuild_rejects_stages_it_does_not_cover(outputs):
     """Only the manifest-side stages are rebuildable: everything before translate
     needs the source media and belongs to a real run. `translate` itself IS
-    rebuildable — the server's provisional version stopped at tts, `dubbing.edit`
+    rebuildable the server's provisional version stopped at tts, `dubbing.edit`
     does not."""
     m = manifest.load(outputs / NAME)
     for stage in ("fetch", "stems", "transcript", "segments", "nonsense"):
@@ -1714,7 +1714,7 @@ def movie_project(outputs):
 
 def test_edit_jobs_carry_the_projects_recorded_options(monkeypatch, outputs):
     """The UI's genre/register/tts-model are stored under `source.app_opts`, which
-    `dubbing.edit._args` does not read — so every job that re-runs a stage has to
+    `dubbing.edit._args` does not read so every job that re-runs a stage has to
     hand them over. Without this a `--genre movie` project is re-rendered as a
     documentary, in the default voice, and nobody is told."""
     from dubbing import edit as real_edit
@@ -1782,7 +1782,7 @@ def test_edit_progress_is_adapted_to_the_pipeline_signature(monkeypatch, call, s
     """`dubbing.edit` reports progress as (fraction, message); this module speaks
     NDJSON event dicts. The two were specified apart and passing one straight to
     the other raised `emit() takes 1 positional argument but 2 were given` on the
-    first real job — a path the fake runner never touched."""
+    first real job a path the fake runner never touched."""
     from dubbing import edit as real_edit
 
     seen: list[dict] = []
@@ -1804,7 +1804,7 @@ def test_edit_progress_is_adapted_to_the_pipeline_signature(monkeypatch, call, s
 
 def test_resynthesize_leaves_every_segment_placed(monkeypatch, outputs):
     """A re-voiced segment must come back placed. Its new clip has a new length,
-    so `invalidate` drops the old placement — and a segment with no placement is
+    so `invalidate` drops the old placement and a segment with no placement is
     absent from the mix, which is never-silent broken by the back door."""
     from dubbing import edit as real_edit
     from dubbing import tts as tts_mod
@@ -1830,7 +1830,7 @@ def test_resynthesize_leaves_every_segment_placed(monkeypatch, outputs):
 
 
 # ---------------------------------------------------------------------------
-# built UI — single-process serving (desktop packaging)
+# built UI single-process serving (desktop packaging)
 # ---------------------------------------------------------------------------
 
 INDEX = "<!doctype html><title>Dubbing Studio</title><div id=root></div>"
@@ -1863,7 +1863,7 @@ def test_ui_index_at_root(ui_client):
 
 
 def test_ui_catch_all_serves_index_for_browser_routes(ui_client):
-    """`/editor/<name>` exists only in the browser router — a hard reload on it
+    """`/editor/<name>` exists only in the browser router a hard reload on it
     must still get the app, not a 404."""
     for path in (f"/editor/{NAME}", "/editor/x/deep", "/import"):
         resp = ui_client.get(path)
@@ -1965,7 +1965,7 @@ def test_setup_grades_every_check_and_required_is_derived_from_it(client):
     for c in checks:
         assert c["severity"] in setup_mod.SEVERITIES, c["id"]
         # One source of truth: nothing may be blocking and not required, or the
-        # reverse — the old flag is now a view of the new grade.
+        # reverse the old flag is now a view of the new grade.
         assert c["required"] is (c["severity"] == setup_mod.BLOCKING), c["id"]
 
     by_id = {c["id"]: c["severity"] for c in checks}
@@ -2129,7 +2129,7 @@ def test_install_refuses_an_id_it_has_no_recipe_for(client):
 
 
 def test_install_body_is_strict(client):
-    """Nothing but `id` is read, so nothing but `id` is accepted — a hopeful
+    """Nothing but `id` is read, so nothing but `id` is accepted a hopeful
     `argv` must not be quietly ignored, it must be a 400."""
     r = client.post("/api/setup/install", json={"id": "ffmpeg", "argv": ["/bin/sh"]})
     assert r.status_code == 400 and r.json()["error"]["code"] == "invalid_request"

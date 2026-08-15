@@ -98,7 +98,7 @@ def test_placement_is_a_fixed_point_once_applied():
     second = timeline.place(applied)
     for a, b in zip(first, second):
         # 2ms tolerance: a stretched clip's rate is rounded to 4 dp in the output,
-        # so reconstructing dur from it drifts sub-frame — harmless for placement.
+        # so reconstructing dur from it drifts sub-frame harmless for placement.
         assert a["start"] == pytest.approx(b["start"], abs=2e-3)
         assert a["end"] == pytest.approx(b["end"], abs=2e-3)
 
@@ -299,7 +299,7 @@ def test_detect_spoken_target_spans_keeps_only_target_language(monkeypatch):
     assert len(spans) == 1
     assert spans[0]["text"] == "Qatar is a dangerous enemy"
     # Start is the VAD onset. With no pause in reach the end falls back to the last
-    # English word (1.45s into the clip) + SPAN_END_PAD — stopping early is the safe
+    # English word (1.45s into the clip) + SPAN_END_PAD stopping early is the safe
     # side, since the alternative is airing whoever speaks next.
     assert (spans[0]["start"], spans[0]["end"]) == (2.0, 3.7)
 
@@ -312,7 +312,7 @@ def test_span_ends_where_the_voice_stops(monkeypatch):
     assert spans[0]["end"] == 4.1
 
     # And when the classifier calls English well past where the voice actually stopped,
-    # the pause still wins — keeping the rest would air the source speaker (3:25).
+    # the pause still wins keeping the rest would air the source speaker (3:25).
     spans = _detect(monkeypatch, [(2.0, 6.0), (8.0, 10.0)],
                     [("en", 0.9), ("he", 1.0)], ["Qatar is a dangerous enemy"],
                     pause=4.2, extend_to=7.5)
@@ -333,7 +333,7 @@ def test_voice_pause_needs_more_than_a_plosive_gap(monkeypatch):
 
 def test_a_third_language_is_kept_as_is(monkeypatch):
     # Arabic in a Hebrew documentary: no ASR here reads it, so it is kept as recorded,
-    # with no subtitle text — dubbing it from the source model's gibberish is worse.
+    # with no subtitle text dubbing it from the source model's gibberish is worse.
     monkeypatch.setattr(transcript, "_sounds_foreign", lambda *a, **k: "ar")
     spans = _detect(monkeypatch, [(2.0, 6.0), (8.0, 10.0)],
                     [("ar", 0.9), ("he", 1.0)], [])
@@ -341,7 +341,7 @@ def test_a_third_language_is_kept_as_is(monkeypatch):
     assert (spans[0]["start"], spans[0]["end"], spans[0]["lang"]) == (2.0, 6.0, "ar")
     assert spans[0]["text"] == "…"
 
-    # The source language itself is never kept — that is what gets dubbed.
+    # The source language itself is never kept that is what gets dubbed.
     assert _detect(monkeypatch, [(2.0, 6.0)], [("he", 1.0)], []) == []
 
     # And an unconfirmed third language is left to the dub rather than aired blind.
@@ -439,7 +439,7 @@ class _FakeAsr:
 def test_target_asr_outvotes_a_confident_source_read(monkeypatch):
     # The muted-English bug. VoxLingua has no usable opinion (its documented
     # mislabels sit at 0.34-0.60) and the Hebrew fine-tune TRANSLITERATES the
-    # English speech into Hebrew script at -0.38 — above the fail bar — so the
+    # English speech into Hebrew script at -0.38 above the fail bar so the
     # passage is judged "source language" and dubbed over a man speaking English.
     # A model that actually reads the target language is the honest witness.
     from dubbing import audio
@@ -455,7 +455,7 @@ def test_target_asr_outvotes_a_confident_source_read(monkeypatch):
     assert sounds(object(), lying, "voc.wav", 0.0, 8.0, "he",
                   tgt_model=english, target="en") == "en"
 
-    # Controls — the witness must not fire on source-language speech:
+    # Controls the witness must not fire on source-language speech:
     honest = _FakeAsr("משפט עברי נקי לגמרי", -0.20)
     # ...the target model reads real Hebrew as low-confidence gibberish,
     gibberish = _FakeAsr("the the the a a", -1.10)
@@ -486,7 +486,7 @@ def test_a_target_verdict_becomes_a_target_span(monkeypatch):
     # A passage the classifier cannot name but the target ASR reads cleanly is
     # routed to the TARGET branch: it gets subtitle text, refined edges and
     # lang == target, so segments/mark_keep files it as a target keep the editor
-    # can see — not an unnamed "foreign" keep with "…" for text.
+    # can see not an unnamed "foreign" keep with "…" for text.
     monkeypatch.setattr(transcript, "_sounds_foreign", lambda *a, **k: "en")
     spans = _detect(monkeypatch, [(2.0, 6.0)], [(None, 0.2)],
                     ["I had the same concerns"])
@@ -572,7 +572,7 @@ def test_word_ends_prefer_measured_end_over_guess():
 
 
 def test_speech_gap_uses_measured_end():
-    # 0.4s spoken then a real 0.6s silence — the char-count guess would have
+    # 0.4s spoken then a real 0.6s silence the char-count guess would have
     # over-estimated the spoken time and shrunk the gap.
     prev = {"t": 0.0, "end": 0.4, "text": "aa"}
     assert segments.speech_gap(prev, {"t": 1.0, "text": "bb"}) == pytest.approx(0.6)
@@ -603,7 +603,7 @@ def test_keep_tail_extends_through_trailing_speech():
 
 
 def test_keep_tail_stops_at_the_next_segment():
-    # The extension never crosses into the next segment (keep or dub) — the
+    # The extension never crosses into the next segment (keep or dub) the
     # language boundary is handled upstream by the detector.
     levels = [0.05] * 30                        # continuous speech
     segs = [{"id": 0, "start": 0.0, "end": 0.5, "speaker": "A", "keep": True},
@@ -624,7 +624,7 @@ def test_split_on_pause():
 
 def test_embedded_latin_token_stays_in_the_hebrew_segment():
     # A lone Latin acronym mid-sentence must not become its own segment (which
-    # would play a fraction of a second of original audio — the 0:31 voice jump).
+    # would play a fraction of a second of original audio the 0:31 voice jump).
     words = mkwords([(0.0, "קטאר"), (0.3, "מממן"), (0.6, "את"),
                      (0.9, "ISIS,"), (1.2, "את"), (1.5, "נוסרה")])
     segs = segments.words_to_segments(words)
@@ -651,7 +651,7 @@ def test_split_on_sentence_end_and_speaker_change():
 
 def test_speaker_change_splits_only_when_a_pause_confirms_it():
     # Diarization edges land a word or two off the real turn boundary, so a
-    # change with no pause must not cut the sentence — the majority vote names it.
+    # change with no pause must not cut the sentence the majority vote names it.
     tight = mkwords([(0.0, "aa"), (0.3, "bb"), (0.6, "cc"),
                      (0.9, "dd"), (1.2, "ee"), (1.5, "ff")])
     for w in tight[4:]:
@@ -823,7 +823,7 @@ def test_handoff_snap_never_overlaps_or_moves_a_start_later():
         return segs[1]["start"]
 
     assert snapped(8.1, 7.9) == 8.1                 # onset inside the previous segment
-    assert snapped(8.5, 7.5) == 8.5                 # 1.0s away — beyond HANDOFF_SNAP
+    assert snapped(8.5, 7.5) == 8.5                 # 1.0s away beyond HANDOFF_SNAP
     assert snapped(8.5, 8.7) == 8.5                 # never later than the first word
     assert snapped(8.5, 8.49) == 8.5                # a rounding-level move is refused
 
@@ -852,7 +852,7 @@ def test_two_clusters_no_wider_apart_than_one_of_them_is_wide(monkeypatch):
 def test_trim_remnant_rejoins_the_span_it_was_cut_from():
     # Measured (news_wa4, 11.8-14.6s): the span ends where the voice stopped, but
     # Whisper's last word smears a second past it, leaving "the" as a one-word
-    # segment of its own — separately translated, separately voiced, and pushed
+    # segment of its own separately translated, separately voiced, and pushed
     # off the seam on the timeline.
     said = [(11.8, 12.01, "The"), (12.01, 12.35, "national"), (12.35, 12.93, "rabbinical"),
             (12.93, 13.19, "court"), (13.19, 13.49, "against"), (13.49, 14.85, "the")]
@@ -897,7 +897,7 @@ def test_foreign_spans_become_their_own_segments():
 
 def test_trimmed_segment_keeps_straddling_words_but_not_the_span_s():
     # The source-language ASR hallucinates over target-language speech, so a trim must
-    # drop what lies inside the span — but a word straddling the boundary is this
+    # drop what lies inside the span but a word straddling the boundary is this
     # segment's own and has to survive, or the line loses its verb.
     words = [{"t": 9.0, "end": 9.4, "text": "hallucinated"},      # inside the span
              {"t": 9.9, "end": 10.6, "text": "straddling"},       # crosses the boundary
@@ -935,7 +935,7 @@ def test_speech_between_two_spans_inside_one_segment_survives():
 
 def test_uncovered_keep_waits_for_the_previous_speaker_to_stop():
     # The gap opens where the transcript stops, but the source voice is still
-    # sounding there — playing original audio from that instant airs the tail of the
+    # sounding there playing original audio from that instant airs the tail of the
     # line just dubbed (the "ה" of "…באומנות רבה" at 1:34). It starts at the pause.
     hop = 0.1
     levels = [0.09] * 20 + [0.001] * 5 + [0.09] * 40   # speech, pause at 2.0s, speech
@@ -960,7 +960,7 @@ def test_uncovered_fill_judges_the_whole_gap_not_only_its_first_window():
     # The language witness answers for one LID window (4s). Asking it once, at the
     # gap's start, decides a twenty-second gap on its first four seconds: a gap that
     # opens on a music sting and then carries an English speaker was answered "not
-    # target" and filled with nothing — the speaker played neither dubbed nor kept.
+    # target" and filled with nothing the speaker played neither dubbed nor kept.
     # Each window is judged on its own and the target-language run is what gets kept.
     hop = 0.1
     levels = [0.09] * 200                     # audible throughout
@@ -983,7 +983,7 @@ def test_uncovered_fill_judges_the_whole_gap_not_only_its_first_window():
     assert [(s["start"], s["end"]) for s in added] == [(10.1, 20.0)]
     assert added[0]["keep"] is True
 
-    # A gap with no target speech in it anywhere is still left alone — the mix's
+    # A gap with no target speech in it anywhere is still left alone the mix's
     # vocals fill is the floor there, and a keep would double the music bed.
     segs = [{"id": 0, "start": 0.0, "end": 2.0, "speaker": "A", "text": "…",
              "keep": False, "keep_reason": None}]
@@ -995,7 +995,7 @@ def test_uncovered_fill_judges_the_whole_gap_not_only_its_first_window():
 
 def test_per_segment_evidence_outvotes_the_speaker_prior():
     # SPEAKER_EN_RATIO is a speaker-level prior: once a speaker crosses it, every
-    # one of their segments is kept — including the ones where they genuinely speak
+    # one of their segments is kept including the ones where they genuinely speak
     # the source language, which then never get dubbed. Per-segment evidence, when
     # it is strong, must be able to outvote the prior.
     # Segments 2 and 3 are code-switched: neither script holds a majority of the
@@ -1015,7 +1015,7 @@ def test_per_segment_evidence_outvotes_the_speaker_prior():
     assert [s["keep_reason"] for s in segs] == ["latin", "latin", "speaker_en", "speaker_en"]
 
     # A confident "this is the source language" on segment 3 sends it to the dub,
-    # while segment 2 — which the witness cannot name — keeps the prior's verdict.
+    # while segment 2 which the witness cannot name keeps the prior's verdict.
     segs = rows()
     said = {2: ("en", 0.72), 3: ("he", 0.97)}
     segments.mark_keep(segs, seg_lang=lambda s: said.get(s["id"]))
@@ -1032,7 +1032,7 @@ def test_per_segment_evidence_outvotes_the_speaker_prior():
 def test_source_script_text_outvotes_the_speaker_prior():
     # The bug: a speaker who alternates between already-dubbed target passages and
     # untranslated source ones crosses SPEAKER_EN_RATIO, and every one of their
-    # segments then rode `speaker_en` — including plainly source-language lines,
+    # segments then rode `speaker_en` including plainly source-language lines,
     # which were never translated or dubbed. The audio witness could not save them:
     # on short clips it returns nothing, or a low-probability wrong label. The
     # segment's own text is the witness that is always there.
@@ -1056,8 +1056,8 @@ def test_source_script_text_outvotes_the_speaker_prior():
     # A majority is required, not a presence: the mixed line stays kept.
     assert segs[3]["keep"] is True
 
-    # The witness the classifier gives on these clips in the wild — absent, or a
-    # confident-sounding nonsense label — still leaves the text witness in charge.
+    # The witness the classifier gives on these clips in the wild absent, or a
+    # confident-sounding nonsense label still leaves the text witness in charge.
     for verdict in (None, ("la", 0.31), ("mi", 0.92)):
         segs = rows()
         segments.mark_keep(segs, seg_lang=lambda s, v=verdict: v)
@@ -1065,7 +1065,7 @@ def test_source_script_text_outvotes_the_speaker_prior():
         assert segs[3]["keep"] is True
 
     # Same-script pair (en→es): script cannot tell the two languages apart, so it
-    # is void as evidence both ways — no speaker is a target speaker there and no
+    # is void as evidence both ways no speaker is a target speaker there and no
     # segment is flipped by its text.
     same = [
         {"id": 0, "start": 0, "end": 6, "speaker": "A", "text": "This is English speech"},
@@ -1376,8 +1376,8 @@ def test_own_gpu_worker_is_persistent_and_reused(monkeypatch):
 
 
 def test_worker_handle_protocol_round_trip(tmp_path):
-    # A stand-in worker that speaks the real protocol — ready line, then one JSON
-    # response per request — exercises spawn, framing, flushing and id matching
+    # A stand-in worker that speaks the real protocol ready line, then one JSON
+    # response per request exercises spawn, framing, flushing and id matching
     # without any model.
     echo = tmp_path / "echo_worker.py"
     echo.write_text(
@@ -1546,7 +1546,7 @@ def test_passthrough_agreeing_with_the_automatic_verdict_keeps_its_named_reason(
 
 def test_a_flip_throws_away_the_work_made_for_the_other_path():
     # The translation, the clip and the placement of a flipped segment were all
-    # made for the path it is no longer on — left behind, mix would lay a dub
+    # made for the path it is no longer on left behind, mix would lay a dub
     # over a span meant to play as recorded.
     segs = [seg_for_passthrough(0, 0.0, 3.0, text_en="hello", text_mid="hello",
                                 tts={"clip": "clips/0.wav", "dur": 2.2},
@@ -1558,7 +1558,7 @@ def test_a_flip_throws_away_the_work_made_for_the_other_path():
 
 def test_a_user_keep_is_subtitled_honestly_under_either_of_its_two_names():
     # One verdict, two words for it: the pipeline's own door writes
-    # `keep_reason="user"`, the studio's (`edit.set_keep`) writes "manual" — and
+    # `keep_reason="user"`, the studio's (`edit.set_keep`) writes "manual" and
     # both stamp `passthrough`. The viewer is about to hear the target language,
     # so the source-language ASR's mangled reading of that span is not the
     # subtitle; recognising only one of the two names captions half the user's
@@ -1750,7 +1750,7 @@ def test_mix_prefers_the_runs_own_copy_and_names_the_failure(tmp_path):
     with pytest.raises(SystemExit, match="moved, or macOS denied"):
         mix.video_path(m, workdir)
 
-    # A readable original outside the run is copied in — healing an old run.
+    # A readable original outside the run is copied in healing an old run.
     outside = tmp_path / "still-here.mp4"
     outside.write_bytes(b"y" * 32)
     m2 = {"files": {"video": str(outside)}}
@@ -1819,7 +1819,7 @@ def test_audio_witness_outranks_target_script():
     segments.mark_keep(segs, spans, target="de", seg_lang=lambda s: ("en", 0.5))
     assert segs[0]["keep_reason"] == "latin"
 
-    # The classifier naming the TARGET agrees with the script — still kept as target.
+    # The classifier naming the TARGET agrees with the script still kept as target.
     segs = seg_for()
     segments.mark_keep(segs, spans, target="de", seg_lang=lambda s: ("de", 0.95))
     assert segs[0]["keep_reason"] == "latin"
@@ -1836,7 +1836,7 @@ def test_audio_witness_outranks_target_script():
 
 
 def test_untranslated_reopens_translate():
-    # mark_failed on a user-locked dub leaves keep=false with no text_en — the
+    # mark_failed on a user-locked dub leaves keep=false with no text_en the
     # honest unfinished state. untranslated() is the stage gate's answer: those
     # lines mean the stage is NOT done, whatever the fingerprint says.
     segs = [
@@ -1863,7 +1863,7 @@ def test_declared_source_mismatch():
     # A genuinely Hebrew video: no accusation.
     hebrew = [seg("זה מן הצד של הדברים", at=i * 10) for i in range(5)]
     assert report.declared_source_mismatch(m_he, hebrew) is None
-    # Too little speech to judge — under the 30s floor, silence.
+    # Too little speech to judge under the 30s floor, silence.
     assert report.declared_source_mismatch(m_he, [seg("Hello there", dur=5.0)]) is None
     # Same-script mistakes are invisible by nature (declared en, actually de).
     m_en = {"source": {"src_lang": "en"}}

@@ -5,7 +5,7 @@
  * screenshot, so the fixture ships audible clips rather than dead <audio>
  * elements: a formant-ish buzz whose pitch stands in for a speaker and whose
  * length matches the segment's real duration. It is obviously not speech, which
- * is the point — nobody will mistake fixture mode for a working pipeline.
+ * is the point nobody will mistake fixture mode for a working pipeline.
  */
 
 const SAMPLE_RATE = 8000;
@@ -13,7 +13,7 @@ const cache = new Map<string, string>();
 
 export type ToneSpec = { hz: number; dur: number; seed: number };
 
-/** `fixture:tone?hz=…&dur=…&seed=…` — a placeholder URL the fixture hands out. */
+/** `fixture:tone?hz=…&dur=…&seed=…` a placeholder URL the fixture hands out. */
 export function toneUrl(spec: ToneSpec): string {
   return `fixture:tone?hz=${spec.hz.toFixed(1)}&dur=${spec.dur.toFixed(3)}&seed=${spec.seed}`;
 }

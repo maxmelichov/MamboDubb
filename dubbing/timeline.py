@@ -1,4 +1,4 @@
-"""Stage 7 — decide where every clip starts. This is the module that makes
+"""Stage 7 decide where every clip starts. This is the module that makes
 cut-off speech structurally impossible.
 
 One forward pass places each clip at its source onset, or as soon after as the
@@ -13,7 +13,7 @@ Each clip is anchored to its *own* segment's end, not to the next segment's
 start: stretching never pushes a clip past the moment its original speaker
 stopped just because the timeline has room, and a clip that is genuinely too
 long is compressed toward its own end, allowed to spill at most TAIL_MAX into
-a following gap when the next segment is the same speaker — and not at all when
+a following gap when the next segment is the same speaker and not at all when
 the speaker changes (or there is no next segment). A speaker change makes the
 next segment's original onset a hard wall: a clip that would still be talking
 when the other character visibly starts is first pulled earlier into free
@@ -24,7 +24,7 @@ and the overrun is measured and reported instead of masquerading as ordinary
 drift.
 
 Placed clips are separated by a short gap, except where the source itself ran
-them together — a passage of original audio split into parts stays joined, since
+them together a passage of original audio split into parts stays joined, since
 inserting silence at each seam would both sound wrong and push the run late.
 
 Invariants asserted at the end of the stage:
@@ -57,7 +57,7 @@ DRIFT_SOFT = 0.50     # lateness that justifies escalating to RATE_MAX
 DRIFT_MAX = 1.50      # lateness that justifies asking for a shorter translation
 SHORTEN_ROUNDS = 2
 TAIL_MAX = 0.60       # how far a too-long clip may run past its own segment's end
-                      # into a following gap — only when the next segment is the
+                      # into a following gap only when the next segment is the
                       # same speaker; a speaker change (or the end of the video)
                       # allows no deliberate tail at all
 LEAD_MAX = 0.60       # how far a clip squeezed against a cross-speaker wall may
@@ -69,7 +69,7 @@ LEAD_MAX = 0.60       # how far a clip squeezed against a cross-speaker wall may
 @dataclass(frozen=True)
 class Rates:
     """Genre-dependent tempo policy. The defaults ARE the documentary constants
-    above — `rates_for_genre("documentary")` must behave byte-identically to the
+    above `rates_for_genre("documentary")` must behave byte-identically to the
     module constants, which every existing test still reads directly."""
     rate_pref: float = RATE_PREF
     rate_max: float = RATE_MAX
@@ -80,7 +80,7 @@ class Rates:
 # Movie mode: completeness over sync. Speech-rate swings are what a viewer hears
 # as the dub "jumping around" (measured: 30/118 clips pinned at 1.3x next to
 # 0.82x neighbours on a 1973-war drama run), so compression is capped much lower
-# and a clip that cannot fit is allowed to drift/overrun more instead — the tail
+# and a clip that cannot fit is allowed to drift/overrun more instead the tail
 # a too-long clip may spill into a same-speaker gap grows accordingly. The
 # cross-speaker wall keeps its earlier-start behaviour; what it loses is the
 # harder force-fit squeeze, so the remainder records as overrun.
@@ -112,7 +112,7 @@ def rate_for(dur: float, slot: float, drift_in: float, stretchable: bool,
     """How much to speed a clip up so it fits `slot`, within policy limits.
 
     `own` is the segment's own span (source_end - source_start): stretching a
-    short clip fills at most that far, never the whole slot — the dub should
+    short clip fills at most that far, never the whole slot the dub should
     stop when the original speaker stopped, not when the next one starts. A
     clip longer than its own span is compressed toward `own + tail`, where
     `tail` is the deliberate overhang allowed past the segment's end (TAIL_MAX
@@ -135,7 +135,7 @@ def rate_for(dur: float, slot: float, drift_in: float, stretchable: bool,
         # The dub is shorter than the span its speaker actually used: play it at
         # 1.0 and it finishes early, leaving a silent tail. Stretch it to fill
         # that span, but never below the rate floor (a drawl is worse than a
-        # little silence) — and never past the segment's own end just because
+        # little silence) and never past the segment's own end just because
         # the timeline has room before the next segment.
         return max(r.rate_min, dur / stretch_to)
     if dur <= fit_to:
@@ -166,8 +166,8 @@ def place(items: list[dict[str, Any]],
     prev_source_end = -math.inf
     for i, it in enumerate(items):
         # Never insert more silence than the source had. Segments that run
-        # straight into each other — a passage of original audio split into
-        # parts, say — must stay joined, or every boundary would add a gap and
+        # straight into each other a passage of original audio split into
+        # parts, say must stay joined, or every boundary would add a gap and
         # the whole run would slide late.
         need = min(MIN_GAP, max(MIN_SEAM, it["source_start"] - prev_source_end))
         start = max(it["source_start"], prev_end + need)
@@ -180,7 +180,7 @@ def place(items: list[dict[str, Any]],
         drift = start - it["source_start"]
         # A too-long clip may run TAIL_MAX past its own end into a following
         # gap when the next segment is the same speaker; a speaker change (or
-        # the end of the video) gets no deliberate tail — compress harder, and
+        # the end of the video) gets no deliberate tail compress harder, and
         # let any unavoidable remainder push the next segment later (drift)
         # rather than talk over its speaker's opening.
         same_speaker = (i + 1 < len(items)
@@ -195,7 +195,7 @@ def place(items: list[dict[str, Any]],
         # starts. First pull the clip earlier into free timeline before it
         # (bounded by LEAD_MAX and the previous placement, so nothing overlaps),
         # then compress up to RATE_MAX. Whatever still does not fit overruns —
-        # audio is never cut — but the overrun is measured and returned rather
+        # audio is never cut but the overrun is measured and returned rather
         # than masquerading as ordinary drift, and because each clip is fitted
         # against its own wall, one clip's lateness never propagates past the
         # next wall that has slack to absorb it.
@@ -236,12 +236,12 @@ def smooth_rates(items: list[dict[str, Any]], places: list[dict[str, Any]], *,
     without ever moving a placement:
 
       * the compressed clip (rate > 1) is slowed toward the drawl using only
-        the slack already on the timeline — its end may never pass the next
+        the slack already on the timeline its end may never pass the next
         placement's start, nor (when the segment after it changes speaker)
-        that segment's source onset: the wall holds. Never below 1.0 — a clip
+        that segment's source onset: the wall holds. Never below 1.0 a clip
         that needed compression is not made to drawl.
       * the drawl (rate < 1, a deliberate stretch) is lifted back toward 1.0
-        as far as continuity needs — always safe, the clip only gets shorter
+        as far as continuity needs always safe, the clip only gets shorter
         and finishes a little early inside its own span.
 
     Cross-speaker pairs are untouched. Returns a new list; `items` read only.
@@ -332,7 +332,7 @@ def build_items(m: dict[str, Any]) -> list[dict[str, Any]]:
     items = []
     for seg in sorted(m["segments"], key=lambda s: s["start"]):
         if seg["keep"]:
-            # Kept audio is a slice of THIS span — anything else means the wrong
+            # Kept audio is a slice of THIS span anything else means the wrong
             # moment's audio is about to be placed (an id-keyed cache once did
             # exactly that). What is checked is the span the slice was cut for,
             # recorded on the clip: with `tts_opts.speed` on a kept segment the
@@ -408,11 +408,11 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
         for seg_id in texts:
             if not records.get(seg_id):
                 # A shorter line the synthesiser could not voice. The original
-                # stands (never silent), and it stays late — say so, exactly as
+                # stands (never silent), and it stays late say so, exactly as
                 # the translator's refusal one branch up does.
                 refused[seg_id] = "synthesis-refused"
                 print(f"  timeline: seg {seg_id} shorten attempted, synthesis "
-                      "refused — original line kept, still drifted", file=sys.stderr)
+                      "refused original line kept, still drifted", file=sys.stderr)
         for seg_id, record in records.items():
             if not record:
                 continue
@@ -431,7 +431,7 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
 
     if genre == "movie":
         # Rate continuity: one voice must not alternate between compression and
-        # a drawl across a scene — nudge the faster neighbour toward the slower
+        # a drawl across a scene nudge the faster neighbour toward the slower
         # using available slack (see smooth_rates).
         places = smooth_rates(items, places)
 
@@ -440,7 +440,7 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
     # that divergence is how the previous pipeline produced overlaps.
     for it, p in zip(items, places):
         raw = workdir / it["clip"]
-        # Bake the tempo change into the clip — both a speed-up (too long for its
+        # Bake the tempo change into the clip both a speed-up (too long for its
         # slot) and a slow-down (a much-shorter English line stretched toward the
         # source duration so it does not finish early and drift out of sync). Only
         # rate ~1.0 is left untouched. The re-place below then runs at rate 1.0 on
@@ -470,7 +470,7 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
         if it["id"] in spoken:
             seg["place"]["spoken"] = spoken[it["id"]]
         if it["id"] in refused:
-            # "shorten attempted, and abandoned" — the missing half of the
+            # "shorten attempted, and abandoned" the missing half of the
             # shortened/drift story in report.json.
             seg["place"]["shorten"] = refused[it["id"]]
 

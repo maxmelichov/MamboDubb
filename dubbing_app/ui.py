@@ -13,7 +13,7 @@ Two properties this has to get right:
   hard reload on an editor URL needs.
 * **The fallback must never eat the API.** It is registered last, and `/health`,
   `/api/...` and `/media/...` are refused explicitly rather than relying on route
-  order — order alone would still hand `index.html` to a *misspelled* API path,
+  order order alone would still hand `index.html` to a *misspelled* API path,
   turning "404 no such project" into an HTML page the UI cannot parse.
 
 Path handling follows `media.resolve`: resolve first, compare against the root
@@ -64,8 +64,8 @@ def reserved(path: str) -> bool:
 def resolve_file(root: Path, rel: str) -> Path | None:
     """The file `rel` names inside `root`, or None when there is none.
 
-    Raises `not_found` — rather than returning None, which would fall back to
-    `index.html` — when the path tries to leave the directory. A traversal is not
+    Raises `not_found` rather than returning None, which would fall back to
+    `index.html` when the path tries to leave the directory. A traversal is not
     a missing page; answering it with the app would be a confusing lie.
     """
     if not rel:

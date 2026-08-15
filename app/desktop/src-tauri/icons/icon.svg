@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Dubbing Studio — application mark. Source of truth for every raster in this
+  Dubbing Studio application mark. Source of truth for every raster in this
   directory; regenerate them with scripts/make_icons.py (see that file's header).
 
-  The motif is the product in one glyph: two overlapping speech bubbles — the
+  The motif is the product in one glyph: two overlapping speech bubbles the
   faint one behind is the original track, the solid one in front is the dub, and
   it carries the waveform. Deep indigo-violet tile so it does not vanish into a
   Dock full of blue apps.
@@ -64,7 +64,7 @@
   </g>
 
   <!-- Mark, scaled and centred on the tile. The back bubble sits far enough up and
-       left that its tail clears the front bubble's rim — overlapped, it degenerated
+       left that its tail clears the front bubble's rim overlapped, it degenerated
        into a smudge at every size. -->
   <g transform="translate(512,512) scale(0.88) translate(-498,-544)">
     <ellipse cx="500" cy="486" rx="350" ry="320" fill="url(#halo)"/>

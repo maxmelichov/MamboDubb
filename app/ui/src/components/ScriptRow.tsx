@@ -12,8 +12,8 @@
  *
  * So the two lines are stacked, always, both visible, both complete:
  *
- *   ORIGINAL      muted, 12.5px  — the reference
- *   TRANSLATION   ink,   14px    — the work
+ *   ORIGINAL      muted, 12.5px  the reference
+ *   TRANSLATION   ink,   14px    the work
  *
  * and nothing here is ever ellipsis-truncated. A collapsed row clamps at two
  * lines; the selected row shows everything. Truncating the text is truncating
@@ -24,7 +24,7 @@
  * "Both visible, always" is a rule about a *comparison*, and there is no
  * comparison when the two halves are the same string. A run over a video that
  * already speaks the target language keeps every line and passes the text
- * through untouched, so `text_en === text` on all seventy-three of them — and
+ * through untouched, so `text_en === text` on all seventy-three of them and
  * the row printed the identical sentence twice, at two weights, seventy-three
  * times. That does not read as "kept", it reads as a broken renderer.
  *
@@ -40,7 +40,7 @@
  * `dir="auto"` + `.auto-dir`. That split is the whole bidi story: the timecode,
  * the id and the buttons are *chrome*, laid out left-to-right no matter what
  * language the run is in, while each text line takes its direction from its own
- * first strong character — so a Hebrew original renders right-to-left directly
+ * first strong character so a Hebrew original renders right-to-left directly
  * above its left-to-right English translation, in one row, correctly, without
  * either of them dragging the layout around.
  *
@@ -49,7 +49,7 @@
  *
  * There is deliberately no `title` on the row. A composed tooltip
  * (`${speaker} · ${text}`) is a single string with mixed directions and no
- * markup to scope them, which the platform renders as a scrambled mess — and it
+ * markup to scope them, which the platform renders as a scrambled mess and it
  * was duplicating text that is now permanently on screen anyway.
  */
 
@@ -89,7 +89,7 @@ export type ScriptRowProps = {
   onSelect: (uid: string) => void;
   onEdit: (target: EditTarget) => void;
   onCommit: (uid: string, field: "text" | "text_en", value: string) => void;
-  /** `window` confines playback to a span of the file — see `clipAudio`. */
+  /** `window` confines playback to a span of the file see `clipAudio`. */
   onPlay: (url: string | null, window?: [number, number] | null) => void;
   onToggleKeep: (seg: Segment) => void;
 };
@@ -164,10 +164,10 @@ function Row({
        * The two strongest are deliberately different *colours* and not two
        * strengths of one: the selection is the accent (`primary` in light, the
        * brand violet in dark) and the playhead stays ink, so on the row that is
-       * both — which is most of them, since selecting a line seeks to it — the
+       * both which is most of them, since selecting a line seeks to it the
        * violet rule and the white tick are still two readable facts.
        *
-       * The rule itself is the state's hue at every other time — a quiet stripe
+       * The rule itself is the state's hue at every other time a quiet stripe
        * down the reading edge that says dub/keep/fail without a second glance.
        */
       className={cn(
@@ -223,7 +223,7 @@ function Row({
         <span className="flex items-center gap-1 font-mono text-[11px] tabular-nums text-muted">
           #{seg.id}
           {hasLocks(seg) ? (
-            <Lock className="h-2.5 w-2.5" aria-label="Hand-edited — a re-run will not overwrite it" />
+            <Lock className="h-2.5 w-2.5" aria-label="Hand-edited a re-run will not overwrite it" />
           ) : null}
         </span>
       </button>
@@ -242,7 +242,7 @@ function Row({
           <StateIcon state={state} className="h-2.5 w-2.5" />
           {/* The state as a *word*, on every row, in ink rather than in the
               state's hue: at 11px this is small text, and light-mode "pending"
-              is 3.70:1 against the card — fine for a stripe, under the 4.5:1
+              is 3.70:1 against the card fine for a stripe, under the 4.5:1
               gate for a label. There is no legend on screen any more, so this
               is the encoding's only spelling out. */}
           <span className="shrink-0 text-secondary">{meta.short}</span>
@@ -251,7 +251,7 @@ function Row({
             of furniture: the same muted grey as the timecode beside it, on a
             row that otherwise looks finished. It joins the pending family —
             amber, the hue this app already spends on "something is still
-            outstanding here" — while a hard failure keeps the red. Both are
+            outstanding here" while a hard failure keeps the red. Both are
             icons, where the 3:1 gate applies; neither is coloured text.
           */}
           {concern !== "none" ? (
@@ -266,7 +266,7 @@ function Row({
           ) : null}
           {/*
             What a kept row does instead of a fourth line. It used to be a
-            paragraph of its own under the two texts — on all seventy-three
+            paragraph of its own under the two texts on all seventy-three
             rows of an all-kept run, which is not information, it is a
             drumbeat. Now it is a clause on the meta line, and it fades in on
             the row under the cursor or under the selection: the *state* is on
@@ -280,7 +280,7 @@ function Row({
             the left; the question a reviewer checking keeps actually has is
             why this one was kept, and it was only answerable by selecting the
             row and reading the panel. `keepReason` is the same mapping the
-            panel and the run summary use, so the three cannot drift — and a
+            panel and the run summary use, so the three cannot drift and a
             reason it has no phrase for falls back to the old sentence rather
             than printing a manifest token on seventy-three rows.
           */}
@@ -291,7 +291,7 @@ function Row({
                 selected ? "opacity-100" : "opacity-0 group-hover/row:opacity-100",
               )}
             >
-              — {hasKeepPhrase(seg.keep_reason)
+              {hasKeepPhrase(seg.keep_reason)
                 ? keepReason(seg.keep_reason)
                 : "original audio plays here"}
             </span>
@@ -322,7 +322,7 @@ function Row({
         />
 
         {/*
-          A kept line that has a subtitle of its own still shows it — a
+          A kept line that has a subtitle of its own still shows it a
           reviewer's job includes checking the keep decisions, and hiding the
           translation of a kept line hides the evidence for the judgement it is
           asking for. It is drawn dimmer than the original above it, because it
@@ -352,18 +352,18 @@ function Row({
         {/*
           The one thing a dimmed line cannot say on its own.
 
-          Typing a translation into a kept row is allowed and it is saved — but
+          Typing a translation into a kept row is allowed and it is saved but
           `edit.set_text` does not reopen a verdict the user or the span
           decided, so the line is a *subtitle* and the original audio still
           plays. Nothing on the row said so: it showed an English sentence
           under a Hebrew one, in the same place the dubbed rows show what will
           be spoken, and the reasonable reading is that it will be spoken.
-          Flipping the verdict here instead would be worse — it would overturn
+          Flipping the verdict here instead would be worse it would overturn
           a decision the user made, on the strength of them fixing a subtitle.
         */}
         {subtitleOnly(seg) ? (
           <p className="px-2 text-[11px] leading-snug text-muted">
-            This line keeps its original audio — the edit is a subtitle. Switch to “Dub it” to
+            This line keeps its original audio the edit is a subtitle. Switch to “Dub it” to
             voice it.
           </p>
         ) : null}
@@ -391,7 +391,7 @@ function Row({
             stopped at the segment's end.
 
             "A" and "B" were the keyboard's names for these, printed on the
-            buttons — a convention from comparison tools, which this is, but one
+            buttons a convention from comparison tools, which this is, but one
             that tells a reviewer meeting the row nothing about which side is
             which. The words say it; `a` and `b` still press them, and the
             shortcut list names both. `data-clip` stays A/B: it is the seam the
@@ -410,21 +410,21 @@ function Row({
           label="Dub"
           title={
             seg.keep
-              ? "No dub exists — this line keeps the original, so A and B would be the same audio"
+              ? "No dub exists this line keeps the original, so A and B would be the same audio"
               : seg.media?.fallback
-                ? "No dub yet — the mix plays the original here until this line is translated and voiced"
+                ? "No dub yet the mix plays the original here until this line is translated and voiced"
                 : "Play what actually went into the mix, after time-fitting"
           }
           // A kept line's placed clip IS the original slice; letting B play it
           // sounds identical to A, which a user reads as "the buttons are
-          // swapped". No dub means no B — and the same is true of a dub-wanted
+          // swapped". No dub means no B and the same is true of a dub-wanted
           // line whose voice fell back to the original slice (`media.fallback`):
           // a fallback is not a dub, it is the absence of one.
           emptyTitle={
             seg.keep
-              ? "No dub exists — this line keeps the original, so A and B would be the same audio"
+              ? "No dub exists this line keeps the original, so A and B would be the same audio"
               : seg.media?.fallback
-                ? "No dub yet — the mix plays the original here until this line is translated and voiced"
+                ? "No dub yet the mix plays the original here until this line is translated and voiced"
                 : undefined
           }
           url={seg.keep || seg.media?.fallback ? null : dubUrl}
@@ -472,7 +472,7 @@ export const ScriptRow = memo(Row);
  * paragraph, never around it and never splitting it into fragments with their
  * own direction: the paragraph is the bidi context, and a Hebrew line chopped
  * into three siblings is three lines each laid out from its own first strong
- * character — which reorders the sentence on screen. And the match is found on
+ * character which reorders the sentence on screen. And the match is found on
  * a lower-cased copy while the slices come from the original, so "Moza" typed
  * as "moza" still shows the capital it actually has.
  */
@@ -517,7 +517,7 @@ function Line({
   editing: boolean;
   placeholder: string;
   className?: string;
-  /** Held back from the line above it — never from the field. */
+  /** Held back from the line above it never from the field. */
   dimmed?: boolean;
   selected: boolean;
   readOnly?: boolean;
@@ -543,7 +543,7 @@ function Line({
       className={cn(
         "auto-dir rounded-lg border border-transparent px-2 py-1",
         // Never an ellipsis: a clamp hides *lines*, a truncate hides the end of
-        // a sentence — and the end of a translated sentence is exactly where
+        // a sentence and the end of a translated sentence is exactly where
         // the mistakes are. The selected row is uncapped.
         selected ? "whitespace-pre-wrap" : "line-clamp-2",
         dimmed && "opacity-70",
@@ -564,12 +564,12 @@ function Line({
  *
  * 1. **The draft is seeded once, on mount, and never re-seeded.** The old
  *    inspector re-synced its draft from props on every change of `seg.text_en`
- *    — so a background job completing, or the 250ms refetch the event stream
+ *    so a background job completing, or the 250ms refetch the event stream
  *    schedules, silently threw away whatever the user was in the middle of
  *    typing. Mounting the editor *with* the value and never looking at props
  *    again makes a refetch structurally unable to reach it.
  * 2. **An empty commit is refused, never sent.** `edit.set_text` 400s on it —
- *    "a dubbed segment must say something" — and a user who wants the line gone
+ *    "a dubbed segment must say something" and a user who wants the line gone
  *    wants Keep original, which is a different button with a different meaning.
  * 3. **Blur commits, Escape reverts**, and Escape has to win: it blurs the
  *    field on its way out, so the blur handler has to know it was cancelled.
@@ -599,7 +599,7 @@ function RowEditor({
 
   const commit = () => {
     if (cancelled.current) return;
-    // Rule 2. Refused before it is ever sent — and refused by *reverting*,
+    // Rule 2. Refused before it is ever sent and refused by *reverting*,
     // because a field that will not close until you type something is a trap:
     // the user who emptied the line meant Keep original, and they can still
     // reach it with the line intact.
@@ -646,7 +646,7 @@ function RowEditor({
       />
       {!draft.trim() ? (
         <span className="px-2 pt-0.5 text-[11px] text-critical">
-          A dubbed line has to say something — switch it to Keep original instead.
+          A dubbed line has to say something switch it to Keep original instead.
         </span>
       ) : (
         <span className="px-2 pt-0.5 text-[11px] text-muted">⌘↵ or click away to save</span>
@@ -666,7 +666,7 @@ function ClipButton({
   onPlay,
   emptyTitle,
 }: {
-  /** The side, A or B — the keybinding's name and the smoke test's handle. */
+  /** The side, A or B the keybinding's name and the smoke test's handle. */
   id: "A" | "B";
   /** The word on the button. */
   label: string;
@@ -715,7 +715,7 @@ function ClipButton({
  * Portalled to `<body>` and positioned from the trigger's own rect, because the
  * script list is an `overflow-auto` container: an absolutely-positioned panel
  * inside it is clipped at the container's edge, which means the menu on the
- * last visible row — the one you are most likely to be reaching for — would
+ * last visible row the one you are most likely to be reaching for would
  * open into nothing.
  */
 function RowMenu({

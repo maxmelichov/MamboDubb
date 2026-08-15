@@ -176,7 +176,7 @@ def api_original(run: str, seg_id: int) -> FileResponse:
 
 @app.get("/api/stage-for-fields")
 def api_stage_for_fields(fields: str = "") -> dict[str, Any]:
-    """Which stage a set of edited fields would force — used by the UI hint."""
+    """Which stage a set of edited fields would force used by the UI hint."""
     names = [f for f in fields.split(",") if f]
     unknown = [f for f in names if f not in EDITABLE]
     if unknown:

@@ -1,15 +1,15 @@
 /**
  * The script.
  *
- * This is the editor's largest region — 58% of the width and all of the height
- * between the header and the timeline strip — which is the whole argument of
+ * This is the editor's largest region 58% of the width and all of the height
+ * between the header and the timeline strip which is the whole argument of
  * the redesign in one number. The video used to be the pane that grew and the
  * text was a fifteen-rem drawer at the bottom; but nobody reviews a dub by
  * watching it, they review it by *reading* it, with the video as the reference
  * they glance at. So the text grows and the picture is fixed.
  *
  * Above the rows sit the two things that make two hundred rows navigable: a
- * search box and five filter chips. They are not decoration — "show me the
+ * search box and five filter chips. They are not decoration "show me the
  * eleven that failed" is the single most common thing a reviewer wants from a
  * run, and it used to require scrolling the whole list looking for a hue.
  * "Unfinished" is the second most common and used to be unaskable: a line with
@@ -19,7 +19,7 @@
  * And once a filter has selected a set, fixing that set is one job rather than
  * eleven: `POST /resynthesize` has always taken `{uids:[…]}` and the UI has
  * always sent exactly one. Eleven separate jobs is eleven model loads, in a
- * process where only one model may be resident at a time — so it is not a
+ * process where only one model may be resident at a time so it is not a
  * convenience, it is the difference between one minute and twenty.
  *
  * Kept is the third chip with a bulk offer and the only one whose button
@@ -65,7 +65,7 @@ const escapeId = (value: string): string =>
  * Which lines the search box and the chips leave on screen.
  *
  * Exported and pure because the editor's ↑/↓ have to step through *what is
- * visible*, not through the whole run — an arrow key that jumps to a row the
+ * visible*, not through the whole run an arrow key that jumps to a row the
  * filter is hiding is a selection the user cannot see.
  */
 export function filterSegments(
@@ -133,7 +133,7 @@ export function ScriptPane({
   onToggleKeep: (seg: Segment) => void;
   onRetranslateMany: (uids: string[]) => void;
   onResynthesizeMany: (uids: string[]) => void;
-  /** Translate whatever has no line, then voice all of them — in that order. */
+  /** Translate whatever has no line, then voice all of them in that order. */
   onFixMany: (uids: string[]) => void;
   /** Flip every one of these from keep to dub, then queue the work once. */
   onDubMany: (uids: string[]) => void;
@@ -167,7 +167,7 @@ export function ScriptPane({
    * Follow the playhead, Final Cut's timeline-index behaviour: the row under
    * the playhead centres itself as playback moves through it.
    *
-   * The guard is the same one the timeline strip uses — only scroll when the
+   * The guard is the same one the timeline strip uses only scroll when the
    * row has actually left the visible band. Anything more eager fights a user
    * who has scrolled somewhere else to look at something, which is the one
    * thing an auto-scrolling list must never do.
@@ -198,7 +198,7 @@ export function ScriptPane({
   }, [selectedUid]);
 
   /**
-   * A row asked for by name — today, by a click on its mark in the timeline.
+   * A row asked for by name today, by a click on its mark in the timeline.
    *
    * Centred rather than `nearest`, and unconditional rather than only-when-off
    * screen: this is not the list keeping up with something, it is the list
@@ -222,7 +222,7 @@ export function ScriptPane({
    *
    * The search box gave no feedback at all: you typed, rows disappeared, and
    * the only way to learn whether "moza" matched eleven lines or none was to
-   * scroll to the bottom and count — with the All chip, two inches away, still
+   * scroll to the bottom and count with the All chip, two inches away, still
    * confidently reading 73. It is the chip that means "no filter", so it is the
    * one that owes an answer about the *other* filter that is running.
    */
@@ -248,8 +248,8 @@ export function ScriptPane({
           One chip is allowed a hue, and it is the one whose count is news.
           "Failed 3" in the same grey as "All 73" is a number you have to read
           to notice; in the failed hue it is the thing your eye lands on when
-          the bar comes up. The rest stay quiet — a filter bar where every chip
-          is coloured is a filter bar with no emphasis in it — and the hue is
+          the bar comes up. The rest stay quiet a filter bar where every chip
+          is coloured is a filter bar with no emphasis in it and the hue is
           the state's own token, so this chip and the rows it selects are the
           same red. It drops the hue when it is the active filter, because then
           the accent pill *is* the emphasis, and two loud colours on one chip is
@@ -271,7 +271,7 @@ export function ScriptPane({
    * unambiguous: Failed, every one of which is a line the pipeline could not
    * say, and Unfinished, every one of which is a line with nothing to play.
    *
-   * Unfinished is the one that gets a run's stragglers back — including the
+   * Unfinished is the one that gets a run's stragglers back including the
    * lines a "Dub it" used to strand, which had no translation, no clip and no
    * job on the way. Its button is one click and at most two jobs: translate
    * whatever has no line, then voice the lot.
@@ -279,7 +279,7 @@ export function ScriptPane({
    * The work set is not "everything on screen that is not a keep", though, and
    * it was wrong in both directions. A line the *pipeline* gave up on is stored
    * as a keep (`keep_reason` tts_failed / mt_failed) with the original audio
-   * attached — so excluding keeps excluded every member of the Failed filter,
+   * attached so excluding keeps excluded every member of the Failed filter,
    * and its two buttons enqueued jobs for nobody. And a line that has a clip
    * but no placement needs a render, not a model: re-voicing it is a minute of
    * GPU to arrive back exactly where it started.
@@ -290,8 +290,8 @@ export function ScriptPane({
   /*
    * …and a line with nothing written on it is not model work either.
    *
-   * `segments.fill_uncovered_audible` writes spans with `text: ""` — audible
-   * stretches the transcript never claimed — and a flip to "Dub it" puts one in
+   * `segments.fill_uncovered_audible` writes spans with `text: ""` audible
+   * stretches the transcript never claimed and a flip to "Dub it" puts one in
    * this set. Translating an empty string and voicing the result is a minute of
    * GPU spent replacing correct original audio with garbage, so they are skipped
    * and the count says how many, rather than being quietly folded in.
@@ -320,24 +320,24 @@ export function ScriptPane({
   /*
    * Every bulk bar names its set precisely once a search has narrowed it.
    *
-   * The Kept bar has said this since it was written — the search box is a filter
+   * The Kept bar has said this since it was written the search box is a filter
    * like any other, and a button that quietly acted on two hundred lines while
    * eleven are on screen is the worst kind of bulk action. The Failed and
    * Unfinished bars had the same property and never said so; it is one sentence,
    * so they say it the same way rather than each in its own words.
    */
   const searchNote = (noun: string) =>
-    searching ? ` — the ones this search leaves on screen, not every ${noun} line in the run` : "";
+    searching ? ` the ones this search leaves on screen, not every ${noun} line in the run` : "";
   /** What a work set left behind, and why. Reads as nothing when it left nothing. */
-  const skipNote = (n: number) => (n > 0 ? ` (${n} skipped — no transcript to translate)` : "");
+  const skipNote = (n: number) => (n > 0 ? ` (${n} skipped no transcript to translate)` : "");
 
   /*
    * The third bulk offer, and the only one that changes a verdict rather than
    * re-running a stage.
    *
    * A kept line plays as recorded. When the keep rule was wrong about a whole
-   * video — a third language read as "already the target", which is what a
-   * Hebrew→German run full of English used to be — every one of those lines is
+   * video a third language read as "already the target", which is what a
+   * Hebrew→German run full of English used to be every one of those lines is
    * a keep the reviewer disagrees with, and the only way out was the per-line
    * flip, N times. This is that flip over the set on screen.
    *
@@ -350,7 +350,7 @@ export function ScriptPane({
   const keptUids = keptSegs.map((seg) => seg.uid);
   const keptSkipped = filter === "kept" ? visible.length - keptSegs.length : 0;
   // What the flip will cost: every line is voiced, and every line whose
-  // translation is the pipeline's is translated again first — `set_keep`
+  // translation is the pipeline's is translated again first `set_keep`
   // discards it on the way through, and only a hand-written one is locked
   // against that.
   const keptNeedText = keptSegs.filter(
@@ -371,7 +371,7 @@ export function ScriptPane({
     >
       {/*
         The filter bar is not inside the scroll container and never scrolls, so
-        it needs an opaque ground and a hairline under it — with a wash or a
+        it needs an opaque ground and a hairline under it with a wash or a
         translucent tone the row passing beneath shows through and the two sets
         of letters overprint. `bg-sunken` is a solid token in both themes.
       */}
@@ -415,7 +415,7 @@ export function ScriptPane({
             ) : (
               <>
                 {lines} with nothing to play
-                {needText > 0 ? ` — ${needText} of them have no translation yet` : null}
+                {needText > 0 ? ` ${needText} of them have no translation yet` : null}
                 {renderUids.length > 0
                   ? `${bulkUids.length > 0 ? ", and " : ""}${renderUids.length} already voiced and waiting for a render`
                   : null}
@@ -439,7 +439,7 @@ export function ScriptPane({
             Every one of these is minutes of model time per line, and until now
             each was a single unguarded click: "Re-voice these 27" is half an
             hour of GPU, asked for and started in the same gesture. They ask
-            first, and what they ask with is the price — the same ~20s / ~1min
+            first, and what they ask with is the price the same ~20s / ~1min
             the selection panel already quotes for one line, multiplied by the
             work set each button actually sends.
           */}
@@ -457,7 +457,7 @@ export function ScriptPane({
                   {skipNote(bulkSkipped)} ·{" "}
                   {modelCost({ translate: needText, voice: bulkUids.length })}
                   {searchNote("unfinished")}. Whatever has no line is translated first, then
-                  the lot is voiced — two jobs, in that order.
+                  the lot is voiced two jobs, in that order.
                 </>
               }
               onConfirm={() => onFixMany(bulkUids)}
@@ -526,7 +526,7 @@ export function ScriptPane({
           <span className="min-w-0 flex-1 text-[11px] text-secondary">
             {lineCount(visible.length)} play as recorded
             {searching ? null : ", subtitled"}
-            {keptSkipped > 0 ? ` — ${keptSkipped} with no transcript to translate` : null}
+            {keptSkipped > 0 ? ` ${keptSkipped} with no transcript to translate` : null}
             {searchNote("kept")}. One click, at most two jobs.
           </span>
           <ConfirmButton
@@ -556,15 +556,15 @@ export function ScriptPane({
         data-script-scroll
         className={cn(
           "min-h-0 flex-1 overflow-y-auto",
-          // Every scroll this list performs is a scroll *to a row* — the
-          // playhead's, the selection's, ↑/↓'s — and a row landed flush under
+          // Every scroll this list performs is a scroll *to a row* the
+          // playhead's, the selection's, ↑/↓'s and a row landed flush under
           // the filter bar reads as text sliced off by it. `scroll-padding`
           // is the platform's answer: it is the inset every one of those
           // scrolls, including `scrollIntoView`, aligns to.
           "scroll-pt-3 scroll-pb-3",
           // Past a few hundred rows the browser skips the layout and paint of
           // everything off screen. No windowing library, no measured
-          // virtualiser, no new dependency — the platform has done this since
+          // virtualiser, no new dependency the platform has done this since
           // 2021 and `contain-intrinsic-size` keeps the scrollbar honest.
           segments.length > VIRTUALIZE_ABOVE && "script-virtual",
         )}
@@ -574,7 +574,7 @@ export function ScriptPane({
             {segments.length === 0 ? (
               <>
                 Segments appear once the <code className="font-mono">segments</code> stage has
-                run — it is what turns the transcript's words into the lines you review here.
+                run it is what turns the transcript's words into the lines you review here.
               </>
             ) : (
               "No line in this run matches the search and the filter together."

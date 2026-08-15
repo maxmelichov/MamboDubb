@@ -20,7 +20,7 @@ pub struct ServerInfo {
 }
 
 /// Parse the handshake line. Anything but a well-formed `"ready"` is an error with
-/// the offending line quoted — a Python traceback on stdout would land here, and the
+/// the offending line quoted a Python traceback on stdout would land here, and the
 /// setup screen is the only place the user will see it.
 pub fn parse_ready_line(line: &str) -> Result<ReadySignal, String> {
     let trimmed = line.trim();

@@ -1,10 +1,10 @@
 /**
- * Fixture backend — `VITE_USE_FIXTURES=1`.
+ * Fixture backend `VITE_USE_FIXTURES=1`.
  *
  * The studio server is being written in parallel against the same contract, so
  * the UI ships its own implementation of that contract: same shapes, same event
  * stream, same one-job rule. The data is a snapshot of a real run
- * (`scripts/make_fixture.py`), which matters — 58 segments of real Hebrew with
+ * (`scripts/make_fixture.py`), which matters 58 segments of real Hebrew with
  * real translations, real drift and real verification transcripts exercise
  * bidi text, long lines and low-overlap warnings that invented data would not.
  *
@@ -49,8 +49,8 @@ const store: Store = structuredClone(data) as unknown as Store;
  * States the snapshot happens not to contain.
  *
  * `fixture-data.json` is a faithful dump of a run that finished, and a run that
- * finished has no per-segment TTS override, no language tag, and — the reason
- * this matters most — no line left unfinished. So two of the inspector's
+ * finished has no per-segment TTS override, no language tag, and the reason
+ * this matters most no line left unfinished. So two of the inspector's
  * shelves would demo as permanently empty and the script's Unfinished chip
  * would demo as permanently zero, which are exactly the states that hide a
  * bug. This adds one of each, by position rather than by content, and it is the
@@ -88,7 +88,7 @@ function seedOverrides(): void {
   if (voiceless) Object.assign(voiceless, { tts: null, place: null, verify: null });
 
   /*
-   * A line that has its clip and no placement — the ordinary state of a studio
+   * A line that has its clip and no placement the ordinary state of a studio
    * segment between a re-voice and the render that lays it down. It is here
    * because it is the state that was *mislabelled*: with no distinct state for
    * it the row said "Needs voice", and the Unfinished chip's one-click fix
@@ -103,7 +103,7 @@ function seedOverrides(): void {
    * And a real failure, in the shape the pipeline actually writes.
    *
    * The snapshot carried `tts.verify = "failed"`, which `dubbing/tts.py` never
-   * writes — the record's verdict is "ok", "soft" or "keep" and nothing else.
+   * writes the record's verdict is "ok", "soft" or "keep" and nothing else.
    * That invented value was the *only* thing the Failed chip counted, so the UI
    * had a failure state that could only be reached by a fixture. What a failed
    * synthesis really leaves behind is a keep the pipeline decided against
@@ -132,7 +132,7 @@ function seedOverrides(): void {
 /**
  * The record a pipeline failure leaves behind: a keep it decided against
  * itself, with a slice of the original audio attached so the mix is never
- * silent (`tts.Engine.keep_clip`). `verify` stays as it was — the low overlap
+ * silent (`tts.Engine.keep_clip`). `verify` stays as it was the low overlap
  * from the attempt that failed is the evidence for the verdict.
  */
 function keptByFailure(seg: Segment, reason: "tts_failed" | "mt_failed"): Partial<Segment> {
@@ -157,8 +157,8 @@ let running = false;
  *
  * Fixture mode is the only mode the smoke test runs in and it never touches
  * `fetch`, so "did that interaction hit the server" has to be counted here or
- * it cannot be asserted at all. It exists for one claim in particular — that
- * closing an editor without changing the text saves nothing — which is
+ * it cannot be asserted at all. It exists for one claim in particular that
+ * closing an editor without changing the text saves nothing which is
  * invisible to a DOM assertion because a no-op PATCH looks exactly like no
  * PATCH from the outside.
  *
@@ -166,7 +166,7 @@ let running = false;
  * "Dub it" has to be judged on: the PATCH clears the line and the clip, so the
  * translate job must be enqueued after it and the voice job after that. A pair
  * of counters cannot tell that apart from the same two calls in the wrong
- * order. Only the calls that queue work are logged — a background refetch of
+ * order. Only the calls that queue work are logged a background refetch of
  * the segment list is not part of any sequence worth asserting.
  */
 export const calls = {
@@ -185,7 +185,7 @@ export const calls = {
    *
    * A counter cannot answer the question this one is asked: whether a switch on
    * that screen reached the request. The options rail is a pile of fields that
-   * only exist to be *sent* — the screen shows no consequence of any of them —
+   * only exist to be *sent* the screen shows no consequence of any of them —
    * so the sent body is the only place their correctness is observable.
    */
   created: [] as CreateProjectRequest[],
@@ -216,7 +216,7 @@ function seedOf(uid: string): number {
 /**
  * Add the fields `GET /segments` promises and the manifest does not store.
  *
- * The shape is `Projects.enrich`'s, key for key — `media.play`, `media.tts`,
+ * The shape is `Projects.enrich`'s, key for key `media.play`, `media.tts`,
  * `media.source`, `media.source_window`. It has to be: these fixtures are the
  * only implementation of the contract that the smoke test ever exercises, so a
  * fixture that invents its own field names is not a stand-in for the server,
@@ -256,7 +256,7 @@ const delay = <T>(value: T): Promise<T> =>
 /**
  * Every failure here is an `ApiError`, never a bare `Error`.
  *
- * The server speaks one error envelope — `{"error":{code,message}}` — and the
+ * The server speaks one error envelope `{"error":{code,message}}` and the
  * app branches on it: a 404 from `peaks` is "no dub.wav yet" and resolves to
  * null, a 409 is the one-job rule refusing an edit. A fixture that rejects with
  * a plain `Error` has no code and no status, so every one of those branches is
@@ -283,13 +283,13 @@ export function health(): Promise<Health> {
  * `GET /api/setup`, deliberately mixed: a fresh machine with the big models
  * already fetched but neither command-line tool, no HF token and no Demucs
  * weights. A checklist where everything passes demos nothing, and the failure
- * rows are where the copy has to earn its keep — each one says what to do, not
+ * rows are where the copy has to earn its keep each one says what to do, not
  * just that it is missing.
  *
  * The two tool rows are the *installable* ones, which is the state the Install
  * button only exists for: `ffmpeg` and `sox` are one `brew install` away, so the
  * app offers to run it. Everything else below is missing in a way no button can
- * fix — a gated token, a download the pipeline does for itself — and must
+ * fix a gated token, a download the pipeline does for itself and must
  * therefore show no button at all.
  */
 export function setup(): Promise<SetupStatus> {
@@ -297,7 +297,7 @@ export function setup(): Promise<SetupStatus> {
   // `ok` is the conjunction of the BLOCKING checks only, exactly as
   // `setup.report` computes it. It used to be `every(c => c.ok)`, which made the
   // fixture stricter than the server: a machine with a gated token and an
-  // un-downloaded Demucs cache is ready to run, and this said it was not — so
+  // un-downloaded Demucs cache is ready to run, and this said it was not so
   // the whole "everything required is ready, N optional things are missing"
   // branch of the footer could not be reached in the only mode that is tested.
   return delay({
@@ -313,17 +313,17 @@ const TOOL_ROWS: Record<string, { label: string; here: string; missing: string; 
   ffmpeg: {
     label: "ffmpeg",
     stage: "fetch",
-    here: "7.1.1 — /opt/homebrew/bin/ffmpeg",
+    here: "7.1.1 /opt/homebrew/bin/ffmpeg",
     missing:
-      "ffmpeg not on PATH — every stage shells out to it for audio and video. " +
+      "ffmpeg not on PATH every stage shells out to it for audio and video. " +
       "Install it with `brew install ffmpeg`.",
   },
   sox: {
     label: "SoX",
     stage: "tts",
-    here: "14.4.2 — /opt/homebrew/bin/sox",
+    here: "14.4.2 /opt/homebrew/bin/sox",
     missing:
-      "sox not on PATH — Qwen3-TTS text normalization needs it. " +
+      "sox not on PATH Qwen3-TTS text normalization needs it. " +
       "Install it with `brew install sox`.",
   },
 };
@@ -353,37 +353,37 @@ function setupChecks(): SetupCheck[] {
       ok: false,
       severity: "degrades",
       detail:
-        "not set — diarization falls back to a single speaker, so every line is attributed " +
+        "not set diarization falls back to a single speaker, so every line is attributed " +
         "to one voice. Accept Pyannote's model terms, then add `HF_TOKEN=hf_…` to " +
         "`/Users/you/DubbingQwen/.env`",
     },
     {
       id: "model_translate",
-      label: "Translation model — Gemma 3 12B (MLX, 4-bit)",
+      label: "Translation model Gemma 3 12B (MLX, 4-bit)",
       ok: true,
       severity: "blocking",
       stage: "translate",
-      detail: "6.9 GB — models/gemma-3-12b-it-qat-4bit",
+      detail: "6.9 GB models/gemma-3-12b-it-qat-4bit",
     },
     {
       id: "model_tts",
-      label: "Speech model — Qwen3-TTS 1.7B",
+      label: "Speech model Qwen3-TTS 1.7B",
       ok: true,
       severity: "blocking",
       stage: "tts",
-      detail: "3.4 GB — models/qwen3-tts-1.7b",
+      detail: "3.4 GB models/qwen3-tts-1.7b",
     },
     {
       id: "model_asr",
-      label: "Transcription model — faster-whisper large-v3",
+      label: "Transcription model faster-whisper large-v3",
       ok: true,
       severity: "blocking",
       stage: "tts",
-      detail: "3.1 GB — models/faster-whisper-large-v3",
+      detail: "3.1 GB models/faster-whisper-large-v3",
     },
     {
       id: "model_stems",
-      label: "Stem separation — Demucs htdemucs",
+      label: "Stem separation Demucs htdemucs",
       ok: false,
       severity: "optional",
       detail:
@@ -395,11 +395,11 @@ function setupChecks(): SetupCheck[] {
       label: "Free disk space",
       ok: true,
       severity: "optional",
-      detail: "184 GB free — a 20-minute run writes about 4 GB under outputs/",
+      detail: "184 GB free a 20-minute run writes about 4 GB under outputs/",
     },
   ];
   // `required` is the server's derived view of `severity`, and the fixture has to
-  // derive it the same way — a row that disagreed with itself would let the
+  // derive it the same way a row that disagreed with itself would let the
   // screen read one field on the server and the other here.
   return rows.map((row) => ({
     installable: false,
@@ -412,7 +412,7 @@ function setupChecks(): SetupCheck[] {
  * `POST|GET /api/setup/install`, compressed.
  *
  * The real thing is a `brew install` and minutes of output; this is the same
- * contract at a speed a smoke test can watch — a handful of lines, a few poll
+ * contract at a speed a smoke test can watch a handful of lines, a few poll
  * cycles, then the check flips to Ready. It has to refuse the same two things
  * the server refuses, or the button's disabled state and the page's error path
  * are untested in the only mode that ever runs.
@@ -441,7 +441,7 @@ export function startInstall(id: string): Promise<SetupInstall> {
       new ApiError(
         "invalid_request",
         `'${id}' cannot be installed from the app. The only installs it runs are ` +
-          "`brew install ffmpeg`, `brew install sox`. Everything else is by hand — " +
+          "`brew install ffmpeg`, `brew install sox`. Everything else is by hand " +
           "the command is in that check's detail line.",
         400,
       ),
@@ -491,7 +491,7 @@ async function runInstall(id: string): Promise<void> {
  *
  * The row's whole job is to say *where a run got to*, and a list where every
  * run is finished cannot show that it does. One is stopped mid-pipeline and one
- * fell over on its first stage — and those two are not decoration for the list
+ * fell over on its first stage and those two are not decoration for the list
  * any more, because the editor's transport now has three states that depend on
  * exactly this: a run past `fetch` has `source.wav` to play before the preview
  * exists, and a run that never got through `fetch` has nothing at all. Opening
@@ -501,7 +501,7 @@ async function runInstall(id: string): Promise<void> {
 const HOUR = 3600;
 
 /**
- * A row, plus how long ago it last moved — the list wants a clock time — and,
+ * A row, plus how long ago it last moved the list wants a clock time and,
  * when the run died, the job that died.
  *
  * `failure` is not decoration either. The server keeps a project's jobs and the
@@ -518,7 +518,7 @@ type OtherRun = Omit<ProjectSummary, "mtime"> & {
 const OTHER_RUNS: OtherRun[] = [
   {
     name: "doha_panel_v2",
-    title: "Doha panel — full episode",
+    title: "Doha panel full episode",
     src_lang: "ar",
     tgt_lang: "en",
     duration: 1840,
@@ -537,13 +537,13 @@ const OTHER_RUNS: OtherRun[] = [
     src_lang: "he",
     tgt_lang: "en",
     duration: 415,
-    // The download itself failed — a dead URL, the commonest first-stage
-    // failure there is — so this run has no source.wav and nothing to play.
+    // The download itself failed a dead URL, the commonest first-stage
+    // failure there is so this run has no source.wav and nothing to play.
     stages: { fetch: "failed" },
     failure: {
       stage: "fetch",
       error:
-        "RuntimeError: yt-dlp exited 1 — ERROR: [youtube] 8pQ2mAy: Video unavailable. " +
+        "RuntimeError: yt-dlp exited 1 ERROR: [youtube] 8pQ2mAy: Video unavailable. " +
         "This video is no longer available.",
     },
     age: 39 * HOUR,
@@ -598,7 +598,7 @@ function detailOf(run: OtherRun): ProjectDetail {
  * A project's jobs, as `GET /api/projects/{name}` serves them: oldest first,
  * this project's only.
  *
- * The dead job of a run that failed goes first, because it happened first — and
+ * The dead job of a run that failed goes first, because it happened first and
  * because it is the whole point of the list. Everything the session has since
  * enqueued follows it, so a resume shows up here the moment it is submitted.
  */
@@ -630,7 +630,7 @@ function jobsOf(name: string): Job[] {
  * The server keeps this in `m["render"].segments`, stamped by `mix.run`, and
  * derives `{stale, changed}` from it on every GET. The fixture does the same
  * rather than hardcoding a flag, so an edit in the demo goes stale for the real
- * reason and the count is the real count — which is the whole thing the header
+ * reason and the count is the real count which is the whole thing the header
  * is about to claim.
  */
 let rendered: Map<string, string> | null = null;
@@ -687,7 +687,7 @@ export function getProject(name: string): Promise<ProjectDetail> {
 }
 
 /**
- * `PATCH /api/projects/{name}` — the three run options that are still a decision.
+ * `PATCH /api/projects/{name}` the three run options that are still a decision.
  *
  * No job, no stage invalidation: the server writes them onto `m["source"]` and
  * they reach the translator the next time it runs. Only the snapshot project has
@@ -704,7 +704,7 @@ export function updateProject(
     return Promise.reject(
       new ApiError(
         "busy",
-        `a job is running on '${name}' — run options are read when a job starts, ` +
+        `a job is running on '${name}' run options are read when a job starts, ` +
           "not while it runs",
         409,
       ),
@@ -714,7 +714,7 @@ export function updateProject(
     ...projectOf(name).source,
     ...(patch.genre ? { genre: patch.genre } : {}),
     ...(patch.register ? { register: patch.register } : {}),
-    // "" is how the note is cleared — the one field with a way out.
+    // "" is how the note is cleared the one field with a way out.
     ...(patch.context === undefined ? {} : { context: patch.context.trim() || null }),
   };
   if (name === store.project.name) store.project.source = next;
@@ -722,7 +722,7 @@ export function updateProject(
 }
 
 /**
- * `POST /api/projects/{name}/run` — run it again, which on a stopped run is a
+ * `POST /api/projects/{name}/run` run it again, which on a stopped run is a
  * resume. Refused while anything is already in flight, exactly as the server
  * refuses it: the pipeline would otherwise re-run the stages it is inside.
  */
@@ -743,7 +743,7 @@ function activeJobsFor(name: string): Job[] {
 }
 
 /**
- * The script — and only for a run that has one.
+ * The script and only for a run that has one.
  *
  * `segments` is what fills this list, so a run stopped before it has no lines,
  * not the snapshot's fifty-eight. That is the difference between the editor's
@@ -759,19 +759,19 @@ export function getSegments(name: string): Promise<Segment[]> {
  * A waveform that agrees with the marks.
  *
  * The point of a fixture waveform is not that it looks like this particular
- * video — it is that the picture and the segment list tell the same story, so
+ * video it is that the picture and the segment list tell the same story, so
  * a lane drawn against the wrong time base, or a SOURCE envelope accidentally
  * fed the OUTPUT spans, is visible rather than plausible. So the envelope is
  * built *from the segments*: speech inside a span, near-silence between them,
  * a syllable-rate wobble on top and a per-bucket jitter from a hash of the
- * index. Deterministic by construction — no `Math.random`, so two calls draw
+ * index. Deterministic by construction no `Math.random`, so two calls draw
  * the same picture and a screenshot diff means something.
  */
 export function peaks(name: string, file: PeaksFile, n: number): Promise<Peaks> {
   calls.peaks += 1;
   const buckets = Math.max(16, Math.min(Math.round(n), 4000));
-// Each lane's file is written by one stage — `source.wav` by fetch, `dub.wav`
-  // by mix — and before that stage has run the server 404s and the lane falls
+// Each lane's file is written by one stage `source.wav` by fetch, `dub.wav`
+  // by mix and before that stage has run the server 404s and the lane falls
   // back to marks alone. The fixture has to refuse in the same cases, in the
   // server's own error shape, or that fallback is never exercised anywhere.
   const stages = projectOf(name).stages;
@@ -824,14 +824,14 @@ export function patchSegment(_name: string, uid: string, patch: SegmentPatch): P
   const seg = find(uid);
 
   // `dubbing/edit.py` refuses both of these outright, with a 400. The editor
-  // refuses them before they are ever sent — but the fixture has to refuse
+  // refuses them before they are ever sent but the fixture has to refuse
   // them too, or the guard above it is untested in the only mode the smoke
   // test runs in.
   if ("text_en" in patch && !patch.text_en?.trim()) {
     return Promise.reject(
       new ApiError(
         "invalid_request",
-        "text_en cannot be empty — a dubbed segment must say something",
+        "text_en cannot be empty a dubbed segment must say something",
         400,
       ),
     );
@@ -841,12 +841,12 @@ export function patchSegment(_name: string, uid: string, patch: SegmentPatch): P
   }
 
   /*
-   * The patch's effects come from `applyPatch` — the same table the editor
+   * The patch's effects come from `applyPatch` the same table the editor
    * predicts with, which is the same table `dubbing/edit.py` implements.
    *
    * What was here was a third copy: it spread the patch over the segment and
    * then invalidated for `text`, `text_en` and `keep`. Everything else went
-   * through untouched — a speaker change kept the clip in the old voice, a
+   * through untouched a speaker change kept the clip in the old voice, a
    * moved span kept a clip cut from the old one, and a language override was
    * written on as a value with nothing dropped. Three implementations of one
    * contract is how a fixture stops being a stand-in for the server and starts
@@ -1009,7 +1009,7 @@ function makeJob(
   return job;
 }
 
-/** One job at a time, process-wide — the models are never co-resident. */
+/** One job at a time, process-wide the models are never co-resident. */
 async function pump(): Promise<void> {
   if (running) return;
   running = true;
@@ -1087,7 +1087,7 @@ async function runJob(job: Job): Promise<void> {
       store.project.stages = { ...store.project.stages, [stage]: "done" };
       // `mix.run` is what writes preview.mp4 and what stamps the manifest with
       // the segments it was made from, so the video stops being stale exactly
-      // here — not when the job ends, and not when `report` finishes after it.
+      // here not when the job ends, and not when `report` finishes after it.
       // Only the snapshot has segments to stamp; `rendered` is its map alone.
       if (stage === "mix") stampRender();
     }
@@ -1110,7 +1110,7 @@ function applyModelResult(kind: JobKind, uid: string): void {
    *
    * `edit.retranslate`/`resynthesize` both start with `invalidate`, whose undo
    * table reopens a `mt_failed` keep on a translate and a `tts_failed` keep on
-   * either — the segment gets another go rather than being stuck on a verdict
+   * either the segment gets another go rather than being stuck on a verdict
    * about a clip that no longer exists. It is what makes the Failed filter's
    * two buttons the right two buttons, so the fixture has to do it too.
    */
@@ -1158,7 +1158,7 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  * Audio is a different matter: `source.wav` is what the transport plays before
  * a run has a preview, and a fixture that answered "" for it would leave the
  * one mode this file exists to demo untestable. It is a tone, like every other
- * fixture clip — long enough to hear the playhead move, and capped by
+ * fixture clip long enough to hear the playhead move, and capped by
  * `resolveToneUrl` either way.
  */
 export function mediaUrl(_name: string, path: string): string {
@@ -1172,19 +1172,19 @@ export function mediaUrl(_name: string, path: string): string {
  * one log line, one stage frame per stage, and one job frame for every job that
  * has not finished.
  *
- * It is not decoration — it is the only reason "Start dubbing" works. The
+ * It is not decoration it is the only reason "Start dubbing" works. The
  * project is created, the job is enqueued, and *then* the editor mounts and
  * subscribes; without a replay the queued/running frames were already gone, so
  * the run's own job strip never appeared and the preview stage sat on "Nothing
  * has run yet" for the whole run. Against the real server that is not what
  * happens, which is exactly the kind of divergence these fixtures exist to not
- * have — a second, kinder server that hides the first one's behaviour.
+ * have a second, kinder server that hides the first one's behaviour.
  */
 function prelude(name: string): StudioEvent[] {
   const stages = projectOf(name).stages;
   return [
     { type: "log", level: "info", message: `watching ${name}` },
-    // `replay: true` on every prelude frame and on nothing else — the nine stage
+    // `replay: true` on every prelude frame and on nothing else the nine stage
     // frames are a snapshot of all nine at once, not a progression, and a client
     // that pinned its display to the last one read the ninth as the stage the run
     // was in. The fixture has to say so too, or the smoke test cannot tell the
@@ -1199,7 +1199,7 @@ function prelude(name: string): StudioEvent[] {
     ...jobs
       // This run's unfinished jobs, not the process's: a stream is opened per
       // project and replaying somebody else's job puts a strip on the wrong
-      // editor. `app.py::project_events` filters the same way — and terminal
+      // editor. `app.py::project_events` filters the same way and terminal
       // means done, failed *or* cancelled: a failed job resent on every
       // reconnect resurrects an error the user dismissed an hour ago.
       .filter((job) => job.project === name && isPending(job))

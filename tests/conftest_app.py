@@ -1,4 +1,4 @@
-"""Fixtures for the studio-server tests — a run directory built by hand.
+"""Fixtures for the studio-server tests a run directory built by hand.
 
 The worktree cannot run models, so every test points the server at a temp
 `outputs/` containing a manifest shaped exactly like a real one (whatsapp_0809:

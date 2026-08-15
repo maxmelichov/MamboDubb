@@ -73,7 +73,7 @@ for sid, mutate in (
         # What tts.run actually leaves behind when a clip cannot be verified: a
         # keep it decided against itself, with a slice of the original audio
         # attached so the mix is never silent (`Engine.keep_clip`). The record's
-        # `verify` is never "failed" — the pipeline only writes ok/soft/keep,
+        # `verify` is never "failed" the pipeline only writes ok/soft/keep,
         # and a fixture that invented "failed" gave the UI a failure state that
         # could only ever be reached in fixture mode.
         s["keep"] = True

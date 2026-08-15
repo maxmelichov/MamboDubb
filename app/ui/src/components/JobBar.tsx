@@ -1,14 +1,14 @@
 /**
- * The queue, as one line — and as a panel when you ask.
+ * The queue, as one line and as a panel when you ask.
  *
  * At most one pipeline job runs process-wide, so the resting state is a single
  * strip rather than a queue panel. But "one job runs" is not "one job exists":
  * a verdict flip queues a translate *and* a voice, and the strip used to say
- * "+1 queued" about the second one — a number, with no name, no size, and no
+ * "+1 queued" about the second one a number, with no name, no size, and no
  * way to cancel it. Everything the queue knows is now sayable:
  *
- * * the running job names its work — "Re-voicing 27 lines · 4 of 27";
- * * the tail names the next one — "then Re-translating 12 lines";
+ * * the running job names its work "Re-voicing 27 lines · 4 of 27";
+ * * the tail names the next one "then Re-translating 12 lines";
  * * clicking the strip opens the queue, where every waiting job has its own
  *   Cancel, the log has its first home on screen, and the three costs are
  *   written down.
@@ -17,14 +17,14 @@
  * above and below it, and it is the one place in the workspace that animates.
  *
  * Two things it used to do and no longer does. It drew a StageTrack, which the
- * preview placeholder was already drawing two inches below it — the same nine
+ * preview placeholder was already drawing two inches below it the same nine
  * dots, twice on one screen. And the bar and the percentage disagreed: the bar
  * read `stage?.progress ?? job.progress` while the number read only
  * `stage?.progress`, so a job reporting job-level progress showed a bar that
  * moved next to a percentage stuck on "—". One value, read once.
  *
  * Two things it does that it did not. A whole-run job names the stage it is in
- * and where that stage sits in the nine ("transcript — stage 3 of 9"), because
+ * and where that stage sits in the nine ("transcript stage 3 of 9"), because
  * the one percentage this strip has is the *stage's* and was being read as the
  * run's. And a job that ends holds the strip for six seconds in a still, quiet
  * version of itself rather than vanishing on the frame it finished: the strip
@@ -53,7 +53,7 @@ const LOG_TAIL = 15;
  * How long a finished job's strip stays up.
  *
  * The strip used to vanish on the frame the job ended, which meant the *only*
- * report a successful job ever made was its own disappearance — a reviewer who
+ * report a successful job ever made was its own disappearance a reviewer who
  * looked away for five seconds came back to a screen that had never mentioned
  * the twenty-seven lines it had just re-voiced. Long enough to read one
  * sentence, and matched to the undo strip's six seconds because they are the
@@ -81,7 +81,7 @@ function describeEnd(job: Job): string {
   const verb =
     job.status === "failed" ? "failed" : job.status === "cancelled" ? "cancelled" : "finished";
   return job.uids.length > 0
-    ? `${KIND_LABEL[job.kind]} ${verb} — ${lines(job.uids.length)}`
+    ? `${KIND_LABEL[job.kind]} ${verb} ${lines(job.uids.length)}`
     : `${KIND_LABEL[job.kind]} ${verb}`;
 }
 
@@ -99,7 +99,7 @@ export function JobBar({
   log: LogEvent[];
   /** `batch` stops every job the same gesture queued, not just this one. */
   onCancel: (id: string, batch: boolean) => void;
-  /** Said in the editor's one live region — see EditorPage's `say`. */
+  /** Said in the editor's one live region see EditorPage's `say`. */
   onAnnounce?: (message: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -160,21 +160,21 @@ export function JobBar({
   /*
    * Where a whole-run job is, in the pipeline's own numbering.
    *
-   * A `run` job's progress bar is the *stage's* fraction — the only one the
-   * pipeline reports — so "62%" on a nine-stage run meant "62% through
+   * A `run` job's progress bar is the *stage's* fraction the only one the
+   * pipeline reports so "62%" on a nine-stage run meant "62% through
    * transcript", and it read as "62% through the dub". It names the stage and
    * its position, which is the fact the percentage was being mistaken for. Only
-   * for `run`: an edit job is one stage by construction, and "tts — stage 6 of
+   * for `run`: an edit job is one stage by construction, and "tts stage 6 of
    * 9" over a re-voice would be inventing a pipeline it is not in.
    */
   const runStage = job?.kind === "run" ? (stage?.stage ?? null) : null;
   const stageAt = runStage ? STAGES.indexOf(runStage) : -1;
   const stageNote =
-    runStage && stageAt >= 0 ? `${runStage} — stage ${stageAt + 1} of ${STAGES.length}` : null;
+    runStage && stageAt >= 0 ? `${runStage} stage ${stageAt + 1} of ${STAGES.length}` : null;
   /*
    * "4 of 27" is the fraction restated over the work the user asked for. The
    * stage frames report a 0..1 fraction and the job knows how many lines it was
-   * given, so the count is derived rather than reported — which is honest at
+   * given, so the count is derived rather than reported which is honest at
    * both ends (0 of 27 before the first line, 27 of 27 at the end) and is the
    * form the question is actually asked in: not "what percent", but "how many
    * of my twenty-seven".
@@ -188,7 +188,7 @@ export function JobBar({
     /*
       One line, always: `flex-wrap` let a long stage message or a dropped
       stream wrap to a second row, which moved the whole editor down by 28px
-      mid-job — the script under the cursor jumping while you read it. Both
+      mid-job the script under the cursor jumping while you read it. Both
       variable-length parts truncate instead, and the strip has a fixed height
       so its appearance is the only layout change it can cause. `relative` is
       for the queue panel, which hangs off the strip and adds no height.
@@ -200,7 +200,7 @@ export function JobBar({
       className="relative flex h-8 shrink-0 items-center gap-3 border-b border-border bg-sunken px-4 text-[12.5px]"
     >
       {/*
-        A dropped stream is not a dead app — every edit still goes over plain
+        A dropped stream is not a dead app every edit still goes over plain
         HTTP and still saves. The only thing that stops is progress arriving on
         its own, so the strip says exactly that. It used to offer a "Refresh
         now" button, which was the third copy of the header's Reload; the
@@ -210,7 +210,7 @@ export function JobBar({
         <span className="flex min-w-0 flex-1 items-center gap-1.5 font-medium text-secondary">
           <WifiOff className="h-3.5 w-3.5 shrink-0" aria-hidden />
           <span className="min-w-0 truncate">
-            Progress stream disconnected — retrying. Edits still save; progress will not
+            Progress stream disconnected retrying. Edits still save; progress will not
             update on its own.
           </span>
         </span>
@@ -281,7 +281,7 @@ export function JobBar({
 
       {/*
         The same strip, standing still.
-        Same height, same ground, same trigger — so the queue is still one click
+        Same height, same ground, same trigger so the queue is still one click
         away for the six seconds a user has to ask "what did that just do", and
         the layout does not move on the way out. It is deliberately quiet: a
         tick rather than a spinner, no bar, no percentage, and the tail is gone
@@ -333,7 +333,7 @@ export function JobBar({
  *
  * The audit's disaster in one gesture: cancel the running re-translate, and the
  * re-voice queued behind it runs anyway on lines whose translation was just
- * abandoned — 27 lines synthesised from nothing, each landing as a `tts_failed`
+ * abandoned 27 lines synthesised from nothing, each landing as a `tts_failed`
  * keep. The user had cancelled "dubbing these 27"; the button cancelled a step.
  *
  * So when the running job has queued mates from the same gesture, the button
@@ -415,7 +415,7 @@ function CancelControl({
  * Everything the queue knows, on one panel.
  *
  * Three things live here that had nowhere else to be. Every waiting job, with
- * its own Cancel — the strip could only ever cancel the running one, so the
+ * its own Cancel the strip could only ever cancel the running one, so the
  * queued half of a pair was unreachable. The log, which the client has been
  * collecting into `state.log` since the first version and never rendered, so a
  * failure's actual message went to a variable nobody could read. And the cost
@@ -435,7 +435,7 @@ function QueuePanel({
   onCancel: (id: string, batch: boolean) => void;
 }) {
   // The most recent job that ended, so a failure has somewhere to be read.
-  // Terminal jobs are never replayed on the stream, which is right — but it
+  // Terminal jobs are never replayed on the stream, which is right but it
   // left a failed job's error with no home at all once the strip cleared.
   const last = [...jobs].reverse().find((job) => !isPending(job)) ?? null;
   const tail = log.slice(-LOG_TAIL);
@@ -447,7 +447,7 @@ function QueuePanel({
       data-queue-panel
       className="absolute left-3 top-full z-50 mt-1 w-[26rem] rounded-xl border border-border bg-raised p-3.5 shadow-pop"
     >
-      <Eyebrow className="mb-2">Queue — {pending.length}</Eyebrow>
+      <Eyebrow className="mb-2">Queue {pending.length}</Eyebrow>
       <ul className="flex flex-col gap-1">
         {pending.map((job) => (
           <li
@@ -476,7 +476,7 @@ function QueuePanel({
             last.status === "failed" ? "text-critical" : "text-muted",
           )}
         >
-          Last: {describeJob(last)} — {last.status}
+          Last: {describeJob(last)} {last.status}
           {last.error ? `. ${last.error}` : ""}
         </p>
       ) : null}
@@ -484,12 +484,12 @@ function QueuePanel({
       {/*
         Three lines, in the order a user meets them, because the ratio is what
         decides whether to fix one line or thirty. It is not a warning and does
-        not need to be read twice — it sits under the queue it is about.
+        not need to be read twice it sits under the queue it is about.
       */}
       <div className="mt-3 border-t border-border pt-2.5 text-[11px] leading-relaxed text-muted">
-        <p>Re-translate — about 20 seconds a line.</p>
-        <p>Re-voice — about a minute a line, and it re-places the whole timeline.</p>
-        <p>Update the video — minutes: it re-encodes the whole file.</p>
+        <p>Re-translate about 20 seconds a line.</p>
+        <p>Re-voice about a minute a line, and it re-places the whole timeline.</p>
+        <p>Update the video minutes: it re-encodes the whole file.</p>
       </div>
 
       {tail.length > 0 ? (
