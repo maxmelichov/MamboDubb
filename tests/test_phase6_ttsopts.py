@@ -336,7 +336,7 @@ class _FakeSynth:
     def generate(self, speak, ref, out, *, seed, greedy, opts=DEFAULT,
                  synth=None, lang=None):
         self.calls.append({"speak": speak, "ref": ref, "seed": seed,
-                           "greedy": greedy, "opts": opts})
+                           "greedy": greedy, "opts": opts, "lang": lang})
         out.parent.mkdir(parents=True, exist_ok=True)
         sf.write(str(out), np.full(audio.SR, 0.2, dtype="float32"), audio.SR)
         return out
@@ -397,8 +397,8 @@ def test_pinned_reference_is_not_escalated_past(tmp_path, monkeypatch):
     fake = _FakeSynth()
     eng.synth_for = lambda opts=DEFAULT: fake
     monkeypatch.setattr(eng, "_verify_and_store",
-                        lambda clip, meta, speak: {"ok": False, "overlap": 0.0,
-                                                   "heard": "", "dur": 1.0})
+                        lambda clip, meta, speak, *lang: {"ok": False, "overlap": 0.0,
+                                                          "heard": "", "dur": 1.0})
     seg = {"id": 1, "start": 0.0, "end": 3.0, "speaker": "S1",
            "tts_opts": {"ref": "refs/pick.wav"}}
     assert eng.clip_for(seg, "hello world") is None            # every attempt failed
@@ -418,8 +418,8 @@ def test_unpinned_segment_still_escalates_to_the_canonical_reference(tmp_path, m
     eng.synth_for = lambda opts=DEFAULT: fake
     eng.ref_for = lambda seg, opts=DEFAULT: (tmp_path / "refs/auto.wav", "ref:1.00-4.00")
     monkeypatch.setattr(eng, "_verify_and_store",
-                        lambda clip, meta, speak: {"ok": False, "overlap": 0.0,
-                                                   "heard": "", "dur": 1.0})
+                        lambda clip, meta, speak, *lang: {"ok": False, "overlap": 0.0,
+                                                          "heard": "", "dur": 1.0})
     assert eng.clip_for({"id": 1, "start": 0.0, "end": 3.0, "speaker": "S1"},
                         "hello world") is None
     assert len(fake.calls) == tts.MAX_TRIES + 1

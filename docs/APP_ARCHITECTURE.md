@@ -96,20 +96,30 @@ the user corrected. Honoured, as shipped, in:
 
 * `manifest.reset_stage` — the main one. A stage reset (`--force`, a changed fingerprint,
   `rebuild`) drops `text_en` / `tts` / `place` for every segment; a locked field survives,
-  and a locked `keep` is not re-decided.
+  and a locked `keep` is not re-decided. `place` is dropped unconditionally — placement is
+  all-or-nothing and is not lockable (below).
 * `translate.run` — `needs_translation(seg)` is False for a locked line, in the main loop,
   the keep-subtitle pass and (crucially) the run-global revision pass, which otherwise
   rewrites every dubbed line whenever anything at all was retranslated.
-* `tts` — `clear_failed_keeps` leaves a locked segment's verdict and clip alone. `pending`
-  needs no lock check: nothing but the user's own edit deletes a locked clip record, so a
-  locked clip is still on disk and already counts as done. A lock whose clip has gone is
-  unhonorable and never-silent wins — that segment is synthesized again.
+* `tts` — `clear_failed_keeps` leaves a locked segment's verdict and clip alone, honouring
+  `locked.keep` through the same predicate `reset_stage` and `edit.invalidate` use
+  (`manifest.undo_pipeline_keep`) — it used to guard only `locked.tts`, so a user-locked
+  keep was re-decided on every run. `pending` re-queues a clip whose *text* has moved
+  under it, unless it is locked: that is a conflict, reported (`report.json:
+  stale_locked_clips`), never silently kept and never silently regenerated. A lock whose
+  clip has gone is unhonorable and never-silent wins — that segment is synthesized again.
 * `timeline.run` — the shortening round skips a segment with a locked `text_en` or `tts`
   instead of re-translating and re-voicing it. It drifts; `place` still asserts non-overlap.
 
-Lock fields (`manifest.LOCK_FIELDS`): `text`, `text_en`, `tts`, `place`, `keep`, `speaker`,
-`bounds`. The setters below set them; a targeted `retranslate`/`resynthesize` of specific
-uids clears the one it replaces.
+Lock fields (`manifest.LOCK_FIELDS`): `text`, `text_en`, `tts`, `keep`, `speaker`. The
+setters below set them; a targeted `retranslate`/`resynthesize` of specific uids clears the
+one it replaces.
+
+`place` and `bounds` are **not** lockable, and `set_locked` rejects them. Nothing could
+honour either: `timeline.run` lays the whole run out in one forward pass and rewrites every
+`place` (which is what makes non-overlap provable), and re-segmentation rebuilds every span
+from the words, carrying only `passthrough` forward by time. Accepting a lock the next run
+overwrites is state that lies about the user's edit.
 
 ### `tts_opts` — per-segment synthesis controls
 

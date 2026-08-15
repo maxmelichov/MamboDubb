@@ -39,11 +39,19 @@ STAGE_FIELDS: dict[str, tuple[str, ...]] = {
     "tts": ("tts",),
     "timeline": ("place",),
 }
-STAGE_LOCK = {"translate": "text_en", "tts": "tts", "timeline": "place"}
+# The lock that holds a stage's result back, per stage. `timeline` has none:
+# placement is all-or-nothing and is never the user's (see manifest.LOCK_FIELDS).
+STAGE_LOCK = {"translate": "text_en", "tts": "tts"}
 DOWNSTREAM = {"translate": ("tts", "timeline"), "tts": ("timeline",), "timeline": ()}
 # Stages `rebuild` can start from. Everything earlier needs the source media and
 # belongs to a full `python -m dubbing` run, not to an edit.
 REBUILDABLE = ("translate", "tts", "timeline", "mix", "report")
+# `tts_opts` keys that only reach the synthesis call. A kept segment has no
+# synthesis, so on one they are inert — see `set_tts_opts`. (`speed` applies:
+# it is post-processing on the finished slice. `keep_pauses` asks for exactly
+# what a kept slice already is, so it is a documented no-op rather than a lie.)
+SYNTHESIS_ONLY_OPTS = ("seed", "greedy", "ref", "ref_text", "model", "temperature",
+                       "top_p", "top_k", "repetition_penalty", "max_new_tokens")
 
 
 class EditError(ValueError):
@@ -125,19 +133,19 @@ def invalidate(m: dict[str, Any], uid: str, *, stages: set[str]) -> set[str]:
     translator's to reissue. Returns the field names actually removed.
 
     A keep this pipeline decided for itself (`mt_failed`, `tts_failed`) is undone
-    too, exactly as `manifest.reset_stage` does, so the segment gets another go
-    rather than being stuck on a verdict about text that no longer exists. Only
-    its own, though: a keep the user asked for (`passthrough` True) is theirs, and
-    un-keeping it would leave the manifest disagreeing with itself until the next
-    `apply_passthrough` flipped it back.
+    too, exactly as `manifest.reset_stage` does — through the same predicate
+    (`manifest.undo_pipeline_keep`), so the two cannot drift apart — rather than
+    the segment being stuck on a verdict about text that no longer exists. That
+    predicate is where the two nuances live: a keep the user asked for
+    (`passthrough` True) is theirs and stays, while a `locked.keep` guarding a
+    failure verdict written over the user's "dub it" (`keep.user_wants_dub`) does
+    not protect it.
 
-    The `keep` lock cuts both ways here. It normally means "the user decided this
-    verdict, leave it", but a failure keep written *over* a locked `keep=False`
-    left the lock guarding a value the pipeline had put there — which is how a
-    span the user asked to dub stayed a keep through every retry. So the undo
-    looks past the lock at what the user actually said (`keep.user_wants_dub`),
-    and old manifests carrying that contradiction repair themselves on first
-    touch.
+    A kept span's subtitle survives on the same rule
+    (`manifest.keeps_own_subtitle`): translate never refills one it did not write,
+    so dropping it here would leave the span with no subtitle at all. The caller
+    that is *flipping* the keep drops the line itself, since the flip is what
+    makes it the wrong kind (see `set_keep`).
 
     The run's stage marks come off with the fields (`manifest.reopen_from`, mix and
     report included). Deleting a clip while nine stages still say "done" is how an
@@ -157,20 +165,18 @@ def invalidate(m: dict[str, Any], uid: str, *, stages: set[str]) -> set[str]:
 
     dropped: set[str] = set()
     for stage in ("translate", "tts", "timeline"):
-        if stage not in want or manifest.is_locked(seg, STAGE_LOCK[stage]):
+        lock = STAGE_LOCK.get(stage)
+        if stage not in want or (lock and manifest.is_locked(seg, lock)):
             continue
         for field in STAGE_FIELDS[stage]:
+            if (stage == "translate" and field == "text_en"
+                    and manifest.keeps_own_subtitle(seg)):
+                continue
             if seg.pop(field, None) is not None:
                 dropped.add(field)
-    from . import keep as keep_mod
-
-    undo = {"translate": ("mt_failed", "tts_failed"), "tts": ("tts_failed",)}
     for stage in ("translate", "tts"):
-        if (stage in want and seg.get("keep_reason") in undo[stage]
-                and seg.get("passthrough") is not True
-                and (keep_mod.user_wants_dub(seg)
-                     or not manifest.is_locked(seg, "keep"))):
-            seg["keep"], seg["keep_reason"] = False, None
+        if stage in want:
+            manifest.undo_pipeline_keep(seg, manifest.PIPELINE_KEEPS[stage])
     return dropped
 
 
@@ -244,19 +250,28 @@ def set_keep(m: dict[str, Any], uid: str, keep: bool,
     seg = _require(m, uid)
     seg["keep"] = bool(keep)
     seg["keep_reason"] = reason if keep else None
-    if reason == MANUAL_REASON or not keep:
-        # One concept, one key: the user's own verdict is also the pipeline's
-        # `passthrough` override, so a headless re-run honours it identically
-        # (segments.apply_passthrough) and it survives re-segmentation
-        # (carry_passthrough). Reason-specific keeps (a bug triage flipping
-        # tts_failed, say) stay out of it — those are not the user's verdict
-        # about the SPAN, only about this attempt.
-        seg["passthrough"] = bool(keep)
+    # One concept, one key: the user's own verdict is also the pipeline's
+    # `passthrough` override, so a headless re-run honours it identically
+    # (segments.apply_passthrough) and it survives re-segmentation
+    # (carry_passthrough). EVERY write through this door carries it, whatever
+    # reason the caller names: the pipeline reads `passthrough`, not the reason
+    # string, so a keep written without it is reverted by the next run — the
+    # user's verdict overruled by a rerun, which is the one thing a lock exists
+    # to prevent. A stage that keeps a segment for its own reasons does not come
+    # through here (it writes `keep_reason` directly).
+    seg["passthrough"] = bool(keep)
     _lock(seg, "keep")
     # The clip is the wrong kind now (a synthesis for a keep, or a slice of the
     # original for a dub), whatever the tts lock said about the old one.
     _unlock(seg, "tts")
     invalidate(m, uid, stages={"translate"})
+    # `invalidate` protects a kept span's subtitle (it is not translate's to
+    # discard) — but this call is the flip itself, and the line it left behind was
+    # written for the other path. Same rule as `segments.apply_passthrough`: it
+    # goes, minus what the user wrote by hand.
+    if keep and not manifest.is_locked(seg, "text_en"):
+        seg.pop("text_en", None)
+        seg.pop("text_mid", None)
     return seg
 
 
@@ -278,6 +293,11 @@ def set_bounds(m: dict[str, Any], uid: str, start: float, end: float) -> dict[st
 
     Segments never overlap and never reorder — `timeline.place` relies on both, and
     a keep's clip is cut from exactly this span.
+
+    No lock is stamped: nothing honours one. Re-running the segments stage rebuilds
+    every span from the words and carries only `passthrough` forward, so a
+    `locked.bounds` promised the user something the next run would quietly break
+    (see `manifest.LOCK_FIELDS`).
     """
     seg = _require(m, uid)
     start, end = round(float(start), 3), round(float(end), 3)
@@ -297,7 +317,6 @@ def set_bounds(m: dict[str, Any], uid: str, start: float, end: float) -> dict[st
         seg["start"], seg["end"] = start, end
         _unlock(seg, "tts")          # a keep clip is cut from the span itself
         invalidate(m, uid, stages={"tts"})
-    _lock(seg, "bounds")
     return seg
 
 
@@ -308,6 +327,11 @@ def set_langs(m: dict[str, Any], uid: str, *, src_lang: str | None = None,
     "This section is actually Arabic", or "translate this bit into French". Both
     change what the translator is asked for, so the translation goes with them.
     Passing "" clears an override and falls back to the run's languages.
+
+    `tgt_lang` reaches the synthesiser too (`tts.Engine.tgt_for`): the line is
+    prepared, cached, spoken and verified in that language. It used to be honoured
+    by the translator alone, so a French line was voiced and ASR-checked as
+    English — it failed verification every time and fell back to keep.
     """
     seg = _require(m, uid)
     changed = False
@@ -337,8 +361,22 @@ def set_tts_opts(m: dict[str, Any], uid: str, **opts: Any) -> dict[str, Any]:
     stage down instead of the edit that caused it. `None` removes an option; no
     options at all removes the whole record, as does a patch that only restates
     the defaults.
+
+    On a segment that is currently a KEEP there is no synthesis call, so the
+    options that only reach one (`SYNTHESIS_ONLY_OPTS`) are refused instead of
+    being stored where they would sit doing nothing — the same rule ttsopts
+    applies to greedy-plus-sampler, one step further out. What does apply to a
+    keep is `speed`, which `tts.keep_clip` bakes into the slice.
     """
     seg = _require(m, uid)
+    if seg.get("keep"):
+        inert = sorted(k for k in opts if k in SYNTHESIS_ONLY_OPTS and opts[k] is not None)
+        if inert:
+            raise EditError(
+                f"{', '.join(inert)}: this segment plays its original audio "
+                f"(keep_reason={seg.get('keep_reason')!r}), so nothing synthesizes it "
+                "and these would do nothing. Un-keep it first (set_keep(keep=False)), "
+                "or set `speed`, which does apply to a kept slice.")
     try:
         current = ttsopts.merge(seg.get("tts_opts"), opts)
     except ValueError as exc:
@@ -445,9 +483,16 @@ def merge(m: dict[str, Any], uid_a: str, uid_b: str) -> str:
     merged["keep_reason"] = (a.get("keep_reason")
                              if merged["keep"] and a.get("keep_reason") == b.get("keep_reason")
                              else (MANUAL_REASON if merged["keep"] else None))
-    for key in ("lang", "src_lang", "tgt_lang", "tts_opts", "passthrough"):
+    for key in ("lang", "src_lang", "tgt_lang", "tts_opts", "detected_lang",
+                "passthrough"):
         if a.get(key) != b.get(key):
             merged.pop(key, None)
+    if merged["keep"] and merged["keep_reason"] == MANUAL_REASON:
+        # The merged span is now a keep the *user* owns, and `passthrough` is the
+        # only carrier of that: it is what a headless re-run honours and the only
+        # thing `carry_passthrough` can re-attach after a re-segmentation. Stamping
+        # the reason without it would invent a keep no later run reproduces.
+        merged["passthrough"] = True
     m["segments"][i:j + 1] = [merged]
     manifest.ensure_uids(m["segments"])
     _renumber(m)
@@ -468,6 +513,9 @@ def _derived(seg: dict[str, Any], *, start: float, end: float, text: str) -> dic
     of it. Dropped, it would survive as far as the next re-segmentation and no
     further — `mark_keep` would re-decide both halves with no override left for
     `carry_passthrough` to re-attach, and the passage would be dubbed again.
+    `detected_lang` rides along for the same reason: it is what the classifier
+    heard over that span, so it still describes every piece of it, and it is what
+    the app reads to suggest passthrough in the first place.
     """
     out: dict[str, Any] = {
         "id": seg.get("id", 0),
@@ -479,7 +527,8 @@ def _derived(seg: dict[str, Any], *, start: float, end: float, text: str) -> dic
         "keep": bool(seg.get("keep")),
         "keep_reason": seg.get("keep_reason") if seg.get("keep") else None,
     }
-    for key in ("lang", "src_lang", "tgt_lang", "tts_opts", "passthrough"):
+    for key in ("lang", "src_lang", "tgt_lang", "tts_opts", "detected_lang",
+                "passthrough"):
         if seg.get(key) is not None:
             out[key] = seg[key]
     return out
@@ -672,10 +721,47 @@ def retranslate(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
     return out
 
 
+class ResynthResult(dict):
+    """`{uid: tts record}` — plus `summary`, how each one actually got there.
+
+    A dict subclass so every existing caller (and the job result the app relays,
+    which is JSON) sees exactly the mapping it always did. The breakdown rides
+    alongside because "synthesized 4 segment(s)" was a lie in two directions: a
+    segment that fell back to its original audio was counted as synthesized, and
+    a placement that could not run was not mentioned at all.
+    """
+
+    def __init__(self, records: dict[str, dict[str, Any]], summary: dict[str, Any]):
+        super().__init__(records)
+        self.summary = dict(summary)
+
+
+def _resynth_message(summary: dict[str, Any],
+                     unvoiced: Sequence[dict[str, Any]] = ()) -> str:
+    """The one line the user reads about the job. Says what happened, not what was asked.
+
+    `unvoiced` rides beside the summary rather than in it: those segments were not
+    a synthesis outcome at all (nothing was translated for them to speak), and the
+    summary's four counts are what every caller reads as the job's result.
+    """
+    parts = [f"synthesized {summary['synthesized']}"]
+    if summary["fell_back"]:
+        parts.append(f"{summary['fell_back']} fell back to the original audio")
+    if summary["kept"]:
+        parts.append(f"{summary['kept']} re-sliced from the original")
+    line = ", ".join(parts)
+    if unvoiced:
+        line += (f" — {len(unvoiced)} still needs a translation "
+                 f"(seg {', '.join(str(s['id']) for s in unvoiced)})")
+    if summary["deferred_placement"]:
+        line += "; placement deferred to the next tts run"
+    return line
+
+
 def resynthesize(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
                  progress: Progress | None = None, device: str | None = None,
-                 model: str | None = None) -> dict[str, dict[str, Any]]:
-    """Re-voice exactly these segments. Returns {uid: tts record}.
+                 model: str | None = None) -> ResynthResult:
+    """Re-voice exactly these segments. Returns {uid: tts record} + a breakdown.
 
     Never silent, as in the stage itself: a segment whose clip cannot be verified
     falls back to its original audio (`keep_reason="tts_failed"`) rather than to
@@ -689,13 +775,19 @@ def resynthesize(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
     keep would hand back the very audio they were replacing — the second half of
     the bug where "Dub it" appears to do nothing. It is left unvoiced and counted,
     and the timeline is deferred rather than built over the hole.
+
+    The fallback and the re-slice *are* failures to synthesize, and so is a
+    re-placement that could not run (`_replace_timeline`), so every one of them is
+    counted (`ResynthResult.summary`) and stated in the final message rather than
+    rolled into a success total the user has no way to check.
     """
     from . import keep as keep_mod
     from . import tts as tts_mod
 
+    counts = {"synthesized": 0, "fell_back": 0, "kept": 0}
     segs = [_require(m, uid) for uid in uids]
     if not segs:
-        return {}
+        return ResynthResult({}, {**counts, "deferred_placement": False})
     out: dict[str, dict[str, Any]] = {}
     unvoiced: list[dict[str, Any]] = []
     _progress(progress, 0.0, f"loading synthesiser for {len(segs)} segment(s)")
@@ -709,6 +801,7 @@ def resynthesize(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
             invalidate(m, seg["uid"], stages={"tts"})
             if seg.get("keep"):
                 record = eng.keep_clip(seg)
+                counts["kept"] += 1
             else:
                 record = eng.clip_for(seg, seg.get("text_en") or "")
                 if record is None:
@@ -720,8 +813,11 @@ def resynthesize(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
                         continue
                     seg["keep"], seg["keep_reason"] = True, "tts_failed"
                     record = eng.keep_clip(seg)
+                    counts["fell_back"] += 1
                     print(f"  edit: seg {seg['id']} unusable → keep original",
                           file=sys.stderr)
+                else:
+                    counts["synthesized"] += 1
             seg["tts"] = record
             out[seg["uid"]] = record
     finally:
@@ -732,13 +828,9 @@ def resynthesize(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
     # which is the never-silent invariant broken by the back door. Rendering the
     # preview stays an explicit action — this restores the manifest, not the video.
     _progress(progress, 0.95, "re-placing the timeline")
-    _replace_timeline(m, workdir)
-    done = f"synthesized {len(out)} of {len(segs)} segment(s)"
-    if unvoiced:
-        done += (f" — {len(unvoiced)} still needs a translation "
-                 f"(seg {', '.join(str(s['id']) for s in unvoiced)})")
-    _progress(progress, 1.0, done)
-    return out
+    summary = {**counts, "deferred_placement": not _replace_timeline(m, workdir)}
+    _progress(progress, 1.0, _resynth_message(summary, unvoiced))
+    return ResynthResult(out, summary)
 
 
 def _replace_timeline(m: dict[str, Any], workdir: Path) -> bool:

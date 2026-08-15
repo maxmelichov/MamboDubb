@@ -937,8 +937,11 @@ def test_resynthesize_does_not_voice_a_locked_dub_that_has_no_line(monkeypatch):
     s = m["segments"][0]
     assert out == {} and "tts" not in s
     assert s["keep"] is False and s["passthrough"] is False
-    assert seen[-1][1] == ("synthesized 0 of 1 segment(s) — 1 still needs a "
-                           "translation (seg 0)")
+    # The message states what happened (`edit._resynth_message`): nothing was
+    # synthesized, one line has no translation to speak, and the placement that
+    # could not run over the hole is said out loud rather than left implied.
+    assert seen[-1][1] == ("synthesized 0 — 1 still needs a translation (seg 0); "
+                           "placement deferred to the next tts run")
 
 
 def test_retranslate_reports_progress(monkeypatch):

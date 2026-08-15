@@ -223,9 +223,21 @@ def apply_passthrough(segments: list[dict[str, Any]]) -> list[int]:
         # word, and this function exists to honour exactly that.
         from . import manifest as manifest_mod
 
-        drop = ("text_mid", "tts", "place") if manifest_mod.is_locked(seg, "text_en")             else ("text_en", "text_mid", "tts", "place")
+        drop = (("text_mid", "tts", "place") if manifest_mod.is_locked(seg, "text_en")
+                else ("text_en", "text_mid", "tts", "place"))
         for field in drop:
             seg.pop(field, None)
+        # The clip is the wrong KIND now (a synthesis under a keep, or a slice of
+        # the original under a dub), so a `locked.tts` on it is answered rather
+        # than left standing over a record that no longer exists — exactly what
+        # `edit.set_keep` does at the studio's own door. Leaving the lock behind
+        # would tell every later run the user approved a clip that is gone.
+        locked = seg.get("locked") or {}
+        locked.pop("tts", None)
+        if locked:
+            seg["locked"] = locked
+        else:
+            seg.pop("locked", None)
         flipped.append(seg["id"])
     return flipped
 

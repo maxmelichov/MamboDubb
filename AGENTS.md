@@ -43,6 +43,11 @@ true, not working around them.
 
 1. **Never silent.** Every segment ends up either dubbed or playing its original audio.
    TTS that cannot be verified falls back to `keep`, never to nothing.
+   And never silent *about* it: a verdict written by a failure path must be as visible
+   and as reversible as the user verdict it overrules. A check that could not run
+   (no verification ASR, no diarization, no speaker embeddings) is recorded in
+   `m["health"]` and repeated in `report.json` (`degraded`, `verify.unverified`) —
+   never rolled into the counts for work that succeeded.
 2. **Never truncated, never overlapping.** `timeline.place()` is the only thing that
    decides where audio goes, and it asserts non-overlap and that every clip's slot is at
    least as long as its audio. `mix` *adds* into the output and asserts the span was
@@ -69,7 +74,11 @@ true, not working around them.
 9. **The user's edits outrank the pipeline.** A segment's identity is `uid` (`id` is
    positional and renumbered on every re-segmentation), and a field the user edited by hand
    is flagged in `locked` — no stage rerun regenerates one. Edits go through `dubbing/edit.py`,
-   never by poking the manifest. A stage's *failure* verdict is not exempt: a
+   never by poking the manifest. Only what a rerun can actually honour is lockable
+   (`manifest.LOCK_FIELDS`): placement and span are not, because `timeline.run` and
+   re-segmentation rebuild them wholesale. Every path that undoes a keep the pipeline
+   decided for itself goes through `manifest.undo_pipeline_keep`, so no two of them can
+   disagree about which lock protects it. A stage's *failure* verdict is not exempt: a
    translation that fails on a span the user asked to dub (`keep.user_wants_dub`)
    leaves it visibly unfinished — `keep=false`, no `text_en`, which the editor shows as
    `untranslated` — instead of answering with a keep. A keep written over the user's

@@ -332,11 +332,16 @@ def build_items(m: dict[str, Any]) -> list[dict[str, Any]]:
     items = []
     for seg in sorted(m["segments"], key=lambda s: s["start"]):
         if seg["keep"]:
-            # Kept audio is the original span, so its clip must be exactly that
-            # long. Anything else means the wrong audio is about to be placed.
+            # Kept audio is a slice of THIS span — anything else means the wrong
+            # moment's audio is about to be placed (an id-keyed cache once did
+            # exactly that). What is checked is the span the slice was cut for,
+            # recorded on the clip: with `tts_opts.speed` on a kept segment the
+            # clip is deliberately shorter than its span. Records made before that
+            # was recorded fall back to the duration, i.e. exactly today's check.
             span = seg["end"] - seg["start"]
-            assert abs(float(seg["tts"]["dur"]) - span) < 0.15, (
-                f"seg {seg['id']}: kept clip is {seg['tts']['dur']:.2f}s "
+            cut_for = float(seg["tts"].get("span", seg["tts"]["dur"]))
+            assert abs(cut_for - span) < 0.15, (
+                f"seg {seg['id']}: kept clip was cut for {cut_for:.2f}s "
                 f"but its source span is {span:.2f}s"
             )
         items.append({
@@ -359,6 +364,7 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
     items = build_items(m)
     by_index = {it["id"]: i for i, it in enumerate(items)}
     spoken: dict[int, str] = {}   # segment id -> shortened line actually voiced
+    refused: dict[int, str] = {}  # segment id -> why its rescue was abandoned
     places = place(items, rates, media_end)
 
     for _round in range(SHORTEN_ROUNDS):
@@ -387,12 +393,26 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
             items[j]["shortened"] = True   # attempted at most once per segment
         if not requests:
             break
-        texts = shorten_many([(by_id[i], n) for i, n in requests.items()]) or {}
-        texts = {i: t for i, t in texts.items() if t}
+        asked = shorten_many([(by_id[i], n) for i, n in requests.items()]) or {}
+        texts = {i: t for i, t in asked.items() if t}
+        # The translator refusing to shorten is already logged where it happens
+        # (cli.shorten_many); record it here so the drifted line is explicable
+        # from report.json alone, not only from a scrollback nobody kept.
+        for seg_id in requests:
+            if not (asked.get(seg_id) or "").strip():
+                refused[seg_id] = "translator-refused"
         if not texts:
             break
         records = resynth_many([(by_id[i], t) for i, t in texts.items()]) or {}
         changed = False
+        for seg_id in texts:
+            if not records.get(seg_id):
+                # A shorter line the synthesiser could not voice. The original
+                # stands (never silent), and it stays late — say so, exactly as
+                # the translator's refusal one branch up does.
+                refused[seg_id] = "synthesis-refused"
+                print(f"  timeline: seg {seg_id} shorten attempted, synthesis "
+                      "refused — original line kept, still drifted", file=sys.stderr)
         for seg_id, record in records.items():
             if not record:
                 continue
@@ -441,9 +461,18 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
         seg = by_id[it["id"]]
         seg["place"] = {"start": p["start"], "end": p["end"],
                         "rate": round(it.get("applied_rate", 1.0), 4),
-                        "drift": p["drift"], "clip": it["clip"]}
+                        "drift": p["drift"], "clip": it["clip"],
+                        # Measured by `place` and, until now, thrown away here:
+                        # a clip still talking past the next speaker's onset is a
+                        # different failure from ordinary lateness, and the module
+                        # docstring promises it is reported rather than hidden.
+                        "overrun": p["overrun"]}
         if it["id"] in spoken:
             seg["place"]["spoken"] = spoken[it["id"]]
+        if it["id"] in refused:
+            # "shorten attempted, and abandoned" — the missing half of the
+            # shortened/drift story in report.json.
+            seg["place"]["shorten"] = refused[it["id"]]
 
     drifts = [p["drift"] for p in final]
     print(f"  timeline: {len(final)} placed, max drift {max(drifts):.2f}s, "

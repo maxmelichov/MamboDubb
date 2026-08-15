@@ -4,6 +4,20 @@ Accounting is a hard gate (a segment is dubbed or kept, nothing else exists).
 Everything else is a warning surfaced to the human: shortened lines, drifted
 placements, and audible stretches of source audio that no transcript word and no
 placement covers — which is exactly the shape the old "dead air at 2:04" bug had.
+
+The other half of that job is accounting for what the run *could not do*, because
+a verdict written by a failure path is exactly the kind that never reaches the
+user otherwise. Four fields exist for it:
+
+* `verify.unverified` — clips no ASR ever heard (the verifier did not load).
+  Never folded into `ok`; the summary says so out loud when nothing was checked.
+* `degraded` — what a stage could not load and what it fell back to
+  (`m["health"]`, written by the stages themselves: diarization, turn
+  refinement, the verify ASR, the reference validator).
+* `overrun`, `shorten_abandoned`, `subtitles_failed` — a drifted line that
+  nothing could rescue, and a kept span showing "…" instead of a subtitle.
+* `stale_locked_clips` — a clip the user approved for a line that has since
+  changed. The pipeline may not replace it and may not pass it off as current.
 """
 
 from __future__ import annotations
@@ -16,6 +30,7 @@ from typing import Any
 import numpy as np
 
 from . import audio, manifest as manifest_mod, timeline, transcript
+from . import tts
 
 SCAN_SR = 16000
 GAP_MIN_SEC = 2.0
@@ -82,12 +97,36 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
                            / max(1, len(s["text_en"].split())), 2),
     } for s in segments if (s.get("place") or {}).get("spoken")]
 
-    verify = {"ok": 0, "soft": 0, "keep": 0}
+    # "unverified" is its own verdict: the clip cleared the length guard and no
+    # ASR ever heard it (dubbing/tts.py, NO_ASR). Counting it as "ok" made a run
+    # with no verifier at all look like a run where everything passed.
+    verify = {"ok": 0, "soft": 0, "keep": 0, "unverified": 0}
     for s in segments:
         verify[s["tts"]["verify"]] = verify.get(s["tts"]["verify"], 0) + 1
 
     drifts = [s["place"]["drift"] for s in segments if s.get("place")]
     rates = [s["place"]["rate"] for s in segments if s.get("place")]
+    overruns = [s["place"]["overrun"] for s in segments
+                if (s.get("place") or {}).get("overrun")]
+    # A rescue that was attempted and abandoned — the missing half of the
+    # shortened/drift story: this line is late because nothing could fix it.
+    abandoned = [{"id": s["id"], "start": s["start"],
+                  "reason": s["place"]["shorten"]}
+                 for s in segments if (s.get("place") or {}).get("shorten")]
+    # A kept span whose subtitle is the translate stage's "…" placeholder: the
+    # translator refused and the viewer gets an ellipsis where a line should be.
+    # (The placeholder is written both by design — a passed-through span has no
+    # translation to show — and by failure; telling the two apart needs a distinct
+    # marker in dubbing/translate.py, which is a follow-up. Counting them is the
+    # visibility that costs nothing meanwhile.)
+    subtitles_failed = [s["id"] for s in kept
+                        if (s.get("text_en") or "").strip() == "…"]
+    # What ran degraded this run, written by the stages themselves.
+    health = dict(m.get("health") or {})
+    # A locked clip whose text has moved on since it was made: the pipeline may
+    # not replace it (the user approved it) and may not pretend it is current.
+    stale_locked = [{"id": s["id"], "uid": s.get("uid")}
+                    for s in segments if tts.clip_text_stale(s)]
     spans = uncovered_spans(workdir / m["files"]["source_wav"], words, segments,
                             float(m["source"]["duration"]))
 
@@ -109,6 +148,12 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
         "unaccounted": unaccounted,
         "verify": verify,
         "shortened": shortened,
+        "shorten_abandoned": abandoned,
+        "subtitles_failed": subtitles_failed,
+        "stale_locked_clips": stale_locked,
+        "degraded": health,
+        "overrun": {"count": len(overruns),
+                    "max": round(max(overruns, default=0.0), 2)},
         "drift": {
             "max": round(max(drifts, default=0.0), 2),
             "mean": round(sum(drifts) / len(drifts), 3) if drifts else 0.0,
@@ -125,9 +170,35 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
     print(f"  {len(segments)} segments: {len(dubbed)} dubbed, {len(kept)} original "
           f"({keep_reasons})", file=sys.stderr)
     print(f"  tts verify: {verify}", file=sys.stderr)
+    if verify["unverified"]:
+        checked = verify["ok"] + verify["soft"]
+        if not checked:
+            print(f"  WARNING: NOT ONE clip was verified — no verification ASR "
+                  f"loaded; {verify['unverified']} dub(s) accepted on length alone",
+                  file=sys.stderr)
+        else:
+            print(f"  WARNING: {verify['unverified']} clip(s) accepted without "
+                  f"verification (of {checked + verify['unverified']} dubbed)",
+                  file=sys.stderr)
+    for name, reason in sorted(health.items()):
+        print(f"  degraded: {name} — {reason}", file=sys.stderr)
     print(f"  drift: max {report['drift']['max']}s, {report['drift']['over_soft']} over "
           f"{timeline.DRIFT_SOFT}s | speed-up on {report['speed']['compressed']} segments "
           f"(max {report['speed']['max']}x)", file=sys.stderr)
+    if overruns:
+        print(f"  overrun: {len(overruns)} clip(s) still talking past the next "
+              f"speaker's onset, worst {report['overrun']['max']}s", file=sys.stderr)
+    for item in abandoned:
+        print(f"    seg {item['id']} @{item['start']:.1f}s shorten attempted, "
+              f"{item['reason']} — original kept, still late", file=sys.stderr)
+    if subtitles_failed:
+        print(f"  subtitles: {len(subtitles_failed)} kept segment(s) show the "
+              f"\"…\" placeholder instead of a line: {subtitles_failed[:10]}",
+              file=sys.stderr)
+    for item in stale_locked:
+        print(f"  CONFLICT: seg {item['id']} has a locked clip made for text that "
+              "has since changed — it speaks the old line (resynthesize it, or "
+              "release the lock)", file=sys.stderr)
     if shortened:
         print(f"  shortened for timing: {len(shortened)} segments", file=sys.stderr)
         for s in shortened:

@@ -32,12 +32,23 @@ STAGE_TAGS = {
     # v35: a segment translates from its OWN language (`translate.segment_langs`),
     # and a failed translation no longer overrules the user's "dub it".
     "translate": "translate/v35",
-    # v15: Hebrew targets synthesize from stressed IPA through the Qwen3-TTS Hebrew
-    # LoRA, and every clip's cache key now carries the adapter and that IPA.
-    "tts": "tts/v15",
-    "timeline": "timeline/v12",
+    # Two lines each claimed tts/v15 for different logic (the Hebrew LoRA vs the
+    # honest-failure records), so the merged tag moves past both.
+    # v16: Hebrew targets synthesize from stressed IPA through the Qwen3-TTS Hebrew
+    # LoRA and every clip's cache key carries the adapter and that IPA; records
+    # carry the text fingerprint and (for keeps) the span and options they were cut
+    # with; "unverified" is its own verdict; and a segment's own `tgt_lang` reaches
+    # synthesis, the cache key and verification.
+    "tts": "tts/v16",
+    # v14: `place` now carries the overrun it measured and why a shortening was
+    # abandoned — report.json's drift story reads from these. (v13 was claimed on
+    # a branch that never landed under that number.)
+    "timeline": "timeline/v14",
     "mix": "mix/v9",
-    "report": "report/v1",
+    # v3: honest failure accounting — verify.unverified, degraded, overrun,
+    # shorten_abandoned, subtitles_failed, stale_locked_clips — alongside the
+    # transcript-origin stamping. (v2 was claimed for the first half alone.)
+    "report": "report/v3",
 }
 
 # Anything not listed here is dropped on save. This is what stops the segment
@@ -73,7 +84,15 @@ SEGMENT_KEYS = {
 # the user's edit outranks the pipeline (docs/APP_ARCHITECTURE.md, Non-negotiables).
 # `text` and `speaker` have no generator to hold off, but the editor records them
 # so a UI can show what was hand-edited.
-LOCK_FIELDS = ("text", "text_en", "tts", "place", "keep", "speaker", "bounds")
+#
+# `place` and `bounds` are deliberately NOT here. Nothing could honour them:
+# placement is all-or-nothing by design (`timeline.run` lays the whole run out in
+# one forward pass and rewrites every `place`, which is what makes non-overlap
+# provable), and re-segmentation rebuilds every span from the words, carrying only
+# `passthrough` forward by time. A lock the pipeline overwrites on the next run is
+# state that lies about the user's edit, so the API rejects it instead — see
+# `edit.set_locked`.
+LOCK_FIELDS = ("text", "text_en", "tts", "keep", "speaker")
 
 
 # Keeps whose `text_en` is written by the translate stage rather than copied from
@@ -86,6 +105,59 @@ SUBTITLED_BY_TRANSLATE = ("foreign", "interjection")
 def is_locked(seg: dict[str, Any], field: str) -> bool:
     """True when the user hand-edited `field` on this segment."""
     return bool((seg.get("locked") or {}).get(field))
+
+
+# A keep the pipeline decided for itself, per stage: the verdicts a rerun of that
+# stage (or of anything upstream of it) is entitled to re-decide. One table, read
+# by `reset_stage`, `edit.invalidate` and `tts.clear_failed_keeps` alike — they
+# undo the same verdict, so they cannot be allowed to disagree about which ones.
+PIPELINE_KEEPS = {"translate": ("mt_failed", "tts_failed"), "tts": ("tts_failed",)}
+
+
+def undo_pipeline_keep(seg: dict[str, Any], reasons: tuple[str, ...]) -> bool:
+    """Reopen a keep the pipeline decided for itself. True when it was undone.
+
+    The single predicate every undo path shares. `locked.keep` is the user
+    answering that verdict — "yes, keep the original here" — and it outranks the
+    rerun, whichever door the rerun came through. Guarding this with any *other*
+    lock (the tts record's, say) is how a user-locked keep ended up silently
+    re-decided on every tts run while `reset_stage` left it alone.
+
+    Two nuances the lock alone gets wrong, so they live here too rather than in
+    one caller:
+
+    * A keep the *user* asked for (`passthrough` True) is never this stage's to
+      reopen, whatever reason string is sitting on it — un-keeping it would leave
+      the manifest disagreeing with itself until the next `apply_passthrough`
+      flipped it back.
+    * A `locked.keep` guarding a value the *pipeline* put there is not the user's
+      verdict at all: a failure keep written over a locked `keep=False` is how a
+      span the user asked to dub stayed kept through every retry. So the undo
+      looks past the lock at what the user actually said
+      (`keep.user_wants_dub`), and old manifests carrying that contradiction
+      repair themselves on first touch.
+    """
+    if seg.get("keep_reason") not in reasons or seg.get("passthrough") is True:
+        return False
+    from . import keep as keep_mod
+
+    if is_locked(seg, "keep") and not keep_mod.user_wants_dub(seg):
+        return False
+    seg["keep"], seg["keep_reason"] = False, None
+    return True
+
+
+def keeps_own_subtitle(seg: dict[str, Any]) -> bool:
+    """True when this keep's `text_en` is the segments stage's, not translate's.
+
+    A kept span still gets a subtitle. For exactly the two kinds in
+    `SUBTITLED_BY_TRANSLATE` that subtitle is a translation, so a translate reset
+    reopens it; every other keep's line belongs to the segments stage and
+    `translate.needs_translation` will never refill it — dropped, it is gone for
+    good. Shared by `reset_stage` (whole run) and `edit.invalidate` (one segment)
+    so the two doors cannot drift apart.
+    """
+    return bool(seg.get("keep")) and seg.get("keep_reason") not in SUBTITLED_BY_TRANSLATE
 
 
 def mint_uid(start: float, end: float, text: str) -> str:
@@ -162,18 +234,17 @@ def reset_stage(m: dict[str, Any], stage: str) -> None:
     # still holds the translation that failed, and a translate reset that skips it
     # (because it looks "kept") re-feeds the same bad text to the new TTS run —
     # the downstream stage is guaranteed to rerun anyway once this one does.
-    undo = {"translate": ("mt_failed", "tts_failed"), "tts": ("tts_failed",)}.get(stage, ())
+    undo = PIPELINE_KEEPS.get(stage, ())
     # A hand-edited field is not this stage's to discard: a global rerun must never
-    # silently overwrite a human correction.
-    lock = {"translate": "text_en", "tts": "tts", "timeline": "place"}[stage]
+    # silently overwrite a human correction. `timeline` has no entry: placement is
+    # all-or-nothing and is never the user's (see LOCK_FIELDS).
+    lock = {"translate": "text_en", "tts": "tts"}.get(stage)
     for seg in m.get("segments") or []:
-        if is_locked(seg, lock):
+        if lock and is_locked(seg, lock):
             continue
-        if seg.get("keep_reason") in undo and not is_locked(seg, "keep"):
-            seg["keep"], seg["keep_reason"] = False, None
+        undo_pipeline_keep(seg, undo)
         for field in fields:
-            if (stage == "translate" and field == "text_en" and seg.get("keep")
-                    and seg.get("keep_reason") not in SUBTITLED_BY_TRANSLATE):
+            if stage == "translate" and field == "text_en" and keeps_own_subtitle(seg):
                 # Structurally kept segments are subtitled by the segments stage;
                 # the keeps whose subtitle comes *from* translate reset with it.
                 continue

@@ -113,11 +113,11 @@ def test_a_line_the_g2p_empties_is_not_synthesized(tmp_path, monkeypatch):
 def test_the_cache_key_carries_the_adapter_and_the_ipa(tmp_path):
     eng = _engine(tmp_path)
     args = ("שלום עולם.", "ref:1.00-4.00", 42, False, DEFAULT)
-    base = eng._cache_key(*args, "ʃalˈom ʔolˈam.")
+    base = eng._cache_key(*args, synth="ʃalˈom ʔolˈam.")
     # A different pronunciation of the same words is a different clip: without this
     # a changed G2P would silently replay audio of the old reading.
-    assert base != eng._cache_key(*args, "ʃalˈom ʔolˈam!")
-    assert base != eng._cache_key(*args, "")
+    assert base != eng._cache_key(*args, synth="ʃalˈom ʔolˈam!")
+    assert base != eng._cache_key(*args, synth="")
 
 
 def test_a_non_hebrew_target_hashes_exactly_as_it_did(tmp_path):
@@ -130,7 +130,7 @@ def test_a_non_hebrew_target_hashes_exactly_as_it_did(tmp_path):
     assert eng._cache_key("some text", "ref:1.00-4.00", 42, False) == want
     # ... and passing a synthesis text (which for en is the same string) is a no-op.
     assert eng._cache_key("some text", "ref:1.00-4.00", 42, False,
-                          DEFAULT, "some text") == want
+                          DEFAULT, synth="some text") == want
 
 
 def test_hebrew_pins_the_checkpoint_the_adapter_fits(tmp_path):
@@ -305,7 +305,9 @@ def test_a_same_language_run_asks_the_timeline_for_no_rewrites(tmp_path):
 def test_the_stage_tags_moved():
     # Hebrew synthesis changes what the tts stage produces, and identity
     # translation changes what translate produces; neither may replay old output.
-    assert manifest.STAGE_TAGS["tts"] == "tts/v15"
+    # v16, not v15: a second line of work claimed v15 for the honest-failure
+    # records, so the merged tag moves past both claims rather than picking one.
+    assert manifest.STAGE_TAGS["tts"] == "tts/v16"
     assert manifest.STAGE_TAGS["translate"] == "translate/v35"
 
 
