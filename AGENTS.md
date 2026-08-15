@@ -69,7 +69,12 @@ true, not working around them.
 9. **The user's edits outrank the pipeline.** A segment's identity is `uid` (`id` is
    positional and renumbered on every re-segmentation), and a field the user edited by hand
    is flagged in `locked` — no stage rerun regenerates one. Edits go through `dubbing/edit.py`,
-   never by poking the manifest.
+   never by poking the manifest. A stage's *failure* verdict is not exempt: a
+   translation that fails on a span the user asked to dub (`keep.user_wants_dub`)
+   leaves it visibly unfinished — `keep=false`, no `text_en`, which the editor shows as
+   `untranslated` — instead of answering with a keep. A keep written over the user's
+   word does not merely overrule them; it contradicts `passthrough`, and the next run's
+   `apply_passthrough` flips it back and re-renders the tail of the run forever.
 10. **An edit reopens the stages whose work it deleted.** Dropping a segment's
     translation, clip or placement while the run still says those stages are done is how
     an edited line ends up silent in a dub the CLI calls up to date. `edit.invalidate`
@@ -107,6 +112,19 @@ since ids are renumbered (`segments.carry_passthrough`).
 ## Language pairs
 
 The pair is `--src` / `--tgt`, and neither half is assumed about the other.
+
+**`--src` is a claim about the video, not about every line in it.**
+`translate.segment_langs` is the one place that decides how far it holds for a
+given segment. Three things know better, in order: the editor's `src_lang` /
+`tgt_lang` override, the span witness `lang`, and the segment's own script —
+which can only *refute* the claim, never replace it, so a Latin line inside a
+Hebrew run comes back with its source **unknown** rather than guessed. Unknown is
+a usable answer: the prompt then names no source language ("Translate the
+following text into German") and the line goes straight to the target instead of
+through a pivot hop premised on a claim just refuted. This is what an
+already-dubbed source needs — told a line of English is Hebrew, the model hands
+the English straight back, the echo guard correctly rejects it, and a perfectly
+translatable segment ends with nothing.
 
 **Hebrew as a target** (`dubbing/hebrew.py`). Qwen3-TTS has ten languages and
 Hebrew is not one of them. A LoRA over the 1.7B Base checkpoint's `talker` adds

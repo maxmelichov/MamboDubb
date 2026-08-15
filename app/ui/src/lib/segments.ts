@@ -7,24 +7,60 @@
 import { Circle, CircleDashed, Diamond, Square, X } from "lucide-react";
 import type { Segment } from "./types";
 
-export type SegmentState = "dubbed" | "kept" | "failed" | "unvoiced" | "untranslated";
+export type SegmentState =
+  | "dubbed"
+  | "kept"
+  | "failed"
+  | "unplaced"
+  | "unvoiced"
+  | "untranslated";
+
+/**
+ * The two things the pipeline calls a failure, and it never calls them that.
+ *
+ * "failed" used to be `tts.verify === "failed"` — a value `dubbing/tts.py` does
+ * not write and never has: the record's `verify` is `"ok"`, `"soft"` or
+ * `"keep"`, and nothing else is in the corpus of a real run. So the Failed chip
+ * counted zero on a run with real failures in it.
+ *
+ * What a failure actually looks like is a *keep the pipeline decided against
+ * itself*: `tts.run` cannot get a usable clip and falls back to the original
+ * audio (`keep_reason="tts_failed"`), or the translator hands back something
+ * that is not the target language (`keep_reason="mt_failed"`). Both are stored
+ * as `keep=true` with the original-audio slice attached — which the UI drew as
+ * a calm green "Kept original", indistinguishable from a line the reviewer
+ * chose to keep. The pipeline's own losses, reported as resolved.
+ *
+ * `edit.invalidate` undoes exactly these two reasons when the stage that set
+ * them is re-run, which is the other half of the argument: the pipeline itself
+ * treats them as "not settled", so the screen must not say they are.
+ */
+export const FAILURE_REASONS = ["tts_failed", "mt_failed"] as const;
+
+export function pipelineFailed(seg: Segment): boolean {
+  return FAILURE_REASONS.includes((seg.keep_reason ?? "") as (typeof FAILURE_REASONS)[number]);
+}
 
 /**
  * Invariant 1 (AGENTS.md) says every segment is either dubbed or plays its
  * original audio — so "failed" is not a normal outcome, it is the pipeline
  * having lost a segment, and it is the thing the reviewer must see first.
  *
- * The last two used to be one state called "pending", returned by a ternary
- * whose two arms were the same word. They are not the same situation and they
- * do not have the same fix: a line with a translation and no clip needs the
- * *voice* run over it, and a line with no translation needs the *translator*.
- * Telling a reviewer "Wait" for both is the row refusing to say which button
- * to press.
+ * Two of the last three used to be one state called "pending", returned by a
+ * ternary whose two arms were the same word, and the third had no name at all.
+ * They are not one situation and they do not have one fix: a line with no
+ * translation needs the *translator*,
+ * a line with a translation and no clip needs the *voice*, and a line with a
+ * clip and no placement needs neither — it needs a *render*. That last one is
+ * the ordinary state of a studio segment between a re-voice and the render
+ * that lays it down, and calling it "Needs voice" sent the bulk button off to
+ * re-synthesize work that was already done.
  */
 export function segmentState(seg: Segment): SegmentState {
-  if (seg.tts?.verify === "failed") return "failed";
+  if (pipelineFailed(seg)) return "failed";
   if (seg.keep) return "kept";
   if (seg.place) return "dubbed";
+  if (seg.tts) return "unplaced";
   return seg.text_en ? "unvoiced" : "untranslated";
 }
 
@@ -46,17 +82,33 @@ export function hasLocks(seg: Segment): boolean {
 }
 
 /**
- * A line that is meant to be dubbed and has nothing to play.
+ * A line that is meant to be dubbed and has nothing in the mix.
  *
- * The two unfinished states, together, because they are one situation from the
- * reviewer's side — "this line will be silent in the mix" — and they have one
- * fix, which is to translate whatever has no text and then voice the lot. It is
- * also the shape a segment is left in by a verdict flip that queued no work:
- * `keep=false`, no `text_en`, no clip, waiting for a job nobody enqueued.
+ * The three unfinished states, together, because they are one situation from
+ * the reviewer's side — "this line will be silent in the output" — and they are
+ * found the same way. It is also the shape a segment is left in by a verdict
+ * flip that queued no work: `keep=false`, no `text_en`, no clip, waiting for a
+ * job nobody enqueued.
+ *
+ * They do *not* share a fix, which is why `needsModelWork` exists below: two of
+ * them want a model and the third only wants the timeline re-laid.
  */
 export function unfinished(seg: Segment): boolean {
   const state = segmentState(seg);
-  return state === "untranslated" || state === "unvoiced";
+  return state === "untranslated" || state === "unvoiced" || state === "unplaced";
+}
+
+/**
+ * Would translating and voicing this line change anything?
+ *
+ * The bulk fix's work set. A synthesized-but-unplaced line answers no: its clip
+ * exists and says the right words, and re-voicing it is a minute of model time
+ * to arrive back where it started — with the placement still missing, because
+ * only a render lays it down. It is the ordinary state after a re-voice with
+ * the render deferred, and it used to be swept into "Needs voice" and redone.
+ */
+export function needsModelWork(seg: Segment): boolean {
+  return segmentState(seg) !== "unplaced";
 }
 
 /**
@@ -125,6 +177,17 @@ export const STATE_META: Record<
     filled: false,
     token: "var(--color-failed)",
   },
+  // Waiting on the *timeline*, not on a model: the clip exists and says the
+  // right words, and the only thing between it and the mix is a render. Same
+  // pending hue as the other two — what is outstanding is still outstanding —
+  // and a distinct word, because the button is a different button.
+  unplaced: {
+    label: "Needs render",
+    short: "Render",
+    icon: Circle,
+    filled: false,
+    token: "var(--color-pending)",
+  },
   unvoiced: {
     label: "Needs voice",
     short: "Voice",
@@ -174,9 +237,17 @@ export function totalDuration(segments: Segment[], hint: number | null): number 
   return Math.max(hint ?? 0, last, 1);
 }
 
-/** Verification worth surfacing: a clone that did not say the right words. */
+/**
+ * Verification worth surfacing: a clone that did not say the right words.
+ *
+ * A keep has nothing to verify — its "clip" is a slice of the original — so the
+ * check short-circuits on it. Except for the two keeps the pipeline decided
+ * against itself: a `tts_failed` line's low overlap is *why* it is a keep, and
+ * suppressing it hid the evidence for the one verdict a reviewer most needs to
+ * check.
+ */
 export function verifyConcern(seg: Segment): "none" | "soft" | "bad" {
-  if (seg.keep) return "none";
+  if (seg.keep && !pipelineFailed(seg)) return "none";
   const overlap = seg.verify?.overlap ?? seg.tts?.overlap;
   if (overlap == null) return "none";
   if (overlap < 0.6) return "bad";
@@ -192,6 +263,51 @@ export function placementConcern(seg: Segment): string[] {
   if (seg.place.rate < 0.85) notes.push(`slowed to ${seg.place.rate.toFixed(2)}x`);
   if (Math.abs(seg.place.drift) > 0.4) notes.push(`drifts ${seg.place.drift.toFixed(2)}s`);
   return notes;
+}
+
+/**
+ * Why a line keeps its original audio, in words a reviewer can read.
+ *
+ * The reasons are `keep_reason` as the pipeline writes it, and the UI used to
+ * print them raw — "Kept because `speaker_en`" — while special-casing exactly
+ * two of them somewhere else. The one that reads worst is the user's own: a
+ * keep made in this app is stored as `manual`, and after a headless re-run the
+ * same decision comes back as `user` (`PASSTHROUGH_REASON` — one concept, one
+ * manifest key), so the app told a user "Kept because user" about a button they
+ * had pressed themselves. Both spellings mean the same thing and it is said
+ * once, here, so the panel and the run summary cannot drift apart again.
+ *
+ * An unknown reason falls through to itself. Inventing a phrase for a value
+ * this file has never seen would be inventing a vocabulary the run's own report
+ * does not use — the raw token is at least searchable.
+ */
+const KEEP_REASONS: Record<string, string> = {
+  // The user's verdict, in both spellings the manifest can hold.
+  user: "you chose this",
+  manual: "you chose this",
+  // The pipeline failing, said plainly. These are the two the Failed state is
+  // derived from, so the phrase has to agree with the chip that found them.
+  tts_failed: "voice failed",
+  mt_failed: "translation failed",
+  // Nothing to dub.
+  foreign: "another language",
+  no_text: "no speech",
+  interjection: "just a sound",
+  // Already the target language, by four different routes.
+  latin: "already in the target language",
+  target_lang: "already in the target language",
+  spoken_target: "already in the target language",
+  speaker_en: "this speaker already speaks it",
+};
+
+export function keepReason(reason: string | null | undefined): string {
+  const key = (reason ?? "").trim();
+  return KEEP_REASONS[key] || key || "no reason recorded";
+}
+
+/** True when the keep is "this is already the target language". */
+export function keptAsTargetLanguage(reason: string | null | undefined): boolean {
+  return KEEP_REASONS[(reason ?? "").trim()] === KEEP_REASONS.latin;
 }
 
 export function neighbours(

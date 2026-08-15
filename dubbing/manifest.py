@@ -29,7 +29,9 @@ STAGE_TAGS = {
     "segments": "segments/v38",
     # v34: a same-language pair (he→he, en→en) translates by identity — the target
     # line is the source line and no translator loads.
-    "translate": "translate/v34",
+    # v35: a segment translates from its OWN language (`translate.segment_langs`),
+    # and a failed translation no longer overrules the user's "dub it".
+    "translate": "translate/v35",
     # v15: Hebrew targets synthesize from stressed IPA through the Qwen3-TTS Hebrew
     # LoRA, and every clip's cache key now carries the adapter and that IPA.
     "tts": "tts/v15",

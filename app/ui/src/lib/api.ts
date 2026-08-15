@@ -5,6 +5,7 @@
  */
 
 import { readNdjson } from "./ndjson";
+import { ApiError } from "./apiError";
 import * as fixtures from "./fixtures";
 import { serverBaseUrl } from "./desktop";
 import { isToneUrl, resolveToneUrl } from "./tone";
@@ -12,7 +13,6 @@ import type {
   ApiErrorBody,
   CreateProjectRequest,
   CreateProjectResponse,
-  ErrorCode,
   Health,
   Job,
   Peaks,
@@ -57,23 +57,12 @@ export function apiBase(): string {
 
 const url = (path: string): string => base + path;
 
-/** The server's uniform error body, as a throwable. */
-export class ApiError extends Error {
-  readonly code: ErrorCode;
-  readonly status: number;
-
-  constructor(code: ErrorCode, message: string, status: number) {
-    super(message);
-    this.name = "ApiError";
-    this.code = code;
-    this.status = status;
-  }
-
-  /** `busy` means the one job slot is taken — the caller can retry, not fail. */
-  get isBusy(): boolean {
-    return this.code === "busy";
-  }
-}
+/**
+ * The server's uniform error body, as a throwable. Defined in `./apiError` so
+ * the fixture backend can throw the same class without importing this module
+ * (which imports it) — re-exported here because this is where callers look.
+ */
+export { ApiError };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
@@ -313,10 +302,15 @@ export const api = {
    * silence.
    *
    * `n` is buckets, clamped server-side to [16, 4000].
+   *
+   * The fixture call goes through the *same* catch, deliberately: it was routed
+   * around it, so a missing `dub.wav` resolved to null against the server and
+   * rejected in fixture mode — the one branch this method exists for, tested in
+   * the one mode the smoke test runs, backwards.
    */
   async peaks(name: string, file: PeaksFile, n: number): Promise<Peaks | null> {
-    if (USE_FIXTURES) return fixtures.peaks(name, file, n);
     try {
+      if (USE_FIXTURES) return await fixtures.peaks(name, file, n);
       return await request<Peaks>(
         `/api/projects/${encodeURIComponent(name)}/peaks?file=${file}&n=${Math.round(n)}`,
       );

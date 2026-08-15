@@ -21,6 +21,7 @@ from __future__ import annotations
 import pytest
 
 from dubbing import STAGES, cli, edit, manifest, segments, timeline, translate
+from dubbing import keep as keep_mod
 from dubbing import tts as tts_mod
 
 
@@ -732,6 +733,11 @@ def test_structural_edits_leave_the_list_ordered_and_non_overlapping():
 
 def test_retranslate_calls_generate_per_segment_and_never_the_revision_pass(monkeypatch):
     m = two_segs()
+    # Real source text for the run's own pair: written in Hebrew, so nothing
+    # refutes `--src he` and the hop translates from Hebrew. The placeholder
+    # "aa bb" is Latin, which `translate.segment_langs` reads as evidence that
+    # the run's claim is not true of this particular line.
+    m["segments"][0]["text"] = "שלום עולם"
     a, b = (s["uid"] for s in m["segments"])
     edit.set_text(m, b, text_en="my own corrected line")
     seen = []
@@ -800,6 +806,139 @@ def test_retranslate_falls_back_to_keep_when_the_model_fails(monkeypatch):
     s = m["segments"][0]
     assert s["keep"] and s["keep_reason"] == "mt_failed"
     assert s["text_en"] == s["text"]                  # never silent: it plays original
+
+
+def test_retranslate_translates_a_foreign_line_from_its_own_language(monkeypatch):
+    # A he→de run of a video whose speech is mostly English. `--src` is a claim
+    # about the video; this line's own Latin script refutes it, so the prompt
+    # asserts no source at all and goes straight to German — one hop, not the
+    # he→en→de pivot whose first hop can only produce an echo.
+    m = mk(seg(start=0.0, end=2.0, text="around this table, after the elections."),
+           src_lang="he", tgt_lang="de")
+    uid = m["segments"][0]["uid"]
+    hops = []
+    monkeypatch.setattr(translate, "load", lambda *a, **k: ("p", "m", None))
+    monkeypatch.setattr(translate, "free", lambda model: None)
+    monkeypatch.setattr(translate, "generate",
+                        lambda p, mo, text, **kw: (hops.append((kw["source"], kw["target"]))
+                                                   or "Rund um diesen Tisch."))
+    out = edit.retranslate(m, tmp_workdir(), [uid])
+    assert hops == [("", "de")]
+    assert out == {uid: "Rund um diesen Tisch."}
+    assert m["segments"][0]["text_en"] == "Rund um diesen Tisch."
+    assert m["segments"][0]["keep"] is False
+
+
+def test_retranslate_leaves_a_locked_dub_it_unfinished_and_says_so(monkeypatch):
+    # The user pressed "Dub it", which locks `keep` and writes `passthrough`.
+    # When the translation fails, reverting them restores the audio they were
+    # replacing — so the button appears to do nothing, twice over, since the job
+    # still reported a success. Their verdict stands and the message is honest.
+    m = mk(seg(start=0.0, end=2.0, text="around this table, after the elections.",
+               text_en="stale", keep=True, keep_reason="latin",
+               tts={"clip": "clips/a.wav", "dur": 1.8}),
+           src_lang="he", tgt_lang="de")
+    uid = m["segments"][0]["uid"]
+    edit.set_keep(m, uid, False)
+    monkeypatch.setattr(translate, "load", lambda *a, **k: ("p", "m", None))
+    monkeypatch.setattr(translate, "free", lambda model: None)
+    monkeypatch.setattr(translate, "generate", lambda *a, **k: "")
+    seen = []
+    out = edit.retranslate(m, tmp_workdir(), [uid],
+                           progress=lambda f, msg: seen.append((f, msg)))
+    s = m["segments"][0]
+    assert s["keep"] is False and s["passthrough"] is False   # manifest agrees
+    assert not s.get("text_en")                 # the editor's "untranslated" state
+    assert out == {}                            # nothing translated, nothing claimed
+    assert seen[-1] == (1.0, "translated 0 of 1 segment(s) — 1 failed to translate (seg 0)")
+
+
+def test_retranslate_leaves_a_kept_spans_verdict_alone(monkeypatch):
+    # Retranslating a keep improves its SUBTITLE. Un-keeping it would strand the
+    # user's `passthrough=True` beside `keep=False`, and the next headless run's
+    # `apply_passthrough` would flip it back and delete this translation — an
+    # 11 GB model load thrown away without a word.
+    m = mk(seg(start=0.0, end=2.0, text="גדי איזנקוט", keep=True,
+               keep_reason="manual", passthrough=True, locked={"keep": True}))
+    uid = m["segments"][0]["uid"]
+    monkeypatch.setattr(translate, "load", lambda *a, **k: ("p", "m", None))
+    monkeypatch.setattr(translate, "free", lambda model: None)
+    monkeypatch.setattr(translate, "generate", lambda *a, **k: "Gadi Eisenkot.")
+    edit.retranslate(m, tmp_workdir(), [uid])
+    s = m["segments"][0]
+    assert s["text_en"] == "Gadi Eisenkot."
+    assert s["keep"] is True and s["passthrough"] is True
+    assert keep_mod.apply_passthrough(m["segments"]) == []   # nothing to undo
+
+
+def test_retranslate_still_reopens_the_pipelines_own_failed_keep(monkeypatch):
+    # The one keep a fresh translation does answer: `mt_failed` is the
+    # translator's own verdict about text that is now gone (`invalidate`).
+    m = mk(seg(start=0.0, end=2.0, text="גדי איזנקוט", keep=True,
+               keep_reason="mt_failed", text_en="גדי איזנקוט"))
+    uid = m["segments"][0]["uid"]
+    monkeypatch.setattr(translate, "load", lambda *a, **k: ("p", "m", None))
+    monkeypatch.setattr(translate, "free", lambda model: None)
+    monkeypatch.setattr(translate, "generate", lambda *a, **k: "Gadi Eisenkot.")
+    edit.retranslate(m, tmp_workdir(), [uid])
+    s = m["segments"][0]
+    assert s["keep"] is False and s["keep_reason"] is None
+    assert s["text_en"] == "Gadi Eisenkot."
+
+
+def test_retranslate_repairs_a_failure_keep_written_over_the_users_dub_it(monkeypatch):
+    # The state three real runs are stuck in: keep=True/mt_failed sitting on top
+    # of passthrough=False and a locked keep. The lock was guarding a value the
+    # PIPELINE wrote, so the undo looks past it at what the user said.
+    m = mk(seg(start=0.0, end=2.0, text="In the meeting, the participants tried.",
+               keep=True, keep_reason="mt_failed", passthrough=False,
+               locked={"keep": True},
+               text_en="In the meeting, the participants tried.",
+               tts={"clip": "clips/keep_a.wav", "dur": 2.0}),
+           src_lang="he", tgt_lang="de")
+    uid = m["segments"][0]["uid"]
+    monkeypatch.setattr(translate, "load", lambda *a, **k: ("p", "m", None))
+    monkeypatch.setattr(translate, "free", lambda model: None)
+    monkeypatch.setattr(translate, "generate", lambda *a, **k: "Bei dem Treffen.")
+    edit.retranslate(m, tmp_workdir(), [uid])
+    s = m["segments"][0]
+    assert s["keep"] is False and s["keep_reason"] is None
+    assert s["text_en"] == "Bei dem Treffen." and "tts" not in s
+    assert keep_mod.apply_passthrough(m["segments"]) == []   # no flip left to make
+
+
+def test_resynthesize_does_not_voice_a_locked_dub_that_has_no_line(monkeypatch):
+    # The second half of the same loop: with nothing to speak, the old code
+    # called it a tts failure and handed the segment its original audio back.
+    m = mk(seg(start=0.0, end=2.0, text="around this table."))
+    uid = m["segments"][0]["uid"]
+    edit.set_keep(m, uid, False)
+
+    class FakeEngine:
+        def __init__(self, *a, **kw):
+            pass
+
+        def build_speaker_refs(self):
+            pass
+
+        def clip_for(self, seg, text_en):
+            return None                       # nothing to say
+
+        def keep_clip(self, seg):
+            pytest.fail("a missing translation is not a synthesis failure")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(tts_mod, "Engine", FakeEngine)
+    seen = []
+    out = edit.resynthesize(m, tmp_workdir(), [uid],
+                            progress=lambda f, msg: seen.append((f, msg)))
+    s = m["segments"][0]
+    assert out == {} and "tts" not in s
+    assert s["keep"] is False and s["passthrough"] is False
+    assert seen[-1][1] == ("synthesized 0 of 1 segment(s) — 1 still needs a "
+                           "translation (seg 0)")
 
 
 def test_retranslate_reports_progress(monkeypatch):
@@ -1201,3 +1340,16 @@ def test_clear_downstream_is_the_shared_helper():
     assert manifest.clear_downstream(m, "tts") == ["timeline", "mix", "report"]
     assert set(m["stages"]) == {"translate", "tts"}
     assert "place" not in m["segments"][0]
+
+
+def test_args_reads_the_apps_recorded_options():
+    # The studio app records run settings under source["app_opts"]; reading only
+    # the CLI's flat keys made every app project re-place its timeline with
+    # documentary rules whatever genre was chosen at import.
+    m = mk(seg())
+    m["source"]["app_opts"] = {"genre": "movie", "register": "dialogue"}
+    args = edit._args(m)
+    assert args.genre == "movie" and args.register == "dialogue"
+    # The flat (CLI) spelling wins when both exist.
+    m["source"]["genre"] = "documentary"
+    assert edit._args(m).genre == "documentary"

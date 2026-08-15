@@ -8,7 +8,7 @@ the model is only ever asked to keep already-spelled number-words as words.
 
 from __future__ import annotations
 
-from dubbing import manifest, translate
+from dubbing import keep, manifest, translate
 
 _NARRATION_EN = ("Write full words, no contractions (\"we are\" not "
                  "\"we're\", \"do not\" not \"don't\") so the text-to-speech "
@@ -173,7 +173,9 @@ def test_translate_stage_tag_bumped():
     # register work) — the merged tag moves past both claims.
     # v33: a user keep is subtitled honestly under either of its two names.
     # v34: a same-language pair translates by identity, with no model loaded.
-    assert manifest.STAGE_TAGS["translate"] == "translate/v34"
+    # v35: a segment translates from its OWN language, and a failed translation
+    # no longer overrules the user's "dub it".
+    assert manifest.STAGE_TAGS["translate"] == "translate/v35"
 
 
 # ------------------------------------------------------- per-segment gloss gating
@@ -428,3 +430,125 @@ def test_run_revises_the_finished_script_with_canonical_names(monkeypatch, tmp_p
     assert seen["lines"] == ["Then Jolani spoke first.",
                              "Later Julani replied at length."]
     assert m["segments"][1]["text_en"] == "Later Jolani replied at length."
+
+
+# ------------------------------------------- a segment's own source language
+
+# The bug this section pins: a he→de dub of a video whose speech is mostly
+# ENGLISH (an already-dubbed source). The user flips one English line from
+# "keep" to "Dub it"; the translator is asked for "the following HEBREW text" —
+# the line is English — Gemma hands the English straight back, `_echoes_source`
+# correctly rejects the echo, `generate` gives up, and the segment is answered
+# with a keep that undoes the user's flip and reports success. Observed on
+# outputs/WhatsApp_Video_2026_08_10_at_14_07_11_2, segment 3.
+
+def test_a_latin_line_in_a_hebrew_run_does_not_claim_to_be_hebrew():
+    seg = {"text": "around this table, after the elections in October."}
+    # Script refutes the run's claim, and refuting is all script can do: the
+    # source is left unknown, never guessed at.
+    assert translate.segment_langs(seg, "he", "de") == ("", "de")
+    p = translate._translate_instruction(seg["text"], "", "de")
+    assert "Translate the following text into clear, natural German" in p
+    assert "Hebrew" not in p
+    assert p.endswith(f"Text: {seg['text']}")
+
+
+def test_a_hebrew_line_in_a_hebrew_run_still_says_hebrew():
+    seg = {"text": "מסביב לשולחן הזה"}
+    assert translate.segment_langs(seg, "he", "de") == ("he", "de")
+    p = translate._translate_instruction(seg["text"], "he", "de")
+    assert "Translate the following Hebrew text into clear, natural German" in p
+    assert p.endswith(f"Hebrew: {seg['text']}")
+
+
+def test_the_span_witness_and_the_editor_override_outrank_the_run():
+    assert translate.segment_langs({"text": "hello there", "lang": "en"},
+                                   "he", "de") == ("en", "de")
+    # The user's override wins over the witness, and names the target too.
+    assert translate.segment_langs({"text": "hello there", "lang": "en",
+                                    "src_lang": "fr", "tgt_lang": "ru"},
+                                   "he", "de") == ("fr", "ru")
+
+
+def test_script_only_refutes_when_it_has_something_to_say():
+    # Same-script pair: no signal, so the run's claim stands.
+    assert translate.segment_langs({"text": "hola mundo"}, "en", "es") == ("en", "es")
+    # Too few letters to judge — a number, an interjection, a stray glyph.
+    assert translate.segment_langs({"text": "330,000"}, "he", "de") == ("he", "de")
+    assert translate.segment_langs({"text": "ok."}, "he", "de") == ("he", "de")
+
+
+def test_an_unknown_source_goes_straight_to_the_target():
+    # The pivot's first hop would have to name a language nothing knows.
+    assert translate.pivot_via_english("", "de") is False
+    assert translate.pivot_via_english("he", "de") is True
+    assert translate.pivot_via_english("en", "de") is False
+    # And the leak guard has no source script to hunt for.
+    assert translate._leaks_source_script("Klartext", "", "he") is False
+
+
+def test_run_translates_an_english_line_from_english_not_from_hebrew(monkeypatch,
+                                                                    tmp_path):
+    hops = []
+
+    def fake_generate(tok, mdl, text, *, source, target, **kw):
+        hops.append((text, source, target))
+        return "Rund um diesen Tisch." if target == "de" else "english"
+
+    monkeypatch.setattr(translate, "load", lambda *a, **k: (None, None, None))
+    monkeypatch.setattr(translate, "free", lambda mdl: None)
+    monkeypatch.setattr(translate, "generate", fake_generate)
+    monkeypatch.setattr(translate, "revise_run", lambda *a, **k: [])
+    m = manifest.new({"input": "x", "src_lang": "he", "tgt_lang": "de"})
+    m["segments"] = [
+        {"id": 0, "start": 0.0, "end": 2.0, "speaker": "S0", "keep": False,
+         "keep_reason": None, "text": "around this table, after the elections."},
+        {"id": 1, "start": 2.0, "end": 4.0, "speaker": "S0", "keep": False,
+         "keep_reason": None, "text": "גדי איזנקוט אמר את זה"},
+    ]
+    translate.run(m, tmp_path, source="he", target="de")
+    # The English line goes straight to German, one hop, naming no source.
+    assert hops[0] == ("around this table, after the elections.", "", "de")
+    # The Hebrew one is untouched by the repair: he→de still pivots via English.
+    assert [(s, t) for _, s, t in hops[1:]] == [("he", "en"), ("en", "de")]
+    assert m["segments"][0]["text_en"] == "Rund um diesen Tisch."
+
+
+def test_a_failed_translation_never_overrules_the_users_dub_it():
+    # Both forms of the user's verdict count: `edit.set_keep(False)` writes the
+    # lock and `passthrough` together, and either alone is still them speaking.
+    for verdict in ({"locked": {"keep": True}}, {"passthrough": False}):
+        seg = {"id": 3, "text": "around this table.", "keep": False,
+               "text_en": "stale", "text_mid": "stale", **verdict}
+        assert translate.mark_failed(seg) is False
+        assert seg["keep"] is False
+        assert "text_en" not in seg and "text_mid" not in seg
+    # Unlocked, the pipeline's own "never silent" answer stands unchanged.
+    plain = {"id": 4, "text": "around this table.", "keep": False}
+    assert translate.mark_failed(plain) is True
+    assert plain["keep"] is True and plain["keep_reason"] == "mt_failed"
+    assert plain["text_en"] == plain["text"]
+    # A locked keep=True is the user asking for the original audio: agreeing
+    # with them is not overruling them.
+    kept = {"id": 5, "text": "around this table.", "keep": True,
+            "passthrough": True, "locked": {"keep": True}}
+    assert translate.mark_failed(kept) is True
+
+
+def test_run_leaves_a_locked_dub_untranslated_instead_of_asserting(monkeypatch,
+                                                                  tmp_path):
+    # The flip-flop this ends: keep=True beside passthrough=False is a manifest
+    # that disagrees with itself, and the next run's `apply_passthrough` flips it
+    # back and drops the whole tail of the run — forever, never converging.
+    monkeypatch.setattr(translate, "load", lambda *a, **k: (None, None, None))
+    monkeypatch.setattr(translate, "free", lambda mdl: None)
+    monkeypatch.setattr(translate, "generate", lambda *a, **k: "")
+    monkeypatch.setattr(translate, "revise_run", lambda *a, **k: [])
+    m = manifest.new({"input": "x", "src_lang": "he", "tgt_lang": "de"})
+    m["segments"] = [{"id": 0, "start": 0.0, "end": 2.0, "speaker": "S0",
+                      "text": "מסביב לשולחן", "keep": False, "keep_reason": None,
+                      "passthrough": False, "locked": {"keep": True}}]
+    translate.run(m, tmp_path, source="he", target="de")   # must not assert
+    seg = m["segments"][0]
+    assert seg["keep"] is False and not seg.get("text_en")
+    assert keep.apply_passthrough(m["segments"]) == []      # nothing to flip back

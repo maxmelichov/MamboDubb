@@ -70,8 +70,19 @@ for sid, mutate in (
     if not s:
         continue
     if mutate == "failed":
-        s["tts"] = {"clip": "", "dur": 0.0, "tries": 3, "overlap": 0.31, "verify": "failed"}
-        s["place"] = None
+        # What tts.run actually leaves behind when a clip cannot be verified: a
+        # keep it decided against itself, with a slice of the original audio
+        # attached so the mix is never silent (`Engine.keep_clip`). The record's
+        # `verify` is never "failed" — the pipeline only writes ok/soft/keep,
+        # and a fixture that invented "failed" gave the UI a failure state that
+        # could only ever be reached in fixture mode.
+        s["keep"] = True
+        s["keep_reason"] = "tts_failed"
+        clip = f"clips/{s['uid']}_keep.wav"
+        s["tts"] = {"clip": clip, "dur": round(s["end"] - s["start"], 2),
+                    "tries": 3, "overlap": 1.0, "verify": "keep"}
+        s["place"] = {"start": s["start"], "end": s["end"], "rate": 1.0,
+                      "drift": 0.0, "clip": clip}
         s["verify"] = {
             "ok": False,
             "overlap": 0.31,

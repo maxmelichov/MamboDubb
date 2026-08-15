@@ -126,7 +126,18 @@ def invalidate(m: dict[str, Any], uid: str, *, stages: set[str]) -> set[str]:
 
     A keep this pipeline decided for itself (`mt_failed`, `tts_failed`) is undone
     too, exactly as `manifest.reset_stage` does, so the segment gets another go
-    rather than being stuck on a verdict about text that no longer exists.
+    rather than being stuck on a verdict about text that no longer exists. Only
+    its own, though: a keep the user asked for (`passthrough` True) is theirs, and
+    un-keeping it would leave the manifest disagreeing with itself until the next
+    `apply_passthrough` flipped it back.
+
+    The `keep` lock cuts both ways here. It normally means "the user decided this
+    verdict, leave it", but a failure keep written *over* a locked `keep=False`
+    left the lock guarding a value the pipeline had put there — which is how a
+    span the user asked to dub stayed a keep through every retry. So the undo
+    looks past the lock at what the user actually said (`keep.user_wants_dub`),
+    and old manifests carrying that contradiction repair themselves on first
+    touch.
 
     The run's stage marks come off with the fields (`manifest.reopen_from`, mix and
     report included). Deleting a clip while nine stages still say "done" is how an
@@ -151,10 +162,14 @@ def invalidate(m: dict[str, Any], uid: str, *, stages: set[str]) -> set[str]:
         for field in STAGE_FIELDS[stage]:
             if seg.pop(field, None) is not None:
                 dropped.add(field)
+    from . import keep as keep_mod
+
     undo = {"translate": ("mt_failed", "tts_failed"), "tts": ("tts_failed",)}
     for stage in ("translate", "tts"):
         if (stage in want and seg.get("keep_reason") in undo[stage]
-                and not manifest.is_locked(seg, "keep")):
+                and seg.get("passthrough") is not True
+                and (keep_mod.user_wants_dub(seg)
+                     or not manifest.is_locked(seg, "keep"))):
             seg["keep"], seg["keep_reason"] = False, None
     return dropped
 
@@ -473,18 +488,23 @@ def _derived(seg: dict[str, Any], *, start: float, end: float, text: str) -> dic
 # --------------------------------------------------------------- model work
 
 def _langs(m: dict[str, Any], seg: dict[str, Any]) -> tuple[str, str]:
-    """This segment's (source, target) — per-segment override, then the run's.
+    """This segment's (source, target) — per-segment knowledge, then the run's.
+
+    One rule for both front ends: the choice is `translate.segment_langs`, which
+    the pipeline stage uses too, so a line re-translated from the app takes the
+    same hops it would in a headless run — including the empty source that means
+    "nothing knows what language this line is" (a Latin line inside a Hebrew run).
 
     Normalised through `cli.normalize_lang`, so "iw" and "he" are one language
     here as they are everywhere else — the pair decides whether this segment needs
     a translation at all (`translate.same_language`).
     """
-    from . import cli
+    from . import cli, translate
 
     src = (m.get("source") or {})
-    source = seg.get("src_lang") or seg.get("lang") or src.get("src_lang") or "he"
-    target = seg.get("tgt_lang") or src.get("tgt_lang") or "en"
-    return cli.normalize_lang(source), cli.normalize_lang(target)
+    source, target = translate.segment_langs(seg, src.get("src_lang") or "he",
+                                             src.get("tgt_lang") or "en")
+    return (cli.normalize_lang(source) if source else ""), cli.normalize_lang(target)
 
 
 def _established(m: dict[str, Any], target: str):
@@ -497,17 +517,18 @@ def _established(m: dict[str, Any], target: str):
          for n in translate._name_occurrences(s["text_en"], target)]))
 
 
-def _preceding(m: dict[str, Any], seg: dict[str, Any], pivot: bool, target: str) -> str:
+def _preceding(m: dict[str, Any], seg: dict[str, Any], pivot: bool, target: str,
+               own_pair: bool = False) -> str:
     """The line just before this one, in the language the hop writes.
 
     Same rule as `translate.run`: the previous English intermediate for a pivot's
     first hop, the previous target line for a direct one, and the previous source
-    text when neither is usable. A segment with its own language stands alone —
-    its neighbour spoke a different one and carries no signal.
+    text when neither is usable. A segment off the run's own language pair stands
+    alone — its neighbour spoke a different language and carries no signal.
     """
     from . import translate
 
-    if seg.get("lang") or seg.get("src_lang"):
+    if own_pair or seg.get("lang") or seg.get("src_lang"):
         return ""
     i = index_of(m, seg["uid"])
     if not i:
@@ -534,10 +555,18 @@ def retranslate(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
     spelled in code, the run's established name spellings for consistency — applied
     to these segments only.
 
-    Asking for a specific segment overrides its lock (that is what the button in
-    front of the user means); `respect_locked=True` skips locked lines instead, for
-    a bulk redo. A translation that comes back untranslated keeps the original
-    audio, as in the pipeline.
+    Asking for a specific segment overrides its `text_en` lock (that is what the
+    button in front of the user means); `respect_locked=True` skips locked lines
+    instead, for a bulk redo. What it never overrides is the *verdict*: whether
+    this span is dubbed or plays as recorded belongs to `keep`/`passthrough` and
+    to `invalidate`'s rule about them, not to a new line arriving. A fresh
+    translation of a kept span is a better subtitle for it; a translation that
+    fails keeps the original audio as in the pipeline — unless the user asked for
+    a dub, which stands (`translate.mark_failed`).
+
+    The returned map holds only the segments that came back translated, so its
+    size is the honest count of what this call achieved; the rest is reported on
+    the progress channel and left visibly unfinished.
     """
     from . import numwords, translate
 
@@ -561,10 +590,15 @@ def retranslate(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
         seg["text_en"] = translate._finalize_numbers(
             (seg.get("text") or "").strip(), _langs(m, seg)[1])
         out[seg["uid"]] = seg["text_en"]
-    segs = todo
+    asked, segs = len(segs), todo
     if not segs:
-        _progress(progress, 1.0, f"translated {len(out)} segment(s)")
+        _progress(progress, 1.0, f"translated {len(out)} of {asked} segment(s)")
         return out
+    from . import cli
+
+    run_pair = (cli.normalize_lang((m.get("source") or {}).get("src_lang") or "he"),
+                cli.normalize_lang((m.get("source") or {}).get("tgt_lang") or "en"))
+    failed: list[dict[str, Any]] = []
     _progress(progress, 0.0, f"loading translator for {len(segs)} segment(s)")
     processor, model, device = translate.load()
     try:
@@ -572,7 +606,8 @@ def retranslate(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
             _progress(progress, n / len(segs), f"translating {n + 1}/{len(segs)}")
             source, target = _langs(m, seg)
             pivot = translate.pivot_via_english(source, target)
-            preceding = _preceding(m, seg, pivot, target)
+            preceding = _preceding(m, seg, pivot, target,
+                                   (source, target) != run_pair)
             seg_ctx = translate.relevant_context(context, seg["text"], source)
             mid = ""
             if pivot:
@@ -610,16 +645,30 @@ def retranslate(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
                 seg["text_en"] = text.strip()
                 if pivot:
                     seg["text_mid"] = mid
-                seg["keep"], seg["keep_reason"] = False, None
+                # The verdict is not this call's to change. `invalidate` above
+                # already reopened the one keep a new translation answers — the
+                # pipeline's own `mt_failed` — under the rule that protects the
+                # user's. Writing keep=False here reached past exactly that rule:
+                # it un-kept spans the user had kept, left their `passthrough`
+                # saying the opposite, and the next run's `apply_passthrough`
+                # flipped them back and deleted this translation on the way.
+                out[seg["uid"]] = seg["text_en"]
             else:
-                seg["keep"], seg["keep_reason"] = True, "mt_failed"
-                seg["text_en"] = seg["text"]
-                print(f"  edit: seg {seg['id']} failed to translate → keep original",
+                failed.append(seg)
+                where = ("keep original" if translate.mark_failed(seg)
+                         else "still untranslated (the user asked for a dub)")
+                print(f"  edit: seg {seg['id']} failed to translate → {where}",
                       file=sys.stderr)
-            out[seg["uid"]] = seg["text_en"]
     finally:
         translate.free(model)
-    _progress(progress, 1.0, f"translated {len(out)} segment(s)")
+    # Say what happened. A job that translated nothing and reported "translated 1
+    # segment(s)" is how a line goes round the flip-and-retry loop forever: the
+    # user is told the work is done and hears no change.
+    done = f"translated {len(out)} of {asked} segment(s)"
+    if failed:
+        done += (f" — {len(failed)} failed to translate "
+                 f"(seg {', '.join(str(s['id']) for s in failed)})")
+    _progress(progress, 1.0, done)
     return out
 
 
@@ -633,13 +682,22 @@ def resynthesize(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
     nothing, and a segment that is already a keep gets a fresh slice of the original.
     Asking for a segment overrides its tts lock; the new clip is unlocked, being the
     machine's work again.
+
+    One case is not a synthesis failure at all and must not be dressed as one: a
+    dub with no line to speak, on a span the user asked to dub. Nothing was voiced
+    because nothing was translated (`translate.mark_failed`), and answering with a
+    keep would hand back the very audio they were replacing — the second half of
+    the bug where "Dub it" appears to do nothing. It is left unvoiced and counted,
+    and the timeline is deferred rather than built over the hole.
     """
+    from . import keep as keep_mod
     from . import tts as tts_mod
 
     segs = [_require(m, uid) for uid in uids]
     if not segs:
         return {}
     out: dict[str, dict[str, Any]] = {}
+    unvoiced: list[dict[str, Any]] = []
     _progress(progress, 0.0, f"loading synthesiser for {len(segs)} segment(s)")
     eng = tts_mod.Engine(m, workdir, device=device,
                          model=model or tts_mod.DEFAULT_TTS_MODEL)
@@ -654,6 +712,12 @@ def resynthesize(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
             else:
                 record = eng.clip_for(seg, seg.get("text_en") or "")
                 if record is None:
+                    if (not (seg.get("text_en") or "").strip()
+                            and keep_mod.user_wants_dub(seg)):
+                        unvoiced.append(seg)
+                        print(f"  edit: seg {seg['id']} has no translation to "
+                              f"speak → left unvoiced", file=sys.stderr)
+                        continue
                     seg["keep"], seg["keep_reason"] = True, "tts_failed"
                     record = eng.keep_clip(seg)
                     print(f"  edit: seg {seg['id']} unusable → keep original",
@@ -669,7 +733,11 @@ def resynthesize(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
     # preview stays an explicit action — this restores the manifest, not the video.
     _progress(progress, 0.95, "re-placing the timeline")
     _replace_timeline(m, workdir)
-    _progress(progress, 1.0, f"synthesized {len(out)} segment(s)")
+    done = f"synthesized {len(out)} of {len(segs)} segment(s)"
+    if unvoiced:
+        done += (f" — {len(unvoiced)} still needs a translation "
+                 f"(seg {', '.join(str(s['id']) for s in unvoiced)})")
+    _progress(progress, 1.0, done)
     return out
 
 
@@ -836,9 +904,18 @@ def _args(m: dict[str, Any], **overrides: Any):
     args.tgt = cli.normalize_lang(src.get("tgt_lang") or args.tgt)
     args.duration = src.get("duration_limit")
     args.context = src.get("context")
-    cli.resolve_settings(args, m)
-    if src.get("device") is not None:      # not a recorded setting; the app's alone
-        args.device = src["device"]
+    # The CLI records settings as flat keys; the studio app records the same
+    # settings under source["app_opts"]. Reading only the flat spelling made
+    # every app-created project silently fall back to CLI defaults here — a
+    # "movie" run re-placed its timeline with documentary timing on every
+    # per-line re-voice. Flat wins when both exist (it is the older writer), and
+    # `cli.resolve_settings` fills in whatever neither recorded, exactly as a bare
+    # re-run does, so the two front ends cannot disagree about a run's settings.
+    app_opts = src.get("app_opts") or {}
+    recorded = {**app_opts, **{k: v for k, v in src.items() if v is not None}}
+    cli.resolve_settings(args, {"source": recorded})
+    if recorded.get("device") is not None:   # not a recorded setting; the app's alone
+        args.device = recorded["device"]
     for key, value in overrides.items():
         if not hasattr(args, key):
             raise EditError(f"unknown option {key!r}")
