@@ -30,6 +30,22 @@
  * there is one assignment to `element.src` in the app and it goes through the
  * seam. `playing` deliberately stays the caller's URL — the A/B buttons compare
  * it against `seg.media.*` to decide which side is lit.
+ *
+ * ## A is a window, not a file
+ *
+ * The dub side is a clip file: it starts where it starts and ends where it
+ * ends. The source side is not — it is one segment's *window* of the whole
+ * source track, which the server names with a `#t=start,end` media fragment and
+ * also states outright as `media.source_window`. Neither of them was used. The
+ * element got `el.src = url` and then `el.currentTime = 0`, which fights the
+ * fragment's own seek and wins often enough to start A at 0:00; and nothing
+ * anywhere enforced the fragment's *end*, which browsers honour inconsistently
+ * and jsdom not at all. Pressing A on segment 140 could play the top of the
+ * video and then keep going.
+ *
+ * So the window is enforced here, from the numbers: seek to its start once the
+ * metadata says seeking is possible, and pause at its end on `timeupdate`. The
+ * fragment stays on the URL and is now merely a hint.
  */
 
 import { useSyncExternalStore } from "react";
@@ -37,6 +53,8 @@ import { api } from "./api";
 
 let element: HTMLAudioElement | null = null;
 let playing: string | null = null;
+/** The window `playing` is confined to, or null for a whole-file clip. */
+let window_: [number, number] | null = null;
 
 const listeners = new Set<() => void>();
 
@@ -56,12 +74,21 @@ function audio(): HTMLAudioElement | null {
     playing = null;
     emit();
   });
+  // The window's two edges. Registered once, on the one element, and read from
+  // module state — a listener per press would leak one per press.
+  element.addEventListener("loadedmetadata", () => {
+    if (window_ && element) element.currentTime = window_[0];
+  });
+  element.addEventListener("timeupdate", () => {
+    if (window_ && element && element.currentTime >= window_[1]) stopClip();
+  });
   return element;
 }
 
 /** Stop whatever is sounding. Safe to call when nothing is. */
 export function stopClip(): void {
   element?.pause();
+  window_ = null;
   if (playing !== null) {
     playing = null;
     emit();
@@ -71,11 +98,14 @@ export function stopClip(): void {
 /**
  * Play `url`, or stop if it is already the one playing.
  *
+ * `window` is the span of the file this clip *is* — `media.source_window` for
+ * the source side, absent for a clip file that is already exactly the segment.
+ *
  * A null url is a no-op rather than an error: the callers are buttons whose
  * clip may not exist yet, and they render disabled — this is the belt to that
  * pair of braces.
  */
-export function toggleClip(url: string | null): void {
+export function toggleClip(url: string | null, window?: [number, number] | null): void {
   if (!url) return;
   const el = audio();
   if (!el) return;
@@ -87,8 +117,11 @@ export function toggleClip(url: string | null): void {
   // one a browser can actually fetch. See the note at the top of this file.
   const src = api.audioUrl(url);
   if (!src) return;
+  window_ = window && window[1] > window[0] ? window : null;
   el.src = src;
-  el.currentTime = 0;
+  // The window's start, not zero: `src` may already be seekable (the same file
+  // as last time), in which case no `loadedmetadata` is coming to do it.
+  el.currentTime = window_ ? window_[0] : 0;
   playing = url;
   emit();
   const started = el.play();
