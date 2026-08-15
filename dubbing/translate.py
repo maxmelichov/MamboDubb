@@ -43,11 +43,11 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import queue
 import re
 import subprocess
 import sys
 import threading
-import time
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -58,9 +58,11 @@ from .script import count_letters, is_script, same_script, script_for
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODEL_PATH = REPO_ROOT / "models" / "gemma-4-12B-it-6bit"
 HUB_ID = "mlx-community/gemma-4-12B-it-6bit"
-# Off-Mac backend: the same Gemma 4 12B, bf16 transformers weights, run on CUDA in an
-# isolated venv (see translator/) because the main venv's transformers 4.57.3 pin
-# predates the gemma4_unified architecture.
+# Off-Mac backends: the same Gemma 4 12B, bf16 weights, run on CUDA in an isolated
+# venv (see translator/) because the main venv's transformers 4.57.3 pin predates the
+# gemma4_unified architecture. Two workers live there and speak one protocol vLLM
+# (throughput; Linux only) and plain transformers (the fallback, and the only CUDA
+# option on Windows). See `select_backend`.
 CUDA_MODEL_PATH = REPO_ROOT / "models" / "gemma-4-12b-it-cuda"
 
 # Words whose loss flips a sentence's meaning, per target language. `shorten`
@@ -160,6 +162,8 @@ class WorkerHandle:
                                       env=env)
         self._stderr_tail: deque[str] = deque(maxlen=40)
         self._next_id = 0
+        self._lines: queue.Queue[str | None] = queue.Queue()
+        threading.Thread(target=self._pump_stdout, daemon=True).start()
         threading.Thread(target=self._pump_stderr, daemon=True).start()
         line = self._read_line(ready_timeout)
         try:
@@ -170,6 +174,22 @@ class WorkerHandle:
             self.close()
             raise RuntimeError(f"translator worker sent {line!r} instead of the ready line"
                                f"{self._stderr_note()}")
+
+    def _pump_stdout(self) -> None:
+        """Every reply line, into a queue; `None` marks the pipe closing.
+
+        A thread rather than `select` on the pipe, because the two disagree about
+        where a line is. `select` answers about the *file descriptor*, while
+        `readline` reads from Python's decoding buffer above it and a worker that
+        writes several replies at once (a batch) has them all pulled into that
+        buffer by the first read. `select` then reports "nothing to read" on a
+        drained fd while three answers sit one layer up, and the parent waits out
+        its full timeout with the replies already in hand. Reading eagerly puts
+        the line boundary in one place instead of two.
+        """
+        for line in self._proc.stdout:
+            self._lines.put(line)
+        self._lines.put(None)
 
     def _pump_stderr(self) -> None:
         for line in self._proc.stderr:
@@ -182,38 +202,36 @@ class WorkerHandle:
         return f"; recent worker stderr:\n{tail}" if tail else ""
 
     def _read_line(self, timeout: float) -> str:
-        import select
+        """The next reply line. Raises on timeout and on a worker that died."""
+        try:
+            line = self._lines.get(timeout=timeout)
+        except queue.Empty:
+            raise RuntimeError(f"translator worker: no response within {timeout:.0f}s"
+                               f"{self._stderr_note()}") from None
+        if line is None:                     # stdout closed: the worker is gone
+            try:
+                self._proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            self._lines.put(None)            # every later read fails the same way
+            raise RuntimeError(f"translator worker died (exit {self._proc.returncode})"
+                               f"{self._stderr_note()}")
+        return line
 
-        deadline = time.monotonic() + timeout
-        while True:
-            left = deadline - time.monotonic()
-            if left <= 0:
-                raise RuntimeError(f"translator worker: no response within {timeout:.0f}s"
-                                   f"{self._stderr_note()}")
-            readable, _, _ = select.select([self._proc.stdout], [], [], min(left, 1.0))
-            if readable:
-                line = self._proc.stdout.readline()
-                if line:
-                    return line
-                self._proc.poll()
-                raise RuntimeError(f"translator worker died (exit {self._proc.returncode})"
-                                   f"{self._stderr_note()}")
-            if self._proc.poll() is not None:
-                raise RuntimeError(f"translator worker died (exit {self._proc.returncode})"
-                                   f"{self._stderr_note()}")
+    def _write(self, msg: dict) -> None:
+        try:
+            self._proc.stdin.write(json.dumps(msg, ensure_ascii=False) + "\n")
+            self._proc.stdin.flush()
+        except (BrokenPipeError, OSError) as exc:
+            raise RuntimeError(f"translator worker pipe closed: {exc}"
+                               f"{self._stderr_note()}") from exc
 
     def request(self, user_text: str, max_new_tokens: int,
                 timeout: float = 600.0) -> str:
         self._next_id += 1
         rid = self._next_id
-        msg = json.dumps({"id": rid, "user_text": user_text,
-                          "max_new_tokens": max_new_tokens}, ensure_ascii=False)
-        try:
-            self._proc.stdin.write(msg + "\n")
-            self._proc.stdin.flush()
-        except (BrokenPipeError, OSError) as exc:
-            raise RuntimeError(f"translator worker pipe closed: {exc}"
-                               f"{self._stderr_note()}") from exc
+        self._write({"id": rid, "user_text": user_text,
+                     "max_new_tokens": max_new_tokens})
         reply = json.loads(self._read_line(timeout))
         if reply.get("error"):
             raise RuntimeError(f"translator worker error: {reply['error']}")
@@ -221,6 +239,45 @@ class WorkerHandle:
             raise RuntimeError(f"translator worker desynced: sent id {rid}, "
                                f"got {reply.get('id')!r}")
         return reply.get("text") or ""
+
+    def request_many(self, items: list[tuple[str, int]],
+                     timeout: float = 900.0) -> list[str]:
+        """Answer several independent prompts in one round trip. Order preserved.
+
+        The whole reason the vLLM backend exists: it batches continuously, so N
+        prompts submitted together cost far less than N submitted one after the
+        other. The transformers worker understands the same message and simply
+        decodes them in turn, so a caller never has to know which worker it got.
+
+        Replies are matched by id and may arrive in any order a batched engine
+        finishes short prompts first and reordering them back here is what keeps
+        that invisible. An error on any item fails the whole call: these are
+        independent prompts, and a caller silently receiving one blank of N is
+        the failure mode this protocol's ids exist to prevent.
+        """
+        if not items:
+            return []
+        if len(items) == 1:
+            return [self.request(items[0][0], items[0][1], timeout=timeout)]
+        reqs = []
+        for user_text, max_new_tokens in items:
+            self._next_id += 1
+            reqs.append({"id": self._next_id, "user_text": user_text,
+                         "max_new_tokens": int(max_new_tokens)})
+        self._write({"batch": reqs})
+        pending = {r["id"] for r in reqs}
+        got: dict[int, str] = {}
+        while pending:
+            reply = json.loads(self._read_line(timeout))
+            if reply.get("error"):
+                raise RuntimeError(f"translator worker error: {reply['error']}")
+            rid = reply.get("id")
+            if rid not in pending:
+                raise RuntimeError(f"translator worker desynced: batch expected one of "
+                                   f"{sorted(pending)}, got {rid!r}")
+            pending.discard(rid)
+            got[rid] = reply.get("text") or ""
+        return [got[r["id"]] for r in reqs]
 
     def close(self) -> None:
         try:
@@ -930,10 +987,102 @@ def _mlx_available() -> bool:
     return True
 
 
-def _worker_cmd() -> list[str]:
-    """Launch line for the CUDA worker, through its own uv project venv."""
-    return ["uv", "run", "--project", str(REPO_ROOT / "translator"), "python",
-            str(REPO_ROOT / "translator" / "worker.py"), str(CUDA_MODEL_PATH)]
+_VLLM_INSTALLED: bool | None = None
+
+
+def _vllm_installed() -> bool:
+    """True when the translator venv carries vLLM (the `vllm` extra was synced).
+
+    Deliberately a filesystem look, not an import: vllm must never be imported
+    into the main venv (it pins its own torch, which is exactly why the worker
+    lives in another venv), and spawning `uv run … -c "import vllm"` to ask would
+    cost a venv resolution on a question asked before every load. The answer is
+    cached for the process a sync mid-run is not a case worth serving.
+
+    Both venv layouts are checked (`lib/python*/site-packages` on POSIX,
+    `Lib/site-packages` on Windows) so the probe is the same code everywhere,
+    even though the answer on Windows is always False for want of wheels.
+    """
+    global _VLLM_INSTALLED
+    if _VLLM_INSTALLED is None:
+        venv = REPO_ROOT / "translator" / ".venv"
+        _VLLM_INSTALLED = any(venv.glob(pattern) for pattern in
+                              ("lib/python*/site-packages/vllm/__init__.py",
+                               "Lib/site-packages/vllm/__init__.py"))
+    return _VLLM_INSTALLED
+
+
+def _cuda_count() -> int:
+    try:
+        import torch
+
+        return int(torch.cuda.device_count())
+    except Exception:
+        return 0
+
+
+def _vllm_available() -> bool:
+    """True when the vLLM backend can actually run here.
+
+    Three conditions, all cheap: the extra is synced into the translator venv,
+    the platform is Linux (vLLM publishes no Windows wheels the transformers
+    worker is the only CUDA backend there), and a CUDA device exists at all.
+    """
+    return _vllm_installed() and sys.platform.startswith("linux") and _cuda_count() > 0
+
+
+BACKENDS = ("mlx", "vllm", "transformers")
+BACKEND_ENV = "DUBBING_TRANSLATOR_BACKEND"
+
+
+def select_backend(forced: str, mlx_ok: bool, vllm_ok: bool) -> str:
+    """Which translation backend to load. Pure the probes are the caller's job.
+
+    Order, when nothing is forced: MLX (a Mac, or anywhere mlx_lm imports) → the
+    vLLM worker (Linux with the extra synced and a CUDA device) → the
+    transformers worker. The last one is the floor rather than a fourth "cpu"
+    backend because it already *is* the CPU path: `translator/worker.py` picks
+    cuda:0 when torch sees a GPU and cpu when it does not, so a box with no CUDA
+    at all lands there and works, slowly.
+
+    `DUBBING_TRANSLATOR_BACKEND` overrides the order outright and is honoured even
+    when the probe says no on purpose: the reason to force a backend is usually
+    that the probe is wrong about this machine, and a forced choice that silently
+    fell back would hide exactly the failure the user asked to see. An
+    unrecognised value is a typo, not a backend: it warns and auto-selects.
+    """
+    want = (forced or "").strip().lower()
+    if want in BACKENDS:
+        return want
+    if want not in ("", "auto"):
+        print(f"  translate: unknown {BACKEND_ENV}={forced!r} (expected one of "
+              f"{', '.join(BACKENDS)} or auto) → choosing automatically", file=sys.stderr)
+    if mlx_ok:
+        return "mlx"
+    if vllm_ok:
+        return "vllm"
+    return "transformers"
+
+
+def _backend() -> str:
+    """The backend this machine will use, probes and env override included."""
+    return select_backend(os.environ.get(BACKEND_ENV, ""), _mlx_available(),
+                          _vllm_available())
+
+
+def _worker_cmd(backend: str = "transformers") -> list[str]:
+    """Launch line for a CUDA worker, through the translator uv project venv.
+
+    Both workers share one venv (see translator/pyproject.toml), and `uv run`
+    re-syncs that venv to the extras its own command line names so a launch
+    without `--extra vllm` would uninstall vLLM out from under the next run's
+    probe. The flag therefore follows the *venv's* state, not the chosen backend.
+    """
+    project = REPO_ROOT / "translator"
+    script = "worker_vllm.py" if backend == "vllm" else "worker.py"
+    extra = ["--extra", "vllm"] if _vllm_installed() else []
+    return ["uv", "run", "--project", str(project), *extra, "python",
+            str(project / script), str(CUDA_MODEL_PATH)]
 
 
 def _spare_gpu() -> str | None:
@@ -963,26 +1112,36 @@ def exclusive_device() -> bool:
 
     MLX (unified memory) and a single-GPU CUDA box must alternate the two models;
     a multi-GPU box runs the worker on its own device, so callers can keep both
-    loaded and skip the close/reload dance.
+    loaded and skip the close/reload dance. True of either CUDA worker: vLLM
+    reserves its KV cache up front, which makes sharing a card with TTS *worse*,
+    not better.
     """
-    return _mlx_available() or _spare_gpu() is None
+    return _backend() == "mlx" or _spare_gpu() is None
 
 
 def load(device: str | None = None):
     """Load Gemma 4 12B on whichever backend this machine has.
 
     On a Mac (or anywhere mlx_lm imports): the MLX quant, in-process unchanged.
-    Otherwise: the bf16 transformers weights on CUDA, in a subprocess worker with
-    its own venv (the main venv's transformers 4.57.3 pin predates Gemma 4; see
-    translator/). Either way the return shape is the transformers-era
-    (processor, model, device) triple the call sites expect; the worker backend
-    returns (None, WorkerHandle, None) and `_run`/`free` dispatch on the handle.
+    Otherwise a subprocess worker with its own venv (the main venv's transformers
+    4.57.3 pin predates Gemma 4; see translator/), running either vLLM
+    (`worker_vllm.py`, Linux + CUDA + the `vllm` extra synced) or plain
+    transformers (`worker.py`, the fallback that also covers Windows, where vLLM
+    has no wheels, and CPU-only boxes). Either way the return shape is the
+    transformers-era (processor, model, device) triple the call sites expect; the
+    worker backends return (None, WorkerHandle, None) and `_run`/`free` dispatch
+    on the handle.
+
+    Both workers speak one protocol, so nothing above this line changes with the
+    backend and neither do the prompts or the post-processing, which live in this
+    module for exactly that reason. `DUBBING_TRANSLATOR_BACKEND` forces the choice.
 
     A worker holding its own GPU is spawned once and reused: `free` leaves it
     running and `load` hands the live handle back.
     """
     global _WORKER
-    if not _mlx_available():
+    backend = _backend()
+    if backend != "mlx":
         if _WORKER is not None and _WORKER._proc.poll() is None:
             return None, _WORKER, None
         gpu = _spare_gpu()
@@ -990,9 +1149,9 @@ def load(device: str | None = None):
         if gpu is not None:
             env = {**os.environ, "CUDA_VISIBLE_DEVICES": gpu}
             print(f"  translate: CUDA worker pinned to GPU {gpu}", file=sys.stderr)
-        print(f"  translate: starting CUDA worker for {CUDA_MODEL_PATH.name} "
+        print(f"  translate: starting {backend} worker for {CUDA_MODEL_PATH.name} "
               f"(first run builds translator/ venv + loads bf16 weights)", file=sys.stderr)
-        handle = WorkerHandle(_worker_cmd(), env=env, own_gpu=gpu is not None)
+        handle = WorkerHandle(_worker_cmd(backend), env=env, own_gpu=gpu is not None)
         if handle.own_gpu:
             _WORKER = handle
             atexit.register(handle.close)

@@ -17,3 +17,20 @@ dependencies = [
     "accelerate>=1.0",
     "sentencepiece>=0.2",
 ]
+
+# vLLM is an optional throughput backend for this same venv (Linux + CUDA only;
+# there are no Windows wheels, which is why the transformers worker above stays
+# the fallback and is never removed). It fits the base pins rather than fighting
+# them vllm 0.27 wants transformers >= 5.5.3 and its own torch, both inside the
+# ranges the plain worker already accepts so one venv serves both workers.
+#
+#   uv sync --project translator --extra vllm
+#
+# `uv run` re-syncs the venv to whatever extras its command line names, so
+# dropping `--extra vllm` from a launch line would *uninstall* vllm. That is why
+# `dubbing/translate._worker_cmd` adds the flag whenever the extra is present,
+# for either worker, instead of only for the vLLM one.
+[project.optional-dependencies]
+vllm = [
+    "vllm>=0.27",
+]
