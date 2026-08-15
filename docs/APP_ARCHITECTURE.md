@@ -258,7 +258,7 @@ JSON in, JSON out. Errors are uniform, after MamboRambo's `write_error`:
 | GET | `/api/setup/install` | `{running, id, ok, error, tail:[…], check}` — poll it; `check` is a fresh probe once the process exits |
 | GET | `/api/projects` | list run dirs: name, title, langs, duration, stage state, mtime |
 | POST | `/api/projects` | `{source, src_lang, tgt_lang, duration?, name?, context?, genre?, register?, transcript?, tts_model?, dub_foreign?, captions?}` → create dir, enqueue a full run |
-| GET | `/api/projects/{name}` | manifest + report (+`stale`) + stage status + jobs |
+| GET | `/api/projects/{name}` | manifest + report (+`stale`) + `render` (+`stale`/`changed`) + stage status + jobs |
 | PATCH | `/api/projects/{name}` | `{context?, genre?, register?}` → change the run's options (see below); 409 while a job runs |
 | POST | `/api/projects/{name}/run` | run it again — which on a stopped run is a **resume** (see below); 409 while a job runs |
 | GET | `/api/projects/{name}/segments` | the segment list, enriched (see below) |
@@ -268,7 +268,7 @@ JSON in, JSON out. Errors are uniform, after MamboRambo's `write_error`:
 | POST | `/api/projects/{name}/resynthesize` | `{uids:[...]}` → job |
 | POST | `/api/projects/{name}/render` | re-run timeline → mix → report → job |
 | GET | `/api/projects/{name}/events` | **NDJSON progress stream** (see below) |
-| GET | `/api/jobs` , `/api/jobs/{id}` , DELETE `/api/jobs/{id}` | queue state, cancel |
+| GET | `/api/jobs` , `/api/jobs/{id}` , DELETE `/api/jobs/{id}[?batch=1]` | queue state, cancel one job or the whole gesture |
 | GET | `/media/{name}/{path}` | range-capable file serving from the run dir (wav/mp4/srt/json) |
 
 `GET /segments` returns each segment plus fields the UI needs and the manifest does not
@@ -325,6 +325,11 @@ what a UI needs to say "re-voicing 3 lines" and to mark exactly those rows busy;
 declared on the client's `Job` type while only the fixtures ever produced it. Always a
 list, never absent.
 
+`uids` and `batch` ride on the **job frames** too, live and replayed, for the same reason
+`kind` does: a client rebuilds "which rows are busy" and "what would Cancel stop" from the
+frames alone, and a replayed job that omitted them would come back as a job about nothing —
+rows stop pulsing on reload mid-render.
+
 ### Stage status — four values, not two
 
 `stages` (on `GET /api/projects/{name}`, in `summary`, and in the event prelude) is
@@ -345,6 +350,61 @@ parameter, so nothing else on disk could tell a current report from one the mani
 past hours ago. The data is served either way — the numbers were true of the run they
 described — and the UI decides whether to caption them "as of the last render". A report
 written before the stamp existed is `stale: true`: it cannot prove otherwise.
+
+### The video says what it is a render of
+
+The same question, asked about `preview.mp4` — the artifact the user actually watches.
+`mix.run` stamps a run-level `m["render"]` as it writes the file:
+
+```json
+{"at": 1700000000, "fp": "<content_fingerprint>", "segments": {"<uid>": "<digest>"}}
+```
+
+Run-level, not per-segment, so `manifest.save`'s `SEGMENT_KEYS` whitelist leaves it alone;
+written inside `mix.run` rather than at its two call sites so the CLI and the app's
+`rebuild` both get it from the one place that writes the video. `GET /api/projects/{name}`
+turns it into **`render`**:
+
+| field | meaning |
+|---|---|
+| `at` | epoch seconds of that render, or `null` when the run predates the stamp or was never mixed |
+| `stale` | the fingerprint no longer matches the manifest. A missing stamp is `true`, on the same rule as `report.stale` |
+| `changed` | how many lines differ from the ones that render was made of |
+
+`changed` is exact, not an estimate: `manifest.segment_digests` hashes each segment's
+decisions under its `uid`, and `manifest.digest_delta` counts the uids whose digest moved
+(a line added or removed counts once). `id` is excluded from the per-segment digest where
+`content_fingerprint` includes it — `id` is positional and renumbered by every split, so
+keying on it would report the whole tail after a split as changed. Everything else
+whitelisted is in, including fields that never reach the audio: over-reporting costs a
+re-render the user chose, under-reporting hides one they asked for.
+
+`changed` is `0` when there is no stamp to compare against, so a UI must not phrase
+"N lines changed" off a `render` whose `at` is `null` — there, the honest answer is that
+staleness is unknown, not that nothing changed.
+
+### One gesture, one thing to cancel
+
+"Dub these 27" is one decision that becomes two jobs — a `retranslate` and the
+`resynthesize` queued behind it. Cancelling only the first left the second to voice 27
+lines whose translation had just been abandoned: 27 `tts_failed` keeps from one click.
+
+Jobs from one gesture therefore share a **`batch`** id. The pair is enqueued by the client
+(two routes, two POSTs), so the id is minted there and sent on both — `POST /retranslate`
+and `POST /resynthesize` accept an optional `batch` alongside `uids`, and `Job.to_dict`
+exposes it. A lone re-voice from the inspector has `batch: null`.
+
+`DELETE /api/jobs/{id}?batch=1` cancels every non-terminal job sharing that batch and
+returns `{job, cancelled: [...]}`; without the flag it cancels exactly the one job and
+`cancelled` is `null`. **Order is load-bearing**: `cancel_batch` cancels the *queued*
+members first, while the running one still holds the single worker. Killing the running job
+first would free the worker to start the very job the call is trying to stop — the race is
+the disaster itself, not a corner of it.
+
+The other half of the guarantee is in the pipeline: `edit.resynthesize` leaves a line with
+no translation *unvoiced* (`keep` stays `false`, no clip) and says so in its summary, rather
+than recording a `tts_failed` keep. Unfinished is a state the editor shows and offers to
+fix; a keep looks like a decision someone made.
 
 ### Progress: NDJSON, one JSON object per line
 
@@ -374,6 +434,26 @@ jobs that are still **queued or running**. Two rules the client can rely on:
   reconnect resurrects an error bar the user dismissed an hour ago — and the UI reconnects
   on every navigation and every wake from sleep. A finished job's outcome is in
   `GET /api/projects/{name}` (`jobs`), which is where a client that wants history looks.
+
+### What the client derives from the queue, and no longer tracks itself
+
+Two pieces of UI state used to be kept alongside `jobs` and drift from it. Both are now
+derived, and the contract above is what makes that possible.
+
+* **`pendingUids`** — which lines have model work in flight — is every `uid` named by a
+  non-terminal `retranslate`/`resynthesize` job. It was a `busyUids` list primed when a
+  request was sent and cleared by two paths that both fired far too early: any `segment`
+  frame dropped that uid, and *any* job reaching a terminal state emptied the list,
+  including a job about other lines. Measured lifetime was about 100 ms against a re-voice
+  that runs for a minute a line, and a reload cleared it outright. Derived, it lasts as
+  long as the work and survives a reconnect, because the jobs do. `run` and `render` name
+  no lines: they rebuild everything, and marking every row busy says nothing.
+* **`stage`** must ignore `replay: true` frames. Replayed stage frames are a snapshot of
+  all nine stages, so a client that pins its display to the last one it saw reads the
+  ninth — which is how the editor came to announce "Running report · 100%" the instant a
+  re-voice started, over a video minutes out of date. Use them for refetch decisions only.
+  A client should also clear `stage` when a **new** job goes `running`: the previous job's
+  final frame is not the new job's first one, and the gap between them is a model load.
 
 ## Desktop packaging
 

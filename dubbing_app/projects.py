@@ -106,6 +106,35 @@ class Projects:
     # -- derived views -----------------------------------------------------
 
     @staticmethod
+    def render_state(m: dict[str, Any] | None) -> dict[str, Any]:
+        """What `preview.mp4` is a render of: `{at, stale, changed}`.
+
+        `report.stale` says the *numbers* moved on; this says the *video* did, which
+        is the one the user is about to watch. `mix.run` stamps `m["render"]` with the
+        content fingerprint and a per-uid digest at the moment it wrote the file, so:
+
+        * `at`   — epoch seconds of that render, or `None` if the run predates the
+          stamp or was never mixed;
+        * `stale` — the fingerprint no longer matches the manifest. Missing stamp
+          counts as stale, on the same rule as `report.stale`: a file that cannot
+          prove it is current is not shown as if it were;
+        * `changed` — how many lines differ from the ones that render was made of, by
+          `manifest.digest_delta`. Exact, not an estimate of it; `0` when there is no
+          stamp to compare against, which is why the UI must not phrase "N lines
+          changed" off a render with no `at`.
+        """
+        stamp = (m or {}).get("render") or {}
+        at = stamp.get("at")
+        fp = stamp.get("fp")
+        if m is None:
+            return {"at": None, "stale": True, "changed": 0}
+        stale = not (fp and fp == manifest.content_fingerprint(m))
+        changed = manifest.digest_delta(stamp.get("segments"),
+                                        manifest.segment_digests(m)) if stale else 0
+        return {"at": at if isinstance(at, (int, float)) else None,
+                "stale": stale, "changed": changed}
+
+    @staticmethod
     def stage_status(m: dict[str, Any],
                      jobs: list[dict[str, Any]] | None = None) -> dict[str, str]:
         """What each pipeline stage is doing: `done`, `pending`, `running`, `failed`.

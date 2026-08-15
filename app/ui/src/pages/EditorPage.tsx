@@ -78,7 +78,7 @@ import { cn } from "../lib/classNames";
 import { stopClip, toggleClip, useClipPlayback } from "../lib/clipAudio";
 import { isDesktop, revealRunFile } from "../lib/desktop";
 import { FIXTURE_PROJECT } from "../lib/fixtures";
-import { languageName, timecode } from "../lib/format";
+import { languageName, lines, timecode } from "../lib/format";
 import {
   STATE_META,
   hasTranscript,
@@ -318,9 +318,21 @@ export function EditorPage() {
       const work = segs.filter((seg) => needsModelWork(seg) && hasTranscript(seg));
       const uids = work.map((seg) => seg.uid);
       if (uids.length === 0) return;
+      /*
+       * Both jobs wear the same batch id, because they are one decision.
+       *
+       * Only this function knows that: the server sees two POSTs on two routes
+       * and has no way to tell a pair from two unrelated requests a second
+       * apart. Without the id, cancelling the translate left the voice job to
+       * run on lines whose translation had just been abandoned — 27 lines
+       * synthesised from nothing. With it, one DELETE reaches both.
+       */
+      const batch = `b${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
       const untranslated = work.filter((seg) => !(seg.text_en ?? "").trim());
-      if (untranslated.length > 0) await actions.retranslate(untranslated.map((seg) => seg.uid));
-      await actions.resynthesize(uids);
+      if (untranslated.length > 0) {
+        await actions.retranslate(untranslated.map((seg) => seg.uid), batch);
+      }
+      await actions.resynthesize(uids, batch);
     },
     [actions],
   );
@@ -449,6 +461,17 @@ export function EditorPage() {
           const saved = await setVerdict(seg, false, false);
           if (saved) flipped.push(saved);
         }
+        /*
+         * Follow the lines, do not strand the user where they were.
+         *
+         * The gesture only exists on the Kept filter, and it empties it — every
+         * line it flipped has left. So the screen the user was reading became
+         * "Nothing matches" at the exact moment their twenty-seven lines
+         * started being worked on, with no way to watch it happen. Unfinished
+         * is where those lines now are, until the jobs finish and they leave
+         * that too.
+         */
+        if (flipped.length > 0) setFilter("unfinished");
         await queueDubWork(flipped);
       })();
     },
@@ -583,7 +606,27 @@ export function EditorPage() {
   }, [actions, selected, splitAt, step, toggleKeep, transport, transportMode, zoomIn, zoomOut]);
 
   const job = activeJob(state.jobs);
-  const queued = state.jobs.filter((j) => j.status === "queued" && j.id !== job?.id).length;
+
+  /*
+   * What the video on screen is a render of.
+   *
+   * `render.at === null` is a run with no stamp — old, or never mixed — where
+   * `changed` is 0 because there is nothing to compare against. That is why the
+   * "N lines changed" phrasing is guarded on the count rather than on `stale`:
+   * saying "0 lines changed" next to a Render button would be worse than quiet.
+   */
+  const render = project?.render ?? { at: null, stale: false, changed: 0 };
+  const stale = render.stale;
+  const changed = render.changed;
+  // The button counts *lines*, because that is what it would re-render. These
+  // two count *changes*, because they are about what the user did — and "your
+  // last 1 line" is not a phrase anybody says.
+  const edits = changed === 1 ? "change" : `${changed} changes`;
+  const staleNote = stale && changed > 0 ? `rendered before your last ${edits}` : null;
+  const staleBand =
+    stale && changed > 0
+      ? `Mixed before your last ${edits} — Update the video to hear them`
+      : null;
 
   /*
    * When Render has nothing to work with, and when it is not the button it says.
@@ -635,10 +678,22 @@ export function EditorPage() {
             {/* The finished file, one click from the run it came out of. It
                 only exists when the file does. */}
             {project?.outputs.preview ? (
-              <OpenFileButton name={name} path={project.outputs.preview} />
+              <OpenFileButton
+                name={name}
+                path={project.outputs.preview}
+                title={staleNote ?? undefined}
+              />
             ) : null}
+            {/*
+              Quiet when the video is current, loud when it is not.
+              The button was permanently accented, which made "there is work
+              waiting" indistinguishable from "everything is up to date" — the
+              one thing this button is in a position to say. It names the
+              number, because "some edits" is not a reason to spend minutes on a
+              re-encode and "27 lines" is.
+            */}
             <ConfirmButton
-              variant="primary"
+              variant={stale ? "primary" : "secondary"}
               size="sm"
               confirmLabel="Render"
               disabled={renderBlocked != null}
@@ -654,7 +709,11 @@ export function EditorPage() {
               onConfirm={() => void actions.render()}
             >
               <Film className="h-3.5 w-3.5" />
-              Render preview
+              {stale && changed > 0
+                ? `Update the video · ${lines(changed)} changed`
+                : stale && render.at
+                  ? "Update the video"
+                  : "Render preview"}
             </ConfirmButton>
             <RunMenu
               project={project}
@@ -682,11 +741,11 @@ export function EditorPage() {
 
       {/* Renders nothing at all unless there is a job or the stream dropped. */}
       <JobBar
-        job={job}
-        queued={queued}
+        jobs={state.jobs}
         stage={state.stage}
         connected={state.connected}
-        onCancel={(id) => void actions.cancel(id)}
+        log={state.log}
+        onCancel={(id, batch) => void actions.cancel(id, batch)}
       />
       {state.error ? <ErrorBar message={state.error} onDismiss={actions.dismissError} /> : null}
 
@@ -701,7 +760,7 @@ export function EditorPage() {
               segments={segments}
               selectedUid={selectedUid}
               currentTime={transport.currentTime}
-              busyUids={state.busyUids}
+              busyUids={state.pendingUids}
               editing={editing}
               playingUrl={playingUrl}
               query={query}
@@ -741,15 +800,36 @@ export function EditorPage() {
                     stage={state.stage}
                     mode={transportMode}
                     onResume={() => void actions.resume()}
+                    // Two separate questions. The dots are hollow whenever the
+                    // render is behind; the *sentence* appears exactly once —
+                    // the strip below carries it whenever there is a preview to
+                    // be behind, and the placeholder covers the case where
+                    // there is no video to put a strip under.
+                    stale={stale && render.at != null}
+                    staleBand={transportMode === "preview" ? null : staleBand}
                   />
                 }
               />
+              {/*
+                One quiet line under the video, where the thing it is about is.
+                Not a warning colour and not dismissable: it is a fact about the
+                file being played, and it stops being true the moment a render
+                makes it stop being true.
+              */}
+              {staleBand && transportMode === "preview" ? (
+                <p
+                  data-stale-band
+                  className="shrink-0 border-b border-border bg-sunken px-3 py-1.5 text-[11px] text-secondary"
+                >
+                  {staleBand}
+                </p>
+              ) : null}
               {selected ? (
                 <SelectionPanel
                   seg={selected}
                   segments={segments}
                   speakers={Object.keys(project?.speakers ?? {})}
-                  busy={state.busyUids.includes(selected.uid)}
+                  busy={state.pendingUids.includes(selected.uid)}
                   playhead={transport.currentTime}
                   onPatch={(patch) => void actions.patch(selected.uid, patch)}
                   onVerdict={(keep) => void setVerdict(selected, keep)}
@@ -774,10 +854,11 @@ export function EditorPage() {
             total={total}
             currentTime={transport.currentTime}
             selectedUid={selectedUid}
-            busyUids={state.busyUids}
+            busyUids={state.pendingUids}
             pxPerSecond={zoom}
             sourcePeaks={sourcePeaks}
             dubPeaks={dubPeaks}
+            stale={stale && render.at != null}
             splitAt={splitAt}
             onSelect={selectFromTimeline}
             onSeek={transport.seek}
@@ -865,15 +946,22 @@ async function openRunFile(name: string, relPath: string): Promise<void> {
  * and labelled for the environment it is in — "Show in Finder" is a promise a
  * browser tab cannot keep, and "Open" is a weaker one than the shell can.
  */
-function OpenFileButton({ name, path }: { name: string; path: string }) {
+function OpenFileButton(
+  { name, path, title }: { name: string; path: string; title?: string },
+) {
   const desktop = isDesktop();
   return (
     <Button
       size="sm"
+      // When the file is behind the edits, say so on the button that opens it —
+      // this is the last moment before the user watches five minutes of a video
+      // that does not contain the correction they just made.
       title={
-        desktop
-          ? `Show ${path} in Finder`
-          : `Open ${path} in a new tab`
+        title
+          ? `${desktop ? `Show ${path} in Finder` : `Open ${path} in a new tab`} — ${title}`
+          : desktop
+            ? `Show ${path} in Finder`
+            : `Open ${path} in a new tab`
       }
       onClick={() => void openRunFile(name, path)}
     >
@@ -976,7 +1064,7 @@ function RunSummary({
         </div>
       ) : null}
 
-      <GapList gaps={gaps} onSeek={onSeek} />
+      <GapList gaps={gaps} onSeek={onSeek} stale={project?.report?.stale} />
 
       <p className="mt-auto pt-2 text-[11px] leading-relaxed text-muted">
         Pick a line in the script — everything that is true about it, and cannot fit on a row,
@@ -1014,16 +1102,28 @@ function StateTally({ counts }: { counts: Record<SegmentState, number> }) {
 function GapList({
   gaps,
   onSeek,
+  stale = false,
   className,
 }: {
   gaps: { start: number; end: number; duration: number }[];
   onSeek: (time: number) => void;
+  /** These spans were found by the last report, not by the script on screen. */
+  stale?: boolean;
   className?: string;
 }) {
   if (gaps.length === 0) return null;
   return (
     <div className={className}>
-      <Eyebrow className="mb-1.5">Audible, uncovered — {gaps.length}</Eyebrow>
+      {/*
+        A gap list is a finding, and a finding has a date. Splitting a segment
+        closes a gap and re-segmenting opens new ones, and neither shows here
+        until a render re-runs the report — so when the report is behind, the
+        eyebrow says which report these are from rather than implying "now".
+      */}
+      <Eyebrow className="mb-1.5">
+        Audible, uncovered — {gaps.length}
+        {stale ? " · from the last render" : ""}
+      </Eyebrow>
       <p className="mb-1.5 text-[11px] leading-relaxed text-muted">
         Speech here is in the source but no segment claims it, so the dub plays the original.
         Jump to one and listen.
@@ -1089,7 +1189,7 @@ function RunMenu({
     >
       <StateTally counts={counts} />
 
-      <GapList gaps={gaps} onSeek={onSeek} className="mt-3.5" />
+      <GapList gaps={gaps} onSeek={onSeek} stale={project?.report?.stale} className="mt-3.5" />
 
       <Eyebrow className="mt-3.5 mb-1.5">This run</Eyebrow>
       <dl className="flex flex-col gap-0.5 text-[11px] text-muted">
@@ -1432,6 +1532,8 @@ function PreviewPlaceholder({
   stage,
   mode,
   onResume,
+  stale = false,
+  staleBand = null,
 }: {
   project: ProjectDetail | null;
   job: Job | null;
@@ -1439,6 +1541,10 @@ function PreviewPlaceholder({
   /** What the transport is on, so the panel does not promise a clock that is not one. */
   mode: TransportMode;
   onResume: () => void;
+  /** The render is behind the script: the last three stage dots go hollow. */
+  stale?: boolean;
+  /** The sentence, when this panel is the one carrying it — else null. */
+  staleBand?: string | null;
 }) {
   const summary = summarizeStages(project?.stages);
   const working = job != null && (job.status === "running" || job.status === "queued");
@@ -1534,8 +1640,24 @@ function PreviewPlaceholder({
         ) : null}
 
         <div className="mt-3 flex justify-center">
-          <StageTrack stages={project?.stages} current={stage?.stage ?? null} />
+          <StageTrack
+            stages={project?.stages}
+            current={stage?.stage ?? null}
+            stale={stale}
+          />
         </div>
+
+        {/*
+          The same sentence the video area carries, for the case where there is
+          no video to carry it: a run whose preview was deleted, or one still
+          mid-render, is exactly as far behind the script and has nothing else
+          on screen that says so.
+        */}
+        {staleBand && !working ? (
+          <p data-stale-band className="mt-2.5 text-[11px] leading-relaxed text-secondary">
+            {staleBand}
+          </p>
+        ) : null}
       </div>
     </div>
   );

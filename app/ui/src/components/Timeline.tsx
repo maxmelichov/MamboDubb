@@ -80,6 +80,7 @@ export function Timeline({
   pxPerSecond,
   sourcePeaks,
   dubPeaks,
+  stale = false,
   splitAt,
   onSelect,
   onSeek,
@@ -97,6 +98,14 @@ export function Timeline({
   sourcePeaks: Peaks | null;
   /** The finished mix's envelope — null until the mix stage has run. */
   dubPeaks: Peaks | null;
+  /**
+   * The segments have moved on since that envelope was drawn.
+   *
+   * Only the waveform is affected. The marks over it come from the segments and
+   * are as current as the script, which is why the lane dims one and not both —
+   * dimming the whole lane would hide the very edits that made it stale.
+   */
+  stale?: boolean;
   /** The playhead, when it is inside the selected segment — else null. */
   splitAt: number | null;
   onSelect: (uid: string) => void;
@@ -178,8 +187,25 @@ export function Timeline({
         <span data-lane-label className="flex min-h-0 flex-1 items-center border-b border-grid px-2">
           Source
         </span>
-        <span data-lane-label className="flex min-h-0 flex-1 items-center px-2">
-          Output
+        {/*
+          The lane's waveform is the *rendered* audio, so when the render is
+          behind the script the picture is of an older cut. The label says which
+          — the marks on top of it stay live, because they are drawn from the
+          segments and are current.
+        */}
+        <span
+          data-lane-label
+          title={stale ? "Output · last render" : undefined}
+          className="flex min-h-0 flex-1 flex-col justify-center px-2"
+        >
+          <span>Output</span>
+          {/* Stacked, not inline: the gutter is 64px and an inline qualifier
+              wraps into the lane it is labelling. Two deliberate lines fit. */}
+          {stale ? (
+            <span className="mt-0.5 text-[8px] font-semibold leading-none text-muted">
+              last render
+            </span>
+          ) : null}
         </span>
       </div>
 
@@ -236,7 +262,7 @@ export function Timeline({
           </Lane>
 
           <Lane last>
-            <Waveform peaks={dubPeaks} lane="dub" pxPerSecond={pxPerSecond} />
+            <Waveform peaks={dubPeaks} lane="dub" pxPerSecond={pxPerSecond} faded={stale} />
             {segments.map((seg) => {
               const span = placedSpan(seg);
               return (
@@ -343,10 +369,13 @@ function Waveform({
   peaks,
   lane,
   pxPerSecond,
+  faded = false,
 }: {
   peaks: Peaks | null;
   lane: "source" | "dub";
   pxPerSecond: number;
+  /** Drawn from audio the script has moved past — see `Timeline`'s `stale`. */
+  faded?: boolean;
 }) {
   const path = useMemo(() => {
     if (!peaks || peaks.duration <= 0 || peaks.peaks.length === 0) return null;
@@ -370,6 +399,7 @@ function Waveform({
     <svg
       aria-hidden
       data-waveform={lane}
+      data-faded={faded ? "" : undefined}
       viewBox={`0 0 ${peaks.peaks.length} 100`}
       preserveAspectRatio="none"
       /*
@@ -385,7 +415,7 @@ function Waveform({
       className="pointer-events-none absolute left-0 top-2 h-[calc(100%-1rem)] text-muted"
       style={{ width: Math.max(1, peaks.duration * pxPerSecond) }}
     >
-      <path d={path} fill="currentColor" fillOpacity={0.42} />
+      <path d={path} fill="currentColor" fillOpacity={faded ? 0.18 : 0.42} />
     </svg>
   );
 }

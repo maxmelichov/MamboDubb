@@ -21,7 +21,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
-from .errors import invalid, not_found
+from .errors import ApiError, invalid, not_found
 from .events import EventBus, job_event
 
 QUEUED, RUNNING, DONE, FAILED, CANCELLED = "queued", "running", "done", "failed", "cancelled"
@@ -48,6 +48,13 @@ class Job:
     progress: float | None = None
     message: str | None = None
     cancelling: bool = False
+    # Jobs one user gesture created. "Dub these 27" is one decision that becomes a
+    # retranslate and a resynthesize, and cancelling only the first leaves the second
+    # to voice 27 lines that now have nothing to say — the audit's `tts_failed` pile.
+    # The pair is enqueued by the client (two routes, two POSTs), so the id is minted
+    # there and travels on both requests; the server's part is to remember it and to
+    # let one DELETE reach everything wearing it.
+    batch: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "kind": self.kind, "project": self.project,
@@ -59,6 +66,7 @@ class Job:
                 # rows busy, and it was declared on the client's Job type while
                 # only the fixtures ever produced it. Always a list, never absent.
                 "uids": list(self.payload.get("uids") or []),
+                "batch": self.batch,
                 "payload": self.payload}
 
 
@@ -103,11 +111,12 @@ class JobQueue:
 
     # -- api ---------------------------------------------------------------
 
-    def submit(self, kind: str, project: str, payload: dict[str, Any] | None = None) -> Job:
+    def submit(self, kind: str, project: str, payload: dict[str, Any] | None = None,
+               *, batch: str | None = None) -> Job:
         if kind not in KINDS:
             raise invalid(f"unknown job kind {kind!r}")
         job = Job(id=uuid.uuid4().hex[:12], kind=kind, project=project,
-                  payload=dict(payload or {}))
+                  payload=dict(payload or {}), batch=batch or None)
         with self._lock:
             self._jobs[job.id] = job
             self._order.append(job.id)
@@ -152,11 +161,46 @@ class JobQueue:
             self._publish(job)
         return job
 
+    def cancel_batch(self, job_id: str) -> list[Job]:
+        """Cancel `job_id` and every non-terminal job that shares its batch.
+
+        The order is the whole point. `_work` skips a job that is no longer `queued`
+        when it reaches it, so the queued members are cancelled **first**, while the
+        running one still holds the worker; killing the running job first would free
+        the worker to start the very job this call is trying to stop. That race is
+        not theoretical — it is the audit's disaster exactly: cancel the translate,
+        the voice job starts anyway, and 27 lines are synthesised from translations
+        that were never written.
+
+        A job with no batch cancels alone. Members already terminal are skipped
+        rather than raising: half a batch finishing before the user hits Cancel is
+        the normal case, not an error.
+        """
+        job = self.get(job_id)
+        if not job.batch:
+            return [self.cancel(job_id)]
+        current = self.current
+        members = [j for j in self.list(job.project)
+                   if j.batch == job.batch and j.status not in TERMINAL]
+        queued = [j for j in members if j is not current]
+        running = [j for j in members if j is current]
+        cancelled = []
+        for member in queued + running:
+            try:
+                cancelled.append(self.cancel(member.id))
+            except ApiError:
+                continue                          # finished in the gap; nothing to stop
+        return cancelled
+
     # -- worker ------------------------------------------------------------
 
     def _publish(self, job: Job) -> None:
+        # A job frame carries what the job is *about*, not just that it moved: the UI
+        # marks rows busy from the frame it hears first, before any refetch lands.
         self.bus.publish(job.project, job_event(job.id, job.status, job.error,
-                                                kind=job.kind, project=job.project))
+                                                kind=job.kind, project=job.project,
+                                                uids=list(job.payload.get("uids") or []),
+                                                batch=job.batch))
 
     def _work(self) -> None:
         while not self._stop.is_set():

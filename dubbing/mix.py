@@ -21,13 +21,14 @@ buffer in memory.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import soundfile as sf
 
-from . import audio
+from . import audio, manifest
 
 BG_GAIN = 0.68         # music bed level under speech
 DUCK_DUB = 0.86        # bed ducking under a dubbed line (gentle: the bed should
@@ -388,4 +389,12 @@ def run(m: dict[str, Any], workdir: Path) -> None:
     mux(video_path(m, workdir), track, srt, preview, float(m["source"]["duration"]),
         lang=tgt)
     m["outputs"] = {"dub_wav": track.name, "srt": srt.name, "preview": preview.name}
+    # What this preview.mp4 is a render *of*. `report.stale` answers the same question
+    # for the numbers; this answers it for the video, which is the artifact the user
+    # actually watches. Run-level, so `manifest.save`'s segment whitelist leaves it
+    # alone, and stamped here rather than at the call sites so the CLI and the app's
+    # rebuild both get it from the one place that writes the file.
+    m["render"] = {"at": int(time.time()),
+                   "fp": manifest.content_fingerprint(m),
+                   "segments": manifest.segment_digests(m)}
     print(f"  mix: {preview.name}", file=sys.stderr)

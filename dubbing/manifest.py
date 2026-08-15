@@ -306,6 +306,45 @@ def content_fingerprint(m: dict[str, Any]) -> str:
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
 
 
+def segment_digests(m: dict[str, Any]) -> dict[str, str]:
+    """`uid` -> a hash of that one segment's decisions.
+
+    `content_fingerprint` answers "did anything change"; this answers "which lines".
+    An artifact that stores it alongside the fingerprint can say *how many* lines it
+    is behind by, instead of guessing from how many are unfinished — a guess that
+    counts lines which were already unfinished when it was written and never changed.
+
+    `id` is excluded where `content_fingerprint` includes it: it is positional and is
+    renumbered by every split and merge, so keying on it would report every line after
+    an inserted split as changed. `uid` is the identity here and is the key. Every
+    other whitelisted field is in, including ones that do not reach the audio
+    (`locked`): over-reporting a change costs a re-render the user chose, while
+    under-reporting hides one they asked for.
+    """
+    out: dict[str, str] = {}
+    keys = sorted(SEGMENT_KEYS - {"id", "uid"})
+    for seg in m.get("segments") or []:
+        uid = seg.get("uid")
+        if not uid:
+            continue
+        blob = json.dumps({key: seg.get(key) for key in keys},
+                          sort_keys=True, ensure_ascii=False)
+        out[str(uid)] = hashlib.sha1(blob.encode("utf-8")).hexdigest()[:12]
+    return out
+
+
+def digest_delta(before: dict[str, str] | None, after: dict[str, str]) -> int:
+    """How many segments differ between two `segment_digests` maps.
+
+    A uid on one side only counts once — a line that was added or removed since is
+    one line's worth of difference, not two.
+    """
+    if not before:
+        return 0
+    return sum(1 for uid in set(before) | set(after)
+               if before.get(uid) != after.get(uid))
+
+
 def stage_done(
     m: dict[str, Any], workdir: Path, stage: str, fp: str, outputs: list[str]
 ) -> bool:

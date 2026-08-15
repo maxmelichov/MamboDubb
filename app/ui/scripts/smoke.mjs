@@ -1388,8 +1388,80 @@ check(
   "the bulk flip is one PATCH per line, then one translate and one voice for the lot",
   calls().log.slice(beforeBulk).join() === "patch,patch,retranslate,resynthesize",
 );
-check("…and the lines it flipped have left the kept filter", rows().length === 0);
+/*
+ * …and the screen follows the lines instead of emptying under the user.
+ *
+ * The gesture only exists on the Kept filter and it empties it — every line it
+ * flipped has left. The user was left reading "Nothing matches" at the exact
+ * moment their lines started being worked on. Unfinished is where they now are.
+ */
+check(
+  "the filter follows the lines it just flipped",
+  chip("Unfinished").getAttribute("aria-pressed") === "true",
+);
+check("…so the flipped lines are on screen, not an empty state", rows().length >= 2 && !/Nothing matches/.test(root.textContent));
 
+/*
+ * The queue, while it actually has something in it.
+ *
+ * Both halves of the gesture are live here: a re-translate running and a
+ * re-voice queued behind it, sharing a batch. Everything the strip could not
+ * say before is asserted against that state.
+ */
+const stripText = () => document.querySelector("[data-job-strip]")?.textContent ?? "";
+check("the running job names its work and its size", /Re-translating 2 lines/.test(stripText()));
+check("the tail names what is next, not a bare number", /then Re-voicing 2 lines/.test(stripText()));
+check("…and never the old count-with-no-name", !/\+\d+ queued/.test(stripText()));
+
+/*
+ * The rows pulse for as long as the work does.
+ *
+ * `busyUids` was a local list wiped by any job's completion and by every
+ * `segment` frame — measured lifetime about 100 ms against a job that runs for
+ * a minute a line. Derived from the queue, the mark lasts exactly as long as
+ * the job naming those uids does.
+ */
+check(
+  "the lines a job names are marked busy",
+  rows().filter((r) => /animate-pulse/.test(r.className)).length >= 2,
+);
+
+/* The stage strip is not still showing the last job's final frame. */
+check(
+  "a new job does not inherit the finished one's progress",
+  !/Running report/.test(root.textContent),
+);
+
+// The queue opens from the strip that raised the question.
+clickIt(document.querySelector("[data-queue-trigger]"));
+await settle(150);
+const queuePanel = () => document.querySelector("[data-queue-panel]");
+check("clicking the strip opens the queue", queuePanel() != null);
+check(
+  "…listing every job that has not finished, running and queued alike",
+  queuePanel().querySelectorAll("[data-queue-job]").length === 2,
+);
+check(
+  "…each with its own Cancel, so the queued half is reachable",
+  [...queuePanel().querySelectorAll("[data-queue-job]")].every((li) =>
+    [...li.querySelectorAll("button")].some((b) => b.textContent.trim() === "Cancel"),
+  ),
+);
+check(
+  "…and the three costs are written down where the queue is",
+  /about 20 seconds a line/.test(queuePanel().textContent) &&
+    /about a minute a line/.test(queuePanel().textContent) &&
+    /re-encodes the whole file/.test(queuePanel().textContent),
+);
+/* `state.log` has been collected since the first version and never rendered —
+   a failure's actual message went to a variable nobody could read. */
+check("…and the log finally has somewhere to be read", queuePanel().querySelector("[data-queue-log]") != null);
+clickIt(document.querySelector("[data-queue-trigger]"));
+await settle(120);
+check("the queue closes again", queuePanel() == null);
+
+clickIt(chip("Kept"));
+await settle(200);
 setInput(searchBox, "");
 await settle(200);
 check("the rest of the run is still kept", rows().length === 27);
@@ -1398,6 +1470,64 @@ await settle(200);
 check("the Kept chip toggles back off as well", rows().length > 40);
 await settle(2400);
 check("the two jobs it queued drain", document.querySelector("[data-job-strip]") == null);
+
+/*
+ * Cancelling the gesture, not the step — the audit's disaster, made unreachable.
+ *
+ * Cancel the running re-translate and the re-voice queued behind it used to run
+ * anyway, on lines whose translation had just been abandoned: 27 lines
+ * synthesised from nothing, each landing as a `tts_failed` keep. One click, and
+ * the user had said "stop dubbing these". The strip's Cancel could only ever
+ * reach the running job, so the second half was not merely missed — it was
+ * unreachable.
+ */
+clickIt(chip("Kept"));
+await settle(200);
+/* The last kept line that there is something to dub. The four no-transcript
+   lines sort to the end of this filter and "Dub it" on one of them is a verdict
+   flip and nothing else — correctly, there is no source text to translate — so
+   taking the last row outright would be asserting a batch on a line that cannot
+   have one. Same marker the no-transcript check above reads. */
+const batchRow = rows()
+  .filter((r) => !r.textContent.includes("nothing was transcribed here"))
+  .at(-1);
+clickIt(batchRow.querySelector('[aria-label^="Select segment"]'));
+await settle(200);
+const beforeCancel = calls().log.length;
+clickIt([...document.querySelectorAll("aside button")].find((b) => /Dub it/.test(b.textContent)));
+await settle(250);
+check(
+  "one flip queues both halves of the work",
+  calls().log.slice(beforeCancel).join() === "patch,retranslate,resynthesize",
+);
+check("…and both are in the queue", /then Re-voicing 1 line/.test(stripText()));
+
+// Cancel does not act until it knows which was meant.
+clickIt([...document.querySelectorAll("[data-job-strip] button")].find((b) => b.textContent.trim() === "Cancel"));
+await settle(150);
+check(
+  "cancelling a batched job asks which was meant",
+  /Cancel just this, or the whole batch \(1 line\)\?/.test(root.textContent),
+);
+check(
+  "…in the app, never an OS sheet",
+  document.querySelector('[role="dialog"][aria-label="Cancel"]') != null,
+);
+clickIt(dialogButton("The whole batch"));
+await settle(600);
+check(
+  "…and the whole batch stops: nothing is left to voice untranslated lines",
+  document.querySelector("[data-job-strip]") == null,
+);
+/* The proof the disaster is gone: the re-voice never ran, so no line was
+   synthesised from a translation that had just been abandoned. */
+check(
+  "…the queued re-voice never reached the model",
+  calls().log.slice(beforeCancel).join() === "patch,retranslate,resynthesize",
+);
+// Back to the whole run, for the sections below that read it unfiltered.
+clickIt(chip("Kept"));
+await settle(200);
 
 /*
  * The selection panel. It holds everything true *about* a line and no text
@@ -1638,6 +1768,15 @@ clickIt(menu);
 await settle(120);
 check("run health surfaces uncovered speech", /Audible, uncovered/.test(root.textContent));
 check("run health counts the states", /Kept original/.test(root.textContent));
+/*
+ * A gap list is a finding, and by now the script has been edited past the
+ * report that found them: splitting a segment closes a gap and re-segmenting
+ * opens new ones, and neither shows here until a render re-runs the report.
+ */
+check(
+  "the gap list says which render found them",
+  /Audible, uncovered — \d+ · from the last render/.test(root.textContent),
+);
 
 /*
  * "I can't easily open the ready file." Both of the things a finished run is
@@ -1750,10 +1889,47 @@ check(
 );
 
 /*
+ * The header says whether the video is still about the script.
+ *
+ * By this point the run has been edited a dozen times, so `render.stale` is
+ * true and the button is the loud one, naming the number it would re-render.
+ * It is the whole point of the staleness work: a permanently-accented "Render
+ * preview" could not tell "there is work waiting" from "you are up to date".
+ */
+const renderButton = () =>
+  [...document.querySelectorAll("header button")].find((b) => /Render preview|Update the video/.test(b.textContent));
+check("the header offers to update the video, and says how much", /Update the video · \d+ lines? changed/.test(renderButton().textContent));
+check(
+  "…as the accented button, not the quiet one",
+  /bg-accent/.test(renderButton().className),
+);
+check(
+  "the video area says the same thing in words",
+  /Mixed before your last \d+ changes — Update the video to hear them/.test(root.textContent),
+);
+/*
+ * The three stages a render re-runs are drawn hollow — done, but done about
+ * something else. A ring rather than a lighter fill, so the difference is shape
+ * and survives greyscale and colour-blindness.
+ */
+check(
+  "timeline, mix and report are drawn hollow, not simply done",
+  [...document.querySelectorAll('[title$="— from the last render"]')].length === 3,
+);
+check(
+  "the output lane is labelled as the last render",
+  [...document.querySelectorAll("[data-lane-label]")].some((el) => /Output\s*last render/.test(el.textContent)),
+);
+check(
+  "…and its waveform is drawn back, while the marks stay live",
+  document.querySelector('[data-waveform="dub"]')?.hasAttribute("data-faded") === true,
+);
+
+/*
  * Confirmation is themed and local, never `window.confirm` — which is drawn by
  * the OS, blocks the main thread and stops the playhead.
  */
-click("Render preview");
+click("Update the video");
 await settle(150);
 check(
   "a destructive action asks in the app, not in an OS sheet",
@@ -1819,7 +1995,7 @@ check("job clears when done", !/Re-voicing/.test(root.textContent));
  * that has not finished) for exactly this reason, and the fixtures have to do
  * the same or the flow is green here and dead in the app.
  */
-click("Render preview");
+click("Update the video");
 await settle(150);
 [...document.querySelectorAll('[role="dialog"] button')]
   .find((b) => b.textContent === "Render")
@@ -1978,14 +2154,17 @@ check(
 );
 /* Render, meanwhile, is refused with its reason instead of enqueueing a job that
    dies in the mix: there is no source.wav to lay speech over and no duration to
-   lay it against, because fetch never finished. */
-const renderButton = [...document.querySelectorAll("header button")].find((b) =>
-  b.textContent.includes("Render preview"),
-);
-check("Render is refused before the click, not by a job that dies", renderButton.disabled === true);
+   lay it against, because fetch never finished.
+
+   `renderButton()` is the staleness section's helper, re-queried rather than
+   captured: this is a different project on a different screen, and on a run that
+   never mixed the label is the quiet "Render preview" — a run with no render
+   cannot be behind one. */
+check("Render is refused before the click, not by a job that dies",
+      renderButton().disabled === true);
 check(
   "…and says why",
-  /fetch has not finished/.test(renderButton.getAttribute("title") ?? ""),
+  /fetch has not finished/.test(renderButton().getAttribute("title") ?? ""),
 );
 
 const logBefore = calls().log.length;

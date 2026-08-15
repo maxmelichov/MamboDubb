@@ -1,3 +1,15 @@
+/**
+ * `1` → `1 line`, `27` → `27 lines`.
+ *
+ * Small, but it is said in five places about the same number — the header
+ * button, two tooltips, the stale band and the queue — and "1 lines changed",
+ * in the one place a run has a single correction, is exactly where the copy
+ * would be noticed.
+ */
+export function lines(count: number): string {
+  return `${count} ${count === 1 ? "line" : "lines"}`;
+}
+
 /** Timecodes are read against a video, so they are m:ss.d, never seconds. */
 export function timecode(seconds: number, decimals = 1): string {
   if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
