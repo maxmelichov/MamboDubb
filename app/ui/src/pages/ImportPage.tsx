@@ -45,6 +45,7 @@ import {
   PencilLine,
   PlugZap,
   Timer,
+  Workflow,
 } from "lucide-react";
 import { PageShell } from "../components/AppShell";
 import { StageTrack } from "../components/StageTrack";
@@ -91,6 +92,20 @@ const SRC_LANGS = [
   ["es", "Spanish"],
   ["de", "German"],
 ] as const;
+
+// The editor's job bar counts "stage 3 of 9"; this is the same nine, one line
+// each, so a first run is not the first time the user meets their names.
+const PIPELINE_GLANCE: [string, string][] = [
+  ["Fetch", "Downloads the video and pulls its audio."],
+  ["Stems", "Separates the voices from music and effects."],
+  ["Transcript", "Reads the captions, or transcribes locally."],
+  ["Segments", "Cuts the speech into dubbable lines."],
+  ["Translate", "A local model translates every line."],
+  ["Voices", "Clones each speaker saying the translation."],
+  ["Timeline", "Fits every clip into its moment."],
+  ["Mix", "Lays the dub over the original music."],
+  ["Report", "Checks the result and flags what to review."],
+];
 
 const TGT_LANGS = [
   ["en", "English"],
@@ -310,6 +325,32 @@ export function ImportPage() {
               The single cheapest thing on this screen: a sentence of context materially
               improves the translation.
             </p>
+
+            {/* The card's lower half. The context field above stopped
+                pretending to need the whole card, and blank card is not a
+                composition — what fills it is the answer to the question every
+                first run asks at exactly this moment: what is that button about
+                to do, and why will it take a while. `mt-auto` parks it at the
+                card's foot, so the slack lands between it and the context note
+                rather than under the Start band. */}
+            <div className="mt-auto pt-7" data-pipeline-glance>
+              <SectionLabel icon={Workflow}>What a run does — nine stages</SectionLabel>
+              <ol className="mt-3.5 grid gap-x-5 gap-y-3 sm:grid-cols-3">
+                {PIPELINE_GLANCE.map(([stage, does], index) => (
+                  <li key={stage} className="flex gap-2.5">
+                    <span className="font-mono text-[10px] font-bold tabular-nums leading-[1.8] text-muted">
+                      {String(index + 1).padStart(2, "0")}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-[12px] font-semibold text-secondary">{stage}</span>
+                      <span className="mt-0.5 block text-[11px] leading-relaxed text-muted">
+                        {does}
+                      </span>
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            </div>
           </CardSection>
 
           <CardSection
