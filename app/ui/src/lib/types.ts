@@ -97,8 +97,27 @@ export type Segment = {
   text_mid?: string | null;
   keep: boolean;
   keep_reason: string | null;
-  /** third-language keeps: what the span's speech actually is */
-  lang: string | null;
+  /**
+   * Third-language keeps: what the span's speech actually is.
+   *
+   * Optional, because it is absent from 98% of the segments a real run serves —
+   * `manifest.SEGMENT_KEYS` keeps it only where the classifier had something to
+   * say. Declared non-optional, it was a guarantee the server does not make and
+   * a `seg.lang` read that TypeScript swore could not be `undefined`.
+   */
+  lang?: string | null;
+  /**
+   * Advisory: what the language classifier heard over this span. It decides
+   * nothing — it is what an editor reads to *suggest* a passthrough.
+   */
+  detected_lang?: string | null;
+  /**
+   * The user's own verdict about the span, as the pipeline stores it: true =
+   * play the original, false = dub it, absent = decide automatically. Written
+   * by `edit.set_keep` for a manual keep and honoured by a headless re-run
+   * (`segments.apply_passthrough`), which is why a keep made here survives one.
+   */
+  passthrough?: boolean | null;
   src_lang?: string | null;
   tgt_lang?: string | null;
   tts_opts?: TtsOpts | null;
@@ -123,17 +142,28 @@ export type SegmentVerify = {
   tries?: number;
 };
 
-/** Body of `PATCH /segments/{uid}` — mirrors the `dubbing/edit.py` setters. */
+/**
+ * Body of `PATCH /segments/{uid}` — mirrors the `dubbing/edit.py` setters.
+ *
+ * `null` means "not supplied", never "clear" (`app.py::PatchSegment`), which is
+ * why nothing here is nullable: an omitted key is how a field is left alone.
+ * The one way to *remove* a value is `src_lang`/`tgt_lang`, where the empty
+ * string clears the override — a language tag has no other way out, and sending
+ * `null` for it was a dead control.
+ */
 export type SegmentPatch = {
   text?: string;
   text_en?: string;
   keep?: boolean;
+  /** Only read alongside `keep`; the server ignores it on its own. */
   keep_reason?: string;
   speaker?: string;
   start?: number;
   end?: number;
-  src_lang?: string | null;
-  tgt_lang?: string | null;
+  /** "" clears the override and falls back to the run's language. */
+  src_lang?: string;
+  /** "" clears the override and falls back to the run's language. */
+  tgt_lang?: string;
   tts_opts?: TtsOpts;
   locked?: Record<string, boolean>;
 };
@@ -238,7 +268,14 @@ export type Job = {
   stage: Stage | null;
   message: string | null;
   error: string | null;
-  /** for retranslate / resynthesize */
+  /**
+   * FIXTURE-ONLY. `jobs.Job.to_dict` serializes the uid list under `payload`,
+   * never as a top-level `uids`, so against the real server this is `undefined`
+   * every time and nothing in the app may branch on it. The fixture backend is
+   * its only reader — it needs to know which segments to advance while it fakes
+   * a run. Whether the server should promote it (or the UI read
+   * `payload.uids`) is a server-side decision, not a gap to paper over here.
+   */
   uids?: string[];
 };
 
