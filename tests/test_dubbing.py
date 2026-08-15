@@ -1756,3 +1756,26 @@ def test_mix_prefers_the_runs_own_copy_and_names_the_failure(tmp_path):
     m2 = {"files": {"video": str(outside)}}
     healed = mix.video_path(m2, workdir)
     assert healed.parent == workdir and healed.read_bytes() == outside.read_bytes()
+
+
+def test_a_named_witness_outranks_the_target_script():
+    # English speech inside a he→de run: Latin script, but NOT German. The old
+    # script clause kept a whole video of English as "already the target" in a
+    # German dub, so keep-and-dub were audibly the same run.
+    spans = [{"start": 0.0, "end": 5.0, "lang": "en", "text": "What plane is missing",
+              "words": [{"t": 0.4 * i, "text": w, "spk": "A"}
+                        for i, w in enumerate("What plane is missing".split())]}]
+    segs = [{"id": 0, "start": 0.0, "end": 4.9, "speaker": "A",
+             "text": "What plane is missing"}]
+    segments.mark_keep(segs, spans, target="de")
+    assert segs[0]["keep"] and segs[0]["keep_reason"] == "foreign"
+    # Opting in to foreign dubbing makes it dubbable, from its own language.
+    segs2 = [dict(segs[0])]
+    segs2[0].pop("keep"), segs2[0].pop("keep_reason")
+    segments.mark_keep(segs2, spans, target="de", dub_foreign=True)
+    assert not segs2[0]["keep"]
+    # The same English line in a he→en run is the target, exactly as before.
+    segs3 = [{"id": 0, "start": 0.0, "end": 4.9, "speaker": "A",
+              "text": "What plane is missing"}]
+    segments.mark_keep(segs3, spans, target="en")
+    assert segs3[0]["keep"] and segs3[0]["keep_reason"] == "latin"

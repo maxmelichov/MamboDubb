@@ -148,11 +148,17 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
     for seg in segments:
         lang = span_lang(seg)
         if lang is not None:
-            # Not the source language, whatever it is: play it as it was recorded. The
-            # span's own language names it — a target-language line that happens to
-            # carry no letters ("330,000") is still the target language, not a third one.
+            # Not the source language, whatever it is: play it as it was recorded.
+            # A witness that NAMED a language cleared its confidence threshold and
+            # outranks the script: English inside a he→de run is Latin-script but
+            # it is NOT German, and letting script overrule the name kept a whole
+            # video of English marked "already the target" in a German dub. The
+            # script clause keeps its say only when the witness is nameless — a
+            # caption span with no language label, where target-script text is
+            # still the best evidence there is.
+            named = lang not in ("", "und")
             in_target = (lang == target
-                         or (cross and script.is_script(seg["text"], target)))
+                         or (not named and cross and script.is_script(seg["text"], target)))
             if (dub_foreign and not in_target and lang and lang != "und"
                     and (seg.get("text") or "").strip() not in ("", "…")):
                 # Opted in, and the span is confident: known language, real words.
