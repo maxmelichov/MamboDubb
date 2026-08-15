@@ -33,7 +33,9 @@ STAGE_TAGS = {
     # abandoned — report.json's drift story reads from these.
     "timeline": "timeline/v13",
     "mix": "mix/v8",
-    "report": "report/v1",
+    # v2: honest failure accounting — verify.unverified, degraded, overrun,
+    # shorten_abandoned, subtitles_failed, stale_locked_clips.
+    "report": "report/v2",
 }
 
 # Anything not listed here is dropped on save. This is what stops the segment

@@ -85,6 +85,16 @@ REF_SIM_OUTLIER = 0.25     # candidate mean-cos below this is suspect ...
 REF_SIM_COHERENT = 0.35    # ... but only when the other windows mutually average this
 REF_MATCH_MIN = 0.25       # segment window vs canonical ref: same-voice acceptance
 
+# What `_verify` reports when there is no verification ASR at all. It is a
+# verdict of its own, not an "ok": the clip passed the length guard and nothing
+# else looked at it. Carried onto the record as verify="unverified" so the run
+# summary can say how much of the safety net actually ran.
+NO_ASR = "no-asr"
+
+# What this stage records in `m["health"]` when it runs degraded, and therefore
+# what a fresh run of it clears (see `run`). Read by `report.run`.
+HEALTH_KEYS = ("tts.verify_asr", "tts.speaker_embeddings")
+
 CLONE_MIN_SEC_PER_WORD = 0.18   # faster than this is chipmunk garble
 CLONE_MAX_SEC_PER_WORD = 0.95   # slower than this is a stall/drawl
 CLONE_MIN_OVERLAP = 0.35        # accept
@@ -469,6 +479,19 @@ def seed_for(seg: dict[str, Any], speak: str, opts: TtsOpts = ttsopts.DEFAULT) -
     return int(hashlib.sha1(f"{seed_id(seg)}|{speak}".encode()).hexdigest()[:8], 16)
 
 
+def _verdict(clip: Path, ok: bool, ov: float, heard: str) -> dict[str, Any]:
+    """One attempt's verification result, as stored in `clips/<key>.json`.
+
+    Built in exactly one place because the pipelined path in `run` and the
+    sequential retry path in `clip_for` must record the same thing — including
+    `verified`, which is False when there was no ASR to ask. Without that flag the
+    two paths both wrote "ok" and a run with no verifier looked, in the manifest
+    and in report.json, exactly like a run where every clip passed.
+    """
+    return {"ok": ok, "overlap": round(ov, 3), "heard": heard,
+            "dur": round(audio.duration(clip), 3), "verified": heard != NO_ASR}
+
+
 class Plan(NamedTuple):
     """What one segment's attempts are made from (see `Engine._plan`)."""
 
@@ -479,6 +502,44 @@ class Plan(NamedTuple):
     opts: TtsOpts
 
 
+def text_sha(text: str) -> str:
+    """Fingerprint of the line a clip was made from (see `clip_text_stale`)."""
+    return hashlib.sha1((text or "").strip().encode("utf-8")).hexdigest()[:12]
+
+
+def clip_text_stale(seg: dict[str, Any]) -> bool:
+    """True when this segment's clip provably says a line it no longer holds.
+
+    A clip is audio of specific words. Nothing recorded which words, so a
+    translate rerun that replaced `text_en` under an existing clip left a segment
+    whose voice says the old sentence while the manifest, the subtitle and the
+    editor all show the new one — and the resume test ("there is a clip, and its
+    options match") called that done.
+
+    False for records written before the fingerprint existed and for keeps (whose
+    clip is a slice of the original audio, not of any line).
+    """
+    rec = seg.get("tts") or {}
+    have = rec.get("text_sha")
+    if not have or seg.get("keep"):
+        return False
+    return have != text_sha(seg.get("text_en") or "")
+
+
+def stale_locked_clip(seg: dict[str, Any]) -> bool:
+    """A locked clip whose text moved: a conflict only the user can settle.
+
+    The lock says "this take is approved"; the text says "that is not what this
+    line reads any more". Regenerating silently overrules the user's approval and
+    keeping silently ships the wrong words, so neither happens — it is reported
+    (`report.json: stale_locked_clips`) and left for the user to resynthesize or
+    unlock.
+    """
+    from . import manifest
+
+    return manifest.is_locked(seg, "tts") and clip_text_stale(seg)
+
+
 def needs_synthesis(seg: dict[str, Any], workdir: Path) -> bool:
     """True when this dubbed segment has no clip that still matches its options.
 
@@ -487,11 +548,18 @@ def needs_synthesis(seg: dict[str, Any], workdir: Path) -> bool:
     old clip in place, and without this the re-run would look successful and
     change nothing. The record carries the option fingerprint it was made with,
     so a mismatch puts the segment back in the queue.
+
+    Nor is it enough once the *text* can move under a clip: the record carries a
+    fingerprint of the line it was made from too, and a mismatch re-queues the
+    segment — unless the user locked that clip, in which case the conflict is
+    reported rather than decided (see `stale_locked_clip`).
     """
     rec = seg.get("tts")
     if not rec or not (workdir / rec["clip"]).is_file():
         return True
-    return rec.get("opts", "") != ttsopts.parse(seg.get("tts_opts")).fingerprint()
+    if rec.get("opts", "") != ttsopts.parse(seg.get("tts_opts")).fingerprint():
+        return True
+    return clip_text_stale(seg) and not stale_locked_clip(seg)
 
 
 class Engine:
@@ -564,7 +632,23 @@ class Engine:
     def asr(self):
         if self._asr is None:
             self._asr = _load_asr(self.tgt_lang)
+            if self._asr is None:
+                self.note_degraded(
+                    "tts.verify_asr",
+                    f"unavailable: no faster-whisper model for {self.tgt_lang!r} — "
+                    "clips accepted on length alone")
         return self._asr
+
+    # -- degraded operation ------------------------------------------------
+    def note_degraded(self, component: str, reason: str) -> None:
+        """Record that part of the safety net could not run (see `report.run`).
+
+        The never-silent principle applies to the checks as much as to the audio:
+        a verification that did not happen is a verdict this stage wrote, and a
+        verdict written by a failure path has to be as visible as the user's own.
+        stderr scrolls past; `m["health"]` reaches report.json.
+        """
+        self.m.setdefault("health", {})[component] = reason
 
     # -- reference audio ---------------------------------------------------
     # Bumped when the canonical-ref recipe changes: reset_stage clears segments'
@@ -625,6 +709,10 @@ class Engine:
             return cands
         vecs = _embed_windows(self.vocals_path, [(c[0], c[1]) for c in cands])
         if vecs is None:
+            self.note_degraded(
+                "tts.speaker_embeddings",
+                "unavailable: clone references unvalidated — a diarization "
+                "mislabel can clone the wrong voice")
             return cands
         keep = reject_voice_outliers(vecs)
         for c, k in zip(cands, keep):
@@ -709,6 +797,11 @@ class Engine:
         if got is None:
             vecs = _embed_windows(self.vocals_path, [span])
             cvec = _embed_wavfile(canon)
+            if vecs is None or cvec is None:
+                self.note_degraded(
+                    "tts.speaker_embeddings",
+                    "unavailable: clone references unvalidated — short windows "
+                    "clone truncated and nothing confirms the voice")
             got = (vecs is not None and cvec is not None
                    and float(vecs[0] @ cvec) >= REF_MATCH_MIN)
             self._match_cache[key] = got
@@ -764,7 +857,9 @@ class Engine:
             return False, 0.0, f"len={sec:.2f}s"
         model = self.asr
         if model is None:
-            return True, 1.0, "no-asr"
+            # Accepted, but not verified — and `_verdict` turns that into a
+            # verdict of its own rather than letting it read as a pass.
+            return True, 1.0, NO_ASR
         try:
             segs, _ = model.transcribe(str(clip), language=self.tgt_lang,
                                        word_timestamps=False,
@@ -820,23 +915,30 @@ class Engine:
         return clip, meta, None
 
     def _verify_and_store(self, clip: Path, meta: Path, speak: str) -> dict[str, Any]:
-        ok, ov, heard = self._verify(clip, speak)
-        verdict = {"ok": ok, "overlap": round(ov, 3), "heard": heard,
-                   "dur": round(audio.duration(clip), 3)}
+        verdict = _verdict(clip, *self._verify(clip, speak))
         meta.write_text(json.dumps(verdict, ensure_ascii=False))
         return verdict
 
     @staticmethod
     def _record(clip: Path, verdict: dict[str, Any], attempt: int,
-                opts: TtsOpts = ttsopts.DEFAULT) -> dict[str, Any]:
+                opts: TtsOpts = ttsopts.DEFAULT, text: str = "") -> dict[str, Any]:
+        # "unverified" is not "ok": the clip cleared the length guard and no ASR
+        # ever heard it. A cached verdict from before this existed has no
+        # `verified` key and was written by a run that did have an ASR, so it
+        # reads as verified — every existing record stays exactly as it was.
         rec = {"clip": f"clips/{clip.name}", "dur": verdict["dur"],
-               "tries": attempt + 1, "overlap": verdict["overlap"], "verify": "ok"}
+               "tries": attempt + 1, "overlap": verdict["overlap"],
+               "verify": "ok" if verdict.get("verified", True) else "unverified"}
         # Which options this clip was made under, so `run` can spot a segment whose
         # options changed under an otherwise-usable clip. Absent for the defaults,
         # which keeps every existing record byte-identical.
         fp = opts.fingerprint()
         if fp:
             rec["opts"] = fp
+        # Which line this clip actually says, so a translate rerun cannot leave it
+        # behind claiming to be current (`clip_text_stale`).
+        if (text or "").strip():
+            rec["text_sha"] = text_sha(text)
         return rec
 
     def clip_for(self, seg: dict[str, Any], text_en: str) -> dict[str, Any] | None:
@@ -875,7 +977,7 @@ class Engine:
                 print(f"  tts: seg {seg['id']} clip {verdict['dur']:.1f}s vs "
                       f"{slot:.1f}s slot — rejected", file=sys.stderr)
                 continue
-            record = self._record(clip, verdict, attempt, opts)
+            record = self._record(clip, verdict, attempt, opts, text_en)
             if verdict["ok"]:
                 return record
             if verdict["overlap"] > (best or {}).get("overlap", -1.0):
@@ -1123,7 +1225,18 @@ def pending(segments: list[dict[str, Any]], workdir: Path) -> list[dict[str, Any
 def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = None,
         model: str = DEFAULT_TTS_MODEL) -> Engine:
     engine = Engine(m, workdir, device=device, model=model)
+    # This run's own excuses only: whatever the last one could not load may well
+    # be there now, and a stale note is a lie of the same family as a missing one.
+    for key in HEALTH_KEYS:
+        (m.get("health") or {}).pop(key, None)
     clear_failed_keeps(m["segments"])
+    # A clip the user approved for a line that has since changed. It is not this
+    # stage's to replace and not this stage's to pass off as current, so it is
+    # named here and counted in report.json (`stale_locked_clips`).
+    for seg in m["segments"]:
+        if stale_locked_clip(seg):
+            print(f"  tts: seg {seg['id']} locked clip was made for different text "
+                  "— left alone; it still speaks the old line", file=sys.stderr)
     engine.build_speaker_refs()
     todo = pending(m["segments"], workdir)
 
@@ -1152,7 +1265,7 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
                 continue
             if verdict is not None:                    # cache hit — no verify needed
                 if verdict["ok"]:
-                    seg["tts"] = engine._record(clip, verdict, 0, opts)
+                    seg["tts"] = engine._record(clip, verdict, 0, opts, seg["text_en"])
                 else:
                     retry.append(seg)
                 continue
@@ -1164,12 +1277,10 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
             if item is None:
                 continue
             fut, clip, meta, speak, opts = item
-            ok, ov, heard = fut.result()
-            verdict = {"ok": ok, "overlap": round(ov, 3), "heard": heard,
-                       "dur": round(audio.duration(clip), 3)}
+            verdict = _verdict(clip, *fut.result())
             meta.write_text(json.dumps(verdict, ensure_ascii=False))
-            if ok:
-                seg["tts"] = engine._record(clip, verdict, 0, opts)
+            if verdict["ok"]:
+                seg["tts"] = engine._record(clip, verdict, 0, opts, seg["text_en"])
             else:
                 retry.append(seg)
             done += 1

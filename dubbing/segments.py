@@ -12,7 +12,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from . import PASSTHROUGH_REASON, script
 
@@ -142,6 +142,10 @@ ISLAND_GAP_MAX = 0.60
 HANDOFF_SNAP = 0.30
 
 DIARIZATION_MODEL = "pyannote/speaker-diarization-community-1"
+
+# What this stage records in `m["health"]` when it has to run degraded, and
+# therefore what a successful run of it clears (see `run`). Read by `report.run`.
+HEALTH_KEYS = ("segments.diarization", "segments.turn_refinement")
 
 # Post-diarization refinement: pyannote's clustering sometimes files two
 # alternating voices under one label (courtroom Q+A dubbed in a single clone),
@@ -1157,8 +1161,16 @@ def stamp_detected_lang(segments: list[dict[str, Any]],
             seg["detected_lang"] = best
 
 
-def diarize(vocals: Path) -> list[dict[str, Any]]:
-    """Pyannote turns; returns [] (single-speaker fallback) if unavailable."""
+def diarize(vocals: Path, *, note: Callable[[str], None] | None = None
+            ) -> list[dict[str, Any]]:
+    """Pyannote turns; returns [] (single-speaker fallback) if unavailable.
+
+    The fallback is a real verdict about the run — every speaker becomes one
+    voice, so every line is cloned from one reference — and the commonest cause
+    (no `HF_TOKEN`, or the model's terms not accepted) is a five-second fix the
+    user never hears about if this only prints. `note` records the reason where
+    `report.run` can repeat it; without one, behaviour is exactly as before.
+    """
     try:
         os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
         import torch
@@ -1183,6 +1195,8 @@ def diarize(vocals: Path) -> list[dict[str, Any]]:
         ]
     except Exception as exc:
         print(f"  segments: diarization unavailable ({exc}) — single speaker", file=sys.stderr)
+        if note is not None:
+            note(f"unavailable ({exc}) — every speaker cloned as one voice")
         return []
 
 
@@ -1279,7 +1293,8 @@ def _embed_turns(vocals: Path, run: list[dict[str, Any]]):
     return np.stack(vecs)
 
 
-def refine_turns(turns: list[dict[str, Any]], vocals: Path) -> list[dict[str, Any]]:
+def refine_turns(turns: list[dict[str, Any]], vocals: Path, *,
+                 note: Callable[[str], None] | None = None) -> list[dict[str, Any]]:
     """Split diarization turns that ECAPA embeddings say hold two voices.
 
     Pyannote's clustering can label two alternating speakers as one (both sides
@@ -1319,6 +1334,9 @@ def refine_turns(turns: list[dict[str, Any]], vocals: Path) -> list[dict[str, An
     if not vocals or not Path(vocals).is_file():
         print(f"  segments: no vocals at {vocals} — turns left as diarized",
               file=sys.stderr)
+        if note is not None:
+            note(f"unavailable: no vocals at {vocals} — two voices pyannote fused "
+                 "stay fused")
         return ordered
     out = [dict(t) for t in ordered]
     for a, b in runs:
@@ -1328,11 +1346,16 @@ def refine_turns(turns: list[dict[str, Any]], vocals: Path) -> list[dict[str, An
         try:
             embs = _embed_turns(vocals, embeddable)
             if embs is None:
+                if note is not None:
+                    note("unavailable: speaker embeddings could not load — two "
+                         "voices pyannote fused stay fused")
                 return ordered
             labels = _split_embedding_clusters(embs @ embs.T)
         except Exception as exc:
             print(f"  segments: turn refinement failed ({exc}) — "
                   "turns left as diarized", file=sys.stderr)
+            if note is not None:
+                note(f"failed ({exc}) — turns left as diarized")
             return ordered
         if labels is None:
             continue
@@ -1498,7 +1521,18 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
         lang_runs: list[dict[str, Any]] | None = None) -> None:
     src_lang = m["source"].get("src_lang") or "he"
     tgt_lang = m["source"].get("tgt_lang") or "en"
-    turns = diarize(workdir / m["files"]["vocals"])
+    # What this run could not do is recorded, not only printed: a stage that
+    # degrades itself is writing a verdict about every segment (one voice for the
+    # whole file, say), and report.json is where that has to be visible. Cleared
+    # first so a run that succeeds erases the previous run's excuse.
+    health = m.setdefault("health", {})
+    for key in HEALTH_KEYS:
+        health.pop(key, None)
+
+    def _note(key: str):
+        return lambda reason: health.__setitem__(key, reason)
+
+    turns = diarize(workdir / m["files"]["vocals"], note=_note("segments.diarization"))
     # Smooth before refining: the blips absorbed here are what chop one speaker's
     # long run into short ones, and every later decision (word labels, boundary
     # cuts, embedding runs) must read the same, smoothed view of the turns.
@@ -1508,7 +1542,8 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
     if moved:
         print(f"  segments: absorbed {moved} sub-{MIN_TURN_SEC}s speaker blip(s)",
               file=sys.stderr)
-    turns = refine_turns(smoothed, workdir / m["files"]["vocals"])
+    turns = refine_turns(smoothed, workdir / m["files"]["vocals"],
+                         note=_note("segments.turn_refinement"))
     assign_word_speakers(words, turns)
     segs = words_to_segments(words, src_lang, tgt_lang, turns=turns)
     # Word timestamps run late after a handoff; diarization knows better where the

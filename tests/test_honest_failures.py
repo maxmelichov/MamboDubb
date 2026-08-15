@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from dubbing import edit, manifest, segments as seg_mod, timeline
+from dubbing import edit, manifest, report as report_mod, segments as seg_mod, timeline
 from dubbing import tts as tts_mod
 
 
@@ -220,3 +220,128 @@ def test_a_shortening_the_translator_refused_is_recorded_too(monkeypatch, tmp_pa
     timeline.run(m, tmp_path, shorten_many=lambda reqs: {s["id"]: "" for s, _ in reqs},
                  resynth_many=lambda items: {})
     assert m["segments"][0]["place"]["shorten"] == "translator-refused"
+
+
+# ------------------------------------------- the safety net reports on itself
+
+def record(verdict, **kw):
+    from pathlib import Path
+
+    return tts_mod.Engine._record(Path("clips/a.wav"), verdict, 0, **kw)
+
+
+def test_a_clip_no_asr_ever_heard_is_recorded_as_unverified():
+    # `_verify` accepts on length alone when there is no verification ASR. That is
+    # a verdict of its own — the record used to say "ok", so a run where nothing
+    # was checked read exactly like a run where everything passed.
+    rec = record({"ok": True, "overlap": 1.0, "heard": tts_mod.NO_ASR, "dur": 1.0,
+                  "verified": False})
+    assert rec["verify"] == "unverified"
+    # A verdict from before the flag existed was written by a run that did have an
+    # ASR: it still reads as verified, so no cached clip changes meaning.
+    old = record({"ok": True, "overlap": 0.9, "heard": "hello", "dur": 1.0})
+    assert old["verify"] == "ok"
+
+
+def fake_report_run(m, tmp_path, monkeypatch):
+    monkeypatch.setattr(report_mod.transcript, "load_words", lambda wd, mm: [])
+    monkeypatch.setattr(report_mod, "uncovered_spans", lambda *a, **k: [])
+    m.setdefault("files", {})["source_wav"] = "source.wav"
+    m["source"]["duration"] = 30.0
+    return report_mod.run(m, tmp_path)
+
+
+def report_segments():
+    return mk(
+        seg(start=0.0, end=2.0, text_en="Hello",
+            tts={"clip": "clips/a.wav", "dur": 1.0, "verify": "unverified"},
+            place={"start": 0.0, "end": 1.0, "clip": "clips/a.wav", "drift": 0.0,
+                   "rate": 1.0, "overrun": 0.4}),
+        seg(id=1, start=2.0, end=4.0, keep=True, keep_reason="user", text_en="…",
+            passthrough=True,
+            tts={"clip": "clips/b.wav", "dur": 2.0, "verify": "keep"},
+            place={"start": 2.0, "end": 4.0, "clip": "clips/b.wav", "drift": 0.0,
+                   "rate": 1.0, "overrun": 0.0, "shorten": "synthesis-refused"}))
+
+
+def test_report_counts_what_the_run_could_not_do(tmp_path, monkeypatch):
+    m = report_segments()
+    m["health"] = {"segments.diarization": "unavailable (no HF_TOKEN) — every "
+                                           "speaker cloned as one voice"}
+    rep = fake_report_run(m, tmp_path, monkeypatch)
+    assert rep["verify"]["unverified"] == 1        # never folded into "ok"
+    assert rep["overrun"] == {"count": 1, "max": 0.4}
+    assert rep["subtitles_failed"] == [1]          # a kept span showing "…"
+    assert rep["shorten_abandoned"][0]["reason"] == "synthesis-refused"
+    assert "segments.diarization" in rep["degraded"]
+
+
+def test_the_summary_says_when_nothing_was_verified(tmp_path, monkeypatch, capsys):
+    fake_report_run(report_segments(), tmp_path, monkeypatch)
+    assert "NOT ONE clip was verified" in capsys.readouterr().err
+
+
+def test_diarization_failure_is_recorded_not_only_printed():
+    # The commonest cause is a missing HF_TOKEN — a five-second fix the user never
+    # hears about while the fallback (one voice for the whole file) only prints.
+    from pathlib import Path
+
+    notes: dict[str, str] = {}
+    turns = seg_mod.diarize(Path("/nope/vocals.wav"),
+                            note=lambda why: notes.__setitem__("diarization", why))
+    assert turns == []
+    assert "unavailable" in notes["diarization"]
+
+
+# ------------------------------------- a clip that says the old words (D-8)
+
+def clip_on_disk(tmp_path, name="clips/a.wav"):
+    p = tmp_path / name
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"x")
+    return p
+
+
+def dubbed_with_clip(text_en="Hello there", **kw):
+    s = seg(text_en=text_en,
+            tts={"clip": "clips/a.wav", "dur": 1.9, "tries": 1, "overlap": 1.0,
+                 "verify": "ok", "text_sha": tts_mod.text_sha(text_en)})
+    s.update(kw)
+    return s
+
+
+def test_a_clip_is_re_queued_when_the_line_moved_under_it(tmp_path):
+    clip_on_disk(tmp_path)
+    s = dubbed_with_clip()
+    assert not tts_mod.needs_synthesis(s, tmp_path)
+    s["text_en"] = "Greetings, friend"          # a translate rerun replaced the line
+    assert tts_mod.clip_text_stale(s)
+    assert tts_mod.needs_synthesis(s, tmp_path)
+    assert [x["id"] for x in tts_mod.pending([s], tmp_path)] == [0]
+
+
+def test_a_locked_clip_whose_line_moved_is_a_conflict_not_a_silent_verdict(tmp_path):
+    clip_on_disk(tmp_path)
+    s = dubbed_with_clip(locked={"tts": True})
+    s["text_en"] = "Greetings, friend"
+    # Never silently regenerated — the user approved this take ...
+    assert not tts_mod.needs_synthesis(s, tmp_path)
+    assert tts_mod.pending([s], tmp_path) == []
+    # ... and never silently kept either: it is surfaced.
+    assert tts_mod.stale_locked_clip(s)
+
+
+def test_records_written_before_the_fingerprint_existed_are_left_alone(tmp_path):
+    clip_on_disk(tmp_path)
+    s = seg(text_en="Hello", tts={"clip": "clips/a.wav", "dur": 1.0, "verify": "ok"})
+    assert not tts_mod.clip_text_stale(s)
+    assert not tts_mod.needs_synthesis(s, tmp_path)
+
+
+def test_report_names_a_locked_clip_that_speaks_the_old_line(tmp_path, monkeypatch):
+    m = report_segments()
+    s = m["segments"][0]
+    s["locked"] = {"tts": True}
+    s["tts"]["text_sha"] = tts_mod.text_sha("something else entirely")
+    rep = fake_report_run(m, tmp_path, monkeypatch)
+    assert [x["id"] for x in rep["stale_locked_clips"]] == [0]
