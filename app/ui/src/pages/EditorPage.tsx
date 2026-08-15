@@ -669,9 +669,12 @@ export function EditorPage() {
                     job={job}
                     stage={state.stage}
                     mode={transportMode}
-                    // Exactly one band. The strip below carries it whenever
-                    // there is a preview to be behind; the placeholder covers
-                    // the case where there is no video to put a strip under.
+                    // Two separate questions. The dots are hollow whenever the
+                    // render is behind; the *sentence* appears exactly once —
+                    // the strip below carries it whenever there is a preview to
+                    // be behind, and the placeholder covers the case where
+                    // there is no video to put a strip under.
+                    stale={stale && render.at != null}
                     staleBand={transportMode === "preview" ? null : staleBand}
                   />
                 }
@@ -1121,6 +1124,7 @@ function PreviewPlaceholder({
   job,
   stage,
   mode,
+  stale = false,
   staleBand = null,
 }: {
   project: ProjectDetail | null;
@@ -1128,7 +1132,9 @@ function PreviewPlaceholder({
   stage: StageProgress | null;
   /** What the transport is on, so the panel does not promise a clock that is not one. */
   mode: TransportMode;
-  /** "Mixed before your last N changes …", or null when the video is current. */
+  /** The render is behind the script: the last three stage dots go hollow. */
+  stale?: boolean;
+  /** The sentence, when this panel is the one carrying it — else null. */
   staleBand?: string | null;
 }) {
   const summary = summarizeStages(project?.stages);
@@ -1167,7 +1173,7 @@ function PreviewPlaceholder({
           <StageTrack
             stages={project?.stages}
             current={stage?.stage ?? null}
-            stale={staleBand != null}
+            stale={stale}
           />
         </div>
 

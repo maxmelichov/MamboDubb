@@ -1504,6 +1504,15 @@ check(
   "the video area says the same thing in words",
   /Mixed before your last \d+ changes — Update the video to hear them/.test(root.textContent),
 );
+/*
+ * The three stages a render re-runs are drawn hollow — done, but done about
+ * something else. A ring rather than a lighter fill, so the difference is shape
+ * and survives greyscale and colour-blindness.
+ */
+check(
+  "timeline, mix and report are drawn hollow, not simply done",
+  [...document.querySelectorAll('[title$="— from the last render"]')].length === 3,
+);
 check(
   "the output lane is labelled as the last render",
   [...document.querySelectorAll("[data-lane-label]")].some((el) => /Output\s*last render/.test(el.textContent)),
