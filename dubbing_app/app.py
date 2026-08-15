@@ -104,6 +104,12 @@ class MergeBody(Strict):
 
 class UidsBody(Strict):
     uids: list[str] = Field(default_factory=list)
+    # One user gesture, two jobs: "Dub these 27" flips the verdicts, then queues a
+    # retranslate and a resynthesize. Only the client knows those two POSTs came from
+    # one decision, so it mints the id and sends it on both; `DELETE /api/jobs/{id}
+    # ?batch=1` is what makes cancelling the decision possible instead of cancelling
+    # half of it. Optional: a lone re-voice from the inspector has no batch.
+    batch: str | None = Field(default=None, max_length=64)
 
 
 class RenderBody(Strict):
@@ -190,9 +196,10 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
                 raise busy(f"job {job.id} ({job.kind}) is running on {name!r}; "
                            "structural edits would renumber segments under it")
 
-    def enqueue(kind: str, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def enqueue(kind: str, name: str, payload: dict[str, Any],
+                *, batch: str | None = None) -> dict[str, Any]:
         workdir = projects.require_dir(name)
-        job = queue.submit(kind, name, {**payload, "workdir": str(workdir)})
+        job = queue.submit(kind, name, {**payload, "workdir": str(workdir)}, batch=batch)
         return job.to_dict()
 
     # -- health ------------------------------------------------------------
@@ -299,6 +306,7 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
         # stage is indistinguishable from one that was never reached.
         jobs = [j.to_dict() for j in queue.list(name)]
         return {"name": name, "manifest": m, "report": projects.report(name, m),
+                "render": projects.render_state(m),
                 "stages": projects.stage_status(m, jobs),
                 "summary": projects.summary(name, jobs),
                 "jobs": jobs}
@@ -371,11 +379,15 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
 
     @app.post("/api/projects/{name}/retranslate", status_code=202)
     def retranslate(name: str, body: UidsBody) -> dict[str, Any]:
-        return {"job": enqueue("retranslate", name, {"uids": _check_uids(projects, name, body)})}
+        return {"job": enqueue("retranslate", name,
+                               {"uids": _check_uids(projects, name, body)},
+                               batch=body.batch)}
 
     @app.post("/api/projects/{name}/resynthesize", status_code=202)
     def resynthesize(name: str, body: UidsBody) -> dict[str, Any]:
-        return {"job": enqueue("resynthesize", name, {"uids": _check_uids(projects, name, body)})}
+        return {"job": enqueue("resynthesize", name,
+                               {"uids": _check_uids(projects, name, body)},
+                               batch=body.batch)}
 
     @app.post("/api/projects/{name}/render", status_code=202)
     def render(name: str, body: RenderBody = Body(default=RenderBody())) -> dict[str, Any]:
@@ -410,8 +422,13 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
                                           1.0 if status[s] == "done" else None),
                      "replay": True}
                     for s in STAGES]
+        # `uids`/`batch` ride along for the same reason `kind` does: a client that
+        # reconnects rebuilds "which rows are busy" and "what would Cancel stop" from
+        # the frames alone, and a replayed job that omitted them would come back as a
+        # job about nothing — rows stop pulsing on reload mid-render.
         prelude += [events.job_event(j["id"], j["status"], j["error"],
-                                     kind=j["kind"], project=j["project"], replay=True)
+                                     kind=j["kind"], project=j["project"],
+                                     uids=j["uids"], batch=j["batch"], replay=True)
                     for j in jobs if j["status"] not in jobs_mod.TERMINAL]
         return StreamingResponse(
             events.stream(sub, prelude=prelude),
@@ -433,8 +450,19 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
         return {"job": queue.get(job_id).to_dict()}
 
     @app.delete("/api/jobs/{job_id}")
-    def cancel_job(job_id: str) -> dict[str, Any]:
-        return {"job": queue.cancel(job_id).to_dict()}
+    def cancel_job(job_id: str, batch: bool = False) -> dict[str, Any]:
+        """Cancel one job, or — with `?batch=1` — the whole gesture it came from.
+
+        `job` is always the job named in the path, so existing callers read the same
+        field they always did; `cancelled` lists everything this call stopped, which
+        for a batch is the job and its queued mates. Cancelling a translate while the
+        voice job it feeds stays queued is the audit's disaster and is what `batch=1`
+        exists to prevent — see `JobQueue.cancel_batch` for why the order matters.
+        """
+        if not batch:
+            return {"job": queue.cancel(job_id).to_dict(), "cancelled": None}
+        stopped = [j.to_dict() for j in queue.cancel_batch(job_id)]
+        return {"job": queue.get(job_id).to_dict(), "cancelled": stopped}
 
     # -- media -------------------------------------------------------------
 

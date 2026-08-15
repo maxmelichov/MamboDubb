@@ -937,6 +937,11 @@ def test_resynthesize_does_not_voice_a_locked_dub_that_has_no_line(monkeypatch):
     s = m["segments"][0]
     assert out == {} and "tts" not in s
     assert s["keep"] is False and s["passthrough"] is False
+    # This exact shape — meant to be dubbed, no translation, no clip — is what the
+    # editor's `segmentState` reads as "untranslated" and the Unfinished chip counts.
+    # Left as a `tts_failed` keep instead (which is what a cancelled translate used
+    # to produce) the line would sit in Kept, looking like a decision someone made.
+    assert not (s.get("text_en") or "").strip() and s.get("keep_reason") is None
     # The message states what happened (`edit._resynth_message`): nothing was
     # synthesized, one line has no translation to speak, and the placement that
     # could not run over the hole is said out loud rather than left implied.

@@ -279,6 +279,63 @@ def test_a_report_goes_stale_the_moment_an_edit_lands(client, outputs):
     assert after["stale"] is True and after["segments"] == 5
 
 
+# ------------------------------------------------- what the video is a render of
+
+def stamp_render(workdir):
+    """Stamp `m["render"]` the way `mix.run` does, without running ffmpeg."""
+    m = manifest.load(workdir)
+    m["render"] = {"at": 1_700_000_000,
+                   "fp": manifest.content_fingerprint(m),
+                   "segments": manifest.segment_digests(m)}
+    manifest.save(workdir, m)
+
+
+def test_a_run_with_no_render_stamp_cannot_claim_to_be_current(client):
+    render = client.get(f"/api/projects/{NAME}").json()["render"]
+    assert render == {"at": None, "stale": True, "changed": 0}
+    # `changed` is 0, not 5: there is no stamp to compare against, so the honest
+    # answer is "unknown", and the UI must not say "5 lines changed" off it.
+
+
+def test_a_fresh_render_is_not_stale_and_counts_nothing_changed(client, outputs):
+    stamp_render(outputs / NAME)
+    render = client.get(f"/api/projects/{NAME}").json()["render"]
+    assert render["stale"] is False and render["changed"] == 0
+    assert render["at"] == 1_700_000_000
+
+
+def test_the_render_counts_the_lines_that_changed_since_it(client, outputs):
+    stamp_render(outputs / NAME)
+    segs = uids(client)
+    for uid in segs[:2]:
+        assert client.patch(f"/api/projects/{NAME}/segments/{uid}",
+                            json={"text_en": f"new words for {uid}"}).status_code == 200
+    render = client.get(f"/api/projects/{NAME}").json()["render"]
+    # Two lines were edited, so two lines differ — not "every unfinished line", and
+    # not the whole list. The count is what the header offers to re-render.
+    assert render["stale"] is True and render["changed"] == 2
+
+
+def test_a_render_stamp_survives_the_manifest_whitelist(outputs):
+    # `manifest.save` strips unknown keys from *segments*; `render` is run-level and
+    # must come back verbatim, or the stamp would be erased by the next edit.
+    stamp_render(outputs / NAME)
+    m = manifest.load(outputs / NAME)
+    assert set(m["render"]) == {"at", "fp", "segments"}
+    manifest.save(outputs / NAME, m)
+    assert manifest.load(outputs / NAME)["render"] == m["render"]
+
+
+def test_renumbering_a_segment_does_not_count_as_changing_it(outputs):
+    # `id` is positional: a split renumbers every line after it. Counting `id` would
+    # report the whole tail as changed and turn "3 lines changed" into "40".
+    m = manifest.load(outputs / NAME)
+    before = manifest.segment_digests(m)
+    for seg in m["segments"]:
+        seg["id"] += 10
+    assert manifest.digest_delta(before, manifest.segment_digests(m)) == 0
+
+
 def test_uids_are_minted_once_and_persisted(client, outputs):
     first = [s["uid"] for s in client.get(f"/api/projects/{NAME}/segments").json()["segments"]]
     second = [s["uid"] for s in client.get(f"/api/projects/{NAME}/segments").json()["segments"]]
@@ -594,6 +651,99 @@ def test_cancel_finished_job_is_invalid(client):
                       == "done")
     r = client.delete(f"/api/jobs/{job['id']}")
     assert r.status_code == 400 and envelope_of(r)["code"] == "invalid_request"
+
+
+# --------------------------------------------- one gesture, one thing to cancel
+
+def test_a_batch_id_travels_from_the_request_onto_both_jobs(client):
+    some = uids(client)
+    a = client.post(f"/api/projects/{NAME}/retranslate",
+                    json={"uids": some[:2], "batch": "g1"}).json()["job"]
+    b = client.post(f"/api/projects/{NAME}/resynthesize",
+                    json={"uids": some[:2], "batch": "g1"}).json()["job"]
+    assert a["batch"] == b["batch"] == "g1"
+    assert a["id"] != b["id"]
+
+
+def test_a_lone_job_has_no_batch(client):
+    job = client.post(f"/api/projects/{NAME}/resynthesize",
+                      json={"uids": uids(client)[:1]}).json()["job"]
+    assert job["batch"] is None
+
+
+def test_cancelling_a_batch_stops_the_voice_job_the_translate_was_feeding(outputs):
+    """The audit's disaster, made impossible.
+
+    Cancel the running re-translate and the queued re-voice used to run anyway, on
+    lines whose translation had just been abandoned — 27 `tts_failed` keeps from one
+    click. `?batch=1` cancels the decision, not the step.
+    """
+    hold = threading.Event()
+    fake = FakeRunner(hold=hold)
+    with TestClient(create_app(outputs, runner=fake)) as c:
+        some = uids(c)
+        first = c.post(f"/api/projects/{NAME}/retranslate",
+                       json={"uids": some, "batch": "g1"}).json()["job"]
+        second = c.post(f"/api/projects/{NAME}/resynthesize",
+                        json={"uids": some, "batch": "g1"}).json()["job"]
+        assert wait_until(lambda: c.get(f"/api/jobs/{first['id']}").json()["job"]["status"]
+                          == "running")
+        r = c.delete(f"/api/jobs/{first['id']}?batch=1")
+        assert r.status_code == 200
+        assert {j["id"] for j in r.json()["cancelled"]} == {first["id"], second["id"]}
+        hold.set()
+        assert wait_until(lambda: c.get(f"/api/jobs/{second['id']}").json()["job"]["status"]
+                          == "cancelled")
+        assert wait_until(lambda: c.get(f"/api/jobs/{first['id']}").json()["job"]["status"]
+                          == "cancelled")
+    # The queued voice job never reached the runner at all.
+    assert [call[0] for call in fake.calls] == ["retranslate"]
+
+
+def test_cancelling_one_job_leaves_its_batch_mate_alone(outputs):
+    # The other half of the choice the UI offers: "just this one" must still mean
+    # just this one, or the dialog is lying.
+    hold = threading.Event()
+    fake = FakeRunner(hold=hold)
+    with TestClient(create_app(outputs, runner=fake)) as c:
+        some = uids(c)
+        first = c.post(f"/api/projects/{NAME}/retranslate",
+                       json={"uids": some, "batch": "g1"}).json()["job"]
+        second = c.post(f"/api/projects/{NAME}/resynthesize",
+                        json={"uids": some, "batch": "g1"}).json()["job"]
+        assert wait_until(lambda: c.get(f"/api/jobs/{first['id']}").json()["job"]["status"]
+                          == "running")
+        assert c.delete(f"/api/jobs/{first['id']}").json()["cancelled"] is None
+        hold.set()
+        assert wait_until(lambda: c.get(f"/api/jobs/{second['id']}").json()["job"]["status"]
+                          == "done")
+    assert [call[0] for call in fake.calls] == ["retranslate", "resynthesize"]
+
+
+def test_batch_cancel_on_a_job_with_no_batch_cancels_only_it(outputs):
+    hold = threading.Event()
+    fake = FakeRunner(hold=hold)
+    with TestClient(create_app(outputs, runner=fake)) as c:
+        first = c.post(f"/api/projects/{NAME}/render", json={}).json()["job"]
+        second = c.post(f"/api/projects/{NAME}/render", json={}).json()["job"]
+        assert wait_until(lambda: c.get(f"/api/jobs/{first['id']}").json()["job"]["status"]
+                          == "running")
+        r = c.delete(f"/api/jobs/{first['id']}?batch=1")
+        assert [j["id"] for j in r.json()["cancelled"]] == [first["id"]]
+        hold.set()
+        assert wait_until(lambda: c.get(f"/api/jobs/{second['id']}").json()["job"]["status"]
+                          == "done")
+
+
+def test_a_job_frame_says_which_lines_and_which_batch(client):
+    # The UI derives its busy rows from job frames, so a frame that omitted `uids`
+    # would leave the rows unmarked until a refetch happened to land.
+    some = uids(client)[:2]
+    job = client.post(f"/api/projects/{NAME}/retranslate",
+                      json={"uids": some, "batch": "g7"}).json()["job"]
+    assert job["uids"] == some and job["batch"] == "g7"
+    listed = client.get(f"/api/projects/{NAME}").json()["jobs"]
+    assert [j for j in listed if j["id"] == job["id"]][0]["uids"] == some
 
 
 def test_failed_job_records_the_error(outputs):
