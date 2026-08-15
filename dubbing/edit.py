@@ -39,7 +39,9 @@ STAGE_FIELDS: dict[str, tuple[str, ...]] = {
     "tts": ("tts",),
     "timeline": ("place",),
 }
-STAGE_LOCK = {"translate": "text_en", "tts": "tts", "timeline": "place"}
+# The lock that holds a stage's result back, per stage. `timeline` has none:
+# placement is all-or-nothing and is never the user's (see manifest.LOCK_FIELDS).
+STAGE_LOCK = {"translate": "text_en", "tts": "tts"}
 DOWNSTREAM = {"translate": ("tts", "timeline"), "tts": ("timeline",), "timeline": ()}
 # Stages `rebuild` can start from. Everything earlier needs the source media and
 # belongs to a full `python -m dubbing` run, not to an edit.
@@ -117,8 +119,13 @@ def invalidate(m: dict[str, Any], uid: str, *, stages: set[str]) -> set[str]:
     translator's to reissue. Returns the field names actually removed.
 
     A keep this pipeline decided for itself (`mt_failed`, `tts_failed`) is undone
-    too, exactly as `manifest.reset_stage` does, so the segment gets another go
-    rather than being stuck on a verdict about text that no longer exists.
+    too, exactly as `manifest.reset_stage` does — through the same predicate, so
+    the two cannot drift apart — rather than the segment being stuck on a verdict
+    about text that no longer exists. A kept span's subtitle survives on the same
+    rule as well (`manifest.keeps_own_subtitle`): translate never refills one it
+    did not write, so dropping it here would leave the span with no subtitle at
+    all. The caller that is *flipping* the keep drops the line itself, since the
+    flip is what makes it the wrong kind (see `set_keep`).
     """
     seg = _require(m, uid)
     want: set[str] = set()
@@ -131,16 +138,18 @@ def invalidate(m: dict[str, Any], uid: str, *, stages: set[str]) -> set[str]:
 
     dropped: set[str] = set()
     for stage in ("translate", "tts", "timeline"):
-        if stage not in want or manifest.is_locked(seg, STAGE_LOCK[stage]):
+        lock = STAGE_LOCK.get(stage)
+        if stage not in want or (lock and manifest.is_locked(seg, lock)):
             continue
         for field in STAGE_FIELDS[stage]:
+            if (stage == "translate" and field == "text_en"
+                    and manifest.keeps_own_subtitle(seg)):
+                continue
             if seg.pop(field, None) is not None:
                 dropped.add(field)
-    undo = {"translate": ("mt_failed", "tts_failed"), "tts": ("tts_failed",)}
     for stage in ("translate", "tts"):
-        if (stage in want and seg.get("keep_reason") in undo[stage]
-                and not manifest.is_locked(seg, "keep")):
-            seg["keep"], seg["keep_reason"] = False, None
+        if stage in want:
+            manifest.undo_pipeline_keep(seg, manifest.PIPELINE_KEEPS[stage])
     return dropped
 
 
@@ -214,19 +223,28 @@ def set_keep(m: dict[str, Any], uid: str, keep: bool,
     seg = _require(m, uid)
     seg["keep"] = bool(keep)
     seg["keep_reason"] = reason if keep else None
-    if reason == MANUAL_REASON or not keep:
-        # One concept, one key: the user's own verdict is also the pipeline's
-        # `passthrough` override, so a headless re-run honours it identically
-        # (segments.apply_passthrough) and it survives re-segmentation
-        # (carry_passthrough). Reason-specific keeps (a bug triage flipping
-        # tts_failed, say) stay out of it — those are not the user's verdict
-        # about the SPAN, only about this attempt.
-        seg["passthrough"] = bool(keep)
+    # One concept, one key: the user's own verdict is also the pipeline's
+    # `passthrough` override, so a headless re-run honours it identically
+    # (segments.apply_passthrough) and it survives re-segmentation
+    # (carry_passthrough). EVERY write through this door carries it, whatever
+    # reason the caller names: the pipeline reads `passthrough`, not the reason
+    # string, so a keep written without it is reverted by the next run — the
+    # user's verdict overruled by a rerun, which is the one thing a lock exists
+    # to prevent. A stage that keeps a segment for its own reasons does not come
+    # through here (it writes `keep_reason` directly).
+    seg["passthrough"] = bool(keep)
     _lock(seg, "keep")
     # The clip is the wrong kind now (a synthesis for a keep, or a slice of the
     # original for a dub), whatever the tts lock said about the old one.
     _unlock(seg, "tts")
     invalidate(m, uid, stages={"translate"})
+    # `invalidate` protects a kept span's subtitle (it is not translate's to
+    # discard) — but this call is the flip itself, and the line it left behind was
+    # written for the other path. Same rule as `segments.apply_passthrough`: it
+    # goes, minus what the user wrote by hand.
+    if keep and not manifest.is_locked(seg, "text_en"):
+        seg.pop("text_en", None)
+        seg.pop("text_mid", None)
     return seg
 
 
@@ -248,6 +266,11 @@ def set_bounds(m: dict[str, Any], uid: str, start: float, end: float) -> dict[st
 
     Segments never overlap and never reorder — `timeline.place` relies on both, and
     a keep's clip is cut from exactly this span.
+
+    No lock is stamped: nothing honours one. Re-running the segments stage rebuilds
+    every span from the words and carries only `passthrough` forward, so a
+    `locked.bounds` promised the user something the next run would quietly break
+    (see `manifest.LOCK_FIELDS`).
     """
     seg = _require(m, uid)
     start, end = round(float(start), 3), round(float(end), 3)
@@ -267,7 +290,6 @@ def set_bounds(m: dict[str, Any], uid: str, start: float, end: float) -> dict[st
         seg["start"], seg["end"] = start, end
         _unlock(seg, "tts")          # a keep clip is cut from the span itself
         invalidate(m, uid, stages={"tts"})
-    _lock(seg, "bounds")
     return seg
 
 
@@ -409,9 +431,16 @@ def merge(m: dict[str, Any], uid_a: str, uid_b: str) -> str:
     merged["keep_reason"] = (a.get("keep_reason")
                              if merged["keep"] and a.get("keep_reason") == b.get("keep_reason")
                              else (MANUAL_REASON if merged["keep"] else None))
-    for key in ("lang", "src_lang", "tgt_lang", "tts_opts", "passthrough"):
+    for key in ("lang", "src_lang", "tgt_lang", "tts_opts", "detected_lang",
+                "passthrough"):
         if a.get(key) != b.get(key):
             merged.pop(key, None)
+    if merged["keep"] and merged["keep_reason"] == MANUAL_REASON:
+        # The merged span is now a keep the *user* owns, and `passthrough` is the
+        # only carrier of that: it is what a headless re-run honours and the only
+        # thing `carry_passthrough` can re-attach after a re-segmentation. Stamping
+        # the reason without it would invent a keep no later run reproduces.
+        merged["passthrough"] = True
     m["segments"][i:j + 1] = [merged]
     manifest.ensure_uids(m["segments"])
     _renumber(m)
@@ -431,6 +460,9 @@ def _derived(seg: dict[str, Any], *, start: float, end: float, text: str) -> dic
     of it. Dropped, it would survive as far as the next re-segmentation and no
     further — `mark_keep` would re-decide both halves with no override left for
     `carry_passthrough` to re-attach, and the passage would be dubbed again.
+    `detected_lang` rides along for the same reason: it is what the classifier
+    heard over that span, so it still describes every piece of it, and it is what
+    the app reads to suggest passthrough in the first place.
     """
     out: dict[str, Any] = {
         "id": seg.get("id", 0),
@@ -442,7 +474,8 @@ def _derived(seg: dict[str, Any], *, start: float, end: float, text: str) -> dic
         "keep": bool(seg.get("keep")),
         "keep_reason": seg.get("keep_reason") if seg.get("keep") else None,
     }
-    for key in ("lang", "src_lang", "tgt_lang", "tts_opts", "passthrough"):
+    for key in ("lang", "src_lang", "tgt_lang", "tts_opts", "detected_lang",
+                "passthrough"):
         if seg.get(key) is not None:
             out[key] = seg[key]
     return out

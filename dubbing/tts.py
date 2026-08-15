@@ -1080,15 +1080,21 @@ def clear_failed_keeps(segments: list[dict[str, Any]]) -> list[int]:
     resume path (same fingerprint after an interruption) skips reset_stage, and
     without this a resumed run would treat the failure as settled forever.
     Returns the ids that were cleared.
+
+    Both locks are honoured, through the same predicate the other two undo paths
+    use (`manifest.undo_pipeline_keep`): `locked.keep` is the user answering the
+    verdict ("yes, keep the original here") and `locked.tts` is the user approving
+    the slice it produced. This function used to guard only the second, so a
+    user-locked keep was silently re-decided on every single tts run while
+    `reset_stage` and `edit.invalidate` left it alone.
     """
     from . import manifest
 
     cleared: list[int] = []
     for seg in segments:
         if manifest.is_locked(seg, "tts"):
-            continue          # the user settled this one; a rerun does not re-decide it
-        if seg.get("keep_reason") == "tts_failed":
-            seg["keep"], seg["keep_reason"] = False, None
+            continue          # the user approved this clip; a rerun does not replace it
+        if manifest.undo_pipeline_keep(seg, manifest.PIPELINE_KEEPS["tts"]):
             seg.pop("tts", None)  # the keep-clip record; this run re-decides
             cleared.append(seg["id"])
     return cleared
