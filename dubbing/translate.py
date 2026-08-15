@@ -547,6 +547,13 @@ def _translate_instruction(text: str, source: str, target: str, context: str = "
                            genre: str = "documentary") -> str:
     """Comprehension prompt: faithful and complete, not literal or summarised.
 
+    `source` may be empty — the honest answer for a line whose language nothing
+    knows (see `segment_langs`). The prompt then names no source language at all
+    ("Translate the following text into German") instead of asserting the run's,
+    because a false claim about the input is worse than no claim: told a line of
+    English is Hebrew, the model hands the English straight back, the echo guard
+    correctly rejects it, and a translatable segment ends with nothing.
+
     `context` is an optional per-video note — who and what the video is about, and
     the established spellings of names the ASR tends to mangle. The model uses it to
     render "שייח' עמוזה" (a mistranscription) as "Sheikha Moza" rather than guessing.
@@ -585,7 +592,12 @@ def _translate_instruction(text: str, source: str, target: str, context: str = "
     never emitted alone). The pivot's second hop reads clean model English and
     passes False.
     """
-    src, tgt = _lang(source), _lang(target)
+    # An unknown source (see `segment_langs`) is named nowhere in the prompt: the
+    # instruction asks about "the following text", because asserting a language
+    # the pipeline cannot vouch for is the lie this exists to stop. A named source
+    # renders byte-identically to before.
+    src, tgt = (_lang(source) if source else ""), _lang(target)
+    labelled = f"{src} " if src else ""
     hint = f"{context.strip()}\n\n" if context and context.strip() else ""
     tail = f" {extra.strip()}" if extra and extra.strip() else ""
     before = _PRECEDING.format(prev=preceding.strip()) if preceding and preceding.strip() else ""
@@ -635,7 +647,7 @@ def _translate_instruction(text: str, source: str, target: str, context: str = "
     # while with named entities in the context it reliably reconciles garbled
     # proper nouns to them and leaves clean lines untouched.
     garble = (
-        f" The {src} text comes from automatic speech recognition and may mishear "
+        f" The {labelled}text comes from automatic speech recognition and may mishear "
         f"words — especially names: a garbled word may actually be one of the names "
         f"in the background above. When a word is incoherent in its context, prefer "
         f"the phonetically-closest plausible reading and match garbled names to the "
@@ -671,7 +683,7 @@ def _translate_instruction(text: str, source: str, target: str, context: str = "
     ) if source == "en" and target != "en" else ""
     return (
         f"{hint}{before}"
-        f"Translate the following {src} text into clear, natural {tgt} for subtitles. "
+        f"Translate the following {labelled}text into clear, natural {tgt} for subtitles. "
         f"Understand the meaning and translate it faithfully and completely: keep every "
         f"clause, every detail and any repeated emphasis; preserve all names, "
         f"organizations, numbers and specific references, using their established {tgt} "
@@ -682,7 +694,7 @@ def _translate_instruction(text: str, source: str, target: str, context: str = "
         f"translate word-for-word. {style}{movie}{numbers}{fluency}{echelon}{garble}{names_note}{military}{tail} "
         f"Output only the {tgt} translation, nothing else — no notes, no comments, no "
         f"square brackets and no alternative renderings.\n\n"
-        f"{src}: {text}"
+        f"{src or 'Text'}: {text}"
     )
 
 
@@ -755,6 +767,58 @@ def same_language(source: str, target: str) -> bool:
     return bool(source) and (source or "").lower() == (target or "").lower()
 
 
+# Below this many letters a line carries no script evidence worth acting on: a
+# number, an initial, a stray glyph, a one-word interjection.
+MIN_SCRIPT_LETTERS = 4
+
+
+def contradicts_source(text: str, source: str) -> bool:
+    """True when `text` is demonstrably not written in `source`'s script.
+
+    Script is a cheap, high-precision signal about what a line is *not*, and only
+    that — a Latin line inside a Hebrew run could be English, German or Turkish.
+    That is still the whole answer to "is the run's `--src` true of this segment",
+    which is the question worth asking before a prompt asserts it.
+
+    Silent for a same-script pair and for a line with too few letters to judge:
+    both are "no evidence", which is not the same as "no contradiction".
+    """
+    if sum(1 for ch in text or "" if ch.isalpha()) < MIN_SCRIPT_LETTERS:
+        return False
+    return not is_script(text or "", source)
+
+
+def segment_langs(seg: dict[str, Any], source: str, target: str) -> tuple[str, str]:
+    """This segment's (source, target) pair — its own knowledge, then the run's.
+
+    `--src` is a claim about the *video*, not about every line in it, and a video
+    that mixes languages breaks the claim segment by segment. Three things know
+    better, in order of authority: the editor's `src_lang` override (the user said
+    so), the span witness `lang` the transcript stage left (it heard so), and the
+    segment's own text, which is written in the script of whatever was spoken.
+
+    The third can only *refute*, so where it is all there is the source comes back
+    unknown (`""`) rather than guessed. Unknown is a usable answer, not a failure:
+    `_translate_instruction` then asserts no source language at all and
+    `pivot_via_english` sends the line straight to the target instead of through
+    an English hop premised on the claim just refuted. Told a line of English is
+    Hebrew, the model hands the English straight back, `_not_a_translation`
+    correctly rejects the echo, and a perfectly translatable segment ends with
+    nothing — which is the whole bug this exists to stop.
+
+    `tgt_lang` is the editor's target override; a target has no witness, only the
+    run's word and the user's.
+    """
+    tgt = (seg.get("tgt_lang") or target or "").strip().lower()
+    known = (seg.get("src_lang") or seg.get("lang") or "").strip().lower()
+    if known:
+        return known, tgt
+    src = (source or "").strip().lower()
+    if src and contradicts_source(seg.get("text") or "", src):
+        return "", tgt
+    return src, tgt
+
+
 def pivot_via_english(source: str, target: str) -> bool:
     """True when translation must route src→en→tgt instead of going direct.
 
@@ -764,11 +828,42 @@ def pivot_via_english(source: str, target: str) -> bool:
     inherited from the measured-good English line — so he→en improvements
     propagate to every target. Codes are normalised upstream; no aliasing here.
 
-    A same-language pair pivots nowhere: there is no hop to make.
+    A same-language pair pivots nowhere: there is no hop to make. Neither does an
+    unknown source (`segment_langs`) — the first hop would have to name a language
+    nothing knows, and a hop that lies about its input is what the pivot exists to
+    avoid.
     """
-    if same_language(source, target):
+    if not source or same_language(source, target):
         return False
     return source != "en" and target != "en"
+
+
+def mark_failed(seg: dict[str, Any]) -> bool:
+    """Record that this segment has no translation. True when it now keeps.
+
+    "Never silent" (AGENTS.md, invariant 1) says a segment the translator could
+    not do plays its original audio, with its own text as the subtitle. That is
+    the pipeline's answer to give — but only while the verdict is still the
+    pipeline's to make. `keep.user_wants_dub` names the case where it is not: the
+    user asked for this line to be dubbed, and answering with a keep both
+    overrules them (it restores the very audio they were replacing, so the button
+    appears to have done nothing) and contradicts the manifest, which then
+    flip-flops on every run.
+
+    So the user's "dub it" stands. The segment stays a dub with no `text_en` —
+    the `untranslated` state the editor already paints and offers a retry for.
+    Visibly unfinished beats invisibly reverted, and the floor still holds: `tts`
+    gives an unspeakable dub its original audio under its own honest reason.
+    """
+    from . import keep as keep_mod
+
+    if keep_mod.user_wants_dub(seg):
+        seg.pop("text_en", None)
+        seg.pop("text_mid", None)
+        return False
+    seg["keep"], seg["keep_reason"] = True, "mt_failed"
+    seg["text_en"] = seg["text"]
+    return True
 
 
 def is_target_text(text: str, target: str = "en") -> bool:
@@ -985,9 +1080,11 @@ def _leaks_source_script(out: str, source: str, target: str) -> bool:
     mostly translated but drags a source-script word along sails through it —
     and TTS then reads the foreign word aloud in the middle of the dub. Only
     meaningful when the two scripts differ; same-script pairs have no signal
-    and are never flagged.
+    and are never flagged. Nor is an unknown source (`segment_langs`): there is
+    no source script to hunt for, and `script_for`'s "latin" default for an
+    unknown code would condemn every Latin word in a Hebrew or Russian dub.
     """
-    if same_script(source, target):
+    if not source or same_script(source, target):
         return False
     return count_letters(out or "", script_for(source)) > 0
 
@@ -1358,15 +1455,35 @@ def needs_subtitle_translation(seg: dict[str, Any]) -> bool:
 
 
 def segment_source(seg: dict[str, Any], source: str) -> str:
-    """The language a segment is spoken in: its own, else the run's."""
-    return (seg.get("lang") or source or "").lower()
+    """The language a segment is spoken in: its own, else the run's.
+
+    Thin wrapper over `segment_langs` for the callers that only need the source
+    half (the same-language identity check). One rule, one implementation.
+    """
+    return segment_langs(seg, source, "")[0]
 
 
 def _assert_translated(segments: list[dict[str, Any]]) -> None:
     """Dubbed segments must have a translation; kept segments need not (an
-    "uncovered" keep is untranscribed audio that only plays as original sound)."""
+    "uncovered" keep is untranscribed audio that only plays as original sound).
+
+    One dub may end without one: the line whose translation failed while the user
+    had asked for it to be dubbed (`mark_failed`). This stage is not allowed to
+    answer that with a keep, so it answers with the truth — the segment is
+    reported as unfinished, `tts` still gives it audio, and the editor shows it
+    as untranslated with a retry.
+    """
+    from . import keep as keep_mod
+
+    stranded = [s["id"] for s in segments
+                if not s.get("keep") and not (s.get("text_en") or "").strip()
+                and keep_mod.user_wants_dub(s)]
+    if stranded:
+        print(f"  translate: {len(stranded)} segment(s) the user asked to dub are "
+              f"still untranslated: {stranded}", file=sys.stderr)
     missing = [s["id"] for s in segments
-               if not s.get("keep") and not (s.get("text_en") or "").strip()]
+               if not s.get("keep") and not (s.get("text_en") or "").strip()
+               and s["id"] not in stranded]
     assert not missing, f"dubbed segments without text_en: {missing}"
 
 
@@ -1452,13 +1569,16 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
             # marked multi-segment window makes the model drift a clause onto its
             # neighbour. The per-video `context` supplies names the ASR mangles, and
             # the preceding line settles a word sense the sentence alone cannot.
-            # A dubbable third-language segment (--dub-foreign) names its own source
-            # language and decides the pivot for itself: an English span on a he→ru
+            # A segment off the run's own language pair decides its hops for
+            # itself (`segment_langs`): a dubbable third-language span
+            # (--dub-foreign) named by the witness, a pair the editor overrode, or
+            # a line whose own script refutes `--src`. An English span on a he→ru
             # run goes en→ru directly, one hop. Its neighbour spoke a different
             # language, so the preceding line carries no tie-breaking signal — pass
             # none rather than mislead the model.
-            seg_src = seg.get("lang") or source
-            seg_pivot = pivot_via_english(seg_src, target)
+            seg_src, seg_tgt = segment_langs(seg, source, target)
+            own_pair = (seg_src, seg_tgt) != (source, target)
+            seg_pivot = pivot_via_english(seg_src, seg_tgt)
             # The preceding line is shown in the language the hop WRITES — the
             # previous English intermediate for a pivot's first hop, the
             # previous target output for a direct hop. Measured: garbled-name
@@ -1467,7 +1587,7 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
             # the first segment and wherever the previous translation failed.
             preceding = ""
             prev_mid = ""
-            if not seg.get("lang"):
+            if not own_pair:
                 prev = prev_of.get(seg["id"])
                 prior = ""
                 if prev is not None:
@@ -1477,7 +1597,7 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
                         prior = prev_mid
                     else:
                         prior = prev.get("text_en") or ""
-                        if not is_target_text(prior, target):
+                        if not is_target_text(prior, seg_tgt):
                             prior = ""     # kept/failed neighbour: subtitle, not output
                 preceding = prior.strip() or before.get(seg["id"], "")
             # Gloss clauses in the user context apply only where their word is
@@ -1512,39 +1632,42 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
                     # every entity-swap guard line — and fixed «запись»→«въезд»,
                     # a dangling «её», and a chameleon incoherence.
                     text = generate(processor, model, mid, source="en",
-                                    target=target, context=seg_ctx,
+                                    target=seg_tgt, context=seg_ctx,
                                     preceding=prev_mid,
                                     device=device, register=register, genre=genre,
-                                    names=tuple(canonical_names(established[target])),
+                                    names=tuple(canonical_names(
+                                        established.setdefault(seg_tgt, []))),
                                     numbers_spelled=True, asr_source=False)
             else:
                 # A direct en→tgt hop gets the same treatment as the pivot's
                 # second hop: spell the English digits in code first, then ask
                 # the model only to keep the number-words as words.
                 src_text = seg["text"]
-                en_direct = seg_src == "en" and target != "en"
+                en_direct = seg_src == "en" and seg_tgt != "en"
                 if en_direct:
                     src_text = numwords.spell_numbers(src_text, "en")
                 text = generate(processor, model, src_text, source=seg_src,
-                                target=target, context=seg_ctx,
+                                target=seg_tgt, context=seg_ctx,
                                 preceding=preceding, device=device,
                                 register=register, genre=genre,
-                                names=tuple(canonical_names(established[target])),
+                                names=tuple(canonical_names(
+                                    established.setdefault(seg_tgt, []))),
                                 numbers_spelled=en_direct)
             # target=="en": spell the final English; otherwise: safety net over
             # any digits the model passed through.
-            text = _finalize_numbers(text, target)
-            if is_target_text(text, target):
+            text = _finalize_numbers(text, seg_tgt)
+            if is_target_text(text, seg_tgt):
                 seg["text_en"] = text.strip()
-                established[target] = update_established_names(
-                    established[target], seg["text_en"], target)
+                established[seg_tgt] = update_established_names(
+                    established.setdefault(seg_tgt, []), seg["text_en"], seg_tgt)
                 if seg_pivot:
                     seg["text_mid"] = mids[seg["id"]]
-            else:
-                seg["keep"], seg["keep_reason"] = True, "mt_failed"
-                seg["text_en"] = seg["text"]
+            elif mark_failed(seg):
                 print(f"  translate: seg {seg['id']} failed → keep original",
                       file=sys.stderr)
+            else:
+                print(f"  translate: seg {seg['id']} failed → still untranslated "
+                      f"(the user asked for this line to be dubbed)", file=sys.stderr)
             if n % 8 == 0:
                 print(f"  translate: {n}/{len(dub)}", file=sys.stderr)
                 if save:
@@ -1555,23 +1678,24 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
             # applies here too, against the span's own text and language. An
             # interjection keep (movie mode) has no span language: it is source
             # speech kept for its actor's own voice, so it translates from the
-            # run's source language.
-            seg_lang = seg.get("lang") or source
+            # run's source language — unless its own script refutes that too
+            # (`segment_langs`).
+            seg_lang, seg_tgt = segment_langs(seg, source, target)
             seg_ctx = relevant_context(context, seg["text"], seg_lang)
-            if pivot_via_english(seg_lang, target):
+            if pivot_via_english(seg_lang, seg_tgt):
                 mid = generate(processor, model, seg["text"], source=seg_lang,
                                target="en", context=seg_ctx, device=device,
                                genre=genre)
                 text = "" if not is_target_text(mid, "en") else generate(
                     processor, model, numwords.spell_numbers(mid.strip(), "en"),
-                    source="en", target=target, context=seg_ctx, device=device,
+                    source="en", target=seg_tgt, context=seg_ctx, device=device,
                     numbers_spelled=True, asr_source=False, genre=genre)
             else:
                 text = generate(processor, model, seg["text"], source=seg_lang,
-                                target=target, context=seg_ctx, device=device,
+                                target=seg_tgt, context=seg_ctx, device=device,
                                 genre=genre)
-            text = _finalize_numbers(text, target)
-            seg["text_en"] = text.strip() if is_target_text(text, target) else "…"
+            text = _finalize_numbers(text, seg_tgt)
+            seg["text_en"] = text.strip() if is_target_text(text, seg_tgt) else "…"
         # Revision pass over the finished dubbing script (dubbed lines only —
         # kept segments' text_en is a subtitle of audio that will play as-is).
         # The entity table is canonicalised from the script's own proper-noun

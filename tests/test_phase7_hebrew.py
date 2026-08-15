@@ -306,7 +306,7 @@ def test_the_stage_tags_moved():
     # Hebrew synthesis changes what the tts stage produces, and identity
     # translation changes what translate produces; neither may replay old output.
     assert manifest.STAGE_TAGS["tts"] == "tts/v15"
-    assert manifest.STAGE_TAGS["translate"] == "translate/v34"
+    assert manifest.STAGE_TAGS["translate"] == "translate/v35"
 
 
 def test_ipa_is_not_a_manifest_field():
