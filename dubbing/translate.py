@@ -866,6 +866,20 @@ def mark_failed(seg: dict[str, Any]) -> bool:
     return True
 
 
+def untranslated(segments: list[dict[str, Any]]) -> list[int]:
+    """Dub-wanted segments with no translation — work a stage stamp cannot close.
+
+    `mark_failed` honours a user-locked dub by leaving it visibly unfinished:
+    keep=false, no `text_en`. Right per-segment answer, wrong stage stamp — a
+    manifest stamped "translate done" while these exist makes every later run
+    skip the stage, and the retry the editor promises never happens on a
+    re-run. The CLI's stage gate treats a non-empty answer here as not-done,
+    whatever the fingerprint says.
+    """
+    return [s["id"] for s in segments
+            if not s.get("keep") and not (s.get("text_en") or "").strip()]
+
+
 def is_target_text(text: str, target: str = "en") -> bool:
     """Reject empty / untranslated (still source-script) output.
 

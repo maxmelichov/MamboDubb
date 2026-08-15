@@ -292,9 +292,18 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             continue
         if manifest.stage_done(m, workdir, stage, fp, outputs[stage]):
-            print(f"[{stage}] up to date", file=sys.stderr)
-            manifest.mark_stage(m, stage, fp)
-            continue
+            # A matching fingerprint is not the whole truth for translate: a
+            # user-locked dub whose translation failed is left visibly
+            # unfinished (keep=false, no text_en) rather than reverted, and
+            # that unfinished work must reopen the stage or no re-run ever
+            # retries it.
+            holes = translate.untranslated(m["segments"]) if stage == "translate" else []
+            if not holes:
+                print(f"[{stage}] up to date", file=sys.stderr)
+                manifest.mark_stage(m, stage, fp)
+                continue
+            print(f"[translate] {len(holes)} line(s) still untranslated — re-entering",
+                  file=sys.stderr)
 
         print(f"[{stage}]", file=sys.stderr)
         t0 = time.time()

@@ -145,6 +145,26 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
         lang, prob = verdict
         return lang == src and float(prob) >= SPEAKER_EN_VETO_PROB
 
+    def names_other(seg: dict[str, Any]) -> bool:
+        """The audio classifier confidently names a language that is NOT the target.
+
+        The mirror of the named-span rule, for witnesses the transcript left
+        nameless: script cannot tell English from German, but the classifier
+        can, and a confident non-target name outranks "it looks like the
+        target's script" for exactly the reason a named span does — a he→de
+        run kept fifty lines of English as "already German" on script alone.
+        Same confidence bar as the source veto: an unsure verdict changes
+        nothing, and with no classifier at all nothing changes either.
+        """
+        if seg_lang is None:
+            return False
+        verdict = seg_lang(seg)
+        if not verdict:
+            return False
+        lang, prob = verdict
+        return (bool(lang) and lang != "und" and lang != target
+                and float(prob) >= SPEAKER_EN_VETO_PROB)
+
     for seg in segments:
         lang = span_lang(seg)
         if lang is not None:
@@ -158,7 +178,8 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
             # still the best evidence there is.
             named = lang not in ("", "und")
             in_target = (lang == target
-                         or (not named and cross and script.is_script(seg["text"], target)))
+                         or (not named and cross and script.is_script(seg["text"], target)
+                             and not names_other(seg)))
             if (dub_foreign and not in_target and lang and lang != "und"
                     and (seg.get("text") or "").strip() not in ("", "…")):
                 # Opted in, and the span is confident: known language, real words.
@@ -172,7 +193,8 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
             # original audio through rather than leaving a hole.
             seg["keep"], seg["keep_reason"] = True, "no_text"
         elif cross and script.is_script(seg["text"], target):
-            seg["keep"], seg["keep_reason"] = True, target_reason
+            seg["keep"] = True
+            seg["keep_reason"] = "foreign" if names_other(seg) else target_reason
         elif seg["speaker"] in en_speakers and not says_source(seg):
             seg["keep"], seg["keep_reason"] = True, "speaker_en"
         elif genre == "movie" and is_interjection_keep(seg, src, target):

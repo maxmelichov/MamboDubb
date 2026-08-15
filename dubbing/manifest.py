@@ -26,7 +26,10 @@ STAGE_TAGS = {
     # alignment+passthrough and the spoken_target/veto work), so the merged tag
     # moves past every claim rather than picking a side.
     "transcript": "transcript/v40",
-    "segments": "segments/v38",
+    # v39: a confident audio-LID witness naming a non-target language outranks
+    # the "already target script" clause, exactly as a named span witness does —
+    # nameless English lines in a he→de run were kept as "already German".
+    "segments": "segments/v39",
     # v34: a same-language pair (he→he, en→en) translates by identity — the target
     # line is the source line and no translator loads.
     # v35: a segment translates from its OWN language (`translate.segment_langs`),

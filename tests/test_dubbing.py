@@ -1791,3 +1791,59 @@ def test_speakable_none_for_failed_locked_dub():
     assert tts.speakable(failed) is None
     assert tts.speakable({"text_en": "   "}) is None
     assert tts.speakable({"text_en": "Guten Tag"}) == "Guten Tag"
+
+
+def test_audio_witness_outranks_target_script():
+    # he→de, English speech, nameless caption span: script alone said "already
+    # German". A confident audio-LID witness naming en (≠ de) outranks it, on
+    # the same rule a NAMED span witness does; an unsure or absent classifier
+    # changes nothing.
+    def seg_for():
+        return [{"id": 0, "start": 0.0, "end": 4.0, "speaker": "A",
+                 "text": "This is from the side."}]
+    spans = [{"start": 0.0, "end": 4.5, "lang": "",  # nameless witness
+              "words": [{"t": 0.5 * i, "text": w, "spk": "A"}
+                        for i, w in enumerate("This is from the side".split())]}]
+
+    segs = seg_for()
+    segments.mark_keep(segs, spans, target="de", seg_lang=lambda s: ("en", 0.95))
+    assert segs[0]["keep"] and segs[0]["keep_reason"] == "foreign"
+
+    # No classifier → the script clause keeps its say, as before.
+    segs = seg_for()
+    segments.mark_keep(segs, spans, target="de", seg_lang=None)
+    assert segs[0]["keep"] and segs[0]["keep_reason"] == "latin"
+
+    # Unsure verdict → below the veto bar, changes nothing.
+    segs = seg_for()
+    segments.mark_keep(segs, spans, target="de", seg_lang=lambda s: ("en", 0.5))
+    assert segs[0]["keep_reason"] == "latin"
+
+    # The classifier naming the TARGET agrees with the script — still kept as target.
+    segs = seg_for()
+    segments.mark_keep(segs, spans, target="de", seg_lang=lambda s: ("de", 0.95))
+    assert segs[0]["keep_reason"] == "latin"
+
+    # Same rule on the no-span path (segment not from any detected span).
+    segs = seg_for()
+    segments.mark_keep(segs, [], target="de", seg_lang=lambda s: ("en", 0.95))
+    assert segs[0]["keep"] and segs[0]["keep_reason"] == "foreign"
+
+    # he→en: en IS the target, so the audio witness confirms rather than vetoes.
+    segs = seg_for()
+    segments.mark_keep(segs, spans, target="en", seg_lang=lambda s: ("en", 0.95))
+    assert segs[0]["keep_reason"] == "latin"
+
+
+def test_untranslated_reopens_translate():
+    # mark_failed on a user-locked dub leaves keep=false with no text_en — the
+    # honest unfinished state. untranslated() is the stage gate's answer: those
+    # lines mean the stage is NOT done, whatever the fingerprint says.
+    segs = [
+        {"id": 0, "keep": False, "text_en": None},         # unfinished
+        {"id": 1, "keep": False, "text_en": "  "},         # unfinished (blank)
+        {"id": 2, "keep": False, "text_en": "Guten Tag"},  # translated
+        {"id": 3, "keep": True},                           # kept: no text needed
+    ]
+    assert translate.untranslated(segs) == [0, 1]
+    assert translate.untranslated([{"id": 0, "keep": False, "text_en": "x"}]) == []
