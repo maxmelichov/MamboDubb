@@ -338,6 +338,81 @@ def test_records_written_before_the_fingerprint_existed_are_left_alone(tmp_path)
     assert not tts_mod.needs_synthesis(s, tmp_path)
 
 
+# --------------------------------- tts_opts on a kept segment (D-9 / audit 9)
+
+class KeepEngine(tts_mod.Engine):
+    """A real Engine with the ffmpeg calls replaced — the bookkeeping is the point."""
+
+    def __init__(self, tmp_path, monkeypatch):
+        m = {"source": {"src_lang": "he", "tgt_lang": "en"},
+             "files": {"source_wav": "source.wav", "vocals": "stems/vocals.wav"},
+             "speakers": {}, "segments": []}
+        super().__init__(m, tmp_path)
+        self.cut: list[tuple] = []
+        self.tempo: list[float] = []
+        monkeypatch.setattr(tts_mod.audio, "extract_slice",
+                            lambda src, a, b, out: (self.cut.append((a, b, out)),
+                                                    out.write_bytes(b"x")))
+        monkeypatch.setattr(tts_mod.audio, "atempo",
+                            lambda raw, out, rate: (self.tempo.append(rate),
+                                                    out.write_bytes(b"x")))
+        monkeypatch.setattr(tts_mod.audio, "duration",
+                            lambda p: 2.0 / (self.tempo[-1] if self.tempo else 1.0))
+
+
+def test_speed_on_a_kept_segment_reaches_the_slice(tmp_path, monkeypatch):
+    eng = KeepEngine(tmp_path, monkeypatch)
+    plain = eng.keep_clip(seg(keep=True, keep_reason="user"))
+    assert eng.tempo == [] and plain["span"] == 2.0
+
+    fast = eng.keep_clip(seg(keep=True, keep_reason="user", tts_opts={"speed": 1.5}))
+    assert eng.tempo == [1.5]
+    # A different clip for different audio, and the span it was cut for recorded
+    # so the timeline can still prove it is this segment's audio.
+    assert fast["clip"] != plain["clip"] and fast["span"] == 2.0
+    assert fast["opts"]                        # fingerprinted, so a change re-cuts
+
+
+def test_changing_speed_on_a_kept_segment_re_cuts_the_slice(tmp_path, monkeypatch):
+    eng = KeepEngine(tmp_path, monkeypatch)
+    s = seg(keep=True, keep_reason="user", tts_opts={"speed": 1.5})
+    s["tts"] = eng.keep_clip(s)
+    (tmp_path / s["tts"]["clip"]).write_bytes(b"x")
+    assert not tts_mod.keep_needs_slice(s, tmp_path)
+    s["tts_opts"] = {"speed": 1.2}
+    assert tts_mod.keep_needs_slice(s, tmp_path)
+
+
+def test_the_timeline_accepts_a_kept_clip_a_tempo_made_shorter():
+    m = mk(seg(keep=True, keep_reason="user", text_en="…", tts_opts={"speed": 2.0},
+               tts={"clip": "clips/k.wav", "dur": 1.0, "span": 2.0, "verify": "keep"}))
+    assert timeline.build_items(m)[0]["dur"] == 1.0
+    # …and still refuses a slice cut for a different moment (ids are renumbered;
+    # an id-keyed cache once handed back the wrong span's audio).
+    m["segments"][0]["tts"]["span"] = 7.0
+    with pytest.raises(AssertionError):
+        timeline.build_items(m)
+
+
+def test_synthesis_only_options_are_refused_on_a_kept_segment():
+    m = mk(seg(keep=True, keep_reason="user", text_en="…"))
+    uid = m["segments"][0]["uid"]
+    with pytest.raises(edit.EditError) as exc:
+        edit.set_tts_opts(m, uid, seed=7)
+    assert "original audio" in str(exc.value)
+    for key, value in (("greedy", True), ("ref", "refs/x.wav"), ("model", "0.6b"),
+                       ("max_new_tokens", 512), ("top_k", 5)):
+        with pytest.raises(edit.EditError):
+            edit.set_tts_opts(m, uid, **{key: value})
+    # What does apply to a kept slice is accepted.
+    edit.set_tts_opts(m, uid, speed=1.4)
+    assert m["segments"][0]["tts_opts"] == {"speed": 1.4}
+    # And on a dubbed segment nothing changes.
+    m2 = mk(seg(text_en="Hello"))
+    edit.set_tts_opts(m2, m2["segments"][0]["uid"], seed=7)
+    assert m2["segments"][0]["tts_opts"] == {"seed": 7}
+
+
 # ------------------------------------- the job says what it did (S-F3/F4)
 
 class FallbackEngine:

@@ -995,15 +995,42 @@ class Engine:
         Named by the span itself, never by segment id: ids are renumbered
         whenever segmentation changes, and an id-keyed cache then hands back a
         clip of the wrong length for the wrong moment.
+
+        `tts_opts.speed` applies here too, through the same atempo path a dub
+        uses: it is post-processing on finished audio, and a keep is finished
+        audio. It used to be accepted on a kept segment and quietly do nothing.
+        The other options cannot apply — there is no synthesis call to send them
+        to — and `edit.set_tts_opts` refuses them on a keep rather than storing a
+        knob that does nothing (`keep_pauses` is the exception that is already
+        true: a keep's silences are the original's, untouched, which is exactly
+        what it asks for).
+
+        The record carries the span it was cut for. The clip's *duration* is no
+        longer that span once a tempo is applied, and `timeline.build_items`
+        needs to know it is looking at this segment's audio — the recorded span
+        is what it checks.
         """
-        want = seg["end"] - seg["start"]
-        key = hashlib.sha1(f"{seg['start']:.3f}|{seg['end']:.3f}".encode()).hexdigest()[:12]
+        opts = ttsopts.parse(seg.get("tts_opts"))
+        span = round(float(seg["end"]) - float(seg["start"]), 3)
+        fp = opts.fingerprint()
+        blob = f"{seg['start']:.3f}|{seg['end']:.3f}" + (f"|{fp}" if fp else "")
+        key = hashlib.sha1(blob.encode()).hexdigest()[:12]
         path = self.clips / f"keep_{key}.wav"
+        want = span / opts.speed
         if not path.is_file() or abs(audio.duration(path) - want) > 0.1:
-            audio.extract_slice(self.workdir / self.m["files"]["source_wav"],
-                                seg["start"], seg["end"], path)
-        return {"clip": f"clips/{path.name}", "dur": round(audio.duration(path), 3),
-                "tries": 0, "overlap": 1.0, "verify": "keep"}
+            source = self.workdir / self.m["files"]["source_wav"]
+            if opts.speed == 1.0:
+                audio.extract_slice(source, seg["start"], seg["end"], path)
+            else:
+                raw = path.with_suffix(".raw.wav")
+                audio.extract_slice(source, seg["start"], seg["end"], raw)
+                audio.atempo(raw, path, opts.speed)
+                raw.unlink(missing_ok=True)
+        rec = {"clip": f"clips/{path.name}", "dur": round(audio.duration(path), 3),
+               "tries": 0, "overlap": 1.0, "verify": "keep", "span": span}
+        if fp:
+            rec["opts"] = fp
+        return rec
 
     def close(self) -> None:
         if self._synth is not None:
@@ -1207,6 +1234,20 @@ def has_clip(seg: dict[str, Any], workdir: Path) -> bool:
     return bool(seg.get("tts")) and (workdir / seg["tts"]["clip"]).is_file()
 
 
+def keep_needs_slice(seg: dict[str, Any], workdir: Path) -> bool:
+    """True when this kept segment needs its original-audio slice (re)cut.
+
+    The mirror of `needs_synthesis` for the other path. A keep's options are
+    fingerprinted onto its record too, so setting `tts_opts.speed` on a kept
+    segment re-cuts the slice instead of leaving the old one in place looking
+    like the edit took.
+    """
+    if not has_clip(seg, workdir):
+        return True
+    return (seg["tts"].get("opts", "")
+            != ttsopts.parse(seg.get("tts_opts")).fingerprint())
+
+
 def pending(segments: list[dict[str, Any]], workdir: Path) -> list[dict[str, Any]]:
     """The dubbed segments this stage must synthesize.
 
@@ -1301,8 +1342,14 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
     if save:
         save()
 
+    from . import manifest
+
     for seg in m["segments"]:
-        if seg["keep"] and not (seg.get("tts") and (workdir / seg["tts"]["clip"]).is_file()):
+        if not seg["keep"]:
+            continue
+        if manifest.is_locked(seg, "tts") and has_clip(seg, workdir):
+            continue          # the user approved this slice; a rerun does not re-cut it
+        if keep_needs_slice(seg, workdir):
             seg["tts"] = engine.keep_clip(seg)
     missing = [s["id"] for s in m["segments"] if not s.get("tts")]
     assert not missing, f"segments without audio: {missing}"

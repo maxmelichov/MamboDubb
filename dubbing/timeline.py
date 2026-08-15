@@ -332,11 +332,16 @@ def build_items(m: dict[str, Any]) -> list[dict[str, Any]]:
     items = []
     for seg in sorted(m["segments"], key=lambda s: s["start"]):
         if seg["keep"]:
-            # Kept audio is the original span, so its clip must be exactly that
-            # long. Anything else means the wrong audio is about to be placed.
+            # Kept audio is a slice of THIS span — anything else means the wrong
+            # moment's audio is about to be placed (an id-keyed cache once did
+            # exactly that). What is checked is the span the slice was cut for,
+            # recorded on the clip: with `tts_opts.speed` on a kept segment the
+            # clip is deliberately shorter than its span. Records made before that
+            # was recorded fall back to the duration, i.e. exactly today's check.
             span = seg["end"] - seg["start"]
-            assert abs(float(seg["tts"]["dur"]) - span) < 0.15, (
-                f"seg {seg['id']}: kept clip is {seg['tts']['dur']:.2f}s "
+            cut_for = float(seg["tts"].get("span", seg["tts"]["dur"]))
+            assert abs(cut_for - span) < 0.15, (
+                f"seg {seg['id']}: kept clip was cut for {cut_for:.2f}s "
                 f"but its source span is {span:.2f}s"
             )
         items.append({

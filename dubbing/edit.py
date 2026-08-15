@@ -46,6 +46,12 @@ DOWNSTREAM = {"translate": ("tts", "timeline"), "tts": ("timeline",), "timeline"
 # Stages `rebuild` can start from. Everything earlier needs the source media and
 # belongs to a full `python -m dubbing` run, not to an edit.
 REBUILDABLE = ("translate", "tts", "timeline", "mix", "report")
+# `tts_opts` keys that only reach the synthesis call. A kept segment has no
+# synthesis, so on one they are inert — see `set_tts_opts`. (`speed` applies:
+# it is post-processing on the finished slice. `keep_pauses` asks for exactly
+# what a kept slice already is, so it is a documented no-op rather than a lie.)
+SYNTHESIS_ONLY_OPTS = ("seed", "greedy", "ref", "ref_text", "model", "temperature",
+                       "top_p", "top_k", "repetition_penalty", "max_new_tokens")
 
 
 class EditError(ValueError):
@@ -329,8 +335,22 @@ def set_tts_opts(m: dict[str, Any], uid: str, **opts: Any) -> dict[str, Any]:
     stage down instead of the edit that caused it. `None` removes an option; no
     options at all removes the whole record, as does a patch that only restates
     the defaults.
+
+    On a segment that is currently a KEEP there is no synthesis call, so the
+    options that only reach one (`SYNTHESIS_ONLY_OPTS`) are refused instead of
+    being stored where they would sit doing nothing — the same rule ttsopts
+    applies to greedy-plus-sampler, one step further out. What does apply to a
+    keep is `speed`, which `tts.keep_clip` bakes into the slice.
     """
     seg = _require(m, uid)
+    if seg.get("keep"):
+        inert = sorted(k for k in opts if k in SYNTHESIS_ONLY_OPTS and opts[k] is not None)
+        if inert:
+            raise EditError(
+                f"{', '.join(inert)}: this segment plays its original audio "
+                f"(keep_reason={seg.get('keep_reason')!r}), so nothing synthesizes it "
+                "and these would do nothing. Un-keep it first (set_keep(keep=False)), "
+                "or set `speed`, which does apply to a kept slice.")
     try:
         current = ttsopts.merge(seg.get("tts_opts"), opts)
     except ValueError as exc:
