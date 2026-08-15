@@ -218,6 +218,12 @@ export type CreateProjectRequest = {
   context?: string | null;
   genre?: "documentary" | "movie" | null;
   register?: "narration" | "dialogue" | null;
+  /**
+   * Translate and voice speech that is in neither the source nor the target
+   * language. Off by default, which is the pipeline's own default: a third
+   * language is KEPT — played as recorded, subtitled — unless the run opts in.
+   */
+  dub_foreign?: boolean;
 };
 
 export type CreateProjectResponse = { name: string; job: Job };

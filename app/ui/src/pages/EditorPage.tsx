@@ -298,16 +298,23 @@ export function EditorPage() {
    * The other direction queues nothing — the original audio is already on disk
    * — and cancels nothing either: a running job belongs to whatever asked for
    * it, not to this line.
+   *
+   * `queue` is how a caller flipping *many* lines borrows this without
+   * borrowing 2N jobs: it takes the PATCH, the lock and the optimistic predict
+   * exactly as they are, and queues the work itself, once, over the lot. The
+   * saved segment comes back for that reason — the server's answer is what says
+   * whether the translation survived the flip.
    */
   const setVerdict = useCallback(
-    async (seg: Segment, keep: boolean) => {
-      if (seg.keep === keep) return;
+    async (seg: Segment, keep: boolean, queue = true): Promise<Segment | null> => {
+      if (seg.keep === keep) return null;
       const saved = await actions.patch(
         seg.uid,
         keep ? { keep: true, keep_reason: "manual" } : { keep: false },
       );
-      if (!saved || keep) return;
-      await queueDubWork([saved]);
+      if (!saved || keep) return saved;
+      if (queue) await queueDubWork([saved]);
+      return saved;
     },
     [actions, queueDubWork],
   );
@@ -324,6 +331,37 @@ export function EditorPage() {
       void queueDubWork(segments.filter((seg) => wanted.has(seg.uid)));
     },
     [queueDubWork, segments],
+  );
+
+  /**
+   * The same flip, over a filtered set: "dub these too".
+   *
+   * The case is a run the keep rule got wrong — a video of a third language
+   * read as "already the target", kept whole, and audibly the original. The
+   * only way out was one line at a time, N times, and a run is two hundred
+   * lines long.
+   *
+   * The PATCHes go one at a time and in order, because each one is a distinct
+   * lock and the server answers each with the segment it produced; the work
+   * goes at the end, over every segment the server gave back, so a hundred
+   * flips still cost at most one translate and one voice. Sequential and not
+   * `Promise.all` on purpose: the flips must all land before the translate is
+   * enqueued, or the job runs against lines the server has not written yet.
+   */
+  const dubMany = useCallback(
+    (uids: string[]) => {
+      const wanted = new Set(uids);
+      void (async () => {
+        const flipped: Segment[] = [];
+        for (const seg of segments) {
+          if (!wanted.has(seg.uid) || !seg.keep) continue;
+          const saved = await setVerdict(seg, false, false);
+          if (saved) flipped.push(saved);
+        }
+        await queueDubWork(flipped);
+      })();
+    },
+    [queueDubWork, segments, setVerdict],
   );
 
   /**
@@ -535,6 +573,7 @@ export function EditorPage() {
               onRetranslateMany={(uids) => void actions.retranslate(uids)}
               onResynthesizeMany={(uids) => void actions.resynthesize(uids)}
               onFixMany={fixMany}
+              onDubMany={dubMany}
             />
 
             {/*

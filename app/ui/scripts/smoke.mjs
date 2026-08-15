@@ -321,6 +321,25 @@ check(
   optionsOf(selects[1]).includes("he"),
 );
 
+/*
+ * A third language is the case the two selects cannot express: English inside a
+ * Hebrew→German run is neither the spoken language nor the dub's, and the
+ * pipeline KEEPS it — played as recorded, subtitled — unless the run opts in.
+ * That opt-in was reachable only from the CLI, so a run started here could
+ * never ask for it. It is off by default, because off is what the pipeline does
+ * when nobody says otherwise, and the clause under it is not decoration: the
+ * whole difference between the two states is what happens to speech the user
+ * has not thought about yet.
+ */
+const foreignBox = () => document.querySelector("[data-dub-foreign] input[type=checkbox]");
+check("a third language can be dubbed rather than kept", foreignBox() != null);
+check("…and the default is the pipeline's, which is off", foreignBox().checked === false);
+check(
+  "…with the consequence of leaving it off spelled out",
+  /Dub foreign speech/.test(root.textContent) &&
+    /plays as recorded, subtitled/.test(root.textContent),
+);
+
 // Genre and register are two-way choices with a clause each, so they are rows
 // and a pill rather than two more dropdowns — but they are still one-of-N, and
 // one of each pair is always on.
@@ -872,6 +891,89 @@ await settle(200);
 check("the Unfinished chip toggles back off too", rows().length > 40);
 
 /*
+ * The Kept chip, and the way out of a whole video kept by mistake.
+ *
+ * The keep rule read a video of English inside a he→de run as "already the
+ * target" and kept every line of it, so the German dub was audibly the
+ * original. The rule is fixed, but a run already on disk is still fifty-eight
+ * verdicts, and the only way to change them was one line at a time. So the
+ * chip that selects them offers the flip over the set it has selected.
+ *
+ * Four claims, and the third is the one that makes it safe to press: the set is
+ * *what is on screen*, so the search box narrows it and the button says so; the
+ * rewrite is confirmed before it fires; and however many lines it takes, it
+ * costs one translate and one voice, not 2N.
+ */
+const setInput = (el, value) => {
+  Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(
+    el,
+    value,
+  );
+  el.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+};
+const bulkBar = () => document.querySelector('[data-bulk="kept"]');
+const dubTrigger = () =>
+  [...(bulkBar()?.querySelectorAll("button") ?? [])].find((b) => b.hasAttribute("aria-expanded"));
+const dialogButton = (label) =>
+  [...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent === label);
+
+clickIt(chip("Kept"));
+await settle(200);
+check("the Kept chip narrows to the lines that play as recorded", rows().length === 27);
+check("…and offers to dub the lot in one gesture", /Dub these 27/.test(dubTrigger().textContent));
+check(
+  "…over the same count the chip is showing",
+  /Kept\s*27/.test(chip("Kept").textContent),
+);
+
+const beforeBulk = calls().log.length;
+clickIt(dubTrigger());
+await settle(150);
+check(
+  "rewriting 27 verdicts asks first, and says what it costs",
+  /27 lines switch to dubbed/.test(document.querySelector('[role="dialog"]').textContent) &&
+    /translate \+ voice queue behind any running job/.test(root.textContent),
+);
+check("…and sends nothing while it is asking", calls().log.length === beforeBulk);
+clickIt(dialogButton("Cancel"));
+await settle(150);
+check(
+  "…so cancelling changes no verdict",
+  calls().log.length === beforeBulk && rows().length === 27,
+);
+
+// The search box is a filter like any other, and a bulk button that ignored it
+// would act on two hundred lines while eleven are on screen.
+const searchBox = document.querySelector('[aria-label="Search the script"]');
+setInput(searchBox, "Qatari");
+await settle(200);
+check("a search narrows the kept set too", rows().length === 2);
+check("…and the button counts the rows on screen", /Dub these 2/.test(dubTrigger().textContent));
+check(
+  "…saying out loud that it is the search's set, not the run's",
+  /not every kept line in the run/.test(bulkBar().textContent),
+);
+
+clickIt(dubTrigger());
+await settle(150);
+clickIt(dialogButton("Dub these 2"));
+await settle(700);
+check(
+  "the bulk flip is one PATCH per line, then one translate and one voice for the lot",
+  calls().log.slice(beforeBulk).join() === "patch,patch,retranslate,resynthesize",
+);
+check("…and the lines it flipped have left the kept filter", rows().length === 0);
+
+setInput(searchBox, "");
+await settle(200);
+check("the rest of the run is still kept", rows().length === 25);
+clickIt(chip("Kept"));
+await settle(200);
+check("the Kept chip toggles back off as well", rows().length > 40);
+await settle(2400);
+check("the two jobs it queued drain", document.querySelector("[data-job-strip]") == null);
+
+/*
  * The selection panel. It holds everything true *about* a line and no text
  * field for the line itself — the text is in the script, where the comparison
  * is. Four shelves, all shut, all named for what is on them.
@@ -1239,6 +1341,40 @@ check("…space does nothing either — the key is the same control", clock() ==
 check(
   "a run with no segments stage has no script, and says so",
   document.querySelectorAll('[role="option"]').length === 0 && /No segments yet/.test(root.textContent),
+);
+
+/*
+ * The import screen's switches only exist to be *sent*: the screen shows no
+ * consequence of any of them, so the request body is the only place their
+ * correctness is observable. "Dub foreign speech" is the one that had no way to
+ * reach a run at all — the pipeline takes `--dub-foreign`, the server's
+ * CreateProject has always accepted it, and the screen never put it in the
+ * body, so a run started here could only ever keep a third language.
+ *
+ * Last in the file because starting a run is the one action on that screen that
+ * mutates the fixture store and occupies the one-job queue for the length of a
+ * whole pipeline.
+ */
+await go("/", 300);
+const SOURCE = "https://example.com/watch?v=three_languages";
+check("the import screen still carries the switch", foreignBox() != null);
+setInput(document.querySelector('[aria-label="Source"]'), SOURCE);
+await settle(80);
+clickIt(foreignBox());
+await settle(120);
+check("the switch flips", foreignBox().checked === true);
+
+const createdBefore = calls().created.length;
+[...document.querySelectorAll("button")]
+  .find((b) => b.textContent.includes("Start dubbing"))
+  .dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+await settle(400);
+check("starting sends exactly one create", calls().created.length === createdBefore + 1);
+const created = calls().created.at(-1);
+check("…carrying the source that was typed", created.source === SOURCE);
+check(
+  "…and dub_foreign, which no run started here could ask for before",
+  created.dub_foreign === true,
 );
 
 check(

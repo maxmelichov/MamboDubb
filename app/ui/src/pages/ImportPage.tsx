@@ -49,6 +49,7 @@ import {
   Button,
   Card,
   CardSection,
+  Checkbox,
   Divider,
   Empty,
   ErrorBlock,
@@ -117,6 +118,8 @@ export function ImportPage() {
     context: "",
     genre: "documentary",
     register: "narration",
+    // Off, because off is what the pipeline does when nobody says otherwise.
+    dub_foreign: false,
   });
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -329,6 +332,29 @@ export function ImportPage() {
                 no translation happens.
               </p>
             ) : null}
+
+            {/*
+              A third language is the case the two selects above cannot express:
+              English inside a Hebrew→German run is neither the spoken language
+              nor the dub's. The pipeline keeps such a line by default — it plays
+              as recorded, with a subtitle — and this is the one place a run can
+              say otherwise before it starts. It lives under Languages because it
+              is a question about languages, not about scope.
+            */}
+            <label className="mt-3 flex items-start gap-2.5" data-dub-foreign>
+              <Checkbox
+                className="mt-[3px]"
+                checked={Boolean(form.dub_foreign)}
+                onChange={(event) => update({ dub_foreign: event.currentTarget.checked })}
+              />
+              <span className="min-w-0">
+                <span className="block text-[12.5px] text-secondary">Dub foreign speech</span>
+                <span className="mt-0.5 block text-[12px] leading-relaxed text-muted">
+                  A third language inside the video is translated and voiced too — otherwise it
+                  plays as recorded, subtitled.
+                </span>
+              </span>
+            </label>
           </CardSection>
 
           <Divider />

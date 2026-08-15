@@ -115,6 +115,15 @@ export const calls = {
   // that still fires would look identical from the DOM.
   install: 0,
   log: [] as string[],
+  /**
+   * Every body the import screen has sent, kept whole.
+   *
+   * A counter cannot answer the question this one is asked: whether a switch on
+   * that screen reached the request. The options rail is a pile of fields that
+   * only exist to be *sent* — the screen shows no consequence of any of them —
+   * so the sent body is the only place their correctness is observable.
+   */
+  created: [] as CreateProjectRequest[],
 };
 (globalThis as { __DUBBING_FIXTURE_CALLS__?: typeof calls }).__DUBBING_FIXTURE_CALLS__ = calls;
 
@@ -660,6 +669,8 @@ export function cancelJob(id: string): Promise<void> {
 }
 
 export function createProject(body: CreateProjectRequest): Promise<CreateProjectResponse> {
+  calls.created.push(structuredClone(body));
+  calls.log.push("createProject");
   store.project.source = {
     ...store.project.source,
     input: body.source,

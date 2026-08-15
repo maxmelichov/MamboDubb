@@ -21,13 +21,17 @@
  * always sent exactly one. Eleven separate jobs is eleven model loads, in a
  * process where only one model may be resident at a time — so it is not a
  * convenience, it is the difference between one minute and twenty.
+ *
+ * Kept is the third chip with a bulk offer and the only one whose button
+ * changes a *verdict* rather than re-running a stage, which is why it is the
+ * only one that asks first.
  */
 
 import { useEffect, useMemo, useRef } from "react";
-import { Languages, ListX, Search, Volume2 } from "lucide-react";
+import { Languages, ListX, Mic2, Search, Volume2 } from "lucide-react";
 import { cn } from "../lib/classNames";
 import { hasLocks, segmentState, unfinished } from "../lib/segments";
-import { Button, Empty } from "./ui";
+import { Button, ConfirmButton, Empty } from "./ui";
 import { ScriptRow, type EditTarget } from "./ScriptRow";
 import type { Segment } from "../lib/types";
 
@@ -92,6 +96,7 @@ export function ScriptPane({
   onRetranslateMany,
   onResynthesizeMany,
   onFixMany,
+  onDubMany,
 }: {
   segments: Segment[];
   selectedUid: string | null;
@@ -115,6 +120,8 @@ export function ScriptPane({
   onResynthesizeMany: (uids: string[]) => void;
   /** Translate whatever has no line, then voice all of them — in that order. */
   onFixMany: (uids: string[]) => void;
+  /** Flip every one of these from keep to dub, then queue the work once. */
+  onDubMany: (uids: string[]) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -241,6 +248,26 @@ export function ScriptPane({
   const showBulk = (filter === "failed" || filter === "unfinished") && bulkUids.length > 0;
   const lines = `${bulkUids.length} line${bulkUids.length === 1 ? "" : "s"}`;
 
+  /*
+   * The third bulk offer, and the only one that changes a verdict rather than
+   * re-running a stage.
+   *
+   * A kept line plays as recorded. When the keep rule was wrong about a whole
+   * video — a third language read as "already the target", which is what a
+   * Hebrew→German run full of English used to be — every one of those lines is
+   * a keep the reviewer disagrees with, and the only way out was the per-line
+   * flip, N times. This is that flip over the set on screen.
+   *
+   * It is the set *on screen* and not "every kept line in the run": the search
+   * box is a filter like any other, and a button that quietly acted on two
+   * hundred lines when eleven are showing would be the worst kind of bulk
+   * action. It says which it is, in the sentence beside it.
+   */
+  const keptUids = filter === "kept" ? visible.map((seg) => seg.uid) : [];
+  const searching = query.trim().length > 0;
+  const showDubBulk = filter === "kept" && keptUids.length > 0;
+  const keptLines = `${keptUids.length} line${keptUids.length === 1 ? "" : "s"}`;
+
   return (
     <section
       className={cn(
@@ -324,6 +351,39 @@ export function ScriptPane({
               </Button>
             </>
           )}
+        </div>
+      ) : null}
+
+      {showDubBulk ? (
+        <div
+          data-bulk="kept"
+          className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-sunken px-3 py-1.5"
+        >
+          <span className="min-w-0 flex-1 text-[11px] text-secondary">
+            {searching ? (
+              <>
+                {keptLines} play as recorded — the ones this search leaves on screen, not every
+                kept line in the run.
+              </>
+            ) : (
+              <>{keptLines} play as recorded, subtitled. One click, at most two jobs.</>
+            )}
+          </span>
+          <ConfirmButton
+            size="xs"
+            confirmLabel={`Dub these ${keptUids.length}`}
+            message={
+              <>
+                {keptUids.length} line{keptUids.length === 1 ? "" : "s"} switch to dubbed
+                {searching ? " — the ones this search leaves on screen" : ""}; translate + voice
+                queue behind any running job.
+              </>
+            }
+            onConfirm={() => onDubMany(keptUids)}
+          >
+            <Mic2 className="h-3 w-3" />
+            Dub these {keptUids.length}
+          </ConfirmButton>
         </div>
       ) : null}
 
