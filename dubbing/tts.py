@@ -1322,6 +1322,8 @@ def pending(segments: list[dict[str, Any]], workdir: Path) -> list[dict[str, Any
 
 def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = None,
         model: str = DEFAULT_TTS_MODEL) -> Engine:
+    from . import manifest
+
     engine = Engine(m, workdir, device=device, model=model)
     # This run's own excuses only: whatever the last one could not load may well
     # be there now, and a stale note is a lie of the same family as a missing one.
@@ -1399,8 +1401,7 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
     if save:
         save()
 
-    from . import manifest
-
+    # Every keep gets its original-audio slice — that is the never-silent floor.
     for seg in m["segments"]:
         if not seg["keep"]:
             continue
