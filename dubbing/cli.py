@@ -209,8 +209,7 @@ def main(argv: list[str] | None = None) -> int:
               f"({', '.join(str(i) for i in flipped[:8])}"
               f"{'…' if len(flipped) > 8 else ''}) — redoing from translate",
               file=sys.stderr)
-        for stale in ("translate", "tts", "timeline", "mix", "report"):
-            (m.get("stages") or {}).pop(stale, None)
+        manifest.reopen_from(m, "translate")
 
     apply_force(m, args.force)
 

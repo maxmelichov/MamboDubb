@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from dubbing import cli, edit, manifest, segments, timeline, translate
+from dubbing import STAGES, cli, edit, manifest, segments, timeline, translate
 from dubbing import tts as tts_mod
 
 
@@ -291,6 +291,98 @@ def test_invalidate_rejects_an_unknown_stage():
     m = two_segs()
     with pytest.raises(edit.EditError):
         edit.invalidate(m, m["segments"][0]["uid"], stages={"mix"})
+
+
+# ------------------------------------------------- edit: the run's stage marks
+
+def finished(m):
+    """A run where every stage is marked done, as a finished one's manifest is."""
+    m["stages"] = {s: {"fp": f"fp-{s}"} for s in STAGES}
+    m["progress"] = {s: f"fp-{s}" for s in STAGES}
+    return m
+
+
+def test_invalidate_reopens_the_stages_whose_work_it_deleted():
+    m = finished(two_segs())
+    edit.invalidate(m, m["segments"][0]["uid"], stages={"translate"})
+    # Deleting a translation, a clip and a placement while the run still says
+    # "translate: done" is how an edited segment ends up silent: the next run
+    # skips all nine stages, nothing refills the hole, and report.json goes on
+    # claiming every second is covered.
+    assert set(m["stages"]) == {"fetch", "stems", "transcript", "segments"}
+    # …but the *progress* marks stay, so the reopened stages resume and refill
+    # only what was deleted, instead of restarting and rebuilding the whole run.
+    assert set(m["progress"]) == set(STAGES)
+    assert m["segments"][1]["text_en"] == "three four"
+
+
+def test_invalidate_reopens_no_further_back_than_the_stage_it_touched():
+    m = finished(two_segs())
+    edit.invalidate(m, m["segments"][0]["uid"], stages={"timeline"})
+    assert set(m["stages"]) == set(STAGES) - {"timeline", "mix", "report"}
+
+
+@pytest.mark.parametrize("apply,gone", [
+    (lambda m, uid: edit.set_text(m, uid, text_en="a better line"),
+     {"translate", "tts", "timeline", "mix", "report"}),
+    (lambda m, uid: edit.set_text(m, uid, text="שורה אחרת"),
+     {"translate", "tts", "timeline", "mix", "report"}),
+    (lambda m, uid: edit.set_keep(m, uid, True),
+     {"translate", "tts", "timeline", "mix", "report"}),
+    (lambda m, uid: edit.set_langs(m, uid, tgt_lang="ru"),
+     {"translate", "tts", "timeline", "mix", "report"}),
+    (lambda m, uid: edit.set_speaker(m, uid, "S9"), {"tts", "timeline", "mix", "report"}),
+    (lambda m, uid: edit.set_bounds(m, uid, 0.2, 1.9), {"tts", "timeline", "mix", "report"}),
+    (lambda m, uid: edit.set_tts_opts(m, uid, seed=7), {"tts", "timeline", "mix", "report"}),
+])
+def test_every_no_model_edit_reopens_what_it_invalidated(apply, gone):
+    m = finished(two_segs())
+    apply(m, m["segments"][0]["uid"])
+    assert set(STAGES) - set(m["stages"]) == gone
+
+
+def test_a_split_reopens_from_translate_and_never_the_segmentation():
+    m = finished(two_segs())
+    edit.split(m, m["segments"][0]["uid"], 1.0)
+    # `segments` stays done on purpose: re-running it rebuilds the list from the
+    # words and would undo the very cut the user just made.
+    assert set(m["stages"]) == {"fetch", "stems", "transcript", "segments"}
+
+
+def test_a_merge_reopens_from_translate():
+    m = finished(two_segs())
+    a, b = (s["uid"] for s in m["segments"])
+    edit.merge(m, a, b)
+    assert set(m["stages"]) == {"fetch", "stems", "transcript", "segments"}
+
+
+def test_a_headless_rerun_after_an_edit_is_not_up_to_date(tmp_path):
+    """The whole point, end to end: the studio hollows out a segment, and the CLI
+    that runs next has to notice. Every stage output the run declares is on disk,
+    so before this fix `stage_done` answered True nine times and the run printed
+    "up to date" for a manifest with a hole in it."""
+    workdir = tmp_workdir(["clips/a.wav", "clips/b.wav"])
+    for out in ("source.wav", "words.json", "dub.wav", "preview.mp4", "report.json",
+                "stems/vocals.wav", "stems/background.wav"):
+        (workdir / out).parent.mkdir(parents=True, exist_ok=True)
+        (workdir / out).write_text("x")
+
+    args = cli.parse_args([str(workdir / "in.mp4"), "-o", str(workdir)])
+    m = two_segs()
+    params = cli.stage_params(args, m)
+    for stage in STAGES:                       # pretend a full run just finished
+        manifest.mark_stage(m, stage, manifest.stage_fingerprint(m, stage, params[stage]))
+        m["progress"][stage] = m["stages"][stage]["fp"]
+
+    def verdicts():
+        return {s: manifest.stage_done(m, workdir, s,
+                                       manifest.stage_fingerprint(m, s, params[s]),
+                                       cli.STAGE_OUTPUTS[s]) for s in STAGES}
+
+    assert all(verdicts().values())
+    edit.set_text(m, m["segments"][1]["uid"], text_en="What on earth is it")
+    assert [s for s, done in verdicts().items() if not done] == \
+        ["translate", "tts", "timeline", "mix", "report"]
 
 
 # --------------------------------------------------------------- edit: setters

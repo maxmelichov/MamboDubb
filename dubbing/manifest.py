@@ -214,6 +214,25 @@ def stage_fingerprint(m: dict[str, Any], stage: str, params: dict[str, Any]) -> 
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
 
 
+def content_fingerprint(m: dict[str, Any]) -> str:
+    """A hash of the decisions in the segment list, for artifacts written beside it.
+
+    Not a stage fingerprint: those key on a stage's *parameters*, and a hand edit
+    changes no parameter at all — which is how `report.json` came to describe a
+    manifest that had moved on hours ago. This keys on the segments themselves, so
+    anything derived from them can say whether it is still about them.
+
+    `stages` is deliberately not in it: `report.run` is called before its own stage
+    is marked, so a fingerprint that included the marks could never match again.
+    """
+    blob = json.dumps(
+        [{key: seg.get(key) for key in sorted(SEGMENT_KEYS)}
+         for seg in m.get("segments") or []],
+        sort_keys=True, ensure_ascii=False,
+    )
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
+
+
 def stage_done(
     m: dict[str, Any], workdir: Path, stage: str, fp: str, outputs: list[str]
 ) -> bool:
@@ -231,6 +250,32 @@ def clear_stage(m: dict[str, Any], stage: str) -> None:
     """Force a full redo of `stage`, discarding even resumable partial work."""
     (m.get("stages") or {}).pop(stage, None)
     (m.get("progress") or {}).pop(stage, None)
+
+
+def unmark_stage(m: dict[str, Any], stage: str) -> bool:
+    """Drop `stage`'s "done" mark, keeping the partial work it can resume from.
+
+    The weaker half of `clear_stage`. A per-segment edit hollowed out one segment
+    and left every other one intact, so the stage must *run again* — but it must
+    run as a resume, filling the hole, not as a restart that throws away the other
+    seventy clips. `clear_stage` drops the progress mark too, which is what makes
+    the next run call `reset_stage` and discard all of it.
+    """
+    return (m.get("stages") or {}).pop(stage, None) is not None
+
+
+def reopen_from(m: dict[str, Any], stage: str) -> list[str]:
+    """Un-mark `stage` and everything after it. Returns the stages reopened.
+
+    What an edit owes the run: deleting one segment's translation, clip or
+    placement leaves eight stages still saying "done", so the next run skips them
+    all and the hole is never filled — a segment with no placement is missing from
+    the mix, which is the never-silent invariant broken by the back door.
+
+    Per-segment work is untouched (`unmark_stage`, not `clear_stage`), so the
+    reopened stages resume: they regenerate exactly what was deleted.
+    """
+    return [later for later in STAGES[STAGES.index(stage):] if unmark_stage(m, later)]
 
 
 def clear_downstream(m: dict[str, Any], stage: str) -> list[str]:

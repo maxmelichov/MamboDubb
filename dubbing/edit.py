@@ -119,6 +119,12 @@ def invalidate(m: dict[str, Any], uid: str, *, stages: set[str]) -> set[str]:
     A keep this pipeline decided for itself (`mt_failed`, `tts_failed`) is undone
     too, exactly as `manifest.reset_stage` does, so the segment gets another go
     rather than being stuck on a verdict about text that no longer exists.
+
+    The run's stage marks come off with the fields (`manifest.reopen_from`, mix and
+    report included). Deleting a clip while nine stages still say "done" is how an
+    edited segment ended up silent in a dub the CLI called up to date: nothing
+    would ever refill the hole, and `report.json` went on claiming full coverage.
+    Every caller gets that for free — which is why it lives here and not in them.
     """
     seg = _require(m, uid)
     want: set[str] = set()
@@ -128,6 +134,7 @@ def invalidate(m: dict[str, Any], uid: str, *, stages: set[str]) -> set[str]:
                             f"{', '.join(sorted(STAGE_FIELDS))}")
         want.add(stage)
         want.update(DOWNSTREAM[stage])
+    manifest.reopen_from(m, min(want, key=STAGES.index))
 
     dropped: set[str] = set()
     for stage in ("translate", "tts", "timeline"):
@@ -377,6 +384,12 @@ def split(m: dict[str, Any], uid: str, at: float) -> tuple[str, str]:
     m["segments"][i:i + 1] = [left, right]
     manifest.ensure_uids(m["segments"])
     _renumber(m)
+    # Two segments with nothing generated for them, in a run that says translate
+    # onward is done. Reopened here rather than in `invalidate` (no field was
+    # dropped — the whole segment was replaced), and never earlier than translate:
+    # re-running the segments stage would rebuild the list from the words and
+    # undo the cut. `mark_keep` re-decides the halves the way it decided the whole.
+    manifest.reopen_from(m, "translate")
     return left["uid"], right["uid"]
 
 
@@ -415,6 +428,7 @@ def merge(m: dict[str, Any], uid_a: str, uid_b: str) -> str:
     m["segments"][i:j + 1] = [merged]
     manifest.ensure_uids(m["segments"])
     _renumber(m)
+    manifest.reopen_from(m, "translate")   # one new segment, nothing generated for it
     return merged["uid"]
 
 
