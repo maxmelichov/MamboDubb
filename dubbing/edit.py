@@ -818,12 +818,13 @@ def rebuild(m: dict[str, Any], workdir: Path, *, from_stage: str,
 
 
 def _args(m: dict[str, Any], **overrides: Any):
-    """CLI arguments for this run: argparse's defaults, then whatever it recorded.
+    """CLI arguments for this run: whatever it recorded, then the CLI's defaults.
 
     The run's settings live in `m["source"]`, so a rebuild reproduces the fingerprints
-    of the run that made the manifest instead of inventing new ones. A setting the
-    run never recorded (genre, register, tts model — the CLI does not store them
-    today) falls back to the CLI default; a caller that knows better passes it in.
+    of the run that made the manifest instead of inventing new ones — the same
+    resolution `cli.main` applies to a bare re-run (`cli.resolve_settings`), so the
+    two paths cannot drift. A setting the run never recorded falls back to the CLI
+    default; a caller that knows better passes it in.
     """
     from . import cli
 
@@ -835,9 +836,9 @@ def _args(m: dict[str, Any], **overrides: Any):
     args.tgt = cli.normalize_lang(src.get("tgt_lang") or args.tgt)
     args.duration = src.get("duration_limit")
     args.context = src.get("context")
-    for key in ("register", "genre", "transcript", "tts_model", "dub_foreign", "device"):
-        if src.get(key) is not None:
-            setattr(args, key, src[key])
+    cli.resolve_settings(args, m)
+    if src.get("device") is not None:      # not a recorded setting; the app's alone
+        args.device = src["device"]
     for key, value in overrides.items():
         if not hasattr(args, key):
             raise EditError(f"unknown option {key!r}")

@@ -1057,6 +1057,53 @@ def test_force_does_not_discard_a_users_locked_work():
     assert "tts" not in other       # everything unlocked is invalidated as usual
 
 
+# ------------------------------------------------ the run's recorded settings
+
+def test_a_bare_rerun_reproduces_the_run_instead_of_overwriting_it():
+    """`python -m dubbing <input>` on an existing run is a *re-run*. It used to
+    overwrite `m["source"]` with argparse's defaults, which changed the segments,
+    translate and timeline fingerprints — and a changed segments fingerprint empties
+    `m["segments"]`, taking every edit, lock and passthrough in the project with it."""
+    made = cli.parse_args(["in.mp4", "--genre", "movie", "--register", "dialogue",
+                           "--dub-foreign"])
+    cli.resolve_settings(made)
+    m = manifest.new(cli.source_record(made))
+    assert m["source"]["genre"] == "movie" and m["source"]["dub_foreign"] is True
+
+    again = cli.parse_args(["in.mp4"])                 # the user types no flags
+    cli.resolve_settings(again, m)
+    assert cli.source_record(again) == cli.source_record(made)
+    assert cli.stage_params(again, m) == cli.stage_params(made, m)
+
+
+def test_an_explicit_flag_still_beats_what_the_run_recorded():
+    m = manifest.new({"input": "in.mp4", "src_lang": "he", "tgt_lang": "en",
+                      "genre": "movie", "register": "dialogue", "dub_foreign": True})
+    args = cli.parse_args(["in.mp4", "--genre", "documentary", "--no-dub-foreign"])
+    cli.resolve_settings(args, m)
+    assert args.genre == "documentary"          # the command line is the last word
+    assert args.dub_foreign is False            # …including turning a flag back off
+    assert args.register == "dialogue"          # and it says nothing about the rest
+
+
+def test_a_run_that_recorded_nothing_gets_the_documented_defaults():
+    args = cli.parse_args(["in.mp4"])
+    assert args.genre is None                   # "nobody said" is a distinct answer
+    cli.resolve_settings(args, manifest.new({"input": "in.mp4"}))
+    assert (args.genre, args.register, args.transcript, args.tts_model,
+            args.dub_foreign) == ("documentary", "narration", "auto", "1.7b", False)
+    assert cli.source_record(args)["genre"] == "documentary"
+
+
+def test_the_studio_resolves_a_runs_settings_the_way_the_cli_does():
+    # One resolution, two front ends: `edit._args` is what `rebuild` computes its
+    # fingerprints from, so a drift here is a whole tail of the pipeline redone.
+    made = cli.parse_args(["in.mp4", "--genre", "movie", "--transcript", "asr"])
+    cli.resolve_settings(made)
+    m = manifest.new(cli.source_record(made))
+    assert cli.stage_params(edit._args(m), m) == cli.stage_params(made, m)
+
+
 def test_content_fingerprint_answers_what_a_derived_artifact_was_made_from(tmp_path):
     # `report.json` is written beside the manifest and describes the segments as
     # they were. An edit changes no stage parameter, so a stage fingerprint cannot

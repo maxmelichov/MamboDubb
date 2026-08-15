@@ -74,24 +74,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--duration", type=float, help="only dub the first N seconds")
     p.add_argument("--context", help="one-line note on who/what the video is about and "
                    "the spellings of names the ASR mangles — steers the translator")
-    p.add_argument("--register", choices=("narration", "dialogue"), default="narration",
+    # Every option in RECORDED_DEFAULTS defaults to None, not to its value: the
+    # value is applied by `resolve_settings`, which cannot tell "the user typed the
+    # default" from "the user typed nothing" once argparse has filled one in — and
+    # the difference is whether a re-run keeps this run's settings or overwrites
+    # them with the defaults. The effective default is in RECORDED_DEFAULTS.
+    p.add_argument("--register", choices=("narration", "dialogue"), default=None,
                    help="translation speaking style: 'narration' (default, full words) "
                         "or 'dialogue' (natural spoken register, e.g. English "
                         "contractions)")
-    p.add_argument("--genre", choices=("documentary", "movie"), default="documentary",
+    p.add_argument("--genre", choices=("documentary", "movie"), default=None,
                    help="content genre: 'documentary' (default, current behavior) or "
                         "'movie' (dialogue register, gentler time-compression with "
                         "rate continuity, and short greeting/interjection beats keep "
                         "the actor's original voice)")
-    p.add_argument("--dub-foreign", action="store_true",
+    p.add_argument("--dub-foreign", action=argparse.BooleanOptionalAction, default=None,
                    help="dub confident third-language passages into the target instead "
-                        "of keeping original audio with a subtitle")
-    p.add_argument("--transcript", choices=("auto", "captions", "asr"), default="auto",
+                        "of keeping original audio with a subtitle (default: off; "
+                        "--no-dub-foreign turns it back off on a run that recorded it)")
+    p.add_argument("--transcript", choices=("auto", "captions", "asr"), default=None,
                    help="where the transcript comes from (default: captions if present)")
     p.add_argument("--stages", help=f"comma-separated subset of: {','.join(STAGES)}")
     p.add_argument("--force", help="stage to re-run, or 'all'")
     p.add_argument("--device", help="torch device override for TTS")
-    p.add_argument("--tts-model", choices=("1.7b", "0.6b"), default="1.7b",
+    p.add_argument("--tts-model", choices=("1.7b", "0.6b"), default=None,
                    help="Qwen3-TTS voice-clone model (default 1.7b; 0.6b accepted only so old runs re-run)")
     return p.parse_args(argv)
 
@@ -113,18 +119,50 @@ STAGE_OUTPUTS: dict[str, list[str]] = {
 
 
 # Settings that shape the output and are not otherwise recoverable from the
-# manifest. `dubbing.edit._args` reads them back to reproduce this run's own
-# arguments; without them the studio silently falls back to argparse's defaults,
-# re-places a movie timeline at documentary rates and stamps rebuilt stages with
-# fingerprints this CLI would never compute.
-RECORDED_SETTINGS = ("register", "genre", "transcript", "tts_model", "dub_foreign")
+# manifest, with the value each one takes when nobody has an opinion.
+# `dubbing.edit._args` reads them back to reproduce this run's own arguments;
+# without them the studio silently falls back to argparse's defaults, re-places a
+# movie timeline at documentary rates and stamps rebuilt stages with fingerprints
+# this CLI would never compute.
+RECORDED_DEFAULTS: dict[str, Any] = {
+    "register": "narration",
+    "genre": "documentary",
+    "transcript": "auto",
+    "tts_model": "1.7b",
+    "dub_foreign": False,
+}
+RECORDED_SETTINGS = tuple(RECORDED_DEFAULTS)
+
+
+def resolve_settings(args: argparse.Namespace, m: dict[str, Any] | None = None) -> None:
+    """Fill in the options nobody typed: this run's own, then the built-in default.
+
+    Three sources, in order of authority: the flag on this command line, what the
+    manifest recorded about the run being re-run, and RECORDED_DEFAULTS. Without
+    the middle one a bare `python -m dubbing <input>` on an existing run was not a
+    re-run at all — argparse's defaults overwrote `m["source"]`, which flipped the
+    segments/translate/timeline fingerprints, and a changed segments fingerprint
+    empties `m["segments"]`: every edit, lock and passthrough in the project, gone,
+    for typing the command without its flags.
+    """
+    recorded = (m or {}).get("source") or {}
+    for key, fallback in RECORDED_DEFAULTS.items():
+        if getattr(args, key, None) is not None:
+            continue                       # typed on this command line: it wins
+        value = recorded.get(key)
+        setattr(args, key, fallback if value is None else value)
 
 
 def source_record(args: argparse.Namespace) -> dict[str, Any]:
-    """What `m["source"]` must remember about the run that made this manifest."""
+    """What `m["source"]` must remember about the run that made this manifest.
+
+    Call `resolve_settings` first: a `None` here would record "no opinion" as this
+    run's setting, and the next run would read it back as one.
+    """
     rec: dict[str, Any] = {"input": args.source, "src_lang": args.src,
                            "tgt_lang": args.tgt, "duration_limit": args.duration}
-    rec.update({key: getattr(args, key) for key in RECORDED_SETTINGS})
+    rec.update({key: getattr(args, key) if getattr(args, key) is not None else default
+                for key, default in RECORDED_DEFAULTS.items()})
     return rec
 
 
@@ -179,7 +217,6 @@ def apply_force(m: dict[str, Any], force: str | None) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     args.src, args.tgt = normalize_lang(args.src), normalize_lang(args.tgt)
-    check_langs(args)
     try:
         from dotenv import load_dotenv
 
@@ -190,7 +227,14 @@ def main(argv: list[str] | None = None) -> int:
     workdir = (args.out or default_workdir(args.source)).resolve()
     workdir.mkdir(parents=True, exist_ok=True)
 
-    m = manifest.load(workdir) or manifest.new(source_record(args))
+    m = manifest.load(workdir)
+    # Before anything reads a setting, and before anything is recorded: an option
+    # this command line did not carry is the one this run was made with, not
+    # argparse's default. `check_langs` reads `--tts-model`, so it waits for this.
+    resolve_settings(args, m)
+    check_langs(args)
+
+    m = m or manifest.new(source_record(args))
     m["source"].update(source_record(args))
     if args.context is not None:
         m["source"]["context"] = args.context
