@@ -27,6 +27,7 @@ import {
   type ComponentProps,
   type ComponentPropsWithRef,
   type ReactNode,
+  type RefObject,
 } from "react";
 import { ChevronDown, TriangleAlert } from "lucide-react";
 import { cn } from "../lib/classNames";
@@ -598,6 +599,41 @@ export function Disclosure({
  * every other day is how a workspace ends up with no room in it. The trigger
  * keeps them one keystroke away and costs one button.
  */
+/**
+ * Outside-click and Escape close an open panel, and Escape hands focus back.
+ *
+ * Shared rather than copied because the second panel to want it — the queue —
+ * has a trigger that cannot be a `Button`, so it could not use `Popover` and
+ * would otherwise have reimplemented these two listeners slightly differently.
+ * The `stopPropagation` matters: without it Escape also reaches the editor's
+ * one keyboard handler, which reads it as "leave the field".
+ */
+export function useDismissable(
+  open: boolean,
+  setOpen: (open: boolean) => void,
+  wrap: RefObject<HTMLElement | null>,
+  trigger?: RefObject<HTMLElement | null>,
+): void {
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      if (!wrap.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      setOpen(false);
+      trigger?.current?.focus();
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open, setOpen, trigger, wrap]);
+}
+
 export function Popover({
   label,
   trigger,
@@ -618,27 +654,7 @@ export function Popover({
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (event: MouseEvent) => {
-      if (!wrap.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      // Escape closes and hands focus back, or the keyboard user is stranded
-      // wherever the panel put them.
-      event.stopPropagation();
-      setOpen(false);
-      triggerRef.current?.focus();
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
+  useDismissable(open, setOpen, wrap, triggerRef);
 
   return (
     <div className="relative" ref={wrap}>

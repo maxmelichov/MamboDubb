@@ -289,9 +289,21 @@ export function EditorPage() {
       const work = segs.filter(needsModelWork);
       const uids = work.map((seg) => seg.uid);
       if (uids.length === 0) return;
+      /*
+       * Both jobs wear the same batch id, because they are one decision.
+       *
+       * Only this function knows that: the server sees two POSTs on two routes
+       * and has no way to tell a pair from two unrelated requests a second
+       * apart. Without the id, cancelling the translate left the voice job to
+       * run on lines whose translation had just been abandoned — 27 lines
+       * synthesised from nothing. With it, one DELETE reaches both.
+       */
+      const batch = `b${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
       const untranslated = work.filter((seg) => !(seg.text_en ?? "").trim());
-      if (untranslated.length > 0) await actions.retranslate(untranslated.map((seg) => seg.uid));
-      await actions.resynthesize(uids);
+      if (untranslated.length > 0) {
+        await actions.retranslate(untranslated.map((seg) => seg.uid), batch);
+      }
+      await actions.resynthesize(uids, batch);
     },
     [actions],
   );
@@ -371,6 +383,17 @@ export function EditorPage() {
           const saved = await setVerdict(seg, false, false);
           if (saved) flipped.push(saved);
         }
+        /*
+         * Follow the lines, do not strand the user where they were.
+         *
+         * The gesture only exists on the Kept filter, and it empties it — every
+         * line it flipped has left. So the screen the user was reading became
+         * "Nothing matches" at the exact moment their twenty-seven lines
+         * started being worked on, with no way to watch it happen. Unfinished
+         * is where those lines now are, until the jobs finish and they leave
+         * that too.
+         */
+        if (flipped.length > 0) setFilter("unfinished");
         await queueDubWork(flipped);
       })();
     },
@@ -505,7 +528,6 @@ export function EditorPage() {
   }, [actions, selected, splitAt, step, toggleKeep, transport, transportMode, zoomIn, zoomOut]);
 
   const job = activeJob(state.jobs);
-  const queued = state.jobs.filter((j) => j.status === "queued" && j.id !== job?.id).length;
 
   /*
    * What the video on screen is a render of.
@@ -586,11 +608,11 @@ export function EditorPage() {
 
       {/* Renders nothing at all unless there is a job or the stream dropped. */}
       <JobBar
-        job={job}
-        queued={queued}
+        jobs={state.jobs}
         stage={state.stage}
         connected={state.connected}
-        onCancel={(id) => void actions.cancel(id)}
+        log={state.log}
+        onCancel={(id, batch) => void actions.cancel(id, batch)}
       />
       {state.error ? <ErrorBar message={state.error} onDismiss={actions.dismissError} /> : null}
 

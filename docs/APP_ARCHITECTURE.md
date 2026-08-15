@@ -392,6 +392,26 @@ jobs that are still **queued or running**. Two rules the client can rely on:
   on every navigation and every wake from sleep. A finished job's outcome is in
   `GET /api/projects/{name}` (`jobs`), which is where a client that wants history looks.
 
+### What the client derives from the queue, and no longer tracks itself
+
+Two pieces of UI state used to be kept alongside `jobs` and drift from it. Both are now
+derived, and the contract above is what makes that possible.
+
+* **`pendingUids`** — which lines have model work in flight — is every `uid` named by a
+  non-terminal `retranslate`/`resynthesize` job. It was a `busyUids` list primed when a
+  request was sent and cleared by two paths that both fired far too early: any `segment`
+  frame dropped that uid, and *any* job reaching a terminal state emptied the list,
+  including a job about other lines. Measured lifetime was about 100 ms against a re-voice
+  that runs for a minute a line, and a reload cleared it outright. Derived, it lasts as
+  long as the work and survives a reconnect, because the jobs do. `run` and `render` name
+  no lines: they rebuild everything, and marking every row busy says nothing.
+* **`stage`** must ignore `replay: true` frames. Replayed stage frames are a snapshot of
+  all nine stages, so a client that pins its display to the last one it saw reads the
+  ninth — which is how the editor came to announce "Running report · 100%" the instant a
+  re-voice started, over a video minutes out of date. Use them for refetch decisions only.
+  A client should also clear `stage` when a **new** job goes `running`: the previous job's
+  final frame is not the new job's first one, and the gap between them is a model load.
+
 ## Desktop packaging
 
 Installed, there is no `pnpm dev` and no second origin: the shell starts **one** process —
