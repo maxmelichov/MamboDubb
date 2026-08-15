@@ -208,27 +208,10 @@ export function ImportPage() {
   };
 
   return (
-    <PageShell
-      width="wide"
-      /*
-       * The page is the workspace, not the form on it.
-       *
-       * It was titled "New dub." which is the name of the card at the top of
-       * it, and left the nav cell saying "Runs" while the page it went to said
-       * something else. Every run in `outputs/` is listed here and re-opening
-       * one is at least as common a reason to be on this screen as starting
-       * another; the card below still says what it is and its button still says
-       * "Start dubbing".
-       */
-      title="Runs."
-      accent="Entirely on this machine."
-      lede={
-        <>
-          Point it at a video, say which way to translate, and it runs the whole pipeline
-          locally. A full run takes a while cap the duration while you are iterating.
-        </>
-      }
-    >
+    // No hero: the nav pill says Runs, the card says what it does, and the
+    // button says Start dubbing — a display title over all three was the page
+    // explaining itself to people already using it.
+    <PageShell width="wide">
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_21rem] xl:grid-cols-[minmax(0,1fr)_24rem]">
         {/* ------------------------------------------------------- the card */}
         <Card

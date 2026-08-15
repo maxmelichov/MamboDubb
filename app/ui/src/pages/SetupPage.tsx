@@ -49,7 +49,6 @@ import {
 } from "../components/ui";
 import { USE_FIXTURES, api } from "../lib/api";
 import { cn } from "../lib/classNames";
-import { isDesktop } from "../lib/desktop";
 import { STAGES } from "../lib/types";
 import type { SetupCheck, SetupInstall, SetupSeverity, SetupStatus } from "../lib/types";
 
@@ -196,17 +195,8 @@ export function SetupPage() {
   const stopsAt = firstBlockingStage(checks);
 
   return (
-    <PageShell
-      title="Setup."
-      accent="What this machine has."
-      lede={
-        <>
-          Everything runs on this machine, so the machine has to have it. These are cheap
-          filesystem checks no model is loaded to answer them.
-          {isDesktop() ? null : " Re-check after installing anything."}
-        </>
-      }
-    >
+    // No hero — the nav pill says Setup and the Readiness card leads.
+    <PageShell>
       <Card className="overflow-hidden p-0">
         <CardSection className="pb-4">
           <div className="flex flex-wrap items-end justify-between gap-3">

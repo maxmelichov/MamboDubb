@@ -293,10 +293,15 @@ check(
 );
 
 const root = document.getElementById("root");
-/* The home screen is titled for the workspace, not for the card at the top of
-   it the nav cell that reaches it says "Runs" and used to land on a page
-   headed "New dub." The card is unchanged and still names its own action. */
-check("home screen renders, titled for the workspace", /Runs\./.test(root.textContent));
+/* The hero is gone on purpose: the nav pill says Runs, the card says what it
+   does, and a display title with a lede over both was the page explaining
+   itself to people already using it. */
+check(
+  "home screen renders without hero copy",
+  root.textContent.length > 0 &&
+    !/Entirely on this machine/.test(root.textContent) &&
+    !/Point it at a video/.test(root.textContent),
+);
 check("…and still carries the new-dub card", root.querySelector('[data-region="new-dub"]') != null);
 check("…whose action still says what it starts", /Start dubbing/.test(root.textContent));
 /* Context is the one optional field sitting under a required one of the same

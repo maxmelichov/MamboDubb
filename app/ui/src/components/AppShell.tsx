@@ -35,7 +35,8 @@ export function PageShell({
   width = "default",
   children,
 }: {
-  title: string;
+  /** Omit for no hero at all — the nav pill already names the place. */
+  title?: string;
   /** The second line of the display title, set quieter and italic. */
   accent?: string;
   lede?: ReactNode;
@@ -65,7 +66,8 @@ export function PageShell({
         </header>
 
         <div className="rise">
-          {wide ? (
+          {/* No title, no hero: the content starts right under the header. */}
+          {!title && !lede ? null : wide ? (
             // One line, with the accent set as a clause rather than a second
             // display line: the wide layout wants its 90px of vertical back for
             // the composition under it.
@@ -97,7 +99,14 @@ export function PageShell({
             </>
           )}
 
-          <div className={cn("flex flex-col gap-6", wide ? "mt-7" : "mt-9")}>{children}</div>
+          <div
+            className={cn(
+              "flex flex-col gap-6",
+              !title && !lede ? "mt-6" : wide ? "mt-7" : "mt-9",
+            )}
+          >
+            {children}
+          </div>
         </div>
       </div>
     </div>
