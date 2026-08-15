@@ -66,6 +66,21 @@ The result lands in `outputs/<run>/preview.mp4`, next to a `report.json` that
 accounts for every second of audio. Re-running is incremental finished stages are
 cached and only what changed is redone.
 
+## Run as a server (no desktop app)
+
+The desktop app is a thin shell over a local Python server — you can run the
+server directly and use the full editor in any browser:
+
+```bash
+cd app/ui && pnpm install && pnpm build && cd ../..   # build the UI once
+uv run mambodubb --port 4400                          # → http://127.0.0.1:4400
+```
+
+`--outputs` picks the run directory root (default `outputs/`); pass
+`--ui-dir ""` to serve the API alone. The server has **no authentication** —
+it can read your filesystem and run the pipeline, so keep it on `127.0.0.1`
+(the default) and don't bind it to a network-visible address.
+
 ## Languages
 
 | | |
