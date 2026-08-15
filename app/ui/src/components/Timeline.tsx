@@ -193,17 +193,19 @@ export function Timeline({
           — the marks on top of it stay live, because they are drawn from the
           segments and are current.
         */}
-        <span data-lane-label className="flex min-h-0 flex-1 items-center px-2">
+        <span
+          data-lane-label
+          title={stale ? "Output · last render" : undefined}
+          className="flex min-h-0 flex-1 flex-col justify-center px-2"
+        >
+          <span>Output</span>
+          {/* Stacked, not inline: the gutter is 64px and an inline qualifier
+              wraps into the lane it is labelling. Two deliberate lines fit. */}
           {stale ? (
-            <>
-              Output
-              <span className="ms-1 font-semibold normal-case tracking-normal text-muted">
-                · last render
-              </span>
-            </>
-          ) : (
-            "Output"
-          )}
+            <span className="mt-0.5 text-[8px] font-semibold leading-none text-muted">
+              last render
+            </span>
+          ) : null}
         </span>
       </div>
 

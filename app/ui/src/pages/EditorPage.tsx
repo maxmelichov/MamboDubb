@@ -540,11 +540,14 @@ export function EditorPage() {
   const render = project?.render ?? { at: null, stale: false, changed: 0 };
   const stale = render.stale;
   const changed = render.changed;
-  const staleNote =
-    stale && changed > 0 ? `rendered before your last ${lines(changed)}` : null;
+  // The button counts *lines*, because that is what it would re-render. These
+  // two count *changes*, because they are about what the user did — and "your
+  // last 1 line" is not a phrase anybody says.
+  const edits = changed === 1 ? "change" : `${changed} changes`;
+  const staleNote = stale && changed > 0 ? `rendered before your last ${edits}` : null;
   const staleBand =
     stale && changed > 0
-      ? `Mixed before your last ${lines(changed)} — Update the video to hear them`
+      ? `Mixed before your last ${edits} — Update the video to hear them`
       : null;
 
   return (
@@ -666,7 +669,10 @@ export function EditorPage() {
                     job={job}
                     stage={state.stage}
                     mode={transportMode}
-                    staleBand={staleBand}
+                    // Exactly one band. The strip below carries it whenever
+                    // there is a preview to be behind; the placeholder covers
+                    // the case where there is no video to put a strip under.
+                    staleBand={transportMode === "preview" ? null : staleBand}
                   />
                 }
               />

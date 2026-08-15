@@ -179,10 +179,11 @@ class JobQueue:
         job = self.get(job_id)
         if not job.batch:
             return [self.cancel(job_id)]
+        current = self.current
         members = [j for j in self.list(job.project)
                    if j.batch == job.batch and j.status not in TERMINAL]
-        queued = [j for j in members if j is not self.current]
-        running = [j for j in members if j is self.current]
+        queued = [j for j in members if j is not current]
+        running = [j for j in members if j is current]
         cancelled = []
         for member in queued + running:
             try:

@@ -1109,7 +1109,7 @@ check(
 clickIt(dubTrigger());
 await settle(150);
 clickIt(dialogButton("Dub these 2"));
-await settle(700);
+await settle(400);
 check(
   "the bulk flip is one PATCH per line, then one translate and one voice for the lot",
   calls().log.slice(beforeBulk).join() === "patch,patch,retranslate,resynthesize",
@@ -1502,11 +1502,11 @@ check(
 );
 check(
   "the video area says the same thing in words",
-  /Mixed before your last \d+ lines? — Update the video to hear them/.test(root.textContent),
+  /Mixed before your last \d+ changes — Update the video to hear them/.test(root.textContent),
 );
 check(
   "the output lane is labelled as the last render",
-  [...document.querySelectorAll("[data-lane-label]")].some((el) => /Output\s*· last render/.test(el.textContent)),
+  [...document.querySelectorAll("[data-lane-label]")].some((el) => /Output\s*last render/.test(el.textContent)),
 );
 check(
   "…and its waveform is drawn back, while the marks stay live",

@@ -114,6 +114,36 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
     }
   }, []);
 
+  /*
+   * An edit changes what the render is behind by, and only the server can say
+   * by how much.
+   *
+   * `render.stale` and `render.changed` are derived on the server from the
+   * manifest, so they are as old as the last `GET /api/projects`. Nothing
+   * refetched that after a no-model edit — `patch` deliberately updates only the
+   * one segment — so the header sat quiet on "Render preview" until some job
+   * happened to finish and pull the project in behind it. The user's own edit is
+   * the one thing that should light it up.
+   *
+   * The project payload only, never the segments: the segment list is already
+   * authoritative from the PATCH's own response, and re-reading it here would
+   * throw away the optimistic state that makes an edit feel instant. Debounced,
+   * because a bulk flip is a hundred PATCHes and this question has one answer.
+   */
+  const projectTimer = useRef<number | undefined>(undefined);
+  const refreshProject = useCallback(() => {
+    window.clearTimeout(projectTimer.current);
+    projectTimer.current = window.setTimeout(() => {
+      void api.getProject(nameRef.current).then(setProject).catch(() => {
+        // A failed refresh leaves the previous answer on screen, which is the
+        // right fallback: it is stale by at most one edit, and the PATCH that
+        // triggered this has already reported its own failure if it had one.
+      });
+    }, 300);
+  }, []);
+
+  useEffect(() => () => window.clearTimeout(projectTimer.current), []);
+
   useEffect(() => {
     setLoading(true);
     void load();
@@ -255,6 +285,7 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
       try {
         const updated = await api.patchSegment(name, uid, body);
         setSegments((current) => current.map((seg) => (seg.uid === uid ? updated : seg)));
+        refreshProject();
         return updated;
       } catch (err) {
         setSegments(before);
@@ -262,18 +293,21 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
         return null;
       }
     },
-    [name, segments],
+    [name, refreshProject, segments],
   );
 
   const structural = useCallback(
     async (run: () => Promise<Segment[]>) => {
       try {
         setSegments(await run());
+        // A split or a merge is the largest edit there is — it mints new uids,
+        // so every count the render was made against moves.
+        refreshProject();
       } catch (err) {
         setError(describe(err));
       }
     },
-    [],
+    [refreshProject],
   );
 
   const split = useCallback(
