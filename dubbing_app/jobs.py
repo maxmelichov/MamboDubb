@@ -54,6 +54,11 @@ class Job:
                 "status": self.status, "error": self.error, "result": self.result,
                 "created": self.created, "started": self.started, "finished": self.finished,
                 "stage": self.stage, "progress": self.progress, "message": self.message,
+                # Which segments this job is about, hoisted out of the payload: it
+                # is what a UI needs to show "re-voicing 3 lines" or to mark those
+                # rows busy, and it was declared on the client's Job type while
+                # only the fixtures ever produced it. Always a list, never absent.
+                "uids": list(self.payload.get("uids") or []),
                 "payload": self.payload}
 
 

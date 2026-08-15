@@ -176,6 +176,14 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
 
         They renumber `seg["id"]`, which the running stage is iterating over.
         Field edits are allowed at any time — the contract requires it.
+
+        Called **inside** `lock_for(name)`, never before it: checked outside, a job
+        could start in the window between the check and the write, and the job
+        child — which loaded the manifest before the split existed — would write
+        its own segment list back over it (`worker.Journal`, which matches by uid
+        and cannot re-apply a segment it has never seen). The lock does not stop
+        the worker thread, so the journal reports what it finds as a conflict; this
+        closes the half of the race the server owns.
         """
         for job in queue.active(name):
             if job.status == "running":
@@ -315,9 +323,9 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
             raise invalid("empty patch")
         if ("start" in fields) != ("end" in fields):
             raise invalid("start and end must be changed together")
-        if "start" in fields:
-            guard_structural(name)
         with lock_for(name):
+            if "start" in fields:
+                guard_structural(name)
             m = projects.load(name)
             try:
                 seg = _apply_patch(m, uid, fields)
@@ -330,8 +338,8 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
 
     @app.post("/api/projects/{name}/segments/{uid}/split")
     def split_segment(name: str, uid: str, body: SplitBody) -> dict[str, Any]:
-        guard_structural(name)
         with lock_for(name):
+            guard_structural(name)
             m = projects.load(name)
             try:
                 uid_a, uid_b = ops.split(m, uid, body.at)
@@ -345,8 +353,8 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
     @app.post("/api/projects/{name}/segments/{uid}/merge")
     def merge_segment(name: str, uid: str, body: MergeBody = Body(default=MergeBody())
                       ) -> dict[str, Any]:
-        guard_structural(name)
         with lock_for(name):
+            guard_structural(name)
             m = projects.load(name)
             other = body.other or body.uid or _next_uid(m, uid)
             if not other:

@@ -1162,6 +1162,61 @@ def test_a_render_merges_at_every_stage_save(outputs, monkeypatch):
     assert ops.find(manifest.load(workdir), edited)["text_en"] == "hand corrected"
 
 
+def test_a_journal_reports_a_split_that_landed_under_it(outputs, capsys):
+    """`guard_structural` refuses a split while a job runs, but the check and the
+    job's start are not one atomic act. When one does land, the child's list is
+    stale — it has never seen either half — and `merge` matches by uid, so it
+    would keep its own list and undo the split without a word."""
+    from dubbing_app.worker import Journal
+
+    workdir = outputs / NAME
+    m = manifest.load(workdir)
+    journal = Journal(workdir, m)
+
+    disk = manifest.load(workdir)
+    uid = disk["segments"][2]["uid"]
+    halves = ops.split(disk, uid, 6.0)
+    manifest.save(workdir, disk)
+
+    journal.merge(manifest.load(workdir))
+    frames = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
+    conflict = next(f for f in frames if f["type"] == "log" and f["level"] == "error")
+    assert "segment list changed on disk" in conflict["message"]
+    assert any(u in conflict["message"] for u in (uid,) + halves)
+
+
+def test_a_journal_says_nothing_when_only_fields_changed(outputs, capsys):
+    from dubbing_app.worker import Journal
+
+    workdir = outputs / NAME
+    journal = Journal(workdir, manifest.load(workdir))
+    edit_on_disk(workdir, manifest.load(workdir)["segments"][3]["uid"],
+                 text_en="hand corrected")
+    journal.merge(manifest.load(workdir))
+    assert "error" not in capsys.readouterr().out
+
+
+def test_a_structural_edit_is_guarded_under_the_lock_it_writes_in(outputs):
+    """Checked before the lock, the guard leaves a window: a job that starts in it
+    is one the split is invisible to. The check belongs to the same critical
+    section as the write."""
+    import inspect
+
+    source = inspect.getsource(app_mod.create_app)
+    for route in ("def split_segment", "def merge_segment", "def patch_segment"):
+        body = source.split(route, 1)[1].split("\n    @app.", 1)[0]
+        assert body.index("with lock_for(name):") < body.index("guard_structural(name)")
+
+
+def test_a_job_carries_the_segments_it_is_about(client, fake):
+    uid = uids(client)[1]
+    job = client.post(f"/api/projects/{NAME}/resynthesize",
+                      json={"uids": [uid]}).json()["job"]
+    assert job["uids"] == [uid]
+    # A whole-run job is about the whole run, and says so as a list, not a null.
+    assert client.post(f"/api/projects/{NAME}/render", json={}).json()["job"]["uids"] == []
+
+
 def test_a_job_keeps_its_own_work_when_nothing_else_changed(outputs):
     """The merge must only replay what actually moved on disk — re-applying an
     untouched disk copy wholesale would revert the job itself."""

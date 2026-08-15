@@ -264,6 +264,14 @@ store: absolute media URLs for `place.clip` and `tts.clip`, the verification ver
 `clips/<hash>.json` (`heard`, `overlap` — the ready-made "did the voice say the right
 thing" signal), and the segment's source-audio window as a URL.
 
+### A job says which segments it is about
+
+Every job dict (`/api/jobs`, the `jobs` list on a project, `POST /retranslate` and friends)
+carries **`uids`** — the segments the job was asked for, `[]` for a whole-run job. It is
+what a UI needs to say "re-voicing 3 lines" and to mark exactly those rows busy; it was
+declared on the client's `Job` type while only the fixtures ever produced it. Always a
+list, never absent.
+
 ### Stage status — four values, not two
 
 `stages` (on `GET /api/projects/{name}`, in `summary`, and in the event prelude) is
