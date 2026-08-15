@@ -28,7 +28,10 @@ STAGE_TAGS = {
     "transcript": "transcript/v40",
     "segments": "segments/v37",
     "translate": "translate/v33",
-    "tts": "tts/v14",
+    # v15: records carry the text fingerprint and (for keeps) the span and options
+    # they were cut with, "unverified" is its own verdict, and a segment's own
+    # `tgt_lang` reaches synthesis/cache key/verification.
+    "tts": "tts/v15",
     # v13: `place` now carries the overrun it measured and why a shortening was
     # abandoned — report.json's drift story reads from these.
     "timeline": "timeline/v13",

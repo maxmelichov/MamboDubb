@@ -306,6 +306,11 @@ def set_langs(m: dict[str, Any], uid: str, *, src_lang: str | None = None,
     "This section is actually Arabic", or "translate this bit into French". Both
     change what the translator is asked for, so the translation goes with them.
     Passing "" clears an override and falls back to the run's languages.
+
+    `tgt_lang` reaches the synthesiser too (`tts.Engine.tgt_for`): the line is
+    prepared, cached, spoken and verified in that language. It used to be honoured
+    by the translator alone, so a French line was voiced and ASR-checked as
+    English — it failed verification every time and fell back to keep.
     """
     seg = _require(m, uid)
     changed = False

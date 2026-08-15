@@ -338,6 +338,61 @@ def test_records_written_before_the_fingerprint_existed_are_left_alone(tmp_path)
     assert not tts_mod.needs_synthesis(s, tmp_path)
 
 
+# ---------------------------- a segment's own target language (D-7 / audit 14)
+
+def fr_engine(tmp_path):
+    m = {"source": {"src_lang": "he", "tgt_lang": "en"},
+         "files": {"source_wav": "source.wav", "vocals": "stems/vocals.wav"},
+         "speakers": {}, "segments": []}
+    eng = tts_mod.Engine(m, tmp_path)
+    eng.ref_for = lambda s, opts=None: (tmp_path / "refs/a.wav", "ref:1.00-4.00")
+    return eng
+
+
+def test_a_segments_own_target_language_reaches_the_synthesiser(tmp_path):
+    # `edit.set_langs` honours seg["tgt_lang"] for translation. The Engine read
+    # only the run's target, so a French line was prepared, keyed, synthesised and
+    # ASR-verified as English — it failed verification every time and degraded to
+    # tts_failed, with nothing pointing at the override as the cause.
+    eng = fr_engine(tmp_path)
+    fr = seg(text_en="Bonjour tout le monde", tgt_lang="fr")
+    assert eng.tgt_for(fr) == "fr" and eng.tgt_for(seg()) == "en"
+    plan = eng._plan(fr, fr["text_en"])
+    assert plan.tgt == "fr" and plan.src == "he"
+    # The cache key MUST carry it: an en clip of the same text is different audio.
+    args = ("bonjour.", "ref:1.00-4.00", 42, False)
+    assert eng._cache_key(*args, tts_mod.ttsopts.DEFAULT, "fr") != eng._cache_key(*args)
+
+
+def test_the_verifier_asks_the_asr_for_that_language(tmp_path, monkeypatch):
+    eng = fr_engine(tmp_path)
+    asked: list[str] = []
+    monkeypatch.setattr(eng, "asr_for", lambda tgt=None: asked.append(tgt) or None)
+    monkeypatch.setattr(tts_mod.audio, "duration", lambda p: 1.5)
+    ok, _ov, heard = eng._verify(tmp_path / "clips/a.wav", "bonjour tout le monde.",
+                                 "fr", "he")
+    assert asked == ["fr"]
+    assert ok and heard == tts_mod.NO_ASR       # no model here: unverified, not "ok"
+
+
+def test_the_synth_is_told_which_language_to_speak(tmp_path, monkeypatch):
+    eng = fr_engine(tmp_path)
+    calls: list[str | None] = []
+
+    class FakeSynth:
+        def generate(self, speak, ref, out, *, seed, greedy, opts=None, lang=None):
+            calls.append(lang)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"x")
+            return out
+
+    eng.synth_for = lambda opts=None: FakeSynth()
+    monkeypatch.setattr(tts_mod.audio, "trim_leading_silence", lambda a, b: None)
+    eng._attempt(1, "bonjour.", tmp_path / "refs/a.wav", "ref:1.00-4.00", 7, 0,
+                 tts_mod.ttsopts.DEFAULT, "fr")
+    assert calls == ["fr"]
+
+
 # --------------------------------- tts_opts on a kept segment (D-9 / audit 9)
 
 class KeepEngine(tts_mod.Engine):

@@ -9,7 +9,18 @@ Two guarantees this module owns:
   sub-unit splitting, so there is no way for part of a line to go missing.
 
 Clips are cached on disk by content hash, which is also the resume mechanism for
-long videos: a killed run picks up at the first uncached clip.
+long videos: a killed run picks up at the first uncached clip. The hash covers
+the text, the reference, the options AND the target language, and the record
+carries a fingerprint of the line it was made from — a clip whose text has moved
+under it is re-queued rather than replayed (`clip_text_stale`).
+
+The run's language pair is a default, not a rule: a segment carrying its own
+`tgt_lang` (the editor's per-segment override) is prepared, keyed, synthesised
+and verified in *that* language.
+
+**A check that did not run is a verdict.** With no verification ASR a clip is
+accepted on length alone and recorded as `verify: "unverified"`, never as "ok",
+and everything this stage could not load lands in `m["health"]` for report.json.
 
 Per-segment overrides live in `seg["tts_opts"]` (see `dubbing/ttsopts.py`): seed,
 forced-greedy decode, a pinned clone reference, model size, tempo, the sampler.
@@ -500,6 +511,14 @@ class Plan(NamedTuple):
     ref_key: str
     base_seed: int
     opts: TtsOpts
+    # This segment's own language pair. Usually the run's, but `seg["tgt_lang"]`
+    # is a real per-segment override (edit.set_langs writes it and the translator
+    # honours it), so the synthesiser, the cache key and the verifier all have to
+    # read it too — a French line synthesised as English, keyed as English and
+    # verified against an English ASR failed verification every time and fell back
+    # to keep, with no hint that a supported override was the cause.
+    tgt: str
+    src: str
 
 
 def text_sha(text: str) -> str:
@@ -581,7 +600,7 @@ class Engine:
         self.model_tag = TTS_MODELS[self.tts_model]["tag"]
         self._synth = None
         self._synth_model: str | None = None
-        self._asr = None
+        self._asr: dict[str, Any] = {}        # target language → verify ASR (or None)
         self._voc: np.ndarray | None = None
         self._ref_hash: dict[str, str] = {}          # canonical ref path → content hash
         self._match_cache: dict[tuple, bool] = {}    # (span, canonical path) → same voice?
@@ -630,14 +649,25 @@ class Engine:
 
     @property
     def asr(self):
-        if self._asr is None:
-            self._asr = _load_asr(self.tgt_lang)
-            if self._asr is None:
+        return self.asr_for(self.tgt_lang)
+
+    def asr_for(self, tgt: str | None = None):
+        """The verification ASR for one target language, loaded once each.
+
+        Keyed by language because a segment may target its own (`seg["tgt_lang"]`):
+        a French line checked against the English model reads as gibberish, fails
+        verification every time and falls back to keep — a supported override
+        turned into a silent, permanent failure.
+        """
+        tgt = (tgt or self.tgt_lang or "en").lower()
+        if tgt not in self._asr:
+            self._asr[tgt] = _load_asr(tgt)
+            if self._asr[tgt] is None:
                 self.note_degraded(
                     "tts.verify_asr",
-                    f"unavailable: no faster-whisper model for {self.tgt_lang!r} — "
+                    f"unavailable: no faster-whisper model for {tgt!r} — "
                     "clips accepted on length alone")
-        return self._asr
+        return self._asr[tgt]
 
     # -- degraded operation ------------------------------------------------
     def note_degraded(self, component: str, reason: str) -> None:
@@ -827,7 +857,7 @@ class Engine:
 
     # -- synthesis ---------------------------------------------------------
     def _cache_key(self, speak: str, ref_key: str, seed: int, greedy: bool,
-                   opts: TtsOpts = ttsopts.DEFAULT) -> str:
+                   opts: TtsOpts = ttsopts.DEFAULT, tgt: str | None = None) -> str:
         """Everything that changes the audio, hashed. Nothing that changes it may
         stay out of here, or an edited segment silently replays its old clip.
 
@@ -840,7 +870,8 @@ class Engine:
         # The target language is part of the key so a ru clip never collides with
         # an en clip of the same text. "en" is left out of the blob to keep every
         # existing English cache entry valid.
-        lang = "" if self.tgt_lang == "en" else f"|{self.tgt_lang}"
+        tgt = (tgt or self.tgt_lang).lower()
+        lang = "" if tgt == "en" else f"|{tgt}"
         blob = (f"{self.model_tag_for(opts)}{lang}|{speak}|{ref_key}"
                 f"|{opts.clone_mode()}|{seed}|{int(greedy)}")
         extra = opts.cache_suffix()
@@ -848,29 +879,44 @@ class Engine:
             blob += f"|{extra}"
         return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
 
-    def _verify(self, clip: Path, speak: str) -> tuple[bool, float, str]:
+    def _verify(self, clip: Path, speak: str, tgt: str | None = None,
+                src: str | None = None) -> tuple[bool, float, str]:
+        tgt = (tgt or self.tgt_lang).lower()
+        src = (src or self.src_lang).lower()
         try:
             sec = audio.duration(clip)
         except Exception:
             return False, 0.0, "unreadable"
-        if not clone_length_ok(sec, speak, self.tgt_lang):
+        if not clone_length_ok(sec, speak, tgt):
             return False, 0.0, f"len={sec:.2f}s"
-        model = self.asr
+        model = self.asr_for(tgt)
         if model is None:
             # Accepted, but not verified — and `_verdict` turns that into a
             # verdict of its own rather than letting it read as a pass.
             return True, 1.0, NO_ASR
         try:
-            segs, _ = model.transcribe(str(clip), language=self.tgt_lang,
+            segs, _ = model.transcribe(str(clip), language=tgt,
                                        word_timestamps=False,
                                        condition_on_previous_text=False, vad_filter=True)
             heard = " ".join((s.text or "").strip() for s in segs).strip()
         except Exception as exc:
             return False, 0.0, f"asr-error {exc}"
-        if source_script_leak(heard, self.src_lang, self.tgt_lang):
+        if source_script_leak(heard, src, tgt):
             return False, 0.0, "source-script output"
-        ov = word_overlap(speak, heard, self.tgt_lang)
+        ov = word_overlap(speak, heard, tgt)
         return ov >= CLONE_MIN_OVERLAP, ov, heard[:120]
+
+    def tgt_for(self, seg: dict[str, Any]) -> str:
+        """This segment's target language — its own override, else the run's.
+
+        Same rule as `edit._langs`, which is what the translator obeys: if the two
+        disagreed, the line would be written in one language and spoken in another.
+        """
+        return (seg.get("tgt_lang") or self.tgt_lang or "en").lower()
+
+    def src_for(self, seg: dict[str, Any]) -> str:
+        """This segment's source language — its own override, else the run's."""
+        return (seg.get("src_lang") or seg.get("lang") or self.src_lang or "he").lower()
 
     def _plan(self, seg: dict[str, Any], text_en: str) -> Plan | None:
         """Everything an attempt needs, or None if the segment cannot be voiced.
@@ -879,17 +925,19 @@ class Engine:
         mistake to show the user, not something to quietly synthesize around.
         """
         opts = ttsopts.parse(seg.get("tts_opts"))
-        speak = prepare_text(text_en, self.tgt_lang)
-        if not speak or len(_tokens(speak, self.tgt_lang)) == 0:
+        tgt, src = self.tgt_for(seg), self.src_for(seg)
+        speak = prepare_text(text_en, tgt)
+        if not speak or len(_tokens(speak, tgt)) == 0:
             return None
         ref = self.ref_for(seg, opts)
         if ref is None:
             return None
         ref_path, ref_key = ref
-        return Plan(speak, ref_path, ref_key, seed_for(seg, speak, opts), opts)
+        return Plan(speak, ref_path, ref_key, seed_for(seg, speak, opts), opts, tgt, src)
 
     def _attempt(self, seg_id: int, speak: str, ref_path: Path, ref_key: str,
-                 base_seed: int, attempt: int, opts: TtsOpts = ttsopts.DEFAULT):
+                 base_seed: int, attempt: int, opts: TtsOpts = ttsopts.DEFAULT,
+                 tgt: str | None = None):
         """Generate (or load-from-cache) one attempt's clip.
 
         Returns (clip, meta, verdict). `verdict` is None when the clip was just
@@ -900,22 +948,24 @@ class Engine:
         """
         greedy = opts.greedy or attempt == MAX_TRIES - 1
         seed = base_seed + 1000 * attempt
-        key = self._cache_key(speak, ref_key, seed, greedy, opts)
+        key = self._cache_key(speak, ref_key, seed, greedy, opts, tgt)
         clip = self.clips / f"{key}.wav"
         meta = self.clips / f"{key}.json"
         if clip.is_file() and meta.is_file():
             return clip, meta, json.loads(meta.read_text())
         try:
             self.synth_for(opts).generate(speak, ref_path, clip, seed=seed, greedy=greedy,
-                                          opts=opts)
+                                          opts=opts, lang=tgt)
         except Exception as exc:
             print(f"  tts: seg {seg_id} generate failed ({exc})", file=sys.stderr)
             return clip, meta, {"failed": True}
         audio.trim_leading_silence(clip, clip)
         return clip, meta, None
 
-    def _verify_and_store(self, clip: Path, meta: Path, speak: str) -> dict[str, Any]:
-        verdict = _verdict(clip, *self._verify(clip, speak))
+    def _verify_and_store(self, clip: Path, meta: Path, speak: str,
+                          tgt: str | None = None, src: str | None = None
+                          ) -> dict[str, Any]:
+        verdict = _verdict(clip, *self._verify(clip, speak, tgt, src))
         meta.write_text(json.dumps(verdict, ensure_ascii=False))
         return verdict
 
@@ -946,7 +996,7 @@ class Engine:
         plan = self._plan(seg, text_en)
         if plan is None:
             return None
-        speak, ref_path, ref_key, base_seed, opts = plan
+        speak, ref_path, ref_key, base_seed, opts, tgt, src = plan
         slot = float(seg["end"]) - float(seg["start"])
         best: dict[str, Any] | None = None
 
@@ -965,11 +1015,11 @@ class Engine:
 
         for attempt, a_path, a_key in attempts:
             clip, meta, verdict = self._attempt(seg["id"], speak, a_path, a_key,
-                                                base_seed, attempt, opts)
+                                                base_seed, attempt, opts, tgt)
             if verdict is not None and verdict.get("failed"):
                 continue
             if verdict is None:
-                verdict = self._verify_and_store(clip, meta, speak)
+                verdict = self._verify_and_store(clip, meta, speak, tgt, src)
             # A clip the timeline could never absorb (shorten + 1.3x speed-up
             # recover maybe 3x; a 71s clip for a 5.7s slot once shoved everything
             # after it 49s late) is a failure however well it verifies.
@@ -1048,7 +1098,7 @@ class _Synth:
         import torch
 
         self.lang = (lang or "en").lower()
-        self._qwen_lang: str | None = None
+        self._qwen_lang: dict[str, str] = {}   # language code → the checkpoint's name
 
         if device and device != "auto":
             self.device = device
@@ -1089,21 +1139,27 @@ class _Synth:
         self._model = model
         return model
 
-    def _language(self, model) -> str:
-        """The checkpoint's name for the target language, resolved once per run."""
-        if self._qwen_lang is None:
+    def _language(self, model, lang: str | None = None) -> str:
+        """The checkpoint's name for a target language, resolved once per language.
+
+        Per language, not per run: a segment may target its own (`seg["tgt_lang"]`),
+        and synthesising a French line as English is how a supported override turned
+        into a permanent tts_failed.
+        """
+        want = (lang or self.lang or "en").lower()
+        if want not in self._qwen_lang:
             try:
                 supported = model.get_supported_languages()
             except Exception:
                 supported = _QWEN_LANG_NAMES.values()
-            self._qwen_lang = qwen_language_name(self.lang, supported)
-            if self._qwen_lang == "Auto":
-                print(f"  tts: target {self.lang!r} not in the checkpoint's supported "
+            self._qwen_lang[want] = qwen_language_name(want, supported)
+            if self._qwen_lang[want] == "Auto":
+                print(f"  tts: target {want!r} not in the checkpoint's supported "
                       "languages — synthesising with language=Auto", file=sys.stderr)
-        return self._qwen_lang
+        return self._qwen_lang[want]
 
     def generate(self, speak: str, ref: Path, out: Path, *, seed: int, greedy: bool,
-                 opts: TtsOpts = ttsopts.DEFAULT) -> Path:
+                 opts: TtsOpts = ttsopts.DEFAULT, lang: str | None = None) -> Path:
         import torch
 
         model = self._load()
@@ -1118,10 +1174,11 @@ class _Synth:
                 ref_audio=str(ref), ref_text=opts.ref_text,
                 x_vector_only_mode=not opts.icl,
             )
+        want = (lang or self.lang).lower()
         wavs, sr = model.generate_voice_clone(
-            text=speak, language=self._language(model),
+            text=speak, language=self._language(model, want),
             voice_clone_prompt=self._prompts[key],
-            max_new_tokens=opts.max_new_tokens or max_new_tokens(speak, self.lang),
+            max_new_tokens=opts.max_new_tokens or max_new_tokens(speak, want),
             repetition_penalty=opts.repetition_penalty or REPETITION_PENALTY,
             **sampling_kwargs(greedy, opts),
         )
@@ -1298,9 +1355,9 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
             if plan is None:
                 retry.append(seg)
                 continue
-            speak, ref_path, ref_key, base_seed, opts = plan
+            speak, ref_path, ref_key, base_seed, opts, tgt, src = plan
             clip, meta, verdict = engine._attempt(seg["id"], speak, ref_path, ref_key,
-                                                  base_seed, 0, opts)
+                                                  base_seed, 0, opts, tgt)
             if verdict is not None and verdict.get("failed"):
                 retry.append(seg)
                 continue
@@ -1310,7 +1367,7 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
                 else:
                     retry.append(seg)
                 continue
-            verifying[seg["id"]] = (vpool.submit(engine._verify, clip, speak),
+            verifying[seg["id"]] = (vpool.submit(engine._verify, clip, speak, tgt, src),
                                     clip, meta, speak, opts)
 
         for seg in todo:
