@@ -32,8 +32,18 @@
  * that says "original audio" over the finished dub would be worse than no chip.
  */
 
-import { useEffect, useState } from "react";
-import { Pause, Play, SkipBack, SkipForward, TriangleAlert } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import {
+  Maximize,
+  Minimize,
+  Pause,
+  Play,
+  SkipBack,
+  SkipForward,
+  TriangleAlert,
+  Volume2,
+  VolumeX,
+} from "lucide-react";
 import { cn } from "../lib/classNames";
 import { timecode } from "../lib/format";
 import type { Transport } from "../lib/useTransport";
@@ -90,6 +100,37 @@ export function VideoPlayer({
   const [failed, setFailed] = useState(false);
   useEffect(() => setFailed(false), [src]);
 
+  /*
+   * The YouTube grammar, because that is the grammar everyone's hands know:
+   * click the picture to play/pause, double-click it for fullscreen, scrub on
+   * a bar, mute where you expect mute. All of it drives the one shared
+   * transport — the timeline playhead and the script's follow-along move with
+   * the scrub exactly as they move with the timeline's own seek.
+   */
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const [fullscreen, setFullscreen] = useState(false);
+  useEffect(() => {
+    const onChange = () => setFullscreen(document.fullscreenElement != null);
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void rootRef.current?.requestFullscreen?.().catch(() => {});
+  };
+
+  // Volume lives on the element, but the element is remounted per source —
+  // state here is what keeps a chosen volume across the source→preview swap.
+  const [muted, setMuted] = useState(false);
+  const [volume, setVolume] = useState(1);
+  useEffect(() => {
+    const el = transport.videoRef.current;
+    if (el) {
+      el.muted = muted;
+      el.volume = volume;
+    }
+  }, [muted, volume, src, transport.videoRef]);
+
   // The picture needs both a preview and a URL for it, and the URL has to load.
   // They come apart in fixture mode, where the manifest names a preview.mp4 that
   // no fixture can serve and the panel is a status board rather than a blank
@@ -106,8 +147,15 @@ export function VideoPlayer({
   const silent = mode === "none" || src == null || failed;
 
   return (
-    <div className={cn("flex flex-col bg-sunken", className)}>
-      <div className="relative min-h-0 flex-1">
+    <div ref={rootRef} className={cn("flex flex-col bg-sunken", className)}>
+      <div
+        className={cn("relative min-h-0 flex-1", picture && "cursor-pointer")}
+        // On the PICTURE only: with the placeholder up, a click is aimed at
+        // whatever the placeholder offers (a retry button, a resume), and a
+        // toggle stolen from under it would play audio nobody asked for.
+        onClick={picture ? transport.toggle : undefined}
+        onDoubleClick={picture ? toggleFullscreen : undefined}
+      >
         {/* One element for both files. Hidden rather than unmounted in `source`
             mode: a display:none media element still plays, and unmounting it
             would hand the transport back its synthetic clock. */}
@@ -124,9 +172,11 @@ export function VideoPlayer({
         {picture ? null : failed ? <MediaError label={srcLabel} /> : placeholder}
       </div>
 
+      <Scrubber current={transport.currentTime} duration={duration} seek={transport.seek} />
+
       <div
         data-transport={mode}
-        className="flex shrink-0 items-center gap-1.5 border-y border-border bg-surface px-3 py-1.5"
+        className="flex shrink-0 items-center gap-1.5 border-b border-border bg-surface px-3 py-1.5"
       >
         <TransportButton onClick={() => transport.nudge(-5)} label="Back 5 seconds">
           <SkipBack className="h-3.5 w-3.5" />
@@ -148,6 +198,34 @@ export function VideoPlayer({
           <SkipForward className="h-3.5 w-3.5" />
         </TransportButton>
 
+        <TransportButton
+          onClick={() => setMuted((m) => !m)}
+          label={muted ? "Unmute" : "Mute"}
+          title={silent ? "No audio attached to mute" : undefined}
+          disabled={silent}
+        >
+          {muted || volume === 0 ? (
+            <VolumeX className="h-3.5 w-3.5" />
+          ) : (
+            <Volume2 className="h-3.5 w-3.5" />
+          )}
+        </TransportButton>
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.05}
+          value={muted ? 0 : volume}
+          disabled={silent}
+          aria-label="Volume"
+          data-volume
+          onChange={(event) => {
+            setMuted(false);
+            setVolume(Number(event.currentTarget.value));
+          }}
+          className="w-14 shrink-0 accent-[var(--color-primary)] disabled:opacity-40"
+        />
+
         {mode === "source" ? (
           <span
             data-transport-note
@@ -165,6 +243,94 @@ export function VideoPlayer({
           {timecode(transport.currentTime)}
           <span className="text-muted"> / {timecode(duration, 0)}</span>
         </span>
+
+        <TransportButton
+          onClick={toggleFullscreen}
+          label={fullscreen ? "Exit fullscreen" : "Fullscreen"}
+          title={picture ? undefined : "Fullscreen needs a picture to fill"}
+          disabled={!picture && !fullscreen}
+        >
+          {fullscreen ? <Minimize className="h-3.5 w-3.5" /> : <Maximize className="h-3.5 w-3.5" />}
+        </TransportButton>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The seek bar — YouTube's, structurally: a full-width strip whose fill is the
+ * played fraction, click or drag anywhere on it to go there. It drives
+ * `transport.seek`, so it works over the preview, the source audio and the
+ * synthetic clock alike, and the timeline playhead follows it for free.
+ */
+function Scrubber({
+  current,
+  duration,
+  seek,
+}: {
+  current: number;
+  duration: number;
+  seek: (time: number) => void;
+}) {
+  const barRef = useRef<HTMLDivElement | null>(null);
+  const disabled = duration <= 0;
+  const frac = disabled ? 0 : Math.max(0, Math.min(1, current / duration));
+
+  const seekAt = (clientX: number) => {
+    const rect = barRef.current?.getBoundingClientRect();
+    if (!rect || rect.width <= 0) return;
+    const f = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    seek(f * duration);
+  };
+
+  return (
+    <div
+      ref={barRef}
+      role="slider"
+      aria-label="Seek"
+      aria-valuemin={0}
+      aria-valuemax={Math.max(0, Math.round(duration))}
+      aria-valuenow={Math.round(current)}
+      aria-disabled={disabled || undefined}
+      tabIndex={disabled ? -1 : 0}
+      data-scrubber
+      onPointerDown={(event) => {
+        if (disabled) return;
+        // Capture so a drag keeps scrubbing past the strip's own edge —
+        // guarded, because the smoke DOM has no pointer capture.
+        event.currentTarget.setPointerCapture?.(event.pointerId);
+        seekAt(event.clientX);
+      }}
+      onPointerMove={(event) => {
+        if (disabled) return;
+        if (event.currentTarget.hasPointerCapture?.(event.pointerId)) seekAt(event.clientX);
+      }}
+      onKeyDown={(event) => {
+        if (disabled) return;
+        if (event.key === "ArrowRight") {
+          event.preventDefault();
+          seek(current + 5);
+        } else if (event.key === "ArrowLeft") {
+          event.preventDefault();
+          seek(current - 5);
+        }
+      }}
+      className={cn(
+        "group/scrub flex h-3 shrink-0 touch-none items-center border-t border-border bg-surface px-3",
+        disabled ? "cursor-default" : "cursor-pointer",
+      )}
+    >
+      <div className="relative h-[3px] w-full rounded-full bg-border transition-[height] group-hover/scrub:h-[5px]">
+        <div
+          data-scrubber-fill
+          className="absolute inset-y-0 left-0 rounded-full"
+          style={{ width: `${frac * 100}%`, background: "var(--color-primary)" }}
+        />
+        <div
+          aria-hidden
+          className="absolute top-1/2 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full opacity-0 transition-opacity group-hover/scrub:opacity-100"
+          style={{ left: `${frac * 100}%`, background: "var(--color-primary)" }}
+        />
       </div>
     </div>
   );

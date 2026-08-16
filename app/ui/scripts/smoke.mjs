@@ -2477,6 +2477,30 @@ check(
     /Original audio \(no preview yet\)/.test(transportBar().textContent),
 );
 check("…behind a live play button", playButton() != null && !playButton().disabled);
+
+/* The YouTube grammar: a scrubber that drives the one shared transport, so the
+   timeline playhead and the script's follow-along ride the same seek. */
+const scrubber = () => document.querySelector("[data-scrubber]");
+check("the player carries a seek bar", scrubber() != null);
+const scrubAt = () => Number(scrubber().getAttribute("aria-valuenow"));
+const scrubFrom = scrubAt();
+scrubber().dispatchEvent(
+  new dom.window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }),
+);
+await settle(150);
+check("keyboard-scrubbing moves the shared clock", scrubAt() >= scrubFrom + 4);
+scrubber().dispatchEvent(
+  new dom.window.KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }),
+);
+await settle(150);
+check("…and scrubs back", Math.abs(scrubAt() - scrubFrom) <= 1);
+check(
+  "volume and fullscreen sit in the bar",
+  document.querySelector("[data-volume]") != null &&
+    [...document.querySelectorAll("button")].some((b) =>
+      ["Fullscreen", "Exit fullscreen"].includes(b.getAttribute("aria-label")),
+    ),
+);
 /*
  * …in a band, not on a stage.
  *
