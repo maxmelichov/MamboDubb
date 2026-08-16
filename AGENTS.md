@@ -195,3 +195,18 @@ non-overlapping.
 - Qwen3-TTS: **float32 on MPS** — float16 NaNs in the code predictor.
 - faster-whisper: **CPU only** (CTranslate2 has no MPS backend).
 - Models are sequential, never co-resident: the translator is freed before TTS loads.
+
+## Device notes (Windows / Linux + CUDA)
+
+- No MLX off a Mac, so `translate.load()` starts the CUDA worker in `translator/`
+  (its own venv, transformers 5.x). On Windows PyPI's default `torch` wheel is
+  CPU-only — install the CUDA index wheel in **both** venvs. See [docs/WINDOWS.md](docs/WINDOWS.md).
+- Platform-dependent behaviour lives in functions that take the platform as an
+  argument, so it is testable off Windows: `dubbing/tools.py` (install recipes
+  per platform, UTF-8 stdio), `dubbing_app/runner.py` (`spawn_kwargs`,
+  `terminate_tree` — `killpg` on POSIX, Ctrl-Break + `taskkill /T` on Windows),
+  `dubbing_app/server.py` (`watchdog` declines on Windows, which never reparents).
+  `tests/test_windows_portability.py` simulates all three; keep it passing.
+- Nothing may import `fcntl`/`termios`/`pty`, name `os.killpg`/`os.setsid`/
+  `preexec_fn` outside `runner.py`, `select` a pipe, or write text without
+  `encoding="utf-8"` — the last one is how Hebrew dies on a cp1252 console.

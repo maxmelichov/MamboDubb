@@ -3,9 +3,12 @@
 The Setup screen's job is to say what this machine is missing. For a model that
 is enough the check's detail line carries the command, and nothing else could
 honestly be offered for a ten-gigabyte download that wants a Hugging Face login
-and half an hour. For `ffmpeg` and `sox` it is not: they are one `brew install`
-away, the user is looking at a red row that says so, and asking them to find a
-terminal is asking them to leave the app to type a line the app already knows.
+and half an hour. For `ffmpeg` and `sox` it is not: they are one package-manager
+line away (`brew install` on a Mac, `winget install` on Windows), the user is
+looking at a red row that says so, and asking them to find a terminal is asking
+them to leave the app to type a line the app already knows. Where that line
+needs a terminal anyway — `sudo apt-get`, which asks for a password — there is
+no button and the detail line carries the command; see `dubbing/tools.py`.
 
 Four rules shape this module, each of them a refusal:
 
@@ -40,13 +43,18 @@ import time
 from collections import deque
 from typing import Any, Callable
 
+from dubbing import tools
+
 from .errors import busy, invalid
 
-# id → the argv to run. The only executable strings in this feature.
-INSTALLERS: dict[str, tuple[str, ...]] = {
-    "ffmpeg": ("brew", "install", "ffmpeg"),
-    "sox": ("brew", "install", "sox"),
-}
+# id → the argv to run, for *this* platform. The only executable strings in this
+# feature, and still a hardcoded table — `dubbing.tools` picks the row for the
+# machine, nothing here is built from a request. A platform whose package
+# manager cannot run unattended (Linux: `sudo apt-get` wants a password on a
+# terminal the app does not have) contributes no rows at all, so the Setup
+# screen shows no button and the check's detail line carries the command
+# instead. That is the same refusal this module already makes for the models.
+INSTALLERS: dict[str, tuple[str, ...]] = tools.auto_installers()
 
 # argv[0] → what to say when it is not on PATH. The tool that installs the tools
 # cannot itself be installed from here; naming the one URL is the whole answer.
@@ -54,6 +62,15 @@ MANAGERS: dict[str, str] = {
     "brew": ("Homebrew is not on this machine, and it is what installs {tool}. "
              "Get it from https://brew.sh, then re-check or install {tool} by "
              "hand with `{command}` once brew is there."),
+    "winget": ("The Windows Package Manager (winget) is not on this machine, and "
+               "it is what installs {tool}. Get App Installer from the Microsoft "
+               "Store, then re-check or install {tool} by hand with `{command}` "
+               "once winget is there."),
+    "apt-get": ("`apt-get` is not on this machine install {tool} with your "
+                "distribution's package manager, or by hand with `{command}`."),
+    "sudo": ("This machine installs {tool} with `{command}`, which asks for a "
+             "password on a terminal the app does not have run it in a terminal "
+             "and re-check."),
 }
 
 # How much of the output the status response carries. An install is chatty and
@@ -69,9 +86,13 @@ Probe = Callable[[str], dict[str, Any] | None]
 
 
 def manual_command(id_: str, recipes: dict[str, tuple[str, ...]] | None = None) -> str | None:
-    """What the user would type for `id_`, or None if the app has no recipe."""
+    """What the user would type for `id_`, or None if this platform has none.
+
+    Falls back to `dubbing.tools`, so a tool the app will not install for itself
+    (no unattended package manager) still hands the user its command.
+    """
     argv = (recipes if recipes is not None else INSTALLERS).get(id_)
-    return " ".join(argv) if argv else None
+    return " ".join(argv) if argv else tools.command(id_)
 
 
 class Installer:
@@ -152,10 +173,18 @@ class Installer:
 
     def _refusal(self, id_: str) -> str:
         offered = ", ".join(f"`{' '.join(a)}`" for a in self.recipes.values())
+        # What this machine would type for the tools there is no button for —
+        # on a platform whose package manager needs a terminal that is *every*
+        # tool, and a refusal that names none of them is a scavenger hunt.
+        byhand = ", ".join(f"`{cmd}`" for cmd in
+                           (tools.command(t) for t in sorted(tools.recipes()))
+                           if cmd and cmd not in
+                           {" ".join(a) for a in self.recipes.values()})
         return (f"{id_!r} cannot be installed from the app. The only installs it "
-                f"runs are {offered or 'none'}. Everything else is by hand: the "
-                "models download themselves on first use and the command is in "
-                "that check's detail line run it in a terminal from the repo.")
+                f"runs are {offered or 'none'}. Everything else is by hand: "
+                + (f"the tools with {byhand}, and " if byhand else "")
+                + "the models download themselves on first use and the command is "
+                "in that check's detail line run it in a terminal from the repo.")
 
     def _env(self) -> dict[str, str]:
         # Non-interactive, because there is no terminal to answer a prompt on and
@@ -166,9 +195,13 @@ class Installer:
     def _run(self, id_: str, argv: tuple[str, ...]) -> None:
         ok, error = False, None
         try:
+            # `errors="replace"`: a package manager's progress output is full of
+            # box-drawing characters, and a decode error must not be what ends an
+            # install that was otherwise working.
             proc = self._spawn(list(argv), stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                               text=True, bufsize=1, env=self._env())
+                               text=True, encoding="utf-8", errors="replace",
+                               bufsize=1, env=self._env())
         except OSError as exc:
             self._finish(id_, False, f"{type(exc).__name__}: {exc}")
             return

@@ -167,6 +167,11 @@ def _cudnn_on_path() -> None:
     The cuDNN that ships alongside torch lives inside the `nvidia.cudnn` package,
     which is not on the default library search path. Preload its libraries and
     prepend the dir to LD_LIBRARY_PATH; harmless no-op when the wheel is absent.
+
+    Windows is the same problem with different spelling: the DLLs sit in
+    `nvidia/cudnn/bin`, `LD_LIBRARY_PATH` means nothing, and since 3.8 a DLL
+    directory has to be declared with `os.add_dll_directory`. Same intent, so it
+    lives here rather than in a second half-copy of this function elsewhere.
     """
     try:
         import ctypes
@@ -178,6 +183,12 @@ def _cudnn_on_path() -> None:
         # A namespace package: __file__ is None, __path__ holds the real dir.
         pkg_dir = next(iter(nvidia.cudnn.__path__), None)
         if pkg_dir is None:
+            return
+        if sys.platform == "win32":
+            for sub in ("bin", "lib"):
+                d = Path(pkg_dir).resolve() / sub
+                if d.is_dir():
+                    os.add_dll_directory(str(d))
             return
         lib = Path(pkg_dir).resolve() / "lib"
         if not lib.is_dir():

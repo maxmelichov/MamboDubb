@@ -1333,6 +1333,8 @@ def test_load_picks_the_subprocess_backend_off_mac(monkeypatch):
             self.own_gpu = kw.get("own_gpu", False)
 
     monkeypatch.setattr(translate, "_mlx_available", lambda: False)
+    monkeypatch.setattr(translate, "_vllm_available", lambda: False)
+    monkeypatch.setattr(translate, "_vllm_installed", lambda: False)
     monkeypatch.setattr(translate, "_spare_gpu", lambda: None)
     monkeypatch.setattr(translate, "WorkerHandle", FakeHandle)
     processor, model, device = translate.load()
@@ -1340,6 +1342,136 @@ def test_load_picks_the_subprocess_backend_off_mac(monkeypatch):
     assert isinstance(model, FakeHandle)
     joined = " ".join(created["cmd"])
     assert "--project" in created["cmd"] and "worker.py" in joined
+
+
+def test_backend_order_is_mlx_then_vllm_then_transformers():
+    # The chain, with nothing forced. The transformers worker is the floor: it is
+    # also the CPU path (worker.py picks cpu when torch sees no GPU) and the only
+    # CUDA backend on Windows, where vLLM has no wheels.
+    pick = translate.select_backend
+    assert pick("auto", mlx_ok=True, vllm_ok=True) == "mlx"
+    assert pick("", mlx_ok=True, vllm_ok=False) == "mlx"
+    assert pick("auto", mlx_ok=False, vllm_ok=True) == "vllm"
+    assert pick("auto", mlx_ok=False, vllm_ok=False) == "transformers"
+
+
+def test_backend_env_override_wins_even_against_the_probes():
+    # Forcing a backend is how a user says the probe is wrong about this machine,
+    # so it must not fall back silently; a typo is not a backend and auto-selects.
+    pick = translate.select_backend
+    assert pick("vllm", mlx_ok=True, vllm_ok=False) == "vllm"
+    assert pick("transformers", mlx_ok=True, vllm_ok=True) == "transformers"
+    assert pick("MLX", mlx_ok=False, vllm_ok=True) == "mlx"          # case-insensitive
+    assert pick("tensorrt", mlx_ok=False, vllm_ok=True) == "vllm"    # unknown → auto
+
+
+def test_vllm_backend_needs_linux_and_a_gpu_and_the_extra(monkeypatch):
+    # All three conditions are load-bearing; none of them may import vllm here.
+    def state(installed, platform, gpus):
+        monkeypatch.setattr(translate, "_vllm_installed", lambda: installed)
+        monkeypatch.setattr(translate.sys, "platform", platform)
+        monkeypatch.setattr(translate, "_cuda_count", lambda: gpus)
+        return translate._vllm_available()
+
+    assert state(True, "linux", 2)
+    assert not state(False, "linux", 2)      # extra not synced
+    assert not state(True, "win32", 2)       # no Windows wheels
+    assert not state(True, "linux", 0)       # no CUDA device
+
+
+def test_worker_cmd_points_at_the_right_script_and_keeps_the_extra(monkeypatch):
+    # `uv run` re-syncs the venv to the extras on its own command line, so a
+    # transformers launch that dropped --extra would uninstall vLLM out from
+    # under the next run's probe: the flag follows the venv, not the backend.
+    monkeypatch.setattr(translate, "_vllm_installed", lambda: True)
+    vllm_cmd = translate._worker_cmd("vllm")
+    tf_cmd = translate._worker_cmd("transformers")
+    assert "worker_vllm.py" in " ".join(vllm_cmd)
+    assert vllm_cmd[vllm_cmd.index("--extra") + 1] == "vllm"
+    assert tf_cmd[tf_cmd.index("--extra") + 1] == "vllm"
+    assert tf_cmd[-2].endswith("worker.py")
+
+    monkeypatch.setattr(translate, "_vllm_installed", lambda: False)
+    assert "--extra" not in translate._worker_cmd("transformers")
+
+
+def test_worker_handle_batches_and_reorders_replies(tmp_path):
+    # A batched worker may finish short prompts first; request_many must hand the
+    # answers back in the order they were asked, matched by id.
+    #
+    # The stand-in writes the whole batch in ONE write and then goes quiet, which
+    # is the shape that broke the old select()-based reader: the first readline
+    # pulls every reply into Python's buffer, the fd goes empty, and select then
+    # reports nothing to read while the answers are already in hand. Anything less
+    # deterministic passes by luck.
+    shuffling = tmp_path / "batch_worker.py"
+    shuffling.write_text(
+        "import json, sys\n"
+        "print(json.dumps({'ready': True}), flush=True)\n"
+        "for line in sys.stdin:\n"
+        "    msg = json.loads(line)\n"
+        "    reqs = msg['batch'] if 'batch' in msg else [msg]\n"
+        "    sys.stdout.write(''.join(\n"
+        "        json.dumps({'id': r['id'], 'text': r['user_text'].upper()},\n"
+        "                   ensure_ascii=False) + '\\n' for r in reversed(reqs)))\n"
+        "    sys.stdout.flush()\n",
+        encoding="utf-8")
+    handle = translate.WorkerHandle([sys.executable, str(shuffling)], ready_timeout=30)
+    try:
+        assert handle.request_many([("one", 10), ("two", 10), ("שלוש", 10)]) == [
+            "ONE", "TWO", "שלוש"]
+        assert handle.request_many([]) == []
+        assert handle.request_many([("alone", 10)]) == ["ALONE"]   # falls back to request
+        assert handle.request("after the batch", 10) == "AFTER THE BATCH"
+    finally:
+        handle.close()
+
+
+def test_both_workers_parse_the_same_protocol_line():
+    # The two workers are only interchangeable if they read the same messages.
+    # Their parse() is importable without any model: neither imports its engine
+    # at module scope, which is also what keeps vllm out of the main venv.
+    import importlib.util
+
+    root = translate.REPO_ROOT
+    parsers = []
+    for name in ("worker", "worker_vllm"):
+        spec = importlib.util.spec_from_file_location(
+            f"translator_{name}", root / "translator" / f"{name}.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        parsers.append(module.parse)
+
+    for parse in parsers:
+        assert parse('{"id": 3, "user_text": "hi", "max_new_tokens": 40}') == [
+            {"id": 3, "user_text": "hi", "max_new_tokens": 40}]
+        assert parse('{"id": 1, "user_text": "hi"}')[0]["max_new_tokens"] == 400
+        assert [r["id"] for r in parse(
+            '{"batch": [{"id": 7, "user_text": "a"}, {"id": 8, "user_text": "b"}]}'
+        )] == [7, 8]
+        with pytest.raises(Exception):
+            parse('{"batch": []}')
+        with pytest.raises(Exception):
+            parse("not json at all")
+
+
+def test_worker_handle_batch_surfaces_a_failed_item(tmp_path):
+    # One blank answer out of N, silently returned, is the exact failure the ids
+    # exist to prevent: an erroring item fails the whole call.
+    failing = tmp_path / "failing_batch_worker.py"
+    failing.write_text(
+        "import json, sys\n"
+        "print(json.dumps({'ready': True}), flush=True)\n"
+        "for line in sys.stdin:\n"
+        "    for r in json.loads(line)['batch']:\n"
+        "        print(json.dumps({'id': r['id'], 'error': 'OOM'}), flush=True)\n",
+        encoding="utf-8")
+    handle = translate.WorkerHandle([sys.executable, str(failing)], ready_timeout=30)
+    try:
+        with pytest.raises(RuntimeError, match="OOM"):
+            handle.request_many([("a", 10), ("b", 10)])
+    finally:
+        handle.close()
 
 
 def test_own_gpu_worker_is_persistent_and_reused(monkeypatch):
@@ -1362,6 +1494,8 @@ def test_own_gpu_worker_is_persistent_and_reused(monkeypatch):
             self.closed = True
 
     monkeypatch.setattr(translate, "_mlx_available", lambda: False)
+    monkeypatch.setattr(translate, "_vllm_available", lambda: False)
+    monkeypatch.setattr(translate, "_vllm_installed", lambda: False)
     monkeypatch.setattr(translate, "_spare_gpu", lambda: "1")
     monkeypatch.setattr(translate, "WorkerHandle", FakeHandle)
     monkeypatch.setattr(translate, "_WORKER", None)

@@ -13,7 +13,8 @@ Tauri shell would parse:
    else may write to it, which is why uvicorn's logging is redirected below.
 4. Watchdog: poll `os.getppid()` once a second and exit(0) when it changes, so a
    crashed parent never leaves a pipeline running. Skipped when the parent is
-   already init (pid 1) there is nothing to outlive.
+   already init (pid 1) there is nothing to outlive, and skipped on Windows,
+   which never reparents (`--exit-on-stdin-close` is the mechanism there).
 """
 
 from __future__ import annotations
@@ -29,6 +30,8 @@ import threading
 import time
 from pathlib import Path
 
+from dubbing.tools import utf8_stdio
+
 from . import __version__
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -39,7 +42,11 @@ WATCHDOG_INTERVAL = 1.0
 # same checkout that works from a terminal reports ffmpeg/sox MISSING inside the
 # installed app, and every stage's shell-out would fail the same way. The server
 # is the ancestor of every job child, so widening PATH once here fixes them all.
+# Every entry is `is_dir()`-guarded, so on Windows and Linux (where a launched
+# process inherits the user's real PATH) this is a no-op rather than a guess.
 TOOL_DIRS = ("/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin")
+
+
 
 
 def widen_path(env: dict | None = None) -> str:
@@ -75,7 +82,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def bind(host: str, port: int) -> socket.socket:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    # SO_REUSEADDR means "reuse a TIME_WAIT port" on POSIX and "let anyone else
+    # steal this port" on Windows, where the equivalent promise is spelled
+    # SO_EXCLUSIVEADDRUSE. A local server that another process can bind out from
+    # under is not a detail on a machine that runs the pipeline.
+    if sys.platform == "win32":
+        sock.setsockopt(socket.SOL_SOCKET, getattr(socket, "SO_EXCLUSIVEADDRUSE", -5), 1)
+    else:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((host, port))
     sock.listen(128)
     sock.set_inheritable(True)
@@ -89,7 +103,19 @@ def announce(port: int, stream=None) -> None:
     stream.flush()
 
 
-def watchdog(on_orphan=None, interval: float = WATCHDOG_INTERVAL) -> threading.Thread | None:
+def watchdog(on_orphan=None, interval: float = WATCHDOG_INTERVAL,
+             platform: str | None = None) -> threading.Thread | None:
+    """Exit when the parent goes away. POSIX only, and it says so.
+
+    The mechanism is reparenting: a dead parent means `getppid()` changes to 1.
+    Windows does not reparent — the recorded parent pid outlives the process
+    that owned it, so this loop would poll forever and never fire, which is
+    worse than not running: it is a watchdog that reports for duty and sleeps.
+    So on Windows it declines, and `--exit-on-stdin-close` (the pipe, which
+    does not lie on any platform) is the mechanism a shell should use there.
+    """
+    if (platform or sys.platform) == "win32":
+        return None
     parent = os.getppid()
     if parent <= 1:
         return None                      # already reparented to init; nothing to watch
@@ -159,6 +185,7 @@ def main(argv: list[str] | None = None) -> int:
     from .app import create_app
 
     args = parse_args(argv)
+    utf8_stdio()
     log_config = configure_logging()
     widen_path()
 

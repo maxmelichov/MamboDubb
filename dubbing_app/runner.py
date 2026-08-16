@@ -51,6 +51,58 @@ _COUNT_RE = re.compile(r"^\s+(\w+):\s+(\d+)/(\d+)$")
 
 TERM_GRACE = 8.0
 
+# Windows has no `subprocess.CREATE_NEW_PROCESS_GROUP` attribute off Windows, so
+# the value is spelled out — the tests choose the platform, not the host.
+CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+
+
+def spawn_kwargs(platform: str | None = None) -> dict[str, Any]:
+    """How to detach the job child so cancelling takes its children with it.
+
+    POSIX: its own session (`start_new_session`), which is what makes
+    `killpg` reach the yt-dlp and ffmpeg the pipeline spawns. Windows has no
+    process groups in that sense — `CREATE_NEW_PROCESS_GROUP` only buys the
+    right to send it a Ctrl-Break — so the tree is torn down with `taskkill /T`
+    instead (see `terminate_tree`). Either way "stop" means the re-encode stops
+    too, which is the whole point of running the job in a child.
+    """
+    if (platform or sys.platform) == "win32":
+        return {"creationflags": CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def terminate_tree(proc: subprocess.Popen, *, hard: bool,
+                   platform: str | None = None) -> None:
+    """Ask the child *and its children* to stop (`hard=False`), or make them.
+
+    Every branch ends in a call that kills at least the child itself: a cancel
+    that quietly did nothing would leave a job the UI believes is stopping
+    running for another forty minutes.
+    """
+    if (platform or sys.platform) == "win32":
+        if not hard:
+            try:
+                proc.send_signal(getattr(signal, "CTRL_BREAK_EVENT", signal.SIGTERM))
+                return
+            except (OSError, ValueError, AttributeError):
+                pass                       # not in its own group, or already gone
+        # TerminateProcess does not touch grandchildren; `taskkill /T` does.
+        try:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        return
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL if hard else signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        (proc.kill if hard else proc.terminate)()
+
 
 def parse_stderr(line: str) -> dict[str, Any] | None:
     """One pipeline log line → one event, or None to pass it through as a log."""
@@ -88,14 +140,18 @@ class SubprocessRunner:
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONPATH"] = os.pathsep.join(
             [str(self.cwd)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
+        # The protocol is NDJSON carrying Hebrew, and a Windows child's stdio
+        # defaults to the ANSI code page — which cannot encode it, so the child
+        # would die inside `print` rather than in anything it was asked to do.
+        env["PYTHONIOENCODING"] = "utf-8"
         proc = subprocess.Popen(
             [self.python, "-m", self.module],
             cwd=str(self.cwd), env=env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, bufsize=1,
-            # Its own process group: the pipeline spawns yt-dlp and ffmpeg, and
-            # cancelling has to take those with it rather than orphan a re-encode.
-            start_new_session=True,
+            text=True, encoding="utf-8", errors="replace", bufsize=1,
+            # Detached: the pipeline spawns yt-dlp and ffmpeg, and cancelling has
+            # to take those with it rather than orphan a re-encode.
+            **spawn_kwargs(),
         )
         with self._lock:
             self._procs[job.id] = proc
@@ -145,10 +201,7 @@ class SubprocessRunner:
             proc = self._procs.get(job.id)
         if proc is None or proc.poll() is not None:
             return
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            proc.terminate()
+        terminate_tree(proc, hard=False)
         killer = threading.Timer(TERM_GRACE, self._kill, args=(proc,))
         killer.daemon = True
         killer.start()
@@ -156,10 +209,7 @@ class SubprocessRunner:
     @staticmethod
     def _kill(proc: subprocess.Popen) -> None:
         if proc.poll() is None:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except Exception:
-                proc.kill()
+            terminate_tree(proc, hard=True)
 
     @staticmethod
     def _pump_stderr(proc: subprocess.Popen, emit: Emit, errors: list[str]) -> None:

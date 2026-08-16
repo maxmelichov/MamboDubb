@@ -9,6 +9,8 @@
   ·
   <a href="#quick-start-cli">Run from source</a>
   ·
+  <a href="docs/WINDOWS.md">Windows</a>
+  ·
   <a href="docs/APP_ARCHITECTURE.md">Architecture</a>
 </p>
 
@@ -50,8 +52,26 @@ uv sync                    # Python 3.12, uv only
 cp .env.example .env       # set HF_TOKEN for speaker diarization (optional)
 ```
 
-> **Apple Silicon is required** translation runs on MLX, which needs an M-series
-> chip. There is no Intel or iOS build.
+> **The packaged app is Apple Silicon only** its translator runs on MLX, which
+> needs an M-series chip. There is no Intel or iOS build.
+
+### Windows and Linux
+
+There is no installer for either, but both run the whole thing from source with
+an NVIDIA GPU: translation moves from MLX to a CUDA worker in `translator/`
+automatically, and everything else is unchanged.
+
+```powershell
+winget install --id astral-sh.uv -e
+winget install --id Gyan.FFmpeg -e --accept-source-agreements --accept-package-agreements
+winget install --id ChrisBagwell.SoX -e --accept-source-agreements --accept-package-agreements
+git clone --recurse-submodules https://github.com/maxmelichov/MamboDubb.git
+cd MamboDubb; uv sync
+```
+
+Windows needs one extra step — PyPI's default `torch` wheel is CPU-only there —
+and has a few platform notes worth reading first: **[docs/WINDOWS.md](docs/WINDOWS.md)**.
+WSL2 is the easier road if you have it, and the faster one.
 
 ## Quick start (CLI)
 

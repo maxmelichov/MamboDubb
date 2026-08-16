@@ -1035,7 +1035,7 @@ class Engine:
         clip = self.clips / f"{key}.wav"
         meta = self.clips / f"{key}.json"
         if clip.is_file() and meta.is_file():
-            return clip, meta, json.loads(meta.read_text())
+            return clip, meta, json.loads(meta.read_text(encoding="utf-8"))
         try:
             self.synth_for(opts).generate(speak, ref_path, clip, seed=seed, greedy=greedy,
                                           opts=opts, synth=synth, lang=tgt)
@@ -1049,7 +1049,7 @@ class Engine:
                           tgt: str | None = None, src: str | None = None
                           ) -> dict[str, Any]:
         verdict = _verdict(clip, *self._verify(clip, speak, tgt, src))
-        meta.write_text(json.dumps(verdict, ensure_ascii=False))
+        meta.write_text(json.dumps(verdict, ensure_ascii=False), encoding="utf-8")
         return verdict
 
     @staticmethod
@@ -1537,7 +1537,7 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
                 continue
             fut, clip, meta, speak, opts = item
             verdict = _verdict(clip, *fut.result())
-            meta.write_text(json.dumps(verdict, ensure_ascii=False))
+            meta.write_text(json.dumps(verdict, ensure_ascii=False), encoding="utf-8")
             if verdict["ok"]:
                 seg["tts"] = engine._record(clip, verdict, 0, opts, seg["text_en"])
             else:
