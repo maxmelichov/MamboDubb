@@ -15,6 +15,7 @@ import type {
   CreateProjectResponse,
   Health,
   Job,
+  NewSegment,
   Peaks,
   PeaksFile,
   ProjectDetail,
@@ -298,6 +299,37 @@ export const api = {
     return request<unknown>(
       `/api/projects/${encodeURIComponent(name)}/segments/${encodeURIComponent(uid)}/split`,
       json({ at }),
+    ).then(() => api.getSegments(name));
+  },
+
+  /**
+   * Claim an uncovered span as a new segment. Returns the whole list, for the
+   * reason `splitSegment` does: `id` is positional and every one after the new
+   * segment has just moved.
+   *
+   * The server refuses an overlap rather than clamping it, so a 400 here is a
+   * real answer to show the user, not a validation the client should have done.
+   */
+  addSegment(name: string, body: NewSegment): Promise<Segment[]> {
+    if (USE_FIXTURES) return fixtures.addSegment(name, body).then(adoptAll);
+    return request<unknown>(
+      `/api/projects/${encodeURIComponent(name)}/segments`, json(body),
+    ).then(() => api.getSegments(name));
+  },
+
+  /**
+   * Take a segment out of the dub entirely.
+   *
+   * Not "mute it": the mix plays the original vocals in every span no placement
+   * claims, so the span goes back to sounding like a passage the pipeline never
+   * detected. Deliberately playing the original *as a decision* is the keep
+   * verdict, which is a `patchSegment({keep: true})` and keeps the segment.
+   */
+  removeSegment(name: string, uid: string): Promise<Segment[]> {
+    if (USE_FIXTURES) return fixtures.removeSegment(name, uid).then(adoptAll);
+    return request<unknown>(
+      `/api/projects/${encodeURIComponent(name)}/segments/${encodeURIComponent(uid)}`,
+      { method: "DELETE" },
     ).then(() => api.getSegments(name));
   },
 

@@ -49,6 +49,7 @@ import {
   HelpCircle,
   Loader2,
   MoreHorizontal,
+  Plus,
   RotateCcw,
   TriangleAlert,
 } from "lucide-react";
@@ -67,7 +68,9 @@ import {
   Empty,
   ErrorBar,
   Eyebrow,
+  Field,
   Kbd,
+  NumberInput,
   Popover,
   Select,
   StateIcon,
@@ -94,7 +97,13 @@ import { summarizeStages } from "../lib/stages";
 import { bucketsFor, usePeaks } from "../lib/usePeaks";
 import { activeJob, useProject } from "../lib/useProject";
 import { useTransport } from "../lib/useTransport";
-import type { Job, ProjectDetail, ProjectOptionsPatch, Segment } from "../lib/types";
+import type {
+  Job,
+  NewSegment,
+  ProjectDetail,
+  ProjectOptionsPatch,
+  Segment,
+} from "../lib/types";
 import type { StageProgress } from "../lib/useProject";
 
 const ZOOM_STEPS = [0.5, 1, 2, 4, 8, 16, 32];
@@ -1044,6 +1053,7 @@ export function EditorPage() {
                   onVerdict={(keep) => void setVerdict(selected, keep)}
                   onSplit={(at) => void actions.split(selected.uid, at)}
                   onMerge={(uidB) => void actions.merge(selected.uid, uidB)}
+                  onRemove={() => void actions.remove(selected.uid)}
                   onRetranslate={() => void actions.retranslate([selected.uid])}
                   onResynthesize={() => void actions.resynthesize([selected.uid])}
                 />
@@ -1053,6 +1063,7 @@ export function EditorPage() {
                   project={project}
                   counts={counts}
                   onSeek={transport.seek}
+                  onAdd={(segment) => void actions.add(segment)}
                   onHighlightGap={setHighlightGap}
                 />
               )}
@@ -1210,12 +1221,22 @@ function RunSummary({
   project,
   counts,
   onSeek,
+  onAdd,
   onHighlightGap,
 }: {
   segments: Segment[];
   project: ProjectDetail | null;
   counts: Record<SegmentState, number>;
   onSeek: (time: number) => void;
+  /**
+   * Adding lives here and not in the run menu behind the header.
+   *
+   * The rail is the surface that is *up* whenever no line is selected, which is
+   * exactly when a reviewer is working through the uncovered spans, and a
+   * composer nested inside the menu's popover would be a dialog inside a dialog
+   * in a 21rem panel. The menu keeps the same list, read-only.
+   */
+  onAdd?: (segment: NewSegment) => void;
   onHighlightGap?: (span: Span | null) => void;
 }) {
   const total = segments.length;
@@ -1283,7 +1304,9 @@ function RunSummary({
 
       <GapList
         gaps={gaps}
+        speakers={Object.keys(project?.speakers ?? {})}
         onSeek={onSeek}
+        onAdd={onAdd}
         onHighlight={onHighlightGap}
         stale={project?.report?.stale}
       />
@@ -1323,13 +1346,28 @@ function StateTally({ counts }: { counts: Record<SegmentState, number> }) {
  */
 function GapList({
   gaps,
+  speakers = [],
   onSeek,
+  onAdd,
   onHighlight,
   stale = false,
   className,
 }: {
   gaps: { start: number; end: number; duration: number }[];
+  /** The run's voices, so a new line can be attributed to one of them. */
+  speakers?: string[];
   onSeek: (time: number) => void;
+  /**
+   * Claim one of these spans as a segment.
+   *
+   * This is where adding belongs, and the only place it does: a segment needs a
+   * span, and these spans are precisely the ones the pipeline left uncovered —
+   * the hallucination-dropped intro, the line under music the ASR skipped. A
+   * free-floating "New segment" button would have to invent a span, and every
+   * span it could invent either overlaps a neighbour (which the server refuses)
+   * or is one of these.
+   */
+  onAdd?: (segment: NewSegment) => void;
   /**
    * Point at one and the timeline lights the hatch it is inside.
    *
@@ -1359,29 +1397,148 @@ function GapList({
       </Eyebrow>
       <p className="mb-1.5 text-[11px] leading-relaxed text-muted">
         Speech here is in the source but no segment claims it, so the dub plays the original.
-        Jump to one and listen.
+        Jump to one and listen{onAdd ? ", and claim it if it should be dubbed" : ""}.
       </p>
       <ul className="flex max-h-48 flex-col gap-1 overflow-y-auto">
         {gaps.map((gap) => (
-          <li key={`${gap.start}-${gap.end}`}>
+          <li
+            key={`${gap.start}-${gap.end}`}
+            className="flex items-stretch gap-1"
+            onMouseEnter={() => onHighlight?.({ start: gap.start, end: gap.end })}
+            onMouseLeave={() => onHighlight?.(null)}
+          >
             <button
               type="button"
               data-gap={gap.start}
               onClick={() => onSeek(gap.start)}
-              onMouseEnter={() => onHighlight?.({ start: gap.start, end: gap.end })}
-              onMouseLeave={() => onHighlight?.(null)}
               onFocus={() => onHighlight?.({ start: gap.start, end: gap.end })}
               onBlur={() => onHighlight?.(null)}
-              className="flex w-full items-center gap-2 rounded-lg border border-border bg-raised px-2 py-1 text-left text-[12.5px] transition-colors hover:border-axis hover:bg-sunken"
+              className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-border bg-raised px-2 py-1 text-left text-[12.5px] transition-colors hover:border-axis hover:bg-sunken"
             >
               <TriangleAlert className="h-3 w-3 shrink-0 text-muted" aria-hidden />
               <span className="font-mono tabular-nums text-primary">{timecode(gap.start)}</span>
               <span className="ml-auto text-muted">{gap.duration.toFixed(1)}s</span>
             </button>
+            {onAdd ? <AddSegmentButton gap={gap} speakers={speakers} onAdd={onAdd} /> : null}
           </li>
         ))}
       </ul>
     </div>
+  );
+}
+
+/** Below this the synthesiser reliably fails a line `segments.MIN_SEG_SEC`. */
+const MIN_SEGMENT_SEC = 0.9;
+
+/**
+ * Claim an uncovered span as a segment.
+ *
+ * A composer, not a one-click "add": a segment needs *words*. The server
+ * refuses one without them and it is right to — `text` is what the translator
+ * reads and the voice speaks, and there is no transcript for a span the
+ * pipeline never segmented, which is exactly why the span is on this list.
+ *
+ * The span itself is the gap's, editable, because the report's bounds are where
+ * *audible* speech was found and a sentence usually starts a beat before that.
+ * They are two number inputs rather than drag handles for the reason the strip
+ * has no trim handles at all: `timeline.place()` is the sole authority on where
+ * audio goes, so a span is a value the user states, not a thing they nudge.
+ *
+ * Nothing here validates the overlap. The server does, and refuses rather than
+ * clamping; duplicating that rule in the client would put a second, drifting
+ * copy of "where is there room" in the one place that cannot see the manifest.
+ */
+function AddSegmentButton({
+  gap,
+  speakers,
+  onAdd,
+}: {
+  gap: { start: number; end: number };
+  speakers: string[];
+  onAdd: (segment: NewSegment) => void;
+}) {
+  const [text, setText] = useState("");
+  const [speaker, setSpeaker] = useState("");
+  const [start, setStart] = useState(gap.start.toFixed(2));
+  const [end, setEnd] = useState(gap.end.toFixed(2));
+  const span = Number(end) - Number(start);
+  const ready = text.trim().length > 0 && Number.isFinite(span) && span >= MIN_SEGMENT_SEC;
+
+  return (
+    <Popover
+      label={`Add a segment at ${timecode(gap.start)}`}
+      title="New segment"
+      align="right"
+      className="w-72"
+      trigger={<Plus className="h-3.5 w-3.5" />}
+    >
+      <div className="flex flex-col gap-2">
+        <p className="text-[11px] leading-relaxed text-muted">
+          Type what is said here. It goes through translate and voice on the next run, like
+          any other line, and the words are kept as yours.
+        </p>
+        <TextArea
+          rows={3}
+          dir="auto"
+          className="auto-dir"
+          value={text}
+          placeholder="what is spoken in this span"
+          onChange={(event) => setText(event.currentTarget.value)}
+        />
+        <div className="flex items-end gap-2">
+          <Field label="Start" className="flex-1">
+            <NumberInput
+              step={0.05}
+              suffix="s"
+              value={start}
+              onChange={(event) => setStart(event.currentTarget.value)}
+            />
+          </Field>
+          <Field label="End" className="flex-1">
+            <NumberInput
+              step={0.05}
+              suffix="s"
+              value={end}
+              onChange={(event) => setEnd(event.currentTarget.value)}
+            />
+          </Field>
+        </div>
+        <Field label="Speaker" hint="blank inherits the nearest line's voice">
+          <Select value={speaker} onChange={(event) => setSpeaker(event.currentTarget.value)}>
+            <option value="">nearest</option>
+            {speakers.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Button
+          size="md"
+          className="self-start"
+          disabled={!ready}
+          title={
+            ready
+              ? "Add this segment"
+              : text.trim()
+                ? `A segment has to be at least ${MIN_SEGMENT_SEC}s long to be voiced`
+                : "A new segment needs its text"
+          }
+          onClick={() => {
+            onAdd({
+              start: Number(start),
+              end: Number(end),
+              text: text.trim(),
+              ...(speaker ? { speaker } : {}),
+            });
+            setText("");
+          }}
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add segment
+        </Button>
+      </div>
+    </Popover>
   );
 }
 

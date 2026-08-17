@@ -175,6 +175,23 @@ export type SegmentPatch = {
   locked?: Record<string, boolean>;
 };
 
+/**
+ * `POST /api/projects/{name}/segments` a span the pipeline missed, claimed by
+ * hand.
+ *
+ * Not a `SegmentPatch`: every field here is required to exist (the server
+ * refuses a segment with no text there is nothing to translate or speak) and
+ * the span must be *free*, so an overlap with a neighbour comes back as a 400
+ * rather than being clamped. `speaker` omitted inherits the nearest segment's,
+ * which is right for a line dropped out of the middle of a passage.
+ */
+export type NewSegment = {
+  start: number;
+  end: number;
+  text: string;
+  speaker?: string;
+};
+
 // --- projects -------------------------------------------------------------
 
 export type ProjectSummary = {
