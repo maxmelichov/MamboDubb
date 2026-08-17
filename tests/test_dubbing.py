@@ -2143,6 +2143,30 @@ def _audible_everywhere(monkeypatch, total=10.0, level=0.05):
                         lambda *a, **kw: np.full(int(total / 0.1), level))
 
 
+def _logged_reads(monkeypatch, total=10.0, level=0.05):
+    """`_audible_everywhere`, plus a log of which file every read came from.
+
+    Two kinds: the whole-file read the levels are measured from (no start/end)
+    and each window's decode clip (both).
+    """
+    from pathlib import Path
+
+    import numpy as np
+
+    from dubbing import audio
+
+    reads: list[tuple[str, Path]] = []
+
+    def decode_mono(path, rate, start=None, end=None, **kw):
+        reads.append(("window" if start is not None else "levels", Path(path)))
+        return np.zeros(16)
+
+    monkeypatch.setattr(audio, "decode_mono", decode_mono)
+    monkeypatch.setattr(audio, "frame_rms",
+                        lambda *a, **kw: np.full(int(total / 0.1), level))
+    return reads
+
+
 def test_speech_only_drops_the_unreadable_decode_and_keeps_its_neighbours():
     segs = [_GapSeg(-0.10, 0.0, 2.0, "real speech"),
             _GapSeg(-0.90, 2.0, 4.0, "invented over music"),
@@ -2176,6 +2200,41 @@ def test_a_gap_window_that_is_only_music_recovers_nothing(tmp_path, monkeypatch)
     words, spans = transcript.recover_gaps(_gap_model(segs), tmp_path / "source.wav",
                                            [], "en", 10.0, tgt_lang="he")
     assert words == [] and spans == []
+
+
+def test_the_gap_pass_judges_audibility_on_the_mix_but_listens_to_the_vocals(tmp_path,
+                                                                            monkeypatch):
+    # Two different questions, two different files. "Is something audible here"
+    # is the mix's answer that is what plays over an uncovered span. "What is
+    # being said" is the vocals' answer, same as the main pass; asked of the mix,
+    # the music itself is what made this decoder invent lines over stings the
+    # main pass had correctly declined.
+    source = tmp_path / "source.wav"
+    vocals = tmp_path / "stems" / "vocals.wav"
+    vocals.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"x"), vocals.write_bytes(b"x")
+
+    reads = _logged_reads(monkeypatch)
+    segs = [_GapSeg(-0.10, 0.0, 2.0, "real speech")]
+    # One known word mid-file, so there are two uncovered windows to decode and
+    # "every window" is a claim with more than one case behind it.
+    known_words = [{"t": 5.0, "end": 5.4, "text": "known", "brk": False}]
+
+    transcript.recover_gaps(_gap_model(segs), source, list(known_words), "en", 10.0,
+                            tgt_lang="he", listen_wav=vocals)
+    assert [path for kind, path in reads if kind == "levels"] == [source]
+    decoded = [path for kind, path in reads if kind == "window"]
+    assert len(decoded) == 2 and set(decoded) == {vocals}
+
+    # No stems, or a vocals file the demucs stage never wrote: the mix is all
+    # there is, which is the behaviour every run before this had.
+    for absent in (None, tmp_path / "stems" / "never_written.wav"):
+        reads.clear()
+        transcript.recover_gaps(_gap_model(segs), source, list(known_words), "en", 10.0,
+                               tgt_lang="he", listen_wav=absent)
+        assert [path for kind, path in reads if kind == "levels"] == [source]
+        decoded = [path for kind, path in reads if kind == "window"]
+        assert len(decoded) == 2 and set(decoded) == {source}
 
 
 # ------------------------------------- a fallback slice keeps a keep's policy

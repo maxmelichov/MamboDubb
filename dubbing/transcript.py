@@ -1113,7 +1113,7 @@ def text_is_target(text: str, src: str, tgt: str) -> bool:
 
 def recover_gaps(model, source_wav: Path, words: list[dict[str, Any]], lang: str,
                  total: float, known: list[tuple[float, float]] | None = None,
-                 tgt_lang: str = "en"
+                 tgt_lang: str = "en", listen_wav: Path | None = None
                  ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Transcribe again, in isolation, wherever audible speech went unheard.
 
@@ -1122,9 +1122,19 @@ def recover_gaps(model, source_wav: Path, words: list[dict[str, Any]], lang: str
     would otherwise have no segment at all, and a segment is the only way audio
     of any kind reaches the output. Recovered target-language text becomes a kept
     segment; recovered source-language text gets dubbed like anything else.
+
+    Two different questions, two different files. "Is something audible here"
+    is asked of `source_wav`, the mix, because that is what the viewer will
+    hear over an uncovered span. "What is being said" is asked of `listen_wav`,
+    the separated vocals, same as the main pass: this decoder used to re-listen
+    to the mix, and the mix's music is exactly what made it invent lines over
+    stings the main pass had correctly declined. A window whose vocals hold no
+    speech now recovers nothing and stays uncovered which the report already
+    flags as `uncovered_audible` instead of becoming a hallucinated segment.
     """
     from . import audio
 
+    listen = listen_wav if listen_wav is not None and listen_wav.is_file() else source_wav
     levels = audio.frame_rms(audio.decode_mono(source_wav, 16000), 16000, 0.1)
     windows = uncovered_windows(words, levels, 0.1, total, known=known)
     if not windows:
@@ -1132,7 +1142,7 @@ def recover_gaps(model, source_wav: Path, words: list[dict[str, Any]], lang: str
     found: list[dict[str, Any]] = []
     spans: list[dict[str, Any]] = []
     for a, b in windows:
-        clip = audio.decode_mono(source_wav, 16000, start=max(0.0, a - GAP_PAD),
+        clip = audio.decode_mono(listen, 16000, start=max(0.0, a - GAP_PAD),
                                  end=min(total, b + GAP_PAD))
         try:
             segs, _ = model.transcribe(clip, language=lang, beam_size=5,
@@ -1259,7 +1269,8 @@ def run(m: dict[str, Any], workdir: Path, *, src_lang: str, tgt_lang: str = "en"
                 model, source_wav, words, src_lang,
                 float(limit or m["source"]["duration"]),
                 known=[(s["start"], s["end"]) for s in caption_spans],
-                tgt_lang=tgt_lang)
+                tgt_lang=tgt_lang,
+                listen_wav=vocals if vocals.is_file() else None)
             words = join_split_marks(drop_stock_phrases(drop_stretched_words(
                 drop_echo_words(collapse_repeats(words)))))
             # Real target-language speech the source model rendered as gibberish:

@@ -25,7 +25,11 @@ STAGE_TAGS = {
     # reruns vs the news register at translate/v31; segments carried both
     # alignment+passthrough and the spoken_target/veto work), so the merged tag
     # moves past every claim rather than picking a side.
-    "transcript": "transcript/v42",
+    "transcript": "transcript/v43",
+    # v43: the gap-recovery decoder listens to the separated vocals, like the
+    # main pass — audibility is still judged from the mix, but "what is said"
+    # is no longer asked of audio with the music still in it, which is where
+    # the invented lines over stings ("thank you very much") came from.
     # v42: `recover_gaps` filters its decode per-segment through `speech_only`
     # before the window mean — a span the main pass declined as music could
     # re-enter through the gap pass whenever better-reading neighbours in the
