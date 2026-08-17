@@ -26,6 +26,13 @@ nohup uv run mambodubb --port 4400 &   # UI + API on http://127.0.0.1:4400
 
 `GET /health` answers when it is up. All examples below assume `B=http://127.0.0.1:$PORT`.
 
+A loopback bind needs no credential — the Host header is the gate. Bind anywhere
+else (`--host 0.0.0.0`, a LAN address) and every request needs a bearer token:
+`--token` supplies one, and without the flag the server generates one rather than
+going open, printing it on stderr at startup as `open http://HOST:PORT/?token=…`.
+Take the token from that line and send it as `-H "Authorization: Bearer $TOKEN"`,
+or visit the URL once in a browser to set the cookie every later request rides.
+
 ## 2. The job model — read this first
 
 - **One model job runs at a time**; new jobs queue. Job kinds: `run`,

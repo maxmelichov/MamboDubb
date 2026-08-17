@@ -240,9 +240,13 @@ class Projects:
             # the original true, and baffling unless the UI says so. Keep
             # slices are span-keyed `keep_*.wav` files, which is the seam this
             # reads; a kept line's slice is not a fallback, it is the verdict.
+            # `fit_keep_` is the same slice after `timeline` rate-fitted it —
+            # timelines placed before timeline/v15 (which stopped stretching
+            # fallback slices) still carry that name, and it is still original
+            # audio wearing a dub's verdict.
             "fallback": bool(not seg.get("keep")
                              and str(place.get("clip") or "").split("/")[-1]
-                             .startswith("keep_")),
+                             .startswith(("keep_", "fit_keep_"))),
         }
         out["verify"] = self.verdict(workdir, tts.get("clip"))
         return out
