@@ -351,7 +351,13 @@ def build_items(m: dict[str, Any]) -> list[dict[str, Any]]:
             "dur": float(seg["tts"]["dur"]),
             "clip": seg["tts"]["clip"],
             "speaker": seg.get("speaker"),
-            "stretchable": not seg["keep"],
+            # A dub-wanted line can carry tts's universal fallback — a
+            # `keep_*.wav` slice of the original span. It is original audio and
+            # exactly its span long, so it gets a keep's placement policy:
+            # never tempo-stretched. (Stretching it also renamed the clip to
+            # `fit_keep_*`, which silently dropped the UI's fallback flag.)
+            "stretchable": not seg["keep"]
+                           and not Path(seg["tts"]["clip"]).name.startswith("keep_"),
         })
     return items
 

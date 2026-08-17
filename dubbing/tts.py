@@ -1507,7 +1507,17 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
                 # plays its original slice exactly what the editor promises
                 # of a failed translation and stays failed until the user
                 # re-translates it.
-                if keep_needs_slice(seg, workdir):
+                #
+                # `keep_needs_slice` alone is the wrong guard here: it answers
+                # False for ANY clip on disk with matching opts — including
+                # the segment's old *synthesis* of a translation mark_failed
+                # has since popped. That clip would then stay in place
+                # speaking the previous line while this print claims the
+                # original plays. The record must already BE a keep slice for
+                # the skip to be honest.
+                rec_clip = str((seg.get("tts") or {}).get("clip") or "")
+                is_slice = rec_clip.rsplit("/", 1)[-1].startswith("keep_")
+                if not is_slice or keep_needs_slice(seg, workdir):
                     seg["tts"] = engine.keep_clip(seg)
                 print(f"  tts: seg {seg['id']} has no translation the original "
                       "plays until it is re-translated", file=sys.stderr)

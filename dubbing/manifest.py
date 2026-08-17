@@ -25,7 +25,11 @@ STAGE_TAGS = {
     # reruns vs the news register at translate/v31; segments carried both
     # alignment+passthrough and the spoken_target/veto work), so the merged tag
     # moves past every claim rather than picking a side.
-    "transcript": "transcript/v41",
+    "transcript": "transcript/v42",
+    # v42: `recover_gaps` filters its decode per-segment through `speech_only`
+    # before the window mean — a span the main pass declined as music could
+    # re-enter through the gap pass whenever better-reading neighbours in the
+    # same window carried the average.
     # v41: the main ASR pass gained the no-speech gate the gap pass already had —
     # a decode read below ASR_MIN_LOGPROB is a hallucination over music, not
     # speech, so a music-only intro yields no words instead of an invented line.
@@ -45,11 +49,19 @@ STAGE_TAGS = {
     # carry the text fingerprint and (for keeps) the span and options they were cut
     # with; "unverified" is its own verdict; and a segment's own `tgt_lang` reaches
     # synthesis, the cache key and verification.
-    "tts": "tts/v16",
+    # v17: a dub-wanted line with no translation replaces its record with the
+    # original-audio slice unless the record already IS one — a stale synthesis
+    # of a since-failed translation used to satisfy `keep_needs_slice` and keep
+    # speaking the old line.
+    "tts": "tts/v17",
     # v14: `place` now carries the overrun it measured and why a shortening was
     # abandoned report.json's drift story reads from these. (v13 was claimed on
     # a branch that never landed under that number.)
-    "timeline": "timeline/v14",
+    # v15: tts's fallback slices (keep_*.wav on a dub-wanted line) get a keep's
+    # placement policy — never tempo-stretched (they are original audio, cut to
+    # exactly their span; stretching also renamed them fit_keep_*, dropping the
+    # UI's fallback flag).
+    "timeline": "timeline/v15",
     "mix": "mix/v9",
     # v3: honest failure accounting verify.unverified, degraded, overrun,
     # shorten_abandoned, subtitles_failed, stale_locked_clips alongside the

@@ -123,6 +123,26 @@ def _require(m: dict[str, Any], uid: str) -> dict[str, Any]:
     return seg
 
 
+def _still_present(m: dict[str, Any], uids: Sequence[str]) -> list[dict[str, Any]]:
+    """The named segments that still exist, skipping (and naming) the rest.
+
+    For the batch jobs only. A queued retranslate/resynthesize holds uids the
+    user is free to delete before the job's turn comes — `guard_structural`
+    refuses edits against a *running* job, not a queued one — and dying on the
+    first missing uid threw away every other segment's work in the batch. An
+    edit addressed to one segment still raises: there, "no segment" is the
+    whole answer.
+    """
+    segs = []
+    for uid in uids:
+        seg = find(m, uid)
+        if seg is None:
+            print(f"  edit: segment {uid!r} no longer exists skipped", file=sys.stderr)
+            continue
+        segs.append(seg)
+    return segs
+
+
 # --------------------------------------------------------------- invalidation
 
 def invalidate(m: dict[str, Any], uid: str, *, stages: set[str]) -> set[str]:
@@ -757,7 +777,7 @@ def retranslate(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
     """
     from . import numwords, translate
 
-    segs = [_require(m, uid) for uid in uids]
+    segs = _still_present(m, uids)
     if not segs:
         return {}
     if respect_locked:
@@ -923,7 +943,7 @@ def resynthesize(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
     from . import tts as tts_mod
 
     counts = {"synthesized": 0, "fell_back": 0, "kept": 0}
-    segs = [_require(m, uid) for uid in uids]
+    segs = _still_present(m, uids)
     if not segs:
         return ResynthResult({}, {**counts, "deferred_placement": False})
     out: dict[str, dict[str, Any]] = {}

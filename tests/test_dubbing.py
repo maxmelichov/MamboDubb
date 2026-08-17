@@ -1530,6 +1530,29 @@ def test_worker_handle_protocol_round_trip(tmp_path):
         handle.close()
 
 
+def test_a_stray_byte_on_the_workers_pipes_never_kills_the_pump(tmp_path):
+    # The child's stdio is not ours to guarantee: a CUDA library, a progress bar
+    # or a truncated multi-byte flush puts one undecodable byte on the pipe.
+    # Decoded strictly, that raises inside the pump *thread*, which then dies
+    # silently and the parent sits on `_read_line` for the whole 3600s
+    # ready_timeout waiting for a worker that is already talking. A mangled log
+    # character is the cheaper failure, so the pipes replace rather than raise.
+    import time
+
+    noisy = tmp_path / "noisy_worker.py"
+    noisy.write_text(
+        "import sys\n"
+        "sys.stderr.buffer.write(b'cuda \\xff init\\n'); sys.stderr.buffer.flush()\n"
+        "sys.stdout.buffer.write(b'\\xff not json\\n'); sys.stdout.buffer.flush()\n"
+        "sys.stdin.readline()\n",
+        encoding="utf-8")
+    t0 = time.time()
+    with pytest.raises(RuntimeError, match="instead of the ready line"):
+        translate.WorkerHandle([sys.executable, str(noisy)], ready_timeout=20)
+    # The point is that it answered at all: strict decoding waits out the timeout.
+    assert time.time() - t0 < 15
+
+
 def test_worker_handle_reports_a_dead_worker(tmp_path):
     # A worker that dies mid-request must surface as a clear error, not a hang.
     dying = tmp_path / "dying_worker.py"
@@ -2015,7 +2038,7 @@ def test_bare_rerun_keeps_languages_and_cap():
     from dubbing import cli
 
     def parsed(**typed):
-        ns = argparse.Namespace(src=None, tgt=None, duration=None)
+        ns = argparse.Namespace(src=None, tgt=None, duration=None, captions=None)
         for key in cli.RECORDED_DEFAULTS:
             setattr(ns, key, None)
         for key, value in typed.items():
@@ -2042,3 +2065,282 @@ def test_bare_rerun_keeps_languages_and_cap():
     args = parsed()
     cli.resolve_settings(args, None)
     assert (args.src, args.tgt, args.duration) == ("he", "en", None)
+
+
+def test_a_bare_rerun_keeps_the_caption_file_it_was_given():
+    # `captions` is in fetch's fingerprint, so a bare re-run that forgot it flips
+    # fetch — and a flipped chain empties `m["segments"]` at the segments stage,
+    # taking every lock and hand-edit with it, while fetch quietly falls back to
+    # ASR. Same class of loss as --duration, same rule.
+    from pathlib import Path as _Path
+
+    from dubbing import cli
+
+    made = cli.parse_args(["in.mp4", "--captions", "subs.json3"])
+    cli.resolve_settings(made, None)
+    m = manifest.new(cli.source_record(made))
+    assert m["source"]["captions"] == "subs.json3"
+
+    again = cli.parse_args(["in.mp4"])                # the user types no flags
+    cli.resolve_settings(again, m)
+    assert again.captions == _Path("subs.json3")
+    assert cli.stage_params(again, m)["fetch"] == cli.stage_params(made, m)["fetch"]
+
+    # A run that never had captions records the absence as "" — never None, which
+    # the next run would read back as "nobody said".
+    bare = cli.parse_args(["in.mp4"])
+    cli.resolve_settings(bare, None)
+    assert cli.source_record(bare)["captions"] == ""
+    assert bare.captions is None
+
+
+def test_a_restored_language_is_normalized_like_a_typed_one():
+    # A manifest this CLI never wrote (an API-created project, a hand-restored
+    # dir) can hold a legacy alias. `edit._args` normalizes its copy, so skipping
+    # it here made the same run fingerprint differently in the studio and the CLI.
+    from dubbing import cli, edit
+
+    m = {"source": {"input": "in.mp4", "src_lang": "iw", "tgt_lang": "en"}}
+    args = cli.parse_args(["in.mp4"])
+    cli.resolve_settings(args, m)
+    assert args.src == "he"
+    assert edit._args(m).src == "he"
+    assert cli.stage_params(args, m) == cli.stage_params(edit._args(m), m)
+
+
+# ------------------------------------------- the gap pass's own speech gate
+
+class _GapWord:
+    def __init__(self, word, start, end, probability=0.9):
+        self.word, self.start, self.end, self.probability = word, start, end, probability
+
+
+class _GapSeg:
+    """What faster-whisper hands back: one decode reading, shared by its words."""
+
+    def __init__(self, avg_logprob, start, end, text):
+        self.avg_logprob, self.start, self.end, self.text = avg_logprob, start, end, text
+        self.words = [_GapWord(" " + w, start + 0.1 * i, start + 0.1 * i + 0.08)
+                      for i, w in enumerate(text.split())]
+
+
+def _gap_model(segs):
+    class _Model:
+        def transcribe(self, *a, **kw):
+            return iter(segs), None
+
+    return _Model()
+
+
+def _audible_everywhere(monkeypatch, total=10.0, level=0.05):
+    """No words known and audio above the floor throughout: one gap window."""
+    import numpy as np
+
+    from dubbing import audio
+
+    monkeypatch.setattr(audio, "decode_mono", lambda *a, **kw: np.zeros(16))
+    monkeypatch.setattr(audio, "frame_rms",
+                        lambda *a, **kw: np.full(int(total / 0.1), level))
+
+
+def test_speech_only_drops_the_unreadable_decode_and_keeps_its_neighbours():
+    segs = [_GapSeg(-0.10, 0.0, 2.0, "real speech"),
+            _GapSeg(-0.90, 2.0, 4.0, "invented over music"),
+            _GapSeg(-0.12, 4.0, 6.0, "real again")]
+    assert [s.text for s in transcript.speech_only(segs)] == ["real speech", "real again"]
+
+
+def test_the_gap_pass_declines_music_its_neighbours_would_have_carried(tmp_path,
+                                                                      monkeypatch):
+    # The window mean is a weaker test than the per-segment one: a span the main
+    # pass declined as music re-entered here whenever the other segments in the
+    # same window read well enough to carry the average.
+    _audible_everywhere(monkeypatch)
+    segs = [_GapSeg(-0.10, 0.0, 2.0, "real speech"),
+            _GapSeg(-0.90, 2.0, 4.0, "invented over music"),
+            _GapSeg(-0.12, 4.0, 6.0, "real again")]
+    mean = sum(s.avg_logprob for s in segs) / len(segs)
+    assert mean > transcript.GAP_MIN_LOGPROB      # the mean alone accepts the window
+    assert segs[1].avg_logprob < transcript.ASR_MIN_LOGPROB
+
+    words, spans = transcript.recover_gaps(_gap_model(segs), tmp_path / "source.wav",
+                                           [], "en", 10.0, tgt_lang="he")
+    assert [w["text"] for w in words] == ["real", "speech", "real", "again"]
+    assert spans == []
+
+
+def test_a_gap_window_that_is_only_music_recovers_nothing(tmp_path, monkeypatch):
+    _audible_everywhere(monkeypatch)
+    segs = [_GapSeg(-0.70, 0.0, 2.0, "one invented line"),
+            _GapSeg(-0.90, 2.0, 4.0, "and another")]
+    words, spans = transcript.recover_gaps(_gap_model(segs), tmp_path / "source.wav",
+                                           [], "en", 10.0, tgt_lang="he")
+    assert words == [] and spans == []
+
+
+# ------------------------------------- a fallback slice keeps a keep's policy
+
+def test_a_fallback_slice_on_a_dubbed_line_is_never_stretched():
+    # tts's universal fallback is a `keep_*.wav` slice of the original span. It
+    # is original audio, exactly its span long, so stretching it both speeds up
+    # the speaker's own voice and renames the clip `fit_keep_*` — which silently
+    # dropped the UI's `media.fallback` flag.
+    m = {"segments": [
+        {"id": 0, "start": 0.0, "end": 2.0, "keep": False,
+         "tts": {"clip": "clips/keep_000000000000.wav", "dur": 2.0}},
+        {"id": 1, "start": 2.0, "end": 4.0, "keep": False,
+         "tts": {"clip": "clips/9f2c.wav", "dur": 2.4}},
+        {"id": 2, "start": 4.0, "end": 6.0, "keep": True,
+         "tts": {"clip": "clips/keep_000000004000.wav", "dur": 2.0, "span": 2.0}},
+    ]}
+    items = timeline.build_items(m)
+    assert [it["stretchable"] for it in items] == [False, True, False]
+    # …and the placement it earns: played at its own rate, like any original audio.
+    assert timeline.place(items)[0]["rate"] == 1.0
+
+
+# ------------------------------- a stale synthesis is not an original-audio slice
+
+class _SliceEngine:
+    """A synthesiser that only ever cuts keep slices. Records what it was asked for."""
+
+    def __init__(self, workdir, *a, **kw):
+        self.workdir, self.cut = workdir, []
+
+    def build_speaker_refs(self):
+        pass
+
+    def keep_clip(self, seg):
+        self.cut.append(seg["id"])
+        clip = f"clips/keep_{int(seg['start'] * 1000):012d}.wav"
+        (self.workdir / clip).parent.mkdir(parents=True, exist_ok=True)
+        (self.workdir / clip).write_bytes(b"x")
+        return {"clip": clip, "dur": round(seg["end"] - seg["start"], 3), "tries": 0,
+                "overlap": 1.0, "verify": "keep", "span": round(seg["end"] - seg["start"], 3)}
+
+    def clip_for(self, seg, text):
+        return None
+
+    def close(self):
+        pass
+
+
+def _failed_dub_with_a_stale_clip(workdir):
+    """A user-locked dub whose translation was popped, its old synthesis still there."""
+    (workdir / "clips").mkdir(parents=True, exist_ok=True)
+    (workdir / "clips" / "9f2c.wav").write_bytes(b"x")
+    return {"version": 1, "source": {"src_lang": "he", "tgt_lang": "en"},
+            "files": {"source_wav": "source.wav"}, "speakers": {},
+            "segments": [{"id": 0, "uid": "s0", "start": 0.0, "end": 2.0,
+                          "speaker": "A", "text": "שלום", "keep": False,
+                          "keep_reason": "mt_failed", "locked": {"keep": True},
+                          "tts": {"clip": "clips/9f2c.wav", "dur": 1.4, "tries": 1,
+                                  "overlap": 0.9, "verify": "ok", "opts": "",
+                                  "text_sha": tts.text_sha("the line it used to say")}}]}
+
+
+def test_a_stale_synthesis_is_replaced_by_the_original_slice(tmp_path, monkeypatch):
+    # `keep_needs_slice` alone answers False for ANY clip on disk with matching
+    # options — including the segment's own synthesis of a translation
+    # `mark_failed` has since popped. That clip then stayed in place speaking the
+    # previous line while the stage's log claimed the original plays.
+    m = _failed_dub_with_a_stale_clip(tmp_path)
+    seg = m["segments"][0]
+    assert tts.speakable(seg) is None                    # nothing to say
+    assert not tts.keep_needs_slice(seg, tmp_path)       # …and the old guard said "done"
+    assert tts.needs_synthesis(seg, tmp_path)            # the stage does see it
+
+    engines = []
+    monkeypatch.setattr(tts, "Engine",
+                        lambda mm, wd, **kw: engines.append(_SliceEngine(wd)) or engines[-1])
+    tts.run(m, tmp_path)
+    assert engines[0].cut == [0]
+    assert seg["tts"]["clip"].startswith("clips/keep_")
+    assert "text_sha" not in seg["tts"]                  # a slice speaks no line
+
+    # …and it does not churn: the record IS a slice now, so the next run leaves it.
+    tts.run(m, tmp_path)
+    assert engines[1].cut == []
+    assert seg["tts"]["clip"].startswith("clips/keep_")
+
+
+# --------------------------- a translate re-entry reopens what was built on it
+
+def test_a_translate_re_entry_reopens_the_stages_built_on_it(tmp_path, monkeypatch):
+    """A hole re-enters translate under an UNCHANGED fingerprint, so every
+    downstream fingerprint recomputes identical and tts/timeline/mix/report each
+    declare no output files — `stage_done`'s `all([])` is True and they all report
+    "up to date". A line the re-entry successfully translates would then keep
+    playing its original-audio fallback forever."""
+    from dubbing import STAGES, cli, report as report_mod
+
+    workdir = tmp_path / "run"
+    for rel in ("source.wav", "words.json", "dub.wav", "preview.mp4", "report.json",
+                "stems/vocals.wav", "stems/background.wav"):
+        (workdir / rel).parent.mkdir(parents=True, exist_ok=True)
+        (workdir / rel).write_bytes(b"x")
+
+    def finished_run(*segs):
+        args = cli.parse_args([str(tmp_path / "in.mp4"), "-o", str(workdir)])
+        cli.resolve_settings(args, None)
+        m = manifest.new(cli.source_record(args))
+        m["source"]["transcript_origin"] = "asr"
+        m["segments"] = [dict(s) for s in segs]
+        params = cli.stage_params(args, m)
+        for stage in STAGES:
+            manifest.mark_stage(m, stage, manifest.stage_fingerprint(m, stage,
+                                                                     params[stage]))
+        manifest.save(workdir, m)
+        return m
+
+    def line(i, text_en):
+        s = {"id": i, "uid": f"s{i}", "start": 2.0 * i, "end": 2.0 * i + 2.0,
+             "speaker": "A", "text": "שלום", "keep": False, "keep_reason": None,
+             "tts": {"clip": f"clips/{i}.wav", "dur": 1.8},
+             "place": {"start": 2.0 * i, "end": 2.0 * i + 1.8, "rate": 1.0,
+                       "drift": 0.0, "clip": f"clips/{i}.wav"}}
+        if text_en is None:      # mark_failed on a user-locked dub: the hole
+            s["keep_reason"], s["locked"] = "mt_failed", {"keep": True}
+        else:
+            s["text_en"] = text_en
+        return s
+
+    ran: list[str] = []
+
+    class FakeEngine:
+        # In the tts stage's fingerprint: a stub without it changes what the CLI
+        # computes, and every mark laid down above would stop matching.
+        REF_BUILD = tts.Engine.REF_BUILD
+
+        def __init__(self, *a, **kw):
+            pass
+
+        def close(self):
+            pass
+
+    def fake_translate(mm, wd, **kw):
+        ran.append("translate")
+        for s in mm["segments"]:
+            s["text_en"] = s.get("text_en") or "a line at last"
+
+    monkeypatch.setattr(translate, "run", fake_translate)
+    monkeypatch.setattr(tts, "run", lambda mm, wd, **kw: (ran.append("tts"), FakeEngine())[1])
+    monkeypatch.setattr(tts, "Engine", FakeEngine)
+    monkeypatch.setattr(timeline, "run", lambda mm, wd, **kw: ran.append("timeline"))
+    monkeypatch.setattr(mix, "run", lambda mm, wd: ran.append("mix"))
+    monkeypatch.setattr(report_mod, "run",
+                        lambda mm, wd: (ran.append("report"), {"unaccounted": []})[1])
+
+    argv = [str(tmp_path / "in.mp4"), "-o", str(workdir)]
+
+    # Control: nothing unfinished, so nothing re-runs.
+    finished_run(line(0, "One"), line(1, "Two"))
+    assert cli.main(argv) == 0
+    assert ran == []
+
+    # One untranslated line: translate re-enters, and so must everything after it.
+    m = finished_run(line(0, None), line(1, "Two"))
+    assert translate.untranslated(m["segments"]) == [0]
+    assert cli.main(argv) == 0
+    assert ran == ["translate", "tts", "timeline", "mix", "report"]
+    assert manifest.load(workdir)["segments"][0]["text_en"] == "a line at last"

@@ -1141,7 +1141,12 @@ def recover_gaps(model, source_wav: Path, words: list[dict[str, Any]], lang: str
         except Exception as exc:
             print(f"  transcript: gap {a:.1f}-{b:.1f}s failed ({exc})", file=sys.stderr)
             continue
-        segs = list(segs)
+        # Per-segment first, with the main pass's own gate: without this, a
+        # segment the main pass just declined as music re-enters here whenever
+        # its neighbours in the same window read well enough to carry the
+        # *mean* — the decline was on the vocals stem, this decode is on the
+        # mix, and averaging across segments is a weaker test than either.
+        segs = list(speech_only(segs))
         # A low-confidence read of a gap is a hallucination, not recovered speech:
         # a music sting made the model invent a whole line ("עוד לא עבר יום…") that
         # was then dubbed as nonsense. Declining leaves the window uncovered, so

@@ -160,10 +160,18 @@ class WorkerHandle:
         # Both ends of the pipe must agree on UTF-8, and only this end can be set
         # from here: a Windows child defaults its stdio to the ANSI code page,
         # which cannot write a Hebrew translation at all.
+        #
+        # `errors="replace"` for the same reason `dubbing_app/runner.py` and
+        # `install.py` carry it: the child's stderr is not ours to guarantee — a
+        # CUDA library, a progress bar, a truncated multi-byte flush — and one
+        # undecodable byte raises inside the pump *thread*, which dies silently.
+        # The parent then sits on `_read_line` for the whole 3600s ready_timeout
+        # waiting for a worker that is already talking. A mangled log character
+        # is the cheaper failure.
         env = {**(env if env is not None else os.environ), "PYTHONIOENCODING": "utf-8"}
         self._proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                       stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                                      env=env)
+                                      errors="replace", env=env)
         self._stderr_tail: deque[str] = deque(maxlen=40)
         self._next_id = 0
         self._lines: queue.Queue[str | None] = queue.Queue()

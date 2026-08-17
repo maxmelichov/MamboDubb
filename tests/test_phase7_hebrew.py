@@ -307,7 +307,9 @@ def test_the_stage_tags_moved():
     # translation changes what translate produces; neither may replay old output.
     # v16, not v15: a second line of work claimed v15 for the honest-failure
     # records, so the merged tag moves past both claims rather than picking one.
-    assert manifest.STAGE_TAGS["tts"] == "tts/v16"
+    # v17: a dub-wanted line with no translation now replaces a stale *synthesis*
+    # with its original-audio slice, which changes what this stage produces.
+    assert manifest.STAGE_TAGS["tts"] == "tts/v17"
     assert manifest.STAGE_TAGS["translate"] == "translate/v35"
 
 

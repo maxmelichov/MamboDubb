@@ -158,14 +158,25 @@ def resolve_settings(args: argparse.Namespace, m: dict[str, Any] | None = None) 
     # turned a 320-second iteration run into the whole 57-minute episode.
     # "not" rather than "is None": `normalize_lang` has already run by the time
     # main() calls this, and it folds an untyped None into "".
+    # Re-normalize after the restore: the typed flags went through
+    # `normalize_lang` in main(), but a manifest value never written by this
+    # CLI (an API-created project, a hand-restored dir) can hold an alias like
+    # "iw" — and `edit._args` normalizes its copy, so skipping it here made
+    # the same run fingerprint differently in the studio and the CLI.
     if not args.src:
-        args.src = recorded.get("src_lang") or "he"
+        args.src = normalize_lang(recorded.get("src_lang") or "he")
     if not args.tgt:
-        args.tgt = recorded.get("tgt_lang") or "en"
+        args.tgt = normalize_lang(recorded.get("tgt_lang") or "en")
     if args.duration is None:
         args.duration = recorded.get("duration_limit")
     elif args.duration <= 0:
         args.duration = None               # typed 0: dub the whole video
+    # Same class as --duration: `captions` is in fetch's fingerprint, so a bare
+    # re-run that forgot it flips fetch — and a flipped chain empties
+    # `m["segments"]` at the segments stage, taking every lock and hand-edit
+    # with it, while fetch quietly falls back to ASR.
+    if args.captions is None and recorded.get("captions"):
+        args.captions = Path(recorded["captions"])
     for key, fallback in RECORDED_DEFAULTS.items():
         if getattr(args, key, None) is not None:
             continue                       # typed on this command line: it wins
@@ -180,7 +191,8 @@ def source_record(args: argparse.Namespace) -> dict[str, Any]:
     run's setting, and the next run would read it back as one.
     """
     rec: dict[str, Any] = {"input": args.source, "src_lang": args.src,
-                           "tgt_lang": args.tgt, "duration_limit": args.duration}
+                           "tgt_lang": args.tgt, "duration_limit": args.duration,
+                           "captions": str(args.captions) if args.captions else ""}
     rec.update({key: getattr(args, key) if getattr(args, key) is not None else default
                 for key, default in RECORDED_DEFAULTS.items()})
     return rec
@@ -325,6 +337,13 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             print(f"[translate] {len(holes)} line(s) still untranslated re-entering",
                   file=sys.stderr)
+            # The trap `apply_force` documents, through this door too: the
+            # re-entry runs translate under an *unchanged* fingerprint, so
+            # every downstream fingerprint recomputes identical and tts/
+            # timeline/mix/report would all report "up to date" — a line the
+            # re-entry successfully translates would keep playing its
+            # original-audio fallback forever. Reopen them explicitly.
+            manifest.clear_downstream(m, "translate")
 
         print(f"[{stage}]", file=sys.stderr)
         t0 = time.time()
