@@ -9,9 +9,10 @@ dedicated Hebrew model also finds ~27% more words than the captions do.
 The main ASR pass runs on the separated vocals, which is measurably more accurate
 with music out of the way (`בקטר` "in Qatar" rather than `בגדה`, a non-word). But
 Demucs sometimes routes speech into the music stem, so whether anyone is speaking
-is judged from `source.wav` the gap-recovery pass below re-listens to the full
-mix wherever the vocals produced nothing, which is what stops those passages from
-disappearing.
+is judged from `source.wav` the gap-recovery pass below re-examines every
+stretch the mix says is audible and the vocals produced no words for, which is
+what stops those passages from disappearing. What it *decodes* there is the
+vocals again, and only where the vocals hold energy: see `recover_gaps`.
 
 Captions are still used for the one thing they are reliably better at: telling us
 *which script* is being spoken, so passages already in the target language can be
@@ -100,6 +101,19 @@ GAP_MIN_SEC = 0.7      # shortest unheard stretch worth a second ASR pass. Was 1
                        # candidates a 0.8s gap held "אל ג'ולאני", the name of the
                        # episode's subject, spoken clear and lost between segments
 GAP_RMS_FLOOR = 0.012  # below this the stretch is silence, not missed speech
+                       # Read twice, of two files, for two different questions
+                       # see `recover_gaps`. Against the separated vocals it is
+                       # the "is anyone speaking here at all" floor, and the two
+                       # populations it separates are 1.5+ orders of magnitude
+                       # apart: measured across every run in outputs/, the three
+                       # sites where the gap pass hallucinated a line over music
+                       # read 0.000016-0.0018 RMS on the vocals stem, while real
+                       # speech read 0.053-0.071. This floor sits ~7x above the
+                       # loudest of the former and ~4x below the quietest of the
+                       # latter. A floor scaled off each file's own speech median
+                       # was considered and rejected: on a source whose vocals
+                       # are quiet throughout it scales *down* into the music,
+                       # which is the one failure the check exists to prevent.
 GAP_PAD = 0.35
 GAP_MIN_LOGPROB = -0.5  # a gap read below this is a hallucination (music sting),
                         # not recovered speech leave the window uncovered instead
@@ -1111,6 +1125,28 @@ def text_is_target(text: str, src: str, tgt: str) -> bool:
     return not script.same_script(src, tgt) and script.is_script(text, tgt)
 
 
+def window_rms(levels, a: float, b: float, hop: float = 0.1) -> float:
+    """The median frame energy over [a, b) of a `frame_rms` array.
+
+    Exactly the statistic and exactly the slice `uncovered_windows` judges a
+    window's audibility by, recovered from the window's times: `a` is always
+    `i * hop`, and `b` is `j * hop` clipped to the file's end, so ceiling `b`
+    lands back on `j`. Written this way on purpose the vocals gate in
+    `recover_gaps` reads the same slice of the same kind of array, so on a run
+    with no stems (where it reads the mix a second time) it is asking the
+    question the window has already answered, and cannot answer it differently.
+    """
+    import math
+
+    import numpy as np
+
+    i0 = max(0, int(a / hop + 1e-9))
+    i1 = min(len(levels), max(i0 + 1, math.ceil(b / hop - 1e-9)))
+    if i1 <= i0:
+        return 0.0
+    return float(np.median(levels[i0:i1]))
+
+
 def recover_gaps(model, source_wav: Path, words: list[dict[str, Any]], lang: str,
                  total: float, known: list[tuple[float, float]] | None = None,
                  tgt_lang: str = "en", listen_wav: Path | None = None
@@ -1129,19 +1165,38 @@ def recover_gaps(model, source_wav: Path, words: list[dict[str, Any]], lang: str
     the separated vocals, same as the main pass: this decoder used to re-listen
     to the mix, and the mix's music is exactly what made it invent lines over
     stings the main pass had correctly declined. A window whose vocals hold no
-    speech now recovers nothing and stays uncovered which the report already
+    speech recovers nothing and stays uncovered which the report already
     flags as `uncovered_audible` instead of becoming a hallucinated segment.
+
+    Audible in the mix is therefore not enough to *earn* a decode, only to
+    nominate one. A music-only sting is loud (measured 0.037-0.052 RMS, well
+    over GAP_RMS_FLOOR) while its separated vocals are digitally silent
+    (0.000016-0.0018), and Whisper handed near-silence is precisely what emits
+    "thank you very much". So the window is nominated by the mix and confirmed
+    by the vocals, and both readings are said out loud when it is refused.
     """
     from . import audio
 
     listen = listen_wav if listen_wav is not None and listen_wav.is_file() else source_wav
     levels = audio.frame_rms(audio.decode_mono(source_wav, 16000), 16000, 0.1)
+    # The same measurement over the file the decoder will actually hear. Memoized
+    # rather than branched: with no stems `listen` IS `source_wav`, so this is the
+    # identical array, the gate below reads the identical slice of it, and the
+    # no-stems path is today's behaviour by construction rather than by promise.
+    heard = levels if listen == source_wav else audio.frame_rms(
+        audio.decode_mono(listen, 16000), 16000, 0.1)
     windows = uncovered_windows(words, levels, 0.1, total, known=known)
     if not windows:
         return words, []
     found: list[dict[str, Any]] = []
     spans: list[dict[str, Any]] = []
     for a, b in windows:
+        voice = window_rms(heard, a, b)
+        if voice < GAP_RMS_FLOOR:
+            print(f"  transcript: gap {a:.1f}-{b:.1f}s is music, not speech "
+                  f"(vocals RMS {voice:.6f} against mix {window_rms(levels, a, b):.3f}) "
+                  f"left uncovered", file=sys.stderr)
+            continue
         clip = audio.decode_mono(listen, 16000, start=max(0.0, a - GAP_PAD),
                                  end=min(total, b + GAP_PAD))
         try:
@@ -1154,8 +1209,7 @@ def recover_gaps(model, source_wav: Path, words: list[dict[str, Any]], lang: str
         # Per-segment first, with the main pass's own gate: without this, a
         # segment the main pass just declined as music re-enters here whenever
         # its neighbours in the same window read well enough to carry the
-        # *mean* — the decline was on the vocals stem, this decode is on the
-        # mix, and averaging across segments is a weaker test than either.
+        # *mean*, and averaging across segments is the weaker test of the two.
         segs = list(speech_only(segs))
         # A low-confidence read of a gap is a hallucination, not recovered speech:
         # a music sting made the model invent a whole line ("עוד לא עבר יום…") that

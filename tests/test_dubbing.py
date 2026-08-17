@@ -2143,11 +2143,14 @@ def _audible_everywhere(monkeypatch, total=10.0, level=0.05):
                         lambda *a, **kw: np.full(int(total / 0.1), level))
 
 
-def _logged_reads(monkeypatch, total=10.0, level=0.05):
+def _logged_reads(monkeypatch, levels=None, total=10.0, level=0.05):
     """`_audible_everywhere`, plus a log of which file every read came from.
 
-    Two kinds: the whole-file read the levels are measured from (no start/end)
-    and each window's decode clip (both).
+    Two kinds of read: the whole-file one a level array is measured from (no
+    start/end) and each window's decode clip (both). `levels` gives a per-file
+    frame-energy array for the files that need one; anything unnamed is audible
+    at `level` throughout. The stubs pass the path itself where the real ones
+    pass samples nothing here looks at audio, only at which file it came from.
     """
     from pathlib import Path
 
@@ -2155,16 +2158,26 @@ def _logged_reads(monkeypatch, total=10.0, level=0.05):
 
     from dubbing import audio
 
-    reads: list[tuple[str, Path]] = []
+    frames = int(total / 0.1)
+    reads: list[tuple[str, Path, float | None]] = []
 
     def decode_mono(path, rate, start=None, end=None, **kw):
-        reads.append(("window" if start is not None else "levels", Path(path)))
-        return np.zeros(16)
+        reads.append(("window" if start is not None else "levels", Path(path), start))
+        return Path(path)
+
+    def frame_rms(samples, rate, hop):
+        value = (levels or {}).get(Path(samples), level)
+        if np.isscalar(value):
+            return np.full(frames, float(value))
+        return np.asarray(value, dtype=float)
 
     monkeypatch.setattr(audio, "decode_mono", decode_mono)
-    monkeypatch.setattr(audio, "frame_rms",
-                        lambda *a, **kw: np.full(int(total / 0.1), level))
+    monkeypatch.setattr(audio, "frame_rms", frame_rms)
     return reads
+
+
+def _read_paths(reads, kind):
+    return [path for what, path, _start in reads if what == kind]
 
 
 def test_speech_only_drops_the_unreadable_decode_and_keeps_its_neighbours():
@@ -2215,26 +2228,91 @@ def test_the_gap_pass_judges_audibility_on_the_mix_but_listens_to_the_vocals(tmp
     source.write_bytes(b"x"), vocals.write_bytes(b"x")
 
     reads = _logged_reads(monkeypatch)
-    segs = [_GapSeg(-0.10, 0.0, 2.0, "real speech")]
+    segs = [_GapSeg(-0.10, 0.5, 2.5, "real speech")]
     # One known word mid-file, so there are two uncovered windows to decode and
     # "every window" is a claim with more than one case behind it.
     known_words = [{"t": 5.0, "end": 5.4, "text": "known", "brk": False}]
 
     transcript.recover_gaps(_gap_model(segs), source, list(known_words), "en", 10.0,
                             tgt_lang="he", listen_wav=vocals)
-    assert [path for kind, path in reads if kind == "levels"] == [source]
-    decoded = [path for kind, path in reads if kind == "window"]
+    # The mix nominates the windows; the vocals both confirm and are decoded.
+    assert _read_paths(reads, "levels") == [source, vocals]
+    decoded = _read_paths(reads, "window")
     assert len(decoded) == 2 and set(decoded) == {vocals}
 
     # No stems, or a vocals file the demucs stage never wrote: the mix is all
-    # there is, which is the behaviour every run before this had.
+    # there is, which is the behaviour every run before this had and it is
+    # measured once, not twice, because the second reading is the same array.
     for absent in (None, tmp_path / "stems" / "never_written.wav"):
         reads.clear()
         transcript.recover_gaps(_gap_model(segs), source, list(known_words), "en", 10.0,
                                tgt_lang="he", listen_wav=absent)
-        assert [path for kind, path in reads if kind == "levels"] == [source]
-        decoded = [path for kind, path in reads if kind == "window"]
+        assert _read_paths(reads, "levels") == [source]
+        decoded = _read_paths(reads, "window")
         assert len(decoded) == 2 and set(decoded) == {source}
+
+
+def _sting_then_speech(tmp_path, monkeypatch):
+    """A run whose first uncovered window is a music sting and second is speech.
+
+    The mix is equally loud over both (a sting measures 0.037-0.052 RMS, well
+    over GAP_RMS_FLOOR), so window *selection* cannot tell them apart. The
+    separated vocals can, by three orders of magnitude: the real hallucination
+    sites measured 0.000016-0.0018 against 0.053-0.071 for real speech.
+    """
+    source = tmp_path / "source.wav"
+    vocals = tmp_path / "stems" / "vocals.wav"
+    vocals.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"x"), vocals.write_bytes(b"x")
+    # One known word at 5.0s splits the file into windows 0.0-4.7 and 5.8-10.0.
+    known_words = [{"t": 5.0, "end": 5.4, "text": "known", "brk": False}]
+    quiet_vocals = [0.0005] * 48 + [0.06] * 52
+    reads = _logged_reads(monkeypatch, levels={source: 0.045, vocals: quiet_vocals})
+    return reads, source, vocals, known_words
+
+
+def test_a_window_loud_in_the_mix_but_silent_in_the_vocals_is_never_decoded(tmp_path,
+                                                                           monkeypatch,
+                                                                           capsys):
+    # The hole the earlier fix left: listening to the vocals does not help if the
+    # window was handed over on the mix's word alone. Whisper given near-silence
+    # is exactly what emits "thank you very much" — so the sting is never decoded
+    # at all. The pre-rewrite pipeline had this guard; the rewrite dropped it.
+    reads, source, vocals, known = _sting_then_speech(tmp_path, monkeypatch)
+    segs = [_GapSeg(-0.10, 0.5, 2.5, "thank you very much")]
+
+    words, spans = transcript.recover_gaps(_gap_model(segs), source, list(known), "en",
+                                           10.0, tgt_lang="he", listen_wav=vocals)
+    # Exactly one decode, and it is the speech window (clip starts at 5.8 - GAP_PAD).
+    windows = [start for kind, _path, start in reads if kind == "window"]
+    assert windows == [pytest.approx(5.8 - transcript.GAP_PAD)]
+    # Nothing from the sting: the one recovered line is the speech window's.
+    assert [w["text"] for w in words] == ["known", "thank", "you", "very", "much"]
+    assert spans == []
+    # Said out loud, with both readings, so a report reader can check the call.
+    note = capsys.readouterr().err
+    assert "gap 0.0-4.7s is music, not speech" in note
+    assert "vocals RMS 0.000500" in note and "mix 0.045" in note
+    assert "left uncovered" in note
+
+
+def test_a_window_with_real_vocal_energy_is_still_decoded_and_recovered(tmp_path,
+                                                                       monkeypatch):
+    # The other half of the same judgement: the gate refuses silence, not gaps.
+    # Same mix and same windows as the sting case only the vocals differ.
+    source = tmp_path / "source.wav"
+    vocals = tmp_path / "stems" / "vocals.wav"
+    vocals.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"x"), vocals.write_bytes(b"x")
+    known = [{"t": 5.0, "end": 5.4, "text": "known", "brk": False}]
+    reads = _logged_reads(monkeypatch, levels={source: 0.045, vocals: [0.06] * 100})
+    segs = [_GapSeg(-0.10, 0.5, 2.5, "real speech")]
+
+    words, _spans = transcript.recover_gaps(_gap_model(segs), source, list(known), "en",
+                                            10.0, tgt_lang="he", listen_wav=vocals)
+    assert _read_paths(reads, "window") == [vocals, vocals]
+    # Both windows' words came back, around the word that was already known.
+    assert [w["text"] for w in words] == ["real", "speech", "known", "real", "speech"]
 
 
 # ------------------------------------- a fallback slice keeps a keep's policy

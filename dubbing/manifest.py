@@ -25,7 +25,12 @@ STAGE_TAGS = {
     # reruns vs the news register at translate/v31; segments carried both
     # alignment+passthrough and the spoken_target/veto work), so the merged tag
     # moves past every claim rather than picking a side.
-    "transcript": "transcript/v43",
+    "transcript": "transcript/v44",
+    # v44: a gap window is nominated by the mix and confirmed by the vocals. A
+    # music-only sting is loud in the mix but digitally silent once separated,
+    # and near-silence is what Whisper answers with "thank you very much"; the
+    # window is now left uncovered (and reported) instead of decoded. Restores a
+    # guard the pre-rewrite pipeline had and the rewrite dropped.
     # v43: the gap-recovery decoder listens to the separated vocals, like the
     # main pass — audibility is still judged from the mix, but "what is said"
     # is no longer asked of audio with the music still in it, which is where
