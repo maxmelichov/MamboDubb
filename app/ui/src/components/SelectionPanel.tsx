@@ -157,9 +157,13 @@ export function SelectionPanel({
               state="dubbed"
             />
             <span className="w-px shrink-0 bg-border" aria-hidden />
+            {/* A pipeline-failed line is stored keep=true, but that is the
+                pipeline's loss, not a verdict — so neither half renders
+                active, and pressing Keep settles it as the user's own
+                (keep_reason "manual"), which IS a change the server hears. */}
             <Choice
-              active={seg.keep}
-              onClick={() => !seg.keep && onVerdict(true)}
+              active={seg.keep && !pipelineFailed(seg)}
+              onClick={() => (!seg.keep || pipelineFailed(seg)) && onVerdict(true)}
               label="Keep original"
               state="kept"
             />
@@ -187,6 +191,16 @@ export function SelectionPanel({
                 {(seg.text_en ?? "").trim() && seg.locked?.text_en
                   ? "queues voice for this line your translation is kept."
                   : "queues translate + voice for this line."}
+              </>
+            ) : seg.media?.fallback ? (
+              // No dub exists yet — the mix already plays the original here.
+              // Promising "the dubbed voice replaces the source audio" on this
+              // line is false, and pressing Keep changes nothing audible; say
+              // both, and say what Keep *does* do (settle the verdict).
+              <>
+                No dub yet the mix plays the original audio here. “Keep original”
+                makes that the verdict, so a re-run stops retrying this line; nothing
+                you hear changes.
               </>
             ) : (seg.text_en ?? "").trim() && seg.locked?.text_en ? (
               // A hand-written line is locked, and `invalidate` honours locks:
@@ -473,9 +487,14 @@ export function SelectionPanel({
 function Bounds({ seg, onPatch }: { seg: Segment; onPatch: (patch: SegmentPatch) => void }) {
   const [start, setStart] = useState(String(seg.start));
   const [end, setEnd] = useState(String(seg.end));
-  const dirty = Number(start) !== seg.start || Number(end) !== seg.end;
-  const valid = Number.isFinite(Number(start)) && Number.isFinite(Number(end)) &&
-    Number(end) > Number(start);
+  // An empty field is not a number, and `Number("")` is 0: clearing Start left
+  // Move enabled and PATCHed `start: 0`, which is a span reaching back to the
+  // top of the video over every line in between. The server refuses it
+  // (`edit.set_bounds`) and the client must not offer it.
+  const value = (text: string): number => (text.trim() === "" ? NaN : Number(text));
+  const dirty = value(start) !== seg.start || value(end) !== seg.end;
+  const valid =
+    Number.isFinite(value(start)) && Number.isFinite(value(end)) && value(end) > value(start);
 
   return (
     <div className="flex items-end gap-2">
@@ -498,8 +517,12 @@ function Bounds({ seg, onPatch }: { seg: Segment; onPatch: (patch: SegmentPatch)
       <Button
         size="md"
         disabled={!dirty || !valid}
-        title={valid ? "Move this segment's span" : "The end has to come after the start"}
-        onClick={() => onPatch({ start: Number(start), end: Number(end) })}
+        title={
+          valid
+            ? "Move this segment's span"
+            : "Both bounds are numbers, and the end comes after the start"
+        }
+        onClick={() => onPatch({ start: value(start), end: value(end) })}
       >
         Move
       </Button>

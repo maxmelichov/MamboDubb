@@ -63,6 +63,7 @@ import {
   hasKeepPhrase,
   hasLocks,
   keepReason,
+  pipelineFailed,
   segmentState,
   subtitleOnly,
   verifyConcern,
@@ -92,6 +93,8 @@ export type ScriptRowProps = {
   /** `window` confines playback to a span of the file see `clipAudio`. */
   onPlay: (url: string | null, window?: [number, number] | null) => void;
   onToggleKeep: (seg: Segment) => void;
+  /** Settle a pipeline-failed keep as the user's own verdict (reason manual). */
+  onSettleKeep: (seg: Segment) => void;
 };
 
 function Row({
@@ -108,6 +111,7 @@ function Row({
   onCommit,
   onPlay,
   onToggleKeep,
+  onSettleKeep,
 }: ScriptRowProps) {
   const state = segmentState(seg);
   const meta = STATE_META[state];
@@ -442,6 +446,7 @@ function Row({
           }}
           onCorrect={() => onEdit({ uid: seg.uid, field: "text" })}
           onToggleKeep={() => onToggleKeep(seg)}
+          onSettleKeep={() => onSettleKeep(seg)}
         />
       </div>
     </div>
@@ -724,12 +729,14 @@ function RowMenu({
   setOpen,
   onCorrect,
   onToggleKeep,
+  onSettleKeep,
 }: {
   seg: Segment;
   open: boolean;
   setOpen: (open: boolean) => void;
   onCorrect: () => void;
   onToggleKeep: () => void;
+  onSettleKeep: () => void;
 }) {
   const trigger = useRef<HTMLButtonElement>(null);
   const [at, setAt] = useState<{ top: number; left: number } | null>(null);
@@ -793,6 +800,10 @@ function RowMenu({
               className="fixed z-50 w-50 rounded-xl border border-border bg-raised p-1 shadow-pop"
             >
               {item("Correct transcript", onCorrect)}
+              {/* A failed line is keep=true only because the pipeline gave up;
+                  "Keep original audio" here settles that as the user's verdict
+                  instead of being hidden behind the boolean. */}
+              {pipelineFailed(seg) ? item("Keep original audio", onSettleKeep) : null}
               {item(seg.keep ? "Dub this line" : "Keep original audio", onToggleKeep)}
             </div>,
             document.body,

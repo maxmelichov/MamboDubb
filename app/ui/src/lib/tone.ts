@@ -22,19 +22,35 @@ export function isToneUrl(url: string): boolean {
   return url.startsWith("fixture:tone?");
 }
 
-/** Decode a tone URL into a playable blob URL, cached per spec. */
+/**
+ * The longest blob this will synthesize. A source track is minutes long and
+ * every segment's Orig button is a window of it, so the ceiling has to clear a
+ * whole run at 8 kHz that is 14 MB, and it is one blob per voice, not one
+ * per line.
+ */
+const MAX_DUR_SEC = 900;
+
+/**
+ * Decode a tone URL into a playable blob URL, cached per spec.
+ *
+ * The `#t=start,end` fragment names a *window* of the file and not another
+ * file, exactly as it does on the server's `source.wav#t=…`, so it is stripped
+ * before the spec is read and before the cache is keyed one track, however
+ * many lines take windows of it. `clipAudio` enforces the window itself.
+ */
 export function resolveToneUrl(url: string): string {
-  const cached = cache.get(url);
+  const [spec] = url.split("#");
+  const cached = cache.get(spec);
   if (cached) return cached;
 
-  const params = new URLSearchParams(url.slice("fixture:tone?".length));
+  const params = new URLSearchParams(spec.slice("fixture:tone?".length));
   const hz = Number(params.get("hz")) || 180;
-  const dur = Math.min(Number(params.get("dur")) || 1, 20);
+  const dur = Math.min(Number(params.get("dur")) || 1, MAX_DUR_SEC);
   const seed = Number(params.get("seed")) || 1;
 
   const blob = new Blob([encodeWav(render(hz, dur, seed))], { type: "audio/wav" });
   const objectUrl = URL.createObjectURL(blob);
-  cache.set(url, objectUrl);
+  cache.set(spec, objectUrl);
   return objectUrl;
 }
 

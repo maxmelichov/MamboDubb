@@ -88,6 +88,7 @@ import {
   keepReason,
   keptAsTargetLanguage,
   needsModelWork,
+  pipelineFailed,
   segmentState,
   totalDuration,
   type SegmentState,
@@ -500,6 +501,12 @@ export function EditorPage() {
     const timer = window.setTimeout(() => setUndoKeep(null), UNDO_MS);
     return () => window.clearTimeout(timer);
   }, [undoKeep]);
+  // The kept line the undo toast is about, resolved live (see the toast's
+  // render-site comment).
+  const undoKept = useMemo(
+    () => (undoKeep ? (segments.find((seg) => seg.uid === undoKeep.uid) ?? null) : null),
+    [segments, undoKeep],
+  );
 
   /**
    * The verdict, and everything it implies.
@@ -534,7 +541,12 @@ export function EditorPage() {
    */
   const setVerdict = useCallback(
     async (seg: Segment, keep: boolean, queue = true): Promise<Segment | null> => {
-      if (seg.keep === keep) return null;
+      // The verdict is (keep, keep_reason), not the boolean alone: a line the
+      // pipeline gave up on is stored keep=true with a *failure* reason, and
+      // pressing "Keep original" on it is not a no-op — it settles the line as
+      // the user's own verdict (reason "manual", passthrough stamped), turning
+      // a red Failed into a green Keep that re-runs honour.
+      if (seg.keep === keep && !(keep && pipelineFailed(seg))) return null;
       const lost = (seg.text_en ?? "").trim() || null;
       const saved = await actions.patch(
         seg.uid,
@@ -584,6 +596,9 @@ export function EditorPage() {
     (seg: Segment) => void setVerdict(seg, !seg.keep),
     [setVerdict],
   );
+
+  /** Row-menu path for a pipeline-failed line: keep, as the user's verdict. */
+  const settleKeep = useCallback((seg: Segment) => void setVerdict(seg, true), [setVerdict]);
 
   /** The script pane's bulk fix, over whatever the filter has selected. */
   const fixMany = useCallback(
@@ -791,11 +806,23 @@ export function EditorPage() {
   // two count *changes*, because they are about what the user did and "your
   // last 1 line" is not a phrase anybody says.
   const edits = changed === 1 ? "change" : `${changed} changes`;
-  const staleNote = stale && changed > 0 ? `rendered before your last ${edits}` : null;
-  const staleBand =
-    stale && changed > 0
+  // `changed` needs a render-time baseline; a run mixed before the stamp
+  // existed reports stale with changed=0 *forever*, so `changed > 0` alone
+  // hid the staleness of exactly the runs that cannot count it — an edit on
+  // such a run gave no header feedback at all. `state.edited` is the
+  // tiebreak: this session touched something, so the staleness is real to
+  // this user, even if the server cannot say how many lines it spans.
+  const staleKnown = stale && (changed > 0 || state.edited);
+  const staleNote = staleKnown
+    ? changed > 0
+      ? `rendered before your last ${edits}`
+      : "rendered before your recent edits"
+    : null;
+  const staleBand = staleKnown
+    ? changed > 0
       ? `Mixed before your last ${edits} Update the video to hear them`
-      : null;
+      : "Mixed before your recent edits Update the video to hear them"
+    : null;
 
   /*
    * When Render has nothing to work with, and when it is not the button it says.
@@ -967,6 +994,7 @@ export function EditorPage() {
               onCommit={commit}
               onPlay={toggleClip}
               onToggleKeep={toggleKeep}
+              onSettleKeep={settleKeep}
               onRetranslateMany={(uids) => void actions.retranslate(uids)}
               onResynthesizeMany={(uids) => void actions.resynthesize(uids)}
               onFixMany={fixMany}
@@ -1063,7 +1091,7 @@ export function EditorPage() {
                   project={project}
                   counts={counts}
                   onSeek={transport.seek}
-                  onAdd={(segment) => void actions.add(segment)}
+                  onAdd={actions.add}
                   onHighlightGap={setHighlightGap}
                 />
               )}
@@ -1095,7 +1123,13 @@ export function EditorPage() {
         </>
       )}
 
-      {undoKeep ? <UndoKeepStrip undo={undoKeep} onUndo={undoLastKeep} /> : null}
+      {/* Rendered from the LIVE segment: a structural edit renumbers every id
+          (so the captured number can name the wrong line) and can retire the
+          uid outright (so Undo would PATCH a segment that no longer exists).
+          No live segment, no toast. */}
+      {undoKept ? (
+        <UndoKeepStrip undo={{ ...undoKeep!, id: undoKept.id }} onUndo={undoLastKeep} />
+      ) : null}
     </div>
   );
 }
@@ -1235,8 +1269,11 @@ function RunSummary({
    * exactly when a reviewer is working through the uncovered spans, and a
    * composer nested inside the menu's popover would be a dialog inside a dialog
    * in a 21rem panel. The menu keeps the same list, read-only.
+   *
+   * It answers whether the server took the segment the composer below cannot
+   * clear itself until it knows.
    */
-  onAdd?: (segment: NewSegment) => void;
+  onAdd?: (segment: NewSegment) => Promise<boolean>;
   onHighlightGap?: (span: Span | null) => void;
 }) {
   const total = segments.length;
@@ -1366,8 +1403,10 @@ function GapList({
    * free-floating "New segment" button would have to invent a span, and every
    * span it could invent either overlaps a neighbour (which the server refuses)
    * or is one of these.
+   *
+   * Resolves to whether the span was taken; a refusal is the composer's to keep.
    */
-  onAdd?: (segment: NewSegment) => void;
+  onAdd?: (segment: NewSegment) => Promise<boolean>;
   /**
    * Point at one and the timeline lights the hatch it is inside.
    *
@@ -1455,7 +1494,7 @@ function AddSegmentButton({
 }: {
   gap: { start: number; end: number };
   speakers: string[];
-  onAdd: (segment: NewSegment) => void;
+  onAdd: (segment: NewSegment) => Promise<boolean>;
 }) {
   const [text, setText] = useState("");
   const [speaker, setSpeaker] = useState("");
@@ -1524,14 +1563,17 @@ function AddSegmentButton({
                 ? `A segment has to be at least ${MIN_SEGMENT_SEC}s long to be voiced`
                 : "A new segment needs its text"
           }
-          onClick={() => {
-            onAdd({
+          onClick={async () => {
+            // The sentence stays in the box until a segment is holding it. The
+            // server refuses an overlap outright, and clearing on the way out
+            // deleted the very text the refusal is asking the user to re-place.
+            const added = await onAdd({
               start: Number(start),
               end: Number(end),
               text: text.trim(),
               ...(speaker ? { speaker } : {}),
             });
-            setText("");
+            if (added) setText("");
           }}
         >
           <Plus className="h-3.5 w-3.5" />
