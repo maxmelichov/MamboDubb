@@ -146,6 +146,22 @@ def merge(m: dict[str, Any], uid_a: str, uid_b: str) -> str:
     return _edit.merge(m, uid_a, uid_b)
 
 
+def remove(m: dict[str, Any], uid: str) -> dict[str, Any]:
+    """Take a segment out of the dub. Returns the record that was deleted.
+
+    Not "mute it": `dubbing.mix` plays the original vocals in every span no
+    placement claims, so a removed span sounds like a passage the pipeline never
+    detected. See `dubbing.edit.remove` for why that is the only honest answer.
+    """
+    return _edit.remove(m, uid)
+
+
+def add(m: dict[str, Any], start: float, end: float, *, text: str,
+        speaker: str | None = None) -> str:
+    """Claim an uncovered span as a new segment. Returns its uid."""
+    return _edit.add(m, start, end, text=text, speaker=speaker)
+
+
 # --------------------------------------------------------------------------
 # the run's pipeline options
 # --------------------------------------------------------------------------

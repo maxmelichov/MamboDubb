@@ -500,6 +500,144 @@ def merge(m: dict[str, Any], uid_a: str, uid_b: str) -> str:
     return merged["uid"]
 
 
+def remove(m: dict[str, Any], uid: str) -> dict[str, Any]:
+    """Take a segment out of the dub entirely. Returns the record it deleted.
+
+    The counterpart of `add`, and deliberately *not* the counterpart of
+    `set_keep`. The two are different answers to different questions:
+
+    * `set_keep(uid, True)` is a verdict about a span the pipeline found — "this
+      passage plays as recorded". The segment stays, it is still placed, and
+      `mix` ducks the bed to zero under it because the original slice carries its
+      own bed.
+    * `remove(uid)` says the pipeline was **wrong that there is a segment here**
+      at all: a fragment of transcript noise, an ASR hallucination, a line that
+      belongs to nobody. The record goes.
+
+    What the viewer then hears over that span is not silence, and this is the
+    only honest answer available: `mix` adds the original vocals stem, at unity
+    gain, into every span no placement claimed (`dubbing/mix.py`, the fill pass).
+    So a removed span plays its original voice over the ducked-away-nothing bed,
+    which is exactly what an undetected passage of speech already sounds like.
+    "Never silent" is kept by the same mechanism that keeps it for speech the
+    pipeline never detected in the first place — there is no mute path here, and
+    adding one would be adding the one thing invariant 1 exists to forbid.
+
+    Nothing else on the run is invalidated: no other segment's translation or
+    clip was made from this one. What *is* rebuilt is the placement — the span
+    is free now, so `timeline.run` may lay its neighbours out differently — and
+    everything after it, which is what `reopen_from("timeline")` reopens. Note
+    the asymmetry with `split`/`merge`, which reopen from `translate`: those
+    create segments with nothing generated for them, and this creates none.
+
+    Like every structural edit here, it is honoured from `translate` onward and
+    a re-run of the *segments* stage rebuilds the list from the words and brings
+    the segment back — the same caveat `split` and `merge` carry.
+    """
+    i = index_of(m, uid)
+    gone = m["segments"].pop(i)
+    _renumber(m)
+    manifest.reopen_from(m, "timeline")
+    return gone
+
+
+def add(m: dict[str, Any], start: float, end: float, *, text: str,
+        speaker: str | None = None) -> str:
+    """Claim an uncovered span as a new segment. Returns its uid.
+
+    For speech the pipeline missed: a hallucination-dropped intro, a line the
+    ASR skipped, a passage under music that never made it into the word stream.
+    The span must be free — `timeline.place` asserts non-overlap and this is one
+    of the two doors (with `set_bounds`) through which a user could otherwise
+    walk a segment into another one's seconds, so the overlap is **refused**,
+    never clamped: a silently moved span is an edit the user did not make.
+
+    It arrives with nothing generated for it, so `translate` onward is reopened
+    and the next run fills it in exactly as it fills any other hole.
+
+    Three things it writes on purpose:
+
+    * `locked.text` — the words are the user's, typed because the ASR had none.
+      A later transcript rerun is not entitled to replace them.
+    * `passthrough = False` — the user's word that this span is to be *dubbed*
+      (`keep.user_wants_dub`). Without it, the first translation or synthesis
+      failure would answer with a keep, and the span would go back to playing
+      its original audio, which is precisely the state the user was correcting.
+      With it, a failure stays visibly unfinished instead.
+    * a `speaker` — synthesis clones a voice, so a segment with no speaker has
+      no reference to clone from. The caller may name one; otherwise it is
+      inherited from the nearest segment in time, which is the only content-free
+      answer available and the right one for a line dropped out of a passage.
+    """
+    from . import segments as segments_mod
+
+    text = (text or "").strip()
+    if not text:
+        raise EditError("a new segment needs its text: it is what gets "
+                        "translated and spoken, and there is no transcript for "
+                        "a span the pipeline never segmented")
+    start, end = round(float(start), 3), round(float(end), 3)
+    if start < 0.0:
+        raise EditError("start cannot be negative")
+    if end - start < segments_mod.MIN_SEG_SEC:
+        raise EditError(f"a segment shorter than {segments_mod.MIN_SEG_SEC}s cannot "
+                        f"be synthesized reliably; [{start}, {end}] is "
+                        f"{end - start:.2f}s")
+    media_end = (m.get("source") or {}).get("duration")
+    if media_end and end > float(media_end) + 1e-6:
+        raise EditError(f"end {end} is past the end of the media "
+                        f"({float(media_end):.3f}s)")
+    segs = m.setdefault("segments", [])
+    for other in segs:
+        if float(other["start"]) < end - 1e-6 and float(other["end"]) > start + 1e-6:
+            raise EditError(f"[{start}, {end}] overlaps segment {other.get('id')} "
+                            f"([{other['start']}, {other['end']}]); split or move "
+                            f"that one first")
+
+    speaker = (speaker or "").strip() or _nearest_speaker(m, start, end)
+    seg: dict[str, Any] = {
+        "id": len(segs),
+        "uid": manifest.mint_uid(start, end, text),
+        "start": start,
+        "end": end,
+        "speaker": speaker,
+        "text": text,
+        "keep": False,
+        "keep_reason": None,
+        "passthrough": False,
+        "locked": {"text": True},
+    }
+    segs.append(seg)
+    manifest.ensure_uids(segs)
+    _renumber(m)
+    # Nothing has been translated, voiced or placed for it, in a run that says
+    # those stages are done. Never earlier than translate, for the same reason
+    # `split` stops there: re-running the segments stage rebuilds the list from
+    # the words and this segment is not in them.
+    manifest.reopen_from(m, "translate")
+    return seg["uid"]
+
+
+def _nearest_speaker(m: dict[str, Any], start: float, end: float) -> str:
+    """Whose voice a new span most likely is: the nearest segment's in time.
+
+    Falls back to the run's longest-speaking speaker, and then to a name, so the
+    result is never empty — `tts` needs one to pick a clone reference. Purely
+    positional: no rule here knows anything about a particular video.
+    """
+    best, best_gap = None, None
+    for other in m.get("segments") or []:
+        gap = max(float(other["start"]) - end, start - float(other["end"]), 0.0)
+        if best_gap is None or gap < best_gap:
+            best, best_gap = other.get("speaker"), gap
+    if best:
+        return str(best)
+    speakers = m.get("speakers") or {}
+    if speakers:
+        return max(speakers, key=lambda s: (speakers[s] or {}).get("dur") or 0.0)
+    return "SPEAKER_00"
+
+
 def _derived(seg: dict[str, Any], *, start: float, end: float, text: str) -> dict[str, Any]:
     """A new segment carved out of `seg`: same voice and settings, no results.
 

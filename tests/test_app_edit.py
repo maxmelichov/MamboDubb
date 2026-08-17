@@ -717,6 +717,89 @@ def test_a_merge_carries_an_override_only_when_both_halves_agreed():
     assert "passthrough" not in split_minds["segments"][0]
 
 
+def test_remove_takes_the_segment_out_and_renumbers():
+    m = mk(seg(start=0.0, end=2.0, text="aa"),
+           seg(id=1, start=2.0, end=4.0, text="bb"),
+           seg(id=2, start=4.0, end=6.0, text="cc"))
+    uid = m["segments"][1]["uid"]
+    gone = edit.remove(m, uid)
+    assert gone["text"] == "bb"
+    assert [s["text"] for s in m["segments"]] == ["aa", "cc"]
+    assert [s["id"] for s in m["segments"]] == [0, 1]
+    assert edit.find(m, uid) is None
+
+
+def test_remove_reopens_the_placement_and_no_further_back():
+    """No other segment's translation or clip was made from the one that went, so
+    reopening translate would re-run work nothing invalidated. The *placement*
+    did change: the span is free and `timeline.run` lays the whole run out at
+    once."""
+    m = mk(seg(start=0.0, end=2.0, text="aa", text_en="one"),
+           seg(id=1, start=2.0, end=4.0, text="bb", text_en="two"))
+    finished(m)
+    edit.remove(m, m["segments"][1]["uid"])
+    assert set(m["stages"]) == {"fetch", "stems", "transcript", "segments",
+                                "translate", "tts"}
+    assert m["segments"][0]["text_en"] == "one"       # the survivor keeps its work
+
+
+def test_remove_rejects_an_unknown_uid():
+    with pytest.raises(edit.SegmentNotFound):
+        edit.remove(mk(seg()), "nope")
+
+
+def test_add_claims_a_free_span_and_says_it_is_the_users():
+    m = mk(seg(start=0.0, end=2.0, text="aa"), seg(id=1, start=10.0, end=12.0, text="bb"))
+    uid = edit.add(m, 4.0, 6.0, text="the missed line")
+    added = edit.find(m, uid)
+    assert (added["start"], added["end"]) == (4.0, 6.0)
+    assert added["text"] == "the missed line" and added["keep"] is False
+    # The words are the user's, and so is the verdict that this span is a dub:
+    # without `passthrough=False` the first failure would answer with a keep and
+    # put the span back to playing its original audio.
+    assert added["locked"] == {"text": True}
+    assert added["passthrough"] is False and keep_mod.user_wants_dub(added)
+    # Sorted into place and renumbered, like every structural edit.
+    assert [s["id"] for s in m["segments"]] == [0, 1, 2]
+    assert [s["start"] for s in m["segments"]] == [0.0, 4.0, 10.0]
+
+
+def test_add_inherits_the_nearest_speaker_and_honours_an_explicit_one():
+    m = mk(seg(start=0.0, end=2.0, text="aa", speaker="S0"),
+           seg(id=1, start=20.0, end=22.0, text="bb", speaker="S9"))
+    near = edit.find(m, edit.add(m, 19.0, 20.0, text="closer to S9"))
+    assert near["speaker"] == "S9"
+    named = edit.find(m, edit.add(m, 4.0, 6.0, text="mine", speaker="S3"))
+    assert named["speaker"] == "S3"
+
+
+def test_add_refuses_an_overlap_rather_than_clamping_it():
+    """`timeline.place` asserts non-overlap, so a request that would break it is
+    answered — silently moving the span is an edit the user did not make."""
+    m = mk(seg(start=0.0, end=2.0, text="aa"), seg(id=1, start=4.0, end=6.0, text="bb"))
+    for start, end in ((1.0, 3.0), (3.0, 5.0), (0.5, 1.5), (-1.0, 1.0)):
+        with pytest.raises(edit.EditError):
+            edit.add(m, start, end, text="nope")
+    assert len(m["segments"]) == 2
+
+
+def test_add_refuses_a_span_with_nothing_to_say_or_nothing_to_say_it_in():
+    m = mk(seg(start=0.0, end=2.0, text="aa"), duration=30.0)
+    with pytest.raises(edit.EditError):
+        edit.add(m, 4.0, 6.0, text="   ")                 # no text
+    with pytest.raises(edit.EditError):
+        edit.add(m, 4.0, 4.2, text="too short")           # under MIN_SEG_SEC
+    with pytest.raises(edit.EditError):
+        edit.add(m, 28.0, 40.0, text="past the media")    # past `source.duration`
+
+
+def test_add_reopens_from_translate_and_never_the_segmentation():
+    m = mk(seg(start=0.0, end=2.0, text="aa"))
+    finished(m)
+    edit.add(m, 4.0, 6.0, text="the missed line")
+    assert set(m["stages"]) == {"fetch", "stems", "transcript", "segments"}
+
+
 def test_structural_edits_leave_the_list_ordered_and_non_overlapping():
     m = two_segs()
     edit.split(m, m["segments"][1]["uid"], 3.0)

@@ -681,6 +681,118 @@ def test_merge_refuses_non_adjacent(client):
 
 
 # ---------------------------------------------------------------------------
+# segments: adding and removing
+# ---------------------------------------------------------------------------
+
+def test_add_segment_claims_a_free_span(client, outputs):
+    """The fixture run's segments stop at 20 s and the media is 38 s long, so
+    everything after that is uncovered — the state a hallucination-dropped line
+    leaves behind."""
+    r = client.post(f"/api/projects/{NAME}/segments",
+                    json={"start": 22.0, "end": 24.5, "text": "השורה שנשמטה"})
+    assert r.status_code == 201
+    uid = r.json()["uid"]
+    segs = manifest.load(outputs / NAME)["segments"]
+    added = ops.find({"segments": segs}, uid)
+    assert (added["start"], added["end"]) == (22.0, 24.5)
+    assert added["text"] == "השורה שנשמטה" and added["keep"] is False
+    # Nothing generated for it, the user's words locked, and the user's word that
+    # this span is a dub — so a failure downstream stays visibly unfinished
+    # instead of answering with the original audio it was added to replace.
+    assert "text_en" not in added and "tts" not in added
+    assert added["locked"] == {"text": True} and added["passthrough"] is False
+    assert [s["id"] for s in segs] == list(range(6))
+    # It is a real segment to every other route from now on.
+    assert uid in uids(client)
+    # And the run knows there is work to do again: translate onward is reopened,
+    # while the segmentation is not (re-running it would rebuild the list from
+    # the words, which this segment is not in).
+    stages = client.get(f"/api/projects/{NAME}").json()["stages"]
+    assert stages["segments"] == "done" and stages["translate"] == "pending"
+    assert stages["mix"] == "pending"
+
+
+def test_add_segment_inherits_the_nearest_speaker_and_takes_an_explicit_one(client):
+    near = client.post(f"/api/projects/{NAME}/segments",
+                       json={"start": 21.0, "end": 23.0, "text": "aa"}).json()["segment"]
+    assert near["speaker"] == "SPEAKER_01"          # the segment ending at 20.0
+    named = client.post(f"/api/projects/{NAME}/segments",
+                        json={"start": 25.0, "end": 27.0, "text": "bb",
+                              "speaker": "SPEAKER_00"}).json()["segment"]
+    assert named["speaker"] == "SPEAKER_00"
+
+
+@pytest.mark.parametrize("body,because", [
+    ({"start": 10.0, "end": 22.0, "text": "aa"}, "overlaps"),
+    ({"start": 30.0, "end": 45.0, "text": "aa"}, "past the end of the media"),
+    ({"start": 22.0, "end": 22.3, "text": "aa"}, "cannot be synthesized reliably"),
+    ({"start": 22.0, "end": 24.0, "text": "   "}, "needs its text"),
+    ({"start": -2.0, "end": 2.0, "text": "aa"}, "negative"),
+])
+def test_add_segment_refuses_what_the_timeline_could_not_hold(client, body, because):
+    r = client.post(f"/api/projects/{NAME}/segments", json=body)
+    assert r.status_code == 400
+    assert because in envelope_of(r)["message"]
+    assert len(uids(client)) == 5            # and nothing was written
+
+
+def test_remove_segment_takes_it_out_of_the_manifest(client, outputs):
+    before = uids(client)
+    r = client.delete(f"/api/projects/{NAME}/segments/{before[2]}")
+    assert r.status_code == 200
+    # The deleted record comes back, so a client can offer an undo without
+    # having kept its own copy.
+    assert r.json()["removed"]["text"] == "ועם כל הגיא."
+    segs = manifest.load(outputs / NAME)["segments"]
+    assert [s["uid"] for s in segs] == [u for u in before if u != before[2]]
+    assert [s["id"] for s in segs] == list(range(4))
+    # The survivors keep every bit of their own work: nothing they hold was made
+    # from the segment that went.
+    assert all(s.get("text_en") for s in segs)
+    # What did change is the placement — the span is free now — and everything
+    # after it. Translate and tts are untouched.
+    stages = client.get(f"/api/projects/{NAME}").json()["stages"]
+    assert stages["translate"] == "done" and stages["tts"] == "done"
+    assert stages["timeline"] == "pending" and stages["mix"] == "pending"
+
+
+def test_remove_unknown_uid(client):
+    r = client.delete(f"/api/projects/{NAME}/segments/nope")
+    assert r.status_code == 404 and envelope_of(r)["code"] == "not_found"
+
+
+def test_add_and_remove_are_structural_and_wait_for_no_running_job(outputs):
+    """Both renumber `seg["id"]`, which a running stage is iterating over — the
+    same reason `split` is refused rather than queued."""
+    hold = threading.Event()
+    fake = FakeRunner(hold=hold)
+    with TestClient(create_app(outputs, runner=fake, ui_dir="")) as c:
+        job = c.post(f"/api/projects/{NAME}/render", json={}).json()["job"]
+        assert wait_until(lambda: c.get(f"/api/jobs/{job['id']}").json()["job"]["status"]
+                          == "running")
+        uid = c.get(f"/api/projects/{NAME}/segments").json()["segments"][1]["uid"]
+        add = c.post(f"/api/projects/{NAME}/segments",
+                     json={"start": 22.0, "end": 24.0, "text": "aa"})
+        assert add.status_code == 409 and envelope_of(add)["code"] == "busy"
+        gone = c.delete(f"/api/projects/{NAME}/segments/{uid}")
+        assert gone.status_code == 409 and envelope_of(gone)["code"] == "busy"
+        hold.set()
+
+
+def test_add_and_remove_announce_themselves_on_the_stream(client, monkeypatch):
+    """A client rebuilds its list from `GET /segments` when a segment frame
+    arrives, and a structural edit is the one it most needs to hear about."""
+    seen: list[dict] = []
+    bus = client.app.state.bus
+    monkeypatch.setattr(bus, "publish", lambda project, event: seen.append(event))
+    uid = client.post(f"/api/projects/{NAME}/segments",
+                      json={"start": 22.0, "end": 24.0, "text": "aa"}).json()["uid"]
+    assert client.delete(f"/api/projects/{NAME}/segments/{uid}").status_code == 200
+    assert [(e["type"], e["uid"], e["field"]) for e in seen] == [
+        ("segment", uid, "add"), ("segment", uid, "remove")]
+
+
+# ---------------------------------------------------------------------------
 # jobs
 # ---------------------------------------------------------------------------
 
@@ -1495,7 +1607,8 @@ def test_a_structural_edit_is_guarded_under_the_lock_it_writes_in(outputs):
     import inspect
 
     source = inspect.getsource(app_mod.create_app)
-    for route in ("def split_segment", "def merge_segment", "def patch_segment"):
+    for route in ("def split_segment", "def merge_segment", "def patch_segment",
+                  "def add_segment", "def remove_segment"):
         body = source.split(route, 1)[1].split("\n    @app.", 1)[0]
         assert body.index("with lock_for(name):") < body.index("guard_structural(name)")
 

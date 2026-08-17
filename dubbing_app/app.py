@@ -125,6 +125,22 @@ class MergeBody(Strict):
     uid: str | None = None
 
 
+class AddSegmentBody(Strict):
+    """A span the pipeline missed, claimed by hand.
+
+    `text` is required and not optional-with-a-placeholder: it is what gets
+    translated and spoken, and a segment with nothing to say is the one thing
+    `edit.add` cannot make (see its docstring). `speaker` is optional — omitted,
+    the nearest segment's voice is inherited, which is right for a line dropped
+    out of the middle of a passage and is the only content-free default there is.
+    """
+
+    start: float
+    end: float
+    text: str
+    speaker: str | None = None
+
+
 class UidsBody(Strict):
     uids: list[str] = Field(default_factory=list)
     # One user gesture, two jobs: "Dub these 27" flips the verdicts, then queues a
@@ -541,6 +557,52 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
         for field in fields:
             bus.publish(name, events.segment_event(uid, field, "done"))
         return {"segment": projects.enrich(name, m, seg)}
+
+    @app.post("/api/projects/{name}/segments", status_code=201)
+    def add_segment(name: str, body: AddSegmentBody) -> dict[str, Any]:
+        """Claim an uncovered span of the timeline as a new segment.
+
+        Structural, so it is guarded like a split: it appends to the list and
+        renumbers every `id` after it, which a running stage is iterating over.
+
+        An overlap with a neighbour is a 400, not a clamp. `timeline.place` is
+        the sole authority on where audio goes and it asserts non-overlap, so a
+        request that would break that has to be answered, not quietly turned
+        into a different request the user did not make.
+        """
+        with lock_for(name):
+            guard_structural(name)
+            m = projects.load(name)
+            try:
+                uid = ops.add(m, body.start, body.end, text=body.text,
+                              speaker=body.speaker)
+            except ops.EditError as exc:
+                raise invalid(str(exc)) from exc
+            projects.save(name, m)
+        bus.publish(name, events.segment_event(uid, "add", "done"))
+        return {"uid": uid, "segment": projects.enrich(name, m, ops.find(m, uid))}
+
+    @app.delete("/api/projects/{name}/segments/{uid}")
+    def remove_segment(name: str, uid: str) -> dict[str, Any]:
+        """Take this segment out of the dub entirely.
+
+        Not a keep: a kept segment is still placed and still ducks the bed. A
+        removed one stops existing, and `mix` plays the original vocals in the
+        span nothing claims — see `dubbing.edit.remove`. The deleted record is
+        returned so a client can offer an undo without having kept a copy.
+        """
+        with lock_for(name):
+            guard_structural(name)
+            m = projects.load(name)
+            try:
+                gone = ops.remove(m, uid)
+            except ops.SegmentNotFound as exc:
+                raise not_found(str(exc)) from exc
+            except ops.EditError as exc:
+                raise invalid(str(exc)) from exc
+            projects.save(name, m)
+        bus.publish(name, events.segment_event(uid, "remove", "done"))
+        return {"uid": uid, "removed": gone, "segments": len(m.get("segments") or [])}
 
     @app.post("/api/projects/{name}/segments/{uid}/split")
     def split_segment(name: str, uid: str, body: SplitBody) -> dict[str, Any]:
