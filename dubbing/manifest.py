@@ -25,7 +25,10 @@ STAGE_TAGS = {
     # reruns vs the news register at translate/v31; segments carried both
     # alignment+passthrough and the spoken_target/veto work), so the merged tag
     # moves past every claim rather than picking a side.
-    "transcript": "transcript/v40",
+    "transcript": "transcript/v41",
+    # v41: the main ASR pass gained the no-speech gate the gap pass already had —
+    # a decode read below ASR_MIN_LOGPROB is a hallucination over music, not
+    # speech, so a music-only intro yields no words instead of an invented line.
     # v39: a confident audio-LID witness naming a non-target language outranks
     # the "already target script" clause, exactly as a named span witness does —
     # nameless English lines in a he→de run were kept as "already German".

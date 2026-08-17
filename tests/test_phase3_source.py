@@ -178,6 +178,82 @@ def test_drop_stock_phrases_removes_whisper_credit_hallucinations():
     assert drop(ok) == ok
 
 
+# --------------------------------------------------- the main pass's no-speech gate
+
+class _DecodedSeg:
+    """A faster-whisper segment as the main pass sees it (attributes, not keys)."""
+
+    def __init__(self, start, end, text, avg_logprob, no_speech_prob=0.0, words=()):
+        self.start, self.end, self.text = start, end, text
+        self.avg_logprob, self.no_speech_prob = avg_logprob, no_speech_prob
+        self.words = list(words)
+
+
+class _DecodedWord:
+    def __init__(self, start, end, word, probability):
+        self.start, self.end, self.word, self.probability = start, end, word, probability
+
+
+def test_music_only_intro_yields_no_words():
+    # The real S5E4 reading: 13.1s of theme music, no speech, and the model
+    # answers with a stock pleasantry at avg_logprob -0.843 — while claiming
+    # no_speech_prob 0.0 and per-word probabilities up to 0.831. Only the
+    # reading gives it away, and the phrase itself must stay off _ASR_STOCK
+    # because it is real dialogue elsewhere in the same series.
+    music = _DecodedSeg(3.02, 3.56, " תודה רבה.", -0.843, no_speech_prob=0.0, words=[
+        _DecodedWord(3.02, 3.40, " תודה", 0.477),
+        _DecodedWord(3.40, 3.56, " רבה.", 0.831)])
+    assert list(transcript.speech_only([music])) == []
+    assert transcript._words_of(transcript.speech_only([music])) == []
+    # And the blacklist is not what is doing the work here.
+    assert not transcript._ASR_STOCK.search("תודה רבה")
+
+
+def test_quiet_real_speech_survives_the_no_speech_gate():
+    # The worst-reading real segment of that episode (-0.242, mean word
+    # probability 0.784) sits far above the floor and must come through whole.
+    quiet = _DecodedSeg(189.26, 192.40, " ואין הצלחת האומה", -0.2418, words=[
+        _DecodedWord(189.26, 189.90, " ואין", 0.62),
+        _DecodedWord(189.90, 190.60, " הצלחת", 0.71),
+        _DecodedWord(190.60, 191.30, " האומה", 0.784)])
+    assert list(transcript.speech_only([quiet])) == [quiet]
+    assert [w["text"] for w in transcript._words_of(transcript.speech_only([quiet]))] \
+        == ["ואין", "הצלחת", "האומה"]
+
+
+def test_narration_over_music_survives_and_only_the_music_chunk_goes():
+    # The intro music continues under the first line; read together they score
+    # -0.17, inside the speech population, so a mixed chunk is kept. The
+    # music-only chunk in the same decode is the one that goes.
+    music = _DecodedSeg(3.0, 3.6, " תודה רבה.", -0.843, words=[
+        _DecodedWord(3.0, 3.4, " תודה", 0.48)])
+    narration = _DecodedSeg(13.36, 14.46, " בשנת 2013,", -0.1727, words=[
+        _DecodedWord(13.36, 13.88, " בשנת", 0.996),
+        _DecodedWord(13.88, 14.46, " 2013,", 0.998)])
+    kept = list(transcript.speech_only([music, narration]))
+    assert kept == [narration]
+    assert [w["text"] for w in transcript._words_of(iter(kept))] == ["בשנת", "2013,"]
+
+
+def test_no_speech_gate_uses_the_reading_not_the_no_speech_probability():
+    # no_speech_prob read 0.0000 over both the music and every real segment of
+    # the episode, so a segment is judged on avg_logprob alone: a confident
+    # no-speech claim does not drop a well-read segment, and a zero one does not
+    # rescue a badly read one.
+    claimed = _DecodedSeg(0.0, 1.0, " real words", -0.15, no_speech_prob=0.97)
+    invented = _DecodedSeg(0.0, 1.0, " invented", -0.90, no_speech_prob=0.0)
+    assert list(transcript.speech_only([claimed, invented])) == [claimed]
+    # A segment carrying no reading at all is not second-guessed.
+    unscored = _DecodedSeg(0.0, 1.0, " no reading", None)
+    assert list(transcript.speech_only([unscored])) == [unscored]
+
+
+def test_main_pass_floor_matches_the_gap_pass_it_mirrors():
+    # One judgement, one number: the gap pass's floor and the main pass's are
+    # the same question asked one pass apart.
+    assert transcript.ASR_MIN_LOGPROB == transcript.GAP_MIN_LOGPROB == -0.5
+
+
 def test_lone_word_stub_merges_across_a_dramatic_pause():
     from dubbing import segments as seg_mod
     # "קשרות" sat alone for 0.56s between 0.84s and 1.2s pauses and was dubbed

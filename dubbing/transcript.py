@@ -104,6 +104,25 @@ GAP_PAD = 0.35
 GAP_MIN_LOGPROB = -0.5  # a gap read below this is a hallucination (music sting),
                         # not recovered speech leave the window uncovered instead
 
+# The same question one pass earlier: the MAIN ASR pass reads whatever window it
+# is handed, and over music with no speech in it the model does not decline it
+# invents. The opening 13.1s of theme music on "אויבים" S5E4 came back as
+# " תודה רבה." — a stock pleasantry that cannot be answered with a phrase
+# blacklist, because those same two words are real dialogue elsewhere in this
+# very series (see _ASR_STOCK: only phrases that are *never* legitimate belong
+# there). Nor does Whisper's own no-speech signal help: measured over that
+# episode, `no_speech_prob` read 0.0000 on the invented line and 0.0000 on all
+# 127 real speech segments, and the invented words carried per-word
+# probabilities up to 0.831. The decode's `avg_logprob` is the one reading that
+# separates the two populations, with room to spare:
+#   real speech, 127 segments across the episode ...  -0.079 … -0.242
+#   the invented line over the music intro .........  -0.843
+#   music the gap pass already rejects .............  -0.55 … -1.01
+# So the floor goes between them, at the value the gap pass was calibrated to
+# for the same judgement. Narration over music is unaffected: the same intro
+# music under speech reads -0.17, well inside the speech population.
+ASR_MIN_LOGPROB = -0.5
+
 # Caption chrome: sound tags and speaker arrows carry no speech.
 _CHROME = re.compile(r"[\[\(](?:[^\]\)]{0,40})[\]\)]")
 _ARROWS = re.compile(r">>+")
@@ -473,13 +492,37 @@ def join_split_marks(words: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def speech_only(segments, *, min_logprob: float = ASR_MIN_LOGPROB):
+    """Yield the decoded segments that read like speech, dropping the rest.
+
+    `vad_filter=True` is not this gate: Silero passes the music intro as speech,
+    and the model then invents a line to fill it. The reading is what tells them
+    apart (see ASR_MIN_LOGPROB for the numbers).
+
+    A reading is the decode chunk's, shared by every segment Whisper splits out
+    of it, so rejecting one rejects the chunk and that is the intent: a chunk
+    that reads this badly is not one whose confident-looking sub-segments can be
+    believed. Lazy on purpose, so `_words_of` can still stop at its limit
+    without forcing the rest of the file through the decoder.
+    """
+    for seg in segments:
+        lp = getattr(seg, "avg_logprob", None)
+        if lp is not None and float(lp) < min_logprob:
+            text = (getattr(seg, "text", "") or "").strip()[:60]
+            print(f"  transcript: {float(getattr(seg, 'start', 0.0)):.1f}-"
+                  f"{float(getattr(seg, 'end', 0.0)):.1f}s read at logprob "
+                  f"{float(lp):.2f} discarded as non-speech: {text}", file=sys.stderr)
+            continue
+        yield seg
+
+
 def words_from_whisper(model, source_wav: Path, lang: str, *,
                        limit: float | None = None) -> list[dict[str, Any]]:
     segments, _info = model.transcribe(
         str(source_wav), language=lang, beam_size=5, word_timestamps=True,
         condition_on_previous_text=False, vad_filter=True,
     )
-    return _words_of(segments, limit=limit)
+    return _words_of(speech_only(segments), limit=limit)
 
 
 def load_target_asr(tgt: str = "en"):
