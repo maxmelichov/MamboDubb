@@ -23,6 +23,7 @@ import type {
   Health,
   Job,
   JobKind,
+  NewSegment,
   Peaks,
   PeaksFile,
   ProjectDetail,
@@ -911,6 +912,89 @@ export function mergeSegments(_name: string, uid: string, uidB: string): Promise
   store.segments.splice(index, 2, merged);
   renumber();
   return delay(store.segments.map(enrich));
+}
+
+/**
+ * `POST /segments` claim an uncovered span.
+ *
+ * Every refusal the server makes is made here too, with the same code, because
+ * this is the only implementation of the contract the smoke test runs against:
+ * no text, a span shorter than the pipeline's `MIN_SEG_SEC`, and above all an
+ * overlap, which the server *refuses* rather than clamping (`timeline.place` is
+ * the sole authority on where audio goes). A fixture that quietly clamped would
+ * make the one error the composer has to show unreachable in demo mode.
+ */
+export function addSegment(_name: string, body: NewSegment): Promise<Segment[]> {
+  const text = body.text.trim();
+  if (!text) throw new ApiError("invalid_request", "a new segment needs its text", 400);
+  if (body.end - body.start < MIN_SEG_SEC) {
+    throw new ApiError(
+      "invalid_request",
+      `a segment shorter than ${MIN_SEG_SEC}s cannot be synthesized reliably`,
+      400,
+    );
+  }
+  const clash = store.segments.find((s) => s.start < body.end && s.end > body.start);
+  if (clash) {
+    throw new ApiError(
+      "invalid_request",
+      `[${body.start}, ${body.end}] overlaps segment ${clash.id}`,
+      400,
+    );
+  }
+  const nearest = [...store.segments].sort(
+    (a, b) => gapTo(a, body) - gapTo(b, body),
+  )[0];
+  const seg = {
+    ...blankSegment(),
+    uid: `added-${Math.round(body.start * 1000)}`,
+    start: body.start,
+    end: body.end,
+    speaker: body.speaker || nearest?.speaker || "SPEAKER_00",
+    text,
+    // Exactly what `edit.add` writes: the words are the user's, and so is the
+    // verdict that this span is a dub rather than a keep waiting to happen.
+    locked: { text: true },
+    passthrough: false,
+  } as Segment;
+  store.segments.push(seg);
+  renumber();
+  return delay(store.segments.map(enrich));
+}
+
+/** `DELETE /segments/{uid}` the record goes; the span plays the original. */
+export function removeSegment(_name: string, uid: string): Promise<Segment[]> {
+  const seg = find(uid);
+  store.segments.splice(store.segments.indexOf(seg), 1);
+  renumber();
+  return delay(store.segments.map(enrich));
+}
+
+/** `dubbing.segments.MIN_SEG_SEC` restated, because the check is server-side. */
+const MIN_SEG_SEC = 0.9;
+
+const gapTo = (seg: Segment, span: { start: number; end: number }): number =>
+  Math.max(seg.start - span.end, span.start - seg.end, 0);
+
+/** A segment with nothing generated for it, which is what a new one is. */
+function blankSegment(): Segment {
+  const template = store.segments[0];
+  return {
+    ...template,
+    keep: false,
+    keep_reason: null,
+    text_en: null,
+    text_mid: null,
+    tts: null,
+    place: null,
+    verify: null,
+    tts_opts: null,
+    locked: null,
+    src_lang: null,
+    tgt_lang: null,
+    detected_lang: null,
+    passthrough: null,
+  };
 }
 
 /** `id` is positional and renumbers on every structural edit; `uid` never does. */

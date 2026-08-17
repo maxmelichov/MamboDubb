@@ -177,6 +177,8 @@ set_langs(m, uid, *, src_lang=None, tgt_lang=None) -> dict
 set_tts_opts(m, uid, **opts) -> dict              # None removes an option
 split(m, uid, at: float) -> tuple[str, str]       # -> two new uids
 merge(m, uid_a, uid_b) -> str                     # adjacent, same speaker -> new uid
+add(m, start, end, *, text, speaker=None) -> str  # claim a free span -> new uid
+remove(m, uid) -> dict                            # take a segment out; returns it
 invalidate(m, uid, *, stages: set[str]) -> set[str]    # {"translate","tts","timeline"}
 enrich(m, workdir, uids=None) -> list[dict]       # segments + the clip's verify verdict
 
@@ -204,6 +206,30 @@ Rules the setters all follow, so the server does not have to think about them:
   named; a UI holding it must be told, not shown different audio. Every word survives
   (`split` cuts at the word boundary nearest the time and refuses a one-word segment),
   the list stays sorted and non-overlapping, and `id` is renumbered.
+* **`add`/`remove` are the other two structural edits, and they are not each other's
+  inverse of `set_keep`.** `add` claims an *uncovered* span: an overlap with a neighbour
+  is refused, never clamped (`timeline.place` asserts non-overlap, so a silently moved
+  span would be an edit the user did not make), the span must be at least
+  `segments.MIN_SEG_SEC` and inside the media, and the text is required — it is what gets
+  translated and spoken. It writes `locked.text` (the words are the user's, typed because
+  the ASR had none) and `passthrough: false` (`keep.user_wants_dub`, so the first
+  translation or synthesis failure leaves the line visibly unfinished instead of answering
+  with the original audio the user was replacing), and inherits the nearest segment's
+  speaker unless one is named. `remove` deletes the record outright — **it does not mute
+  the span**: `mix` adds the original vocals stem at unity gain into every span no
+  placement claims, so a removed span sounds exactly like a passage the pipeline never
+  detected. That is the honest reading of "take it out of the dub" and the only one
+  compatible with *never silent*; "play the original here, deliberately" is `set_keep` /
+  `passthrough`, which keeps the segment, places it, and ducks the bed to zero under it.
+* **What each structural edit reopens.** `split`, `merge` and `add` reopen from
+  `translate` — each leaves a segment with nothing generated for it. `remove` reopens from
+  `timeline`: no survivor's translation or clip was made from the segment that went, but
+  the span is free now and placement is laid out in one forward pass. None of them reopens
+  `segments`: re-running that stage rebuilds the list from the words and undoes the edit.
+  Which is also the standing caveat — a structural edit is honoured from `translate`
+  onward, and a genuine re-segmentation (a changed `--transcript`, a new duration cap)
+  loses it, exactly as it has always lost a split. Only `passthrough` survives that, by
+  time (`segments.carry_passthrough`).
 * **Targeted beats locked, global does not.** `retranslate(uids)` / `resynthesize(uids)` is
   the user pointing at *this* segment, so it replaces a locked value and leaves it unlocked
   (machine work again). `respect_locked=True` for a bulk redo; `rebuild` always respects.
@@ -262,7 +288,9 @@ JSON in, JSON out. Errors are uniform, after MamboRambo's `write_error`:
 | PATCH | `/api/projects/{name}` | `{context?, genre?, register?}` → change the run's options (see below); 409 while a job runs |
 | POST | `/api/projects/{name}/run` | run it again which on a stopped run is a **resume** (see below); 409 while a job runs |
 | GET | `/api/projects/{name}/segments` | the segment list, enriched (see below) |
+| POST | `/api/projects/{name}/segments` | `{start, end, text, speaker?}` → claim an uncovered span; 201 `{uid, segment}` |
 | PATCH | `/api/projects/{name}/segments/{uid}` | any no-model edit; body mirrors the setters |
+| DELETE | `/api/projects/{name}/segments/{uid}` | take the segment out of the dub; `{uid, removed, segments}` |
 | POST | `/api/projects/{name}/segments/{uid}/split` `/merge` | structural edits |
 | POST | `/api/projects/{name}/retranslate` | `{uids:[...]}` → job |
 | POST | `/api/projects/{name}/resynthesize` | `{uids:[...]}` → job |
@@ -580,8 +608,12 @@ Two screens:
 
    The **selection panel** holds what is true *about* a line and no copy of the line
    itself: the dub/keep verdict, the two model actions with their prices, then four shut
-   `Disclosure` shelves Voice & speaker, Verification, Timing & languages, Advanced
-   (locks, and the `PATCH {locked:{}}` that releases them). The **timeline** stays a map:
+   `Disclosure` shelves Voice & speaker, Verification, Timing & languages (the bounds
+   as two number inputs, split at the playhead, merge with either neighbour, and remove),
+   Advanced (locks, and the `PATCH {locked:{}}` that releases them). Adding a segment is
+   offered where the absence is visible the uncovered-audio list in the rail, whose
+   spans are exactly "speech nobody claimed" not as a floating "new segment" button
+   with no span to attach to. The **timeline** stays a map:
    two lanes (source vs. output the drift picture), unclaimed hatch, click to seek or
    select, drag to scrub, zoom and split at its right edge. No dragging clips and no trim
    handles, ever: `timeline.place()` is the sole authority on where audio goes.

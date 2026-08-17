@@ -16,6 +16,7 @@ import { isPending } from "./types";
 import type {
   Job,
   LogEvent,
+  NewSegment,
   ProjectDetail,
   Segment,
   SegmentPatch,
@@ -70,6 +71,14 @@ export type ProjectActions = {
   patch: (uid: string, patch: SegmentPatch) => Promise<Segment | null>;
   split: (uid: string, at: number) => Promise<void>;
   merge: (uid: string, uidB: string) => Promise<void>;
+  /** Claim an uncovered span as a new segment. Overlaps come back as an error. */
+  add: (segment: NewSegment) => Promise<void>;
+  /**
+   * Take a segment out of the dub. The selection goes with it: a panel pointing
+   * at a uid the server has just retired is the same bug `split` avoids by
+   * minting new ones.
+   */
+  remove: (uid: string) => Promise<void>;
   retranslate: (uids: string[], batch?: string) => Promise<void>;
   resynthesize: (uids: string[], batch?: string) => Promise<void>;
   render: () => Promise<void>;
@@ -329,6 +338,22 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
     [name, structural],
   );
 
+  const add = useCallback(
+    (segment: NewSegment) => structural(() => api.addSegment(name, segment)),
+    [name, structural],
+  );
+
+  const remove = useCallback(
+    async (uid: string) => {
+      await structural(() => api.removeSegment(name, uid));
+      // Whether or not the call succeeded, the panel must not be left pointing
+      // at a uid that no longer names anything. `setSelectedUid` is a no-op when
+      // something else was selected.
+      setSelectedUid((current) => (current === uid ? null : current));
+    },
+    [name, structural],
+  );
+
   /*
    * The job the server just accepted is the record that the work exists the
    * rows it names start pulsing because it is in `jobs`, not because a separate
@@ -352,6 +377,8 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
       patch,
       split,
       merge,
+      add,
+      remove,
       retranslate: (uids, batch) => submit(() => api.retranslate(name, uids, batch)),
       resynthesize: (uids, batch) => submit(() => api.resynthesize(name, uids, batch)),
       render: () => submit(() => api.render(name)),
@@ -384,7 +411,7 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
       reload: load,
       dismissError: () => setError(null),
     }),
-    [load, merge, name, patch, split, submit],
+    [add, load, merge, name, patch, remove, split, submit],
   );
 
   /*

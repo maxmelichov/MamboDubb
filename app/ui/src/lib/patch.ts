@@ -18,7 +18,7 @@
  *   text_en          text_mid, tts, place           text_en      tts
  *   keep             text_en, text_mid, tts, place  keep         tts
  *   speaker          tts, place                     speaker      tts
- *   start / end      tts, place                     bounds       tts
+ *   start / end      tts, place                                  tts
  *   src/tgt_lang     text_en, text_mid, tts, place             text_en
  *   tts_opts         tts, place                                tts
  *   locked                                        (replaces every lock)
@@ -122,7 +122,12 @@ export function applyPatch(seg: Segment, patch: SegmentPatch): Segment {
       drop.tts = true;
       drop.place = true;
     }
-    locked.bounds = true;
+    // No lock is stamped, and this used to stamp one. `bounds` is not in
+    // `manifest.LOCK_FIELDS` and `edit.set_locked` rejects it, because nothing
+    // could honour it: re-segmentation rebuilds every span from the words. So
+    // the prediction claimed a lock the server's own answer never carried, and
+    // the Advanced shelf listed "bounds" as hand-edited for the half-second
+    // before the PATCH came back.
   }
   if (patch.src_lang != null || patch.tgt_lang != null) {
     let changed = false;
