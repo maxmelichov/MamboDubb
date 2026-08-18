@@ -1,7 +1,7 @@
 # Plan: Linux/CUDA port, 10-min bug-hunt run, and multilingual dubbing
 
 Persistent tracker each phase is long-running. Update the checkboxes as work lands.
-Owner: Claude + maxm. Started 2026-08-07.
+Owner: maxm. Started 2026-08-07.
 
 ## Goal
 
