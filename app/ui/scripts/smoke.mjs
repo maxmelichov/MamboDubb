@@ -421,6 +421,12 @@ check(
   "Hebrew is a dub target, so a same-language pair is expressible",
   optionsOf(dubInto).includes("he"),
 );
+check(
+  // The ASR reads these five and the translator has always taken them; only the
+  // picker was short, so a Japanese video could be started only from the CLI.
+  "the five languages the source list used to be missing are offerable",
+  ["ja", "zh", "ko", "it", "pt"].every((code) => optionsOf(srcLangSelect).includes(code)),
+);
 
 /*
  * Where the transcript comes from.
@@ -2434,6 +2440,262 @@ check(
   "…and the translation made under the old pair goes with it",
   rowFor(23).textContent.includes("not translated yet"),
 );
+
+/*
+ * The per-segment pair is two lists too.
+ *
+ * It was one shared array, which is a list that cannot say the true thing: it
+ * offered Arabic as a line's dub target, and a line whose target the voice
+ * cannot speak is a tts stage that can only fail — the same asymmetry the import
+ * screen already keeps.
+ */
+const overrideOptions = (label) =>
+  [...timing.querySelector(`select[aria-label="${label}"]`).options].map((o) => o.value);
+check(
+  "the line's spoken list reads what the import screen's does",
+  ["ar", "ja", "zh", "ko", "it", "pt"].every((code) =>
+    overrideOptions("Spoken in this line").includes(code),
+  ),
+);
+check(
+  "…and the line's dub target refuses the one voice cannot speak",
+  !overrideOptions("Translate this line into").includes("ar") &&
+    overrideOptions("Translate this line into").includes("ja"),
+);
+check(
+  "…both keeping inherit, the only value that clears an override",
+  overrideOptions("Spoken in this line")[0] === "" &&
+    overrideOptions("Translate this line into")[0] === "",
+);
+
+/*
+ * Claiming a span, and the sentence the composer must not eat.
+ *
+ * `POST /segments` refuses an overlap outright rather than clamping it, and the
+ * composer cleared its textarea in the same gesture that sent the request: the
+ * refusal took the typed line with it and left an error bar asking for a span
+ * with nothing to put in it. The other half is the acknowledgement a segment
+ * that lands mid-list, unselected and unscrolled, is announced by nothing but a
+ * count on a chip.
+ *
+ * Adding lives on the rail's run summary, which is up exactly when nothing is
+ * selected, so the run is re-opened rather than deselected there is no key
+ * for "select nothing" and there should not be one.
+ */
+await go("/", 300);
+await go("/editor/kan11_v3", 700);
+const addTrigger = () =>
+  [...document.querySelectorAll("button")].find((b) =>
+    /^Add a segment at /.test(b.getAttribute("aria-label") ?? ""),
+  );
+check("an uncovered span can be claimed from the rail", addTrigger() != null);
+clickIt(addTrigger());
+await settle(150);
+const composer = () => document.querySelector('[role="dialog"][aria-label="New segment"]');
+const composerText = () => composer()?.querySelector("textarea") ?? null;
+const composerEnd = () => composer().querySelectorAll("input")[1];
+const addButton = () =>
+  [...composer().querySelectorAll("button")].find((b) => /Add segment/.test(b.textContent));
+check("…in a composer, because a segment needs words", composerText() != null);
+
+const SPOKEN = "the line the transcript never claimed";
+setValue(composerText(), SPOKEN);
+// The gap's own bounds are free; stretching the end into the next line is the
+// one refusal the server exists to make here.
+setInput(composerEnd(), "46.0");
+await settle(120);
+const rowsAtStart = rows().length;
+clickIt(addButton());
+await settle(400);
+check(
+  "an overlapping span is refused, in the server's own words",
+  /overlaps segment \d+/.test(document.querySelector('[role="alert"]')?.textContent ?? ""),
+);
+check("…adding nothing", rows().length === rowsAtStart);
+check("…and leaving the typed line where it was typed", composerText().value === SPOKEN);
+
+// The same words over a span that is actually free are taken, and the screen
+// answers with the line rather than with an arithmetic difference on a chip.
+setInput(composerEnd(), "44.80");
+await settle(120);
+const scrollsAt = scrolls.length;
+clickIt(addButton());
+await settle(400);
+const addedRow = () => rows().find((r) => r.textContent.includes(SPOKEN));
+check("a free span becomes a row", rows().length === rowsAtStart + 1);
+check("…carrying the words that were typed", addedRow() != null);
+check(
+  "…selected, so the rail is about the line that was just made",
+  addedRow().getAttribute("aria-selected") === "true",
+);
+check(
+  "…and scrolled to, rather than left somewhere in two hundred rows",
+  scrolls.slice(scrollsAt).some((s) => s.uid === addedRow().getAttribute("data-uid")),
+);
+check("…which is what closes the composer", composer() == null);
+
+/*
+ * A dub-wanted line whose mix plays the original.
+ *
+ * `tts` falls back to the keep slice rather than leaving a span silent, so the
+ * verdict says dub and the audio is the source. `media.fallback` is the server's
+ * word for exactly that (`Projects.enrich`, `keep_`/`fit_keep_`), and the panel
+ * used to promise "The dubbed voice replaces the source audio" over a line where
+ * no dubbed voice exists.
+ */
+const fallbackRow = rows().find((r) => /No dub yet/.test(clip(r, "B").getAttribute("title") ?? ""));
+check("the run carries a line whose dub fell back to the original", fallbackRow != null);
+check("…with a dead Dub side, because a fallback is not a dub", clip(fallbackRow, "B").disabled);
+clickIt(fallbackRow.querySelector('[aria-label^="Select segment"]'));
+await settle(250);
+const panelText = () => document.querySelector("aside").textContent;
+check("…and a panel that says the mix plays the original here", /No dub yet/.test(panelText()));
+check(
+  "…never that a dubbed voice replaces a source audio it never replaced",
+  !/The dubbed voice replaces the source audio/.test(panelText()),
+);
+
+/*
+ * Orig is a window of the source track, so the window has to be inside the file.
+ *
+ * The fixture served a tone as long as the *segment* under a window in
+ * whole-track coordinates two coordinate systems in one pair of fields. The
+ * seek then landed past the end of the blob and playback ended on the spot, so
+ * every Orig button in demo mode was dead while the live server's were fine.
+ */
+const toneDur = (url) =>
+  Number(new URLSearchParams(url.split("#")[0].slice("fixture:tone?".length)).get("dur"));
+check(
+  "every Orig window lies inside the track it is a window of",
+  rows().every((r) => {
+    const button = clip(r, "A");
+    const span = JSON.parse(button.getAttribute("data-window") || "null");
+    return span != null && span[1] <= toneDur(button.getAttribute("data-url")) + 0.001;
+  }),
+);
+press(clip(rowFor(4), "A"));
+await settle(150);
+check("…so pressing Orig sounds, and stays sounding", clip(rowFor(4), "A").getAttribute("aria-pressed") === "true");
+press(clip(rowFor(4), "A"));
+await settle(120);
+
+/*
+ * The pipeline's own loss, settled by hand.
+ *
+ * A `tts_failed` keep is stored `keep=true`, so "Keep original" read as the
+ * verdict already in force and did nothing at all: the guard returned on the
+ * boolean, the control lit neither half, and the line stayed red whatever the
+ * reviewer pressed. The verdict is (keep, keep_reason), and pressing Keep here
+ * is a real change the line becomes the user's own keep, which a re-run
+ * honours instead of retrying.
+ */
+clickIt(chip("Failed"));
+await settle(250);
+const rowByUid = (uid) => rows().find((r) => r.getAttribute("data-uid") === uid);
+const lost = rows().find((r) => /voice failed/.test(r.textContent));
+if (!lost) throw new Error("smoke: no tts_failed row");
+const lostUid = lost.getAttribute("data-uid");
+const lostId = Number(
+  lost.querySelector('[aria-label^="Select segment"]').getAttribute("aria-label").match(/\d+/)[0],
+);
+clickIt(lost.querySelector('[aria-label^="More actions"]'));
+await settle(150);
+const menuLabels = [...document.querySelectorAll('[role="menu"] button')].map((b) => b.textContent);
+check(
+  "a failed line's row menu offers to settle it as a keep",
+  menuLabels.includes("Keep original audio"),
+);
+check(
+  "…beside the flip, which on a keep=true line can only offer the other direction",
+  menuLabels.includes("Dub this line"),
+);
+clickIt(rowByUid(lostUid).querySelector('[aria-label^="More actions"]'));
+await settle(200);
+
+const choice = (label) =>
+  [...document.querySelectorAll("aside button")].find((b) => b.textContent.includes(label));
+check(
+  "neither half is lit while the keep is the pipeline's and not the reviewer's",
+  choice("Dub it").getAttribute("aria-pressed") === "false" &&
+    choice("Keep original").getAttribute("aria-pressed") === "false",
+);
+const sinceSettle = calls().log.length;
+clickIt(choice("Keep original"));
+await settle(350);
+check(
+  "pressing Keep on a failed line is heard, in one PATCH and no job",
+  calls().log.slice(sinceSettle).join() === "patch",
+);
+check(
+  "…and the control lights the verdict it just settled",
+  choice("Keep original").getAttribute("aria-pressed") === "true",
+);
+check("…so the Failed chip stops counting it", rows().length === 1);
+clickIt(chip("Failed"));
+await settle(250);
+check(
+  "…and the row is a keep the reviewer chose, not the failure it was",
+  /you chose this/.test(rowByUid(lostUid).textContent) &&
+    !/voice failed/.test(rowByUid(lostUid).textContent),
+);
+
+/*
+ * …and the undo it leaves behind is about a *line*, not about a number.
+ *
+ * Every id is positional and renumbers on any structural edit, and the strip
+ * was rendered from the id captured at the moment of the flip so removing a
+ * line above it left a toast offering to undo a segment that is now somebody
+ * else's number entirely.
+ */
+const toast = () => document.querySelector("[data-undo-toast]");
+check(
+  "settling a failed line leaves the same undo behind, naming the line",
+  new RegExp(`Kept #${lostId}\\b`).test(toast()?.textContent ?? ""),
+);
+clickIt(addedRow().querySelector('[aria-label^="Select segment"]'));
+await settle(250);
+const timingShelf = [...document.querySelectorAll("aside details")].find((d) =>
+  d.querySelector("summary").textContent.includes("Timing & languages"),
+);
+if (!timingShelf.open) clickIt(timingShelf.querySelector("summary"));
+await settle(150);
+clickIt([...timingShelf.querySelectorAll("button")].find((b) => /Remove segment/.test(b.textContent)));
+await settle(150);
+clickIt(dialogButton("Remove"));
+await settle(400);
+check("a claimed span can be given back", addedRow() == null);
+check("…and the script is the length it was", rows().length === rowsAtStart);
+check(
+  "the undo names the line's live id, not the one it had when it was kept",
+  new RegExp(`Kept #${lostId - 1}\\b`).test(toast()?.textContent ?? ""),
+);
+
+/*
+ * Bounds move together, and an empty field is not a number.
+ *
+ * `Number("")` is 0 and 0 is finite, so clearing Start left Move enabled over
+ * `start: 0` a span reaching back to the top of the video, across every line
+ * in between. `edit.set_bounds` refuses it; the button must not offer it.
+ */
+clickIt(rowFor(5).querySelector('[aria-label^="Select segment"]'));
+await settle(250);
+const boundsShelf = [...document.querySelectorAll("aside details")].find((d) =>
+  d.querySelector("summary").textContent.includes("Timing & languages"),
+);
+if (!boundsShelf.open) clickIt(boundsShelf.querySelector("summary"));
+await settle(150);
+const moveButton = () =>
+  [...boundsShelf.querySelectorAll("button")].find((b) => b.textContent.trim() === "Move");
+const startField = boundsShelf.querySelectorAll("input")[0];
+check("the span is editable as two numbers", startField != null && moveButton() != null);
+const patchesAtMove = calls().patch;
+setInput(startField, "");
+await settle(150);
+check("an emptied bound is not a move to 0:00", moveButton().disabled === true);
+setInput(startField, "26.00");
+await settle(150);
+check("…while a real number still moves it", moveButton().disabled === false);
+check("…and nothing was sent in between", calls().patch === patchesAtMove);
 
 /*
  * Play before render.

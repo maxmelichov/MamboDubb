@@ -107,6 +107,7 @@ export function ScriptPane({
   onCommit,
   onPlay,
   onToggleKeep,
+  onSettleKeep,
   onRetranslateMany,
   onResynthesizeMany,
   onFixMany,
@@ -131,6 +132,7 @@ export function ScriptPane({
   onCommit: (uid: string, field: "text" | "text_en", value: string) => void;
   onPlay: (url: string | null) => void;
   onToggleKeep: (seg: Segment) => void;
+  onSettleKeep: (seg: Segment) => void;
   onRetranslateMany: (uids: string[]) => void;
   onResynthesizeMany: (uids: string[]) => void;
   /** Translate whatever has no line, then voice all of them in that order. */
@@ -597,6 +599,7 @@ export function ScriptPane({
               onCommit={onCommit}
               onPlay={onPlay}
               onToggleKeep={onToggleKeep}
+              onSettleKeep={onSettleKeep}
             />
           ))
         )}

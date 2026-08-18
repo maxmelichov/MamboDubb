@@ -54,6 +54,8 @@ export type ProjectState = {
    * does and survives reconnecting, because the jobs do.
    */
   pendingUids: string[];
+  /** True once this session has made any edit (patch or structural). */
+  edited: boolean;
   log: LogEvent[];
 };
 
@@ -71,8 +73,16 @@ export type ProjectActions = {
   patch: (uid: string, patch: SegmentPatch) => Promise<Segment | null>;
   split: (uid: string, at: number) => Promise<void>;
   merge: (uid: string, uidB: string) => Promise<void>;
-  /** Claim an uncovered span as a new segment. Overlaps come back as an error. */
-  add: (segment: NewSegment) => Promise<void>;
+  /**
+   * Claim an uncovered span as a new segment. Overlaps come back as an error.
+   *
+   * Resolves to whether the server took it. The boolean is not a second error
+   * channel the error bar still carries every refusal it is the one thing
+   * the caller cannot read off `segments`, because a refused add leaves the list
+   * exactly as it was, and the composer must not clear the sentence the user
+   * typed until there is a segment holding it.
+   */
+  add: (segment: NewSegment) => Promise<boolean>;
   /**
    * Take a segment out of the dub. The selection goes with it: a panel pointing
    * at a uid the server has just retired is the same bug `split` avoids by
@@ -107,6 +117,15 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [jobs, setJobs] = useState<Job[]>([]);
+  // Has *this session* edited anything? A run mixed before the render stamp
+  // existed is `stale` with `changed=0` forever; the header must not nag on it,
+  // but it also must not stay silent after a real edit. This is the tiebreak.
+  const [edited, setEdited] = useState(false);
+  // Mirror for reads inside stable callbacks (see `patch`'s rollback).
+  const segmentsRef = useRef<Segment[]>(segments);
+  useEffect(() => {
+    segmentsRef.current = segments;
+  }, [segments]);
   const [stage, setStage] = useState<StageProgress | null>(null);
   const [log, setLog] = useState<LogEvent[]>([]);
 
@@ -296,50 +315,91 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
        * row shows in between and what it showed before was a ◆ Dubbed badge
        * over audio of a sentence the user had just replaced.
        */
-      const before = segments;
+      /*
+       * Rollback is per-uid, never the whole array. In a bulk flip this
+       * callback closes over an array from before the loop started, so
+       * restoring it wholesale visually undid every *successful* PATCH made
+       * before the one that failed. The one record this call touched is the
+       * only thing a failure may revert — and reading it through a ref keeps
+       * `segments` out of the deps, so `actions` (and every row callback fed
+       * from it) keeps its identity across segment updates.
+       */
+      const before = segmentsRef.current.find((seg) => seg.uid === uid);
       setSegments((current) =>
         current.map((seg) => (seg.uid === uid ? applyPatch(seg, body) : seg)),
       );
       try {
         const updated = await api.patchSegment(name, uid, body);
         setSegments((current) => current.map((seg) => (seg.uid === uid ? updated : seg)));
+        setEdited(true);
         refreshProject();
         return updated;
       } catch (err) {
-        setSegments(before);
+        setSegments((current) =>
+          current.map((seg) => (seg.uid === uid && before ? before : seg)),
+        );
         setError(describe(err));
         return null;
       }
     },
-    [name, refreshProject, segments],
+    [name, refreshProject],
   );
 
+  /**
+   * Returns whether the edit landed; the error bar still gets every failure.
+   *
+   * `land` names the line to select afterwards. Every one of these edits leaves
+   * the reviewer looking at a list that has moved under them, and the selection
+   * was simply dropped: a split collapsed the inspector back to the run board,
+   * and an added segment arrived mid-list, unselected and unscrolled the only
+   * sign it had worked being the count on the All chip.
+   */
   const structural = useCallback(
-    async (run: () => Promise<Segment[]>) => {
+    async (
+      run: () => Promise<Segment[]>,
+      land?: (before: Segment[], after: Segment[]) => string | null,
+    ): Promise<boolean> => {
+      const before = segmentsRef.current;
       try {
-        setSegments(await run());
+        const after = await run();
+        setSegments(after);
         // A split or a merge is the largest edit there is it mints new uids,
         // so every count the render was made against moves.
+        setEdited(true);
         refreshProject();
+        const uid = land?.(before, after) ?? null;
+        if (uid) setSelectedUid(uid);
+        return true;
       } catch (err) {
         setError(describe(err));
+        return false;
       }
     },
     [refreshProject],
   );
 
   const split = useCallback(
-    (uid: string, at: number) => structural(() => api.splitSegment(name, uid, at)),
+    async (uid: string, at: number) => {
+      await structural(
+        () => api.splitSegment(name, uid, at),
+        (before, after) => landed(before, after, uid),
+      );
+    },
     [name, structural],
   );
 
   const merge = useCallback(
-    (uid: string, uidB: string) => structural(() => api.mergeSegments(name, uid, uidB)),
+    async (uid: string, uidB: string) => {
+      await structural(
+        () => api.mergeSegments(name, uid, uidB),
+        (before, after) => landed(before, after, uid),
+      );
+    },
     [name, structural],
   );
 
   const add = useCallback(
-    (segment: NewSegment) => structural(() => api.addSegment(name, segment)),
+    (segment: NewSegment) => structural(() => api.addSegment(name, segment), landed),
     [name, structural],
   );
 
@@ -442,10 +502,28 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
     jobs,
     stage,
     pendingUids,
+    edited,
     log,
   };
 
   return [state, actions];
+}
+
+/**
+ * Which line a structural edit leaves the reviewer on.
+ *
+ * Which uid the server mints is the server's business, so the rule is
+ * positional: the record that was not in the list before, earliest first a
+ * split mints two halves and the first is the one being read. `survivor` is the
+ * fallback for an edit that mints nothing, as a merge keeping the first line's
+ * uid does; a uid the answer no longer carries selects nothing rather than
+ * pointing the panel at a retired record.
+ */
+function landed(before: Segment[], after: Segment[], survivor?: string): string | null {
+  const had = new Set(before.map((seg) => seg.uid));
+  const minted = after.filter((seg) => !had.has(seg.uid));
+  if (minted.length > 0) return minted.reduce((a, b) => (a.start <= b.start ? a : b)).uid;
+  return survivor && after.some((seg) => seg.uid === survivor) ? survivor : null;
 }
 
 export function activeJob(jobs: Job[]): Job | null {

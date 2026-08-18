@@ -29,6 +29,7 @@ import re
 from num2words import num2words
 
 from . import script as _script
+from .script import script_for
 
 
 def _spaceless(ch: str) -> bool:
@@ -55,12 +56,10 @@ _PERCENT = {
     "ja": "パーセント",
     "ko": "퍼센트",
 }
-
-# Chinese reads a percentage as a prefix: 百分之六十五 ("65 of a hundred parts").
+# Chinese writes the percent word *before* the number: 20% is 百分之二十, never
+# 二十百分之. num2words has no zh, so the number itself stays digits and the
+# prefix lands on them (百分之20) — the voice reads digits natively.
 _PERCENT_PREFIX = {"zh": "百分之"}
-
-# Scripts written without spaces glue the percent word straight onto the number.
-_PERCENT_NO_SPACE = {"ja", "zh"}
 
 
 def _percent_words(number_words: str, lang: str) -> str:
@@ -68,8 +67,10 @@ def _percent_words(number_words: str, lang: str) -> str:
     prefix = _PERCENT_PREFIX.get(lang)
     if prefix is not None:
         return prefix + number_words
-    sep = "" if lang in _PERCENT_NO_SPACE else " "
+    # No space in a script that has none between its words (二十パーセント).
+    sep = "" if script_for(lang) in ("cjk", "hangul") else " "
     return number_words + sep + _PERCENT.get(lang, _PERCENT["en"])
+
 
 # A number token: thousands-separated integer, decimal, or plain integer —
 # optionally trailed by "%", a short attached non-Latin grammatical suffix

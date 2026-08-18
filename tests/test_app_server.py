@@ -179,11 +179,44 @@ def test_create_project_refuses_an_option_the_cli_cannot_take(client, outputs):
     assert sorted(p.name for p in outputs.iterdir()) == [NAME]
 
 
+def test_create_project_refuses_a_language_the_pipeline_cannot_dub(client, outputs):
+    """A bad language code is worse than a bad genre: `script.script_for` answers
+    "latin" for anything it does not know, so a project created with "jp" would
+    not fail — it would run to the end with every script-derived verdict (keep vs
+    dub, gloss matching, source-leak detection) quietly built on a lie."""
+    url = "https://youtu.be/abc"
+    for field, bad in (("src_lang", "jp"),          # a typo for ja
+                       ("src_lang", "klingon"),
+                       ("tgt_lang", "xx"),
+                       ("tgt_lang", "ar")):         # Arabic reads, but has no voice
+        r = client.post("/api/projects", json={"source": url, field: bad})
+        assert r.status_code == 400, (field, bad)
+        env = envelope_of(r)
+        assert env["code"] == "invalid_request" and field in env["message"]
+    assert sorted(p.name for p in outputs.iterdir()) == [NAME]
+
+
+def test_create_project_accepts_the_languages_that_opened(client, outputs, fake):
+    from dubbing import cli
+
+    body = {"source": "https://youtu.be/abc", "src_lang": "ja",
+            "tgt_lang": "pt", "name": "japt"}
+    r = client.post("/api/projects", json=body)
+    assert r.status_code == 201
+    assert wait_until(lambda: fake.calls, 5.0)
+    args = cli.parse_args(ops.full_run_argv(Path(fake.calls[0][2]["workdir"]),
+                                            fake.calls[0][2]["source"]))
+    assert (args.src, args.tgt) == ("ja", "pt")
+    assert manifest.load(outputs / "japt")["source"]["src_lang"] == "ja"
+
+
 @pytest.mark.parametrize("flag,dest,literal", [
     ("--genre", "genre", app_mod.Genre),
     ("--register", "register", app_mod.Register),
     ("--transcript", "transcript", app_mod.Transcript),
     ("--tts-model", "tts_model", app_mod.TtsModel),
+    ("--src", "src", app_mod.SrcLang),
+    ("--tgt", "tgt", app_mod.TgtLang),
 ])
 def test_create_project_options_are_exactly_the_cli_choices(flag, dest, literal, capsys):
     """`dubbing.cli` cannot be imported here it drags in torch so the choice
@@ -2403,6 +2436,53 @@ class TestRequestGate:
         for host in ("localhost:1", "127.0.0.1:9999", "[::1]:80", "localhost"):
             assert client.get("/api/projects", headers={"host": host}).status_code == 200
 
+    def test_the_host_the_desktop_shell_really_sends_passes(self, client):
+        # Every other test rides TestClient's "testserver" default, which is on
+        # the trusted list for its own reason so the gate was never exercised
+        # against the Host a browser pointed at the shell's port actually sends.
+        assert client.get("/health", headers={"host": "127.0.0.1:4400"}).status_code == 200
+        assert client.get("/health", headers={"host": "localhost:4400"}).status_code == 200
+        # A name that merely *contains* a loopback name is not one.
+        for host in ("127.0.0.1.evil.example:4400", "notlocalhost:4400", ""):
+            assert client.get("/health", headers={"host": host}).status_code == 403
+
+    @staticmethod
+    def _tokened(tmp_path):
+        """A fresh client each time: the first accepted request sets the cookie,
+        and every later assertion would then be about the cookie, not the token."""
+        from dubbing_app.app import create_app
+
+        return TestClient(create_app(tmp_path, ui_dir="", token="s3cret"))
+
+    def test_the_bearer_scheme_is_case_insensitive(self, tmp_path):
+        # RFC 7235: the scheme is case-insensitive. `removeprefix("Bearer ")`
+        # is not, so a correct token spelled `bearer …` was a 401.
+        for header in ("Bearer s3cret", "bearer s3cret", "BEARER s3cret",
+                       "bearer  s3cret "):
+            with self._tokened(tmp_path) as c:
+                assert c.get("/health", headers={"Authorization": header}).status_code == 200
+        # The token value itself is not: only the scheme name is folded, and a
+        # scheme that is not Bearer carries no token at all.
+        for header in ("Bearer S3CRET", "Basic s3cret", "s3cret", "Bearer"):
+            with self._tokened(tmp_path) as c:
+                assert c.get("/health", headers={"Authorization": header}).status_code == 401
+
+    def test_a_non_ascii_token_is_a_refusal_not_a_crash(self, tmp_path):
+        # `compare_digest` raises TypeError on non-ASCII *str* input, and the
+        # query string is attacker-supplied: `?token=%C3%A9` answered 500 with
+        # the exception text instead of 401.
+        with self._tokened(tmp_path) as c:
+            assert c.get("/api/projects", params={"token": "é"}).status_code == 401
+            assert c.get("/api/projects", params={"token": "s3crét"}).status_code == 401
+            # Headers arrive as bytes and are decoded latin-1, so they can carry
+            # a non-ASCII token too the same TypeError, through two more doors.
+            assert c.get("/health",
+                         headers={"Authorization": b"Bearer \xe9"}).status_code == 401
+            assert c.get("/health",
+                         headers={"Cookie": b"mambodubb_token=\xe9"}).status_code == 401
+            # …and the real token still works from the same client afterwards.
+            assert c.get("/api/projects", params={"token": "s3cret"}).status_code == 200
+
     def test_token_mode(self, tmp_path):
         from fastapi.testclient import TestClient
 
@@ -2418,3 +2498,136 @@ class TestRequestGate:
             assert c.get("/api/projects").status_code == 200
             assert c.get("/health", headers={"Authorization": "Bearer s3cret"},
                          cookies={}).status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# CORS the only cross-origin callers that exist
+# ---------------------------------------------------------------------------
+
+ALLOWED_ORIGINS = ("tauri://localhost",          # the Tauri webview
+                   "http://tauri.localhost",     # …and its Windows spelling
+                   "http://localhost:5173",      # the Vite dev server
+                   "http://127.0.0.1:4400")      # a second instance / a plain browser
+
+
+@pytest.mark.parametrize("origin", ALLOWED_ORIGINS)
+def test_the_shell_and_the_dev_server_may_read_the_api(client, origin):
+    r = client.get("/health", headers={"Origin": origin})
+    assert r.status_code == 200
+    assert r.headers["access-control-allow-origin"] == origin
+
+
+@pytest.mark.parametrize("origin", ["https://evil.com", "http://evil.com",
+                                    "http://localhost.evil.com", "null"])
+def test_no_other_page_may_read_the_api(client, origin):
+    # `["*"]` here meant any web page open in the user's browser could read and
+    # drive this API: the server reads the filesystem and runs the pipeline, so
+    # the wildcard was the hole, not the port. The request still runs the browser
+    # is what refuses the response, and it refuses it for want of this header.
+    r = client.get("/health", headers={"Origin": origin})
+    assert "access-control-allow-origin" not in r.headers
+
+
+def test_a_preflight_is_answered_without_a_credential(tmp_path):
+    # A CORS preflight carries neither cookie nor token by design, so the gate
+    # lets OPTIONS through and the CORS layer (added after it, therefore wrapping
+    # outside it) answers. Gate it and every cross-origin PATCH dies at the door.
+    app = create_app(tmp_path, ui_dir="", token="s3cret")
+    with TestClient(app) as c:
+        r = c.options("/api/projects/x/segments/y",
+                      headers={"Origin": "tauri://localhost",
+                               "Access-Control-Request-Method": "PATCH",
+                               "Access-Control-Request-Headers": "content-type"})
+        assert r.status_code == 200
+        assert r.headers["access-control-allow-origin"] == "tauri://localhost"
+        assert "PATCH" in r.headers["access-control-allow-methods"]
+    # …and the preflight is not a way in: the real request still needs the token.
+    with TestClient(create_app(tmp_path, ui_dir="", token="s3cret")) as c:
+        assert c.get("/api/projects",
+                     headers={"Origin": "tauri://localhost"}).status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# a legacy fitted fallback slice
+# ---------------------------------------------------------------------------
+
+def test_a_stretched_fallback_slice_is_still_named_a_fallback(client, outputs):
+    # tts's universal fallback is a `keep_*.wav` slice of the original span on a
+    # dub-wanted line. Timelines placed before timeline/v15 rate-fitted it and
+    # renamed it `fit_keep_*` it is still original audio wearing a dub's
+    # verdict, and the UI has to say so or the line is baffling.
+    from tests.conftest_app import write_wav
+
+    workdir = outputs / NAME
+    m = manifest.load(workdir)
+    fitted = "clips/fit_keep_000000000340_1.100.wav"
+    write_wav(workdir / fitted, 1.6)
+    m["segments"][1]["place"]["clip"] = fitted
+    manifest.save(workdir, m)
+
+    segs = client.get(f"/api/projects/{NAME}/segments").json()["segments"]
+    assert segs[1]["media"]["fallback"] is True
+    # A kept line's slice is not a fallback it is the verdict; and an ordinary
+    # fitted synthesis is not one either.
+    assert segs[0]["media"]["fallback"] is False
+    assert segs[2]["media"]["fallback"] is False
+
+
+# ---------------------------------------------------------------------------
+# a verdict flipped while a job ran
+# ---------------------------------------------------------------------------
+
+def _clipless_line(workdir):
+    """A dub-wanted line with no clip yet the state a queued job starts from."""
+    m = manifest.load(workdir)
+    seg = m["segments"][1]
+    seg.pop("tts", None), seg.pop("place", None)
+    manifest.save(workdir, m)
+    return seg["uid"]
+
+
+def test_a_keep_flipped_while_a_job_ran_wins_over_the_clip_it_made(outputs):
+    """The segment had no clip when the job started, the user flipped `keep`
+    mid-job (which deletes `tts`/`place` still absent on disk), and the job
+    then wrote a fresh clip. absent == absent, so the key-by-key merge kept the
+    job's clip alongside the re-applied `keep=true` a kept line with a dub
+    placed, which the mix plays and the UI (deriving from `keep`) never shows."""
+    from dubbing_app.worker import Journal
+
+    workdir = outputs / NAME
+    uid = _clipless_line(workdir)
+    journal = Journal(workdir, manifest.load(workdir))
+
+    # The job's own work, on its private copy.
+    ops.find(journal.m, uid).update(
+        {"tts": {"clip": "clips/new.wav", "dur": 1.0, "verify": "ok"},
+         "place": {"start": 0.34, "end": 1.34, "rate": 1.0, "drift": 0.0,
+                   "clip": "clips/new.wav"}})
+
+    disk = manifest.load(workdir)
+    ops.set_keep(disk, uid, True)
+    manifest.save(workdir, disk)
+    assert "tts" not in ops.find(manifest.load(workdir), uid)
+
+    assert journal.merge(manifest.load(workdir)) == [uid]
+    merged = ops.find(journal.m, uid)
+    assert merged["keep"] is True
+    assert "tts" not in merged and "place" not in merged
+
+
+def test_a_job_keeps_its_clip_when_the_verdict_did_not_move(outputs):
+    from dubbing_app.worker import Journal
+
+    workdir = outputs / NAME
+    uid = _clipless_line(workdir)
+    journal = Journal(workdir, manifest.load(workdir))
+    ops.find(journal.m, uid).update({"tts": {"clip": "clips/new.wav", "dur": 1.0}})
+
+    disk = manifest.load(workdir)
+    ops.set_text(disk, uid, text_en="hand corrected")   # a field edit, not a flip
+    manifest.save(workdir, disk)
+
+    journal.merge(manifest.load(workdir))
+    merged = ops.find(journal.m, uid)
+    assert merged["tts"] == {"clip": "clips/new.wav", "dur": 1.0}
+    assert merged["text_en"] == "hand corrected"

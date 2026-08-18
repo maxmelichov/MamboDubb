@@ -52,7 +52,7 @@ Tauri shell would parse.
 ## The one-job rule
 
 **At most one pipeline job runs at a time, process-wide.** Not a design preference: the
-models are sequential and never co-resident (AGENTS.md, device notes) and the dev machine
+models are sequential and never co-resident (a hard rule of the pipeline) and the dev machine
 has 26 GB of unified memory. A second concurrent job would swap the machine to death.
 
 Enqueue further requests; expose the queue. Cheap edits that touch no model (`keep` flips,
@@ -62,7 +62,7 @@ text edits, speaker relabels) are *not* jobs and must stay responsive while a jo
 
 A **project** is one run directory under `outputs/`. Its `manifest.json` is the source of
 truth. The server holds no database; it reads and writes the manifest through
-`dubbing.manifest`, which means every invariant in AGENTS.md still applies in particular
+`dubbing.manifest`, which means every pipeline invariant still applies in particular
 `SEGMENT_KEYS` is a whitelist and **any key not listed there is silently dropped on save**.
 
 ### Stable segment identity new
@@ -653,7 +653,7 @@ Each branches from `app`, stays in its own worktree, and merges back into `app` 
 
 ## Non-negotiables
 
-Everything in AGENTS.md still holds never silent, never truncated or overlapping,
+The pipeline's own invariants still hold never silent, never truncated or overlapping,
 one TTS call per segment, no per-video content, the manifest stays small. Two app-specific
 additions:
 

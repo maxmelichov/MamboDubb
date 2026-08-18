@@ -25,19 +25,45 @@ STAGE_TAGS = {
     # reruns vs the news register at translate/v31; segments carried both
     # alignment+passthrough and the spoken_target/veto work), so the merged tag
     # moves past every claim rather than picking a side.
-    "transcript": "transcript/v41",
+    "transcript": "transcript/v44",
+    # v44: a gap window is nominated by the mix and confirmed by the vocals. A
+    # music-only sting is loud in the mix but digitally silent once separated,
+    # and near-silence is what Whisper answers with "thank you very much"; the
+    # window is now left uncovered (and reported) instead of decoded. Restores a
+    # guard the pre-rewrite pipeline had and the rewrite dropped.
+    # v43: the gap-recovery decoder listens to the separated vocals, like the
+    # main pass — audibility is still judged from the mix, but "what is said"
+    # is no longer asked of audio with the music still in it, which is where
+    # the invented lines over stings ("thank you very much") came from.
+    # v42: `recover_gaps` filters its decode per-segment through `speech_only`
+    # before the window mean — a span the main pass declined as music could
+    # re-enter through the gap pass whenever better-reading neighbours in the
+    # same window carried the average.
     # v41: the main ASR pass gained the no-speech gate the gap pass already had —
     # a decode read below ASR_MIN_LOGPROB is a hallucination over music, not
     # speech, so a music-only intro yields no words instead of an invented line.
     # v39: a confident audio-LID witness naming a non-target language outranks
     # the "already target script" clause, exactly as a named span witness does —
     # nameless English lines in a he→de run were kept as "already German".
-    "segments": "segments/v39",
+    # v40: CJK opens as a source. `SENTENCE_END` knows the fullwidth enders
+    # (。！？, from `script.CJK_PUNCT` — the table TTS already read), so a Japanese
+    # read splits per sentence instead of into mid-clause length chunks; and word
+    # tokens join through `script.join_words`, which writes Han/kana without the
+    # spaces neither language has.
+    "segments": "segments/v40",
     # v34: a same-language pair (he→he, en→en) translates by identity the target
     # line is the source line and no translator loads.
     # v35: a segment translates from its OWN language (`translate.segment_langs`),
     # and a failed translation no longer overrules the user's "dub it".
-    "translate": "translate/v36",
+    # v36: the --context gloss floors are per script bucket instead of the
+    # Hebrew-calibrated 4/5 (a 2-character 首相 could never match, and Korean
+    # agglutination beat the exact-word rung), `_has_negation` reads Korean
+    # negations glued inside a word, and `shorten`'s budget is in speech units —
+    # counting `.split()` words made every CJK rewrite fail its own length check.
+    # v37: "%" becomes the target's own spoken word for every TTS target (zh as
+    # the 百分之 prefix over kept digits; numbers inside spaceless-script prose
+    # now spell at all) — merged past a parallel claim on v36.
+    "translate": "translate/v37",
     # Two lines each claimed tts/v15 for different logic (the Hebrew LoRA vs the
     # honest-failure records), so the merged tag moves past both.
     # v16: Hebrew targets synthesize from stressed IPA through the Qwen3-TTS Hebrew
@@ -45,11 +71,23 @@ STAGE_TAGS = {
     # carry the text fingerprint and (for keeps) the span and options they were cut
     # with; "unverified" is its own verdict; and a segment's own `tgt_lang` reaches
     # synthesis, the cache key and verification.
-    "tts": "tts/v16",
+    # v17: a dub-wanted line with no translation replaces its record with the
+    # original-audio slice unless the record already IS one — a stale synthesis
+    # of a since-failed translation used to satisfy `keep_needs_slice` and keep
+    # speaking the old line.
+    "tts": "tts/v17",
     # v14: `place` now carries the overrun it measured and why a shortening was
     # abandoned report.json's drift story reads from these. (v13 was claimed on
     # a branch that never landed under that number.)
-    "timeline": "timeline/v14",
+    # v15: tts's fallback slices (keep_*.wav on a dub-wanted line) get a keep's
+    # placement policy — never tempo-stretched (they are original audio, cut to
+    # exactly their span; stretching also renamed them fit_keep_*, dropping the
+    # UI's fallback flag).
+    # v16: the shorten budget asked for is in speech units (`script.speech_units`),
+    # so a CJK line is measured in characters. As words it was always 1, the budget
+    # floored at 3, and `shorten` refused every rewrite — this stage's only rescue
+    # for a late line was dead for zh/ja/ko.
+    "timeline": "timeline/v16",
     "mix": "mix/v9",
     # v3: honest failure accounting verify.unverified, degraded, overrun,
     # shorten_abandoned, subtitles_failed, stale_locked_clips alongside the

@@ -53,7 +53,7 @@ from pathlib import Path
 from typing import Any
 
 from . import USER_KEEP_REASONS, numwords
-from .script import count_letters, is_script, same_script, script_for
+from .script import count_letters, is_script, same_script, script_for, speech_units
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODEL_PATH = REPO_ROOT / "models" / "gemma-4-12B-it-6bit"
@@ -160,10 +160,18 @@ class WorkerHandle:
         # Both ends of the pipe must agree on UTF-8, and only this end can be set
         # from here: a Windows child defaults its stdio to the ANSI code page,
         # which cannot write a Hebrew translation at all.
+        #
+        # `errors="replace"` for the same reason `dubbing_app/runner.py` and
+        # `install.py` carry it: the child's stderr is not ours to guarantee — a
+        # CUDA library, a progress bar, a truncated multi-byte flush — and one
+        # undecodable byte raises inside the pump *thread*, which dies silently.
+        # The parent then sits on `_read_line` for the whole 3600s ready_timeout
+        # waiting for a worker that is already talking. A mangled log character
+        # is the cheaper failure.
         env = {**(env if env is not None else os.environ), "PYTHONIOENCODING": "utf-8"}
         self._proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                       stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                                      env=env)
+                                      errors="replace", env=env)
         self._stderr_tail: deque[str] = deque(maxlen=40)
         self._next_id = 0
         self._lines: queue.Queue[str | None] = queue.Queue()
@@ -534,6 +542,44 @@ def _within_one_edit(a: str, b: str) -> bool:
     return True
 
 
+# Per script bucket: (shortest gloss token that may match at all, shortest that may
+# match loosely). Between the two floors a token must equal a whole spoken word; at
+# or above the second it goes through `_gloss_loose_hit`. The default is the
+# Hebrew-calibrated pair the rule was written with; the two exceptions are the
+# scripts where "letters in a word" is not a comparable unit.
+_GLOSS_FLOORS_DEFAULT = (4, 5)
+_GLOSS_FLOORS: dict[str, tuple[int, int]] = {
+    # Han/kana words are one or two characters — 首相 (prime minister), 内閣
+    # (cabinet). A 4-letter floor excluded every one of them, so no gloss in a
+    # zh/ja --context note ever reached a prompt. One character is too ambiguous to
+    # match loosely (it occurs inside unrelated compounds), so it gets the
+    # exact-word rung, which CJK text reaches only when the whole run is that
+    # character; two or more may match as a substring, which is how a gloss finds
+    # its word inside an unspaced sentence.
+    "cjk": (1, 2),
+    # Korean is spaced, but its particles glue onto the noun: a note glossing
+    # 국무총리 must still match the spoken 국무총리는. Equality cannot do that and
+    # free substring matching is the leak the Hebrew floors were raised to stop, so
+    # hangul matches by *prefix* instead (see `_gloss_loose_hit`).
+    "hangul": (2, 2),
+}
+
+
+def _gloss_loose_hit(low: str, seg_tokens: list[str], seg_text_low: str,
+                     script: str) -> bool:
+    """Whether a long-enough gloss token matches this segment other than exactly."""
+    if script == "hangul":
+        # Prefix, not substring: 국무총리 matches the inflected 국무총리는, while
+        # 총리 alone still does not — the precision the Hebrew floors bought.
+        return any(st.startswith(low) for st in seg_tokens)
+    # Substring finds the word inside an unspaced CJK run; edit distance 1 covers
+    # the ASR spelling variants a gloss lists. (`_within_one_edit` bails on any
+    # length difference above 1, so it is inert against whole-sentence CJK tokens
+    # and cannot confuse two 2-character words that differ by one character.)
+    return (low in seg_text_low
+            or any(_within_one_edit(low, st) for st in seg_tokens))
+
+
 def relevant_context(context: str, source_text: str, src_lang: str) -> str:
     """The slice of the user's --context note that belongs in *this* segment's prompt.
 
@@ -547,13 +593,20 @@ def relevant_context(context: str, source_text: str, src_lang: str) -> str:
       documentary about …") and is always included entity context helps everywhere.
     - A clause carrying source-script tokens is a gloss, and is included only when one
       of those tokens appears in the segment's own source text. Matching is gated by
-      token length both limits are measured leak traps from the drama harness:
-      tokens under 4 letters never participate at all (a clause glossing מ"פ matched
-      by substring nearly everywhere and leaked run-wide), 4-letter tokens match only
-      as an exact word (אותו reached unrelated segments through the fuzzy rule and
-      perturbed them), and only 5+-letter tokens match as a substring or at edit
-      distance <= 1 which still covers the ASR variants a gloss typically lists
-      (בלאגן / מלאגן) without a per-video matching rule.
+      token length (`_GLOSS_FLOORS`) both limits are measured leak traps from the
+      drama harness: tokens under 4 letters never participate at all (a clause
+      glossing מ"פ matched by substring nearly everywhere and leaked run-wide),
+      4-letter tokens match only as an exact word (אותו reached unrelated segments
+      through the fuzzy rule and perturbed them), and only 5+-letter tokens match as a
+      substring or at edit distance <= 1 which still covers the ASR variants a gloss
+      typically lists (בלאגן / מלאגן) without a per-video matching rule.
+
+    Those floors count *letters of one word*, which is a Hebrew-sized unit. The
+    floors are therefore per script bucket, not global: a Chinese or Japanese word is
+    one or two characters (首相 = "prime minister"), so a 4-letter floor made the
+    whole --context feature dead for zh/ja, and Korean glues its particles onto the
+    noun (국무총리 → 국무총리는), so an exact-word test never fires there. See
+    `_GLOSS_FLOORS` and `_gloss_loose_hit` for what each bucket does instead.
 
     When the source language is Latin-script the gloss/background split has no signal
     (every token is "source script") and the note passes through whole, as before.
@@ -577,17 +630,17 @@ def relevant_context(context: str, source_text: str, src_lang: str) -> str:
         if not gloss_tokens:
             kept.append(clause)                        # background: always included
             continue
+        exact_floor, loose_floor = _GLOSS_FLOORS.get(script, _GLOSS_FLOORS_DEFAULT)
         hit = False
         for tok in gloss_tokens:
             low = tok.lower()
-            if len(low) < 4:
+            if len(low) < exact_floor:
                 continue                   # too short to identify any word
-            if len(low) == 4:
+            if len(low) < loose_floor:
                 if low in seg_tokens:      # exact word only no fuzz, no substring
                     hit = True
                     break
-            elif (low in seg_text_low
-                    or any(_within_one_edit(low, st) for st in seg_tokens)):
+            elif _gloss_loose_hit(low, seg_tokens, seg_text_low, script):
                 hit = True
                 break
         if hit:
@@ -1240,6 +1293,11 @@ def _not_a_translation(out: str, src: str) -> bool:
     and gross length blow-up (a translation of a 4+-token source stays within a
     few multiples of its length; only sources with enough tokens are judged, so
     CJK sources few `\\w+` tokens are exempt rather than misjudged).
+
+    That exemption rests on `script.join_words`: the segmenter writes Han/kana
+    text unspaced, so a Japanese sentence is one `\\w+` token. Space-join it and
+    every character becomes a token, the source looks long, and a correct short
+    translation of it starts failing this guard.
     """
     if _echoes_source(out, src):
         return True
@@ -1436,7 +1494,13 @@ def _digits(text: str) -> set[str]:
 def _has_negation(text: str, target: str = "en") -> bool:
     negations = _NEGATIONS_BY_LANG.get(target, _NEGATIONS_BY_LANG["en"])
     low = (text or "").lower()
-    if script_for(target) == "cjk":            # no spaces substring is the word test
+    # CJK has no word spaces at all, and Korean writes its negation *inside* the
+    # verb it negates (가지 않습니다 — the 않 is glued to the ending), so `\w+`
+    # tokens miss both. Substring is the only word test either script has.
+    # It over-fires — 안녕 ("hello") contains the negation 안 — and that direction
+    # is safe: the only caller is `shorten`'s guard, where a false positive costs
+    # a rewrite refused, never a negation dropped from a line.
+    if script_for(target) in ("cjk", "hangul"):
         return any(neg in low for neg in negations)
     words = set(re.findall(r"\w+", low))
     if words & negations:
@@ -1454,9 +1518,15 @@ def shorten(processor, model, source_text: str, current_en: str, max_words: int,
     a negation. It carries `preceding` for the same reason `generate` does: this
     starts from the source again, so without it the shortened line could come back
     with the word sense the full translation had just got right.
+
+    `max_words` is a budget in *speech units* the same unit `timeline` measures
+    the line in, which is characters for a CJK or Korean target. Counting `.split()`
+    words there gave `have = 1` for any Japanese line, so `n >= have` rejected every
+    rewrite and the timeline's shorten rescue was permanently dead for zh/ja.
     """
-    have = len((current_en or "").split())
+    have = speech_units(current_en, target)
     want = max(3, min(max_words, have - 1))
+    unit = "characters" if script_for(target) in ("cjk", "hangul") else "words"
     src, tgt = _lang(source), _lang(target)
     # Same gloss gating as `run`: a shorten re-reads the source, so only the
     # gloss clauses whose word is in *this* source text belong in its prompt.
@@ -1470,14 +1540,14 @@ def shorten(processor, model, source_text: str, current_en: str, max_words: int,
     instruction = (
         f"{hint}{before}"
         f"Translate the following {src} text into {tgt} as concisely as possible, in at "
-        f"most {want} words, while keeping every name, number and negation. Output only "
+        f"most {want} {unit}, while keeping every name, number and negation. Output only "
         f"the {tgt} translation.\n\n{src}: {source_text}"
     )
     out = _run(processor, model, instruction, max(64, want * 4 + 40))
     out = (out or "").strip().strip('"')
     if not is_target_text(out, target) or "[[C" in out or _not_a_translation(out, source_text):
         return None
-    n = len(out.split())
+    n = speech_units(out, target)
     if n >= have or n < max(3, 0.5 * have):
         return None
     # Numbers are spelled out deterministically (numwords, via _finalize_numbers),

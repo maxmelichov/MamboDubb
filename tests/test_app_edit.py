@@ -18,6 +18,8 @@ tested where it lives.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from dubbing import STAGES, cli, edit, manifest, segments, timeline, translate
@@ -612,6 +614,20 @@ def test_split_preserves_every_word():
     assert (left["text"] + " " + right["text"]).split() == "one two three four five".split()
     assert (left["start"], left["end"], right["start"], right["end"]) == (0.0, 1.0, 1.0, 2.0)
     assert [s["id"] for s in m["segments"]] == [0, 1, 2]
+
+
+def test_split_cuts_a_japanese_line_by_character_and_rejoins_without_a_space():
+    # The segmenter writes Han/kana without word spaces (`script.join_words`), so
+    # `.split()` calls the whole line one word and every CJK segment became
+    # unsplittable in the editor. The unit there is the character.
+    m = two_segs()
+    uid = m["segments"][0]["uid"]
+    m["segments"][0]["text"] = "首相は今日会見した"
+    edit.split(m, uid, 1.0)
+    left, right = m["segments"][0], m["segments"][1]
+    assert left["text"] + right["text"] == "首相は今日会見した"
+    assert " " not in left["text"] and " " not in right["text"]
+    assert left["text"] and right["text"]
 
 
 def test_split_drops_what_was_made_from_the_whole_line():
@@ -1371,15 +1387,23 @@ def test_a_bare_rerun_reproduces_the_run_instead_of_overwriting_it():
     translate and timeline fingerprints and a changed segments fingerprint empties
     `m["segments"]`, taking every edit, lock and passthrough in the project with it."""
     made = cli.parse_args(["in.mp4", "--genre", "movie", "--register", "dialogue",
-                           "--dub-foreign"])
+                           "--dub-foreign", "--captions", "subs.json3"])
     cli.resolve_settings(made)
     m = manifest.new(cli.source_record(made))
     assert m["source"]["genre"] == "movie" and m["source"]["dub_foreign"] is True
+    # Recorded as a string, and as "" rather than None when absent — the same
+    # rule the other settings follow, so the next run cannot read the absence
+    # back as an opinion.
+    assert m["source"]["captions"] == "subs.json3"
 
     again = cli.parse_args(["in.mp4"])                 # the user types no flags
     cli.resolve_settings(again, m)
+    assert again.captions == Path("subs.json3")
     assert cli.source_record(again) == cli.source_record(made)
     assert cli.stage_params(again, m) == cli.stage_params(made, m)
+    # `captions` is in fetch's fingerprint, and a flipped fetch empties
+    # `m["segments"]` two stages later — every lock and hand edit with it.
+    assert cli.stage_params(again, m)["fetch"]["captions"] == "subs.json3"
 
 
 def test_an_explicit_flag_still_beats_what_the_run_recorded():
@@ -1447,3 +1471,73 @@ def test_args_reads_the_apps_recorded_options():
     # The flat (CLI) spelling wins when both exist.
     m["source"]["genre"] = "documentary"
     assert edit._args(m).genre == "documentary"
+
+
+# ------------------------------------ a queued batch outlives a deleted line
+
+def three_segs():
+    """Three adjacent lines, all translated, none voiced yet."""
+    return mk(
+        seg(id=0, start=0.0, end=2.0, text="aa bb", text_en="one two"),
+        seg(id=1, start=2.0, end=4.0, text="cc dd", text_en="three four"),
+        seg(id=2, start=4.0, end=6.0, text="ee ff", text_en="five six"),
+    )
+
+
+def test_still_present_skips_the_missing_uid_and_names_it(capsys):
+    m = three_segs()
+    uids = [s["uid"] for s in m["segments"]]
+    got = edit._still_present(m, [uids[0], "sdeadbeef", uids[2]])
+    assert [s["uid"] for s in got] == [uids[0], uids[2]]
+    assert "sdeadbeef" in capsys.readouterr().err       # skipped, and said so
+    assert edit._still_present(m, ["sdeadbeef"]) == []
+
+
+def test_a_queued_retranslate_survives_a_line_deleted_before_its_turn(monkeypatch):
+    # `guard_structural` refuses edits against a *running* job, not a queued one,
+    # so the user is free to delete a line while a batch waits its turn. Dying on
+    # the first missing uid threw away every other segment's work in the batch.
+    m = three_segs()
+    uids = [s["uid"] for s in m["segments"]]
+    edit.remove(m, uids[1])
+
+    monkeypatch.setattr(translate, "load", lambda *a, **k: ("p", "model", None))
+    monkeypatch.setattr(translate, "free", lambda model: None)
+    monkeypatch.setattr(translate, "generate", lambda *a, **k: "a fresh line")
+    out = edit.retranslate(m, tmp_workdir(), uids)
+    assert set(out) == {uids[0], uids[2]}
+    assert [s["text_en"] for s in m["segments"]] == ["a fresh line", "a fresh line"]
+
+
+def test_a_queued_resynthesize_survives_a_line_deleted_before_its_turn(monkeypatch):
+    m = three_segs()
+    uids = [s["uid"] for s in m["segments"]]
+    edit.remove(m, uids[1])
+
+    class FakeEngine:
+        def __init__(self, *a, **kw):
+            pass
+
+        def build_speaker_refs(self):
+            pass
+
+        def clip_for(self, seg, text):
+            return {"clip": "clips/new.wav", "dur": 1.0, "verify": "ok"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(tts_mod, "Engine", FakeEngine)
+    out = edit.resynthesize(m, tmp_workdir(["clips/new.wav"]), uids)
+    assert set(out) == {uids[0], uids[2]}
+    assert out.summary["synthesized"] == 2
+
+
+def test_a_single_segment_edit_still_refuses_a_uid_that_is_gone():
+    # There, "no segment" is the whole answer the batch tolerance is not a
+    # licence to swallow a bad address on an edit aimed at one line.
+    m = three_segs()
+    with pytest.raises(edit.SegmentNotFound):
+        edit.set_text(m, "sdeadbeef", text_en="anything")
+    with pytest.raises(edit.SegmentNotFound):
+        edit.set_keep(m, "sdeadbeef", True)

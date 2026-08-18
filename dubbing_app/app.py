@@ -44,6 +44,13 @@ Genre = Literal["documentary", "movie"]
 Register = Literal["narration", "dialogue"]
 Transcript = Literal["auto", "captions", "asr"]
 TtsModel = Literal["1.7b"]  # 0.6b is retired for new runs; old manifests that recorded it still re-run
+# `cli.SRC_CHOICES` / `cli.TGT_CHOICES`, sorted, legacy aliases included. An
+# unrecognised code is worse here than an unrecognised genre: `script.script_for`
+# answers "latin" for anything it does not know, so a project created with "jp"
+# would run to completion with every script-derived verdict quietly wrong,
+# instead of failing.
+SrcLang = Literal["ar", "de", "en", "es", "fr", "he", "it", "iw", "ja", "ko", "pt", "ru", "zh"]
+TgtLang = Literal["de", "en", "es", "fr", "he", "it", "iw", "ja", "ko", "pt", "ru", "zh"]
 
 
 # ---------------------------------------------------------------------------
@@ -56,8 +63,8 @@ class Strict(BaseModel):
 
 class CreateProject(Strict):
     source: str
-    src_lang: str = "he"
-    tgt_lang: str = "en"
+    src_lang: SrcLang = "he"
+    tgt_lang: TgtLang = "en"
     duration: float | None = None
     name: str | None = None
     context: str | None = None
@@ -236,8 +243,16 @@ class RequestGate:
             qs = parse_qs(scope.get("query_string", b"").decode("latin-1"))
             supplied = (qs.get("token") or [""])[0]
         if not supplied:
-            supplied = headers.get("authorization", "").removeprefix("Bearer ").strip()
-        if not secrets.compare_digest(supplied, self.token):
+            # RFC 7235: the scheme is case-insensitive, so `bearer x` is as
+            # valid as `Bearer x`.
+            scheme, _, value = headers.get("authorization", "").strip().partition(" ")
+            if scheme.lower() == "bearer":
+                supplied = value.strip()
+        # Compare bytes: `compare_digest` raises TypeError on non-ASCII *str*
+        # input, and the query string is attacker-supplied — `?token=%C3%A9`
+        # must be a 401, not a 500 wearing the exception text.
+        if not secrets.compare_digest(supplied.encode("utf-8", "surrogateescape"),
+                                      self.token.encode("utf-8")):
             return await self._refuse(send, 401, "authentication required: open "
                                       "the ?token=… link the server printed at startup")
 

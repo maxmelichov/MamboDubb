@@ -1,7 +1,7 @@
 # Plan: Linux/CUDA port, 10-min bug-hunt run, and multilingual dubbing
 
 Persistent tracker each phase is long-running. Update the checkboxes as work lands.
-Owner: Claude + maxm. Started 2026-08-07.
+Owner: maxm. Started 2026-08-07.
 
 ## Goal
 
@@ -35,7 +35,7 @@ Owner: Claude + maxm. Started 2026-08-07.
 - [ ] `.env` with `HF_TOKEN` (Pyannote diarization is gated; without it → single-speaker fallback).
       **Needs user's token.**
 - [ ] Docs: Linux setup section in `docs/setup.md` (+ fix stale `qat-4bit` → `6bit` quant name),
-      device notes in AGENTS.md.
+      device notes in docs/APP_ARCHITECTURE.md.
 
 ## Phase 1 10-minute he→en bug-hunt run  `[blocked on Phase 0]`
 

@@ -107,9 +107,19 @@ class Journal:
             was, ours = self.base.get(uid), mine.get(uid)
             if was is None or ours is None:
                 continue
+            # A verdict flip on disk owns the audio keys outright. Snapshot
+            # comparison alone misses one case: the segment had no clip when
+            # the job started (`tts` absent in `was`), the user flipped `keep`
+            # mid-job (set_keep deletes `tts`/`place` — still absent on disk),
+            # and the job then wrote a fresh clip. absent == absent, so the
+            # key-by-key merge kept the job's clip alongside the re-applied
+            # `keep=true` — a kept line with a dub placed, which the mix plays
+            # and the UI (deriving from `keep`) never exposes.
+            flip = was.get("keep") != seg.get("keep")
+            forced = {"tts", "place"} if flip else frozenset()
             for key in manifest.SEGMENT_KEYS - self.SKIP:
                 old, new = was.get(key, _ABSENT), seg.get(key, _ABSENT)
-                if old == new:
+                if old == new and key not in forced:
                     continue                      # nobody touched it while we worked
                 if new is _ABSENT:
                     ours.pop(key, None)
@@ -117,6 +127,9 @@ class Journal:
                     ours[key] = copy.deepcopy(new)
                 if uid not in touched:
                     touched.append(uid)
+            if flip:
+                log(f"segment {uid}: keep flipped while this job ran; "
+                    f"the flip wins over the job's clip", "info")
         return touched
 
     def save(self) -> None:

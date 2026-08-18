@@ -128,6 +128,25 @@ function seedOverrides(): void {
       text_en: untranslatable.text,
     });
   }
+
+  /*
+   * And the state the server has a rule for and no fixture ever produced: a
+   * dub-wanted line whose *mix* plays the original audio. `tts` falls back to
+   * the keep slice rather than leaving the span silent and `timeline` fits it
+   * to the span (`fit_keep_`), so the verdict says dub, the file says original,
+   * and only `media.fallback` tells them apart. From the back, past the three
+   * shapes above, which no longer match: they are keeps or have no placement.
+   */
+  const fellBack = [...store.segments]
+    .reverse()
+    .find((seg) => !seg.keep && seg.place && seg.tts);
+  if (fellBack?.place && fellBack.tts) {
+    const clip = `clips/fit_keep_${fellBack.uid}.wav`;
+    Object.assign(fellBack, {
+      tts: { ...fellBack.tts, clip },
+      place: { ...fellBack.place, clip },
+    });
+  }
 }
 
 /**
@@ -208,6 +227,24 @@ function speakerHz(speaker: string, offset: number): number {
   return 110 + (hash % 9) * 14 + offset;
 }
 
+/**
+ * The run's source track, as one file per voice.
+ *
+ * `source.wav` is a single file on the server and the fixture cannot be quite
+ * that faithful and stay useful: pitch is what tells two speakers apart by ear
+ * in demo mode, and that has to survive on the side the comparison starts from.
+ * What matters is that it is a *track* long enough to hold every window cut
+ * from it, and that it is one blob rather than one per line.
+ */
+function sourceTrackUrl(speaker: string): string {
+  const duration = Math.max(
+    store.project.source.duration ?? 0,
+    ...store.segments.map((seg) => seg.end),
+    1,
+  );
+  return toneUrl({ hz: speakerHz(speaker, 0), dur: duration, seed: seedOf(speaker) });
+}
+
 function seedOf(uid: string): number {
   let hash = 7;
   for (let i = 0; i < uid.length; i += 1) hash = (hash * 33 + uid.charCodeAt(i)) % 100003;
@@ -227,6 +264,7 @@ function seedOf(uid: string): number {
 function enrich(seg: Segment): Segment {
   const seed = seedOf(seg.uid);
   const sourceDur = Math.max(0.4, seg.end - seg.start);
+  const placed = (seg.place?.clip ?? "").split("/").pop() ?? "";
   return {
     ...seg,
     media: {
@@ -240,13 +278,26 @@ function enrich(seg: Segment): Segment {
       tts: seg.tts?.clip
         ? toneUrl({ hz: speakerHz(seg.speaker, 26), dur: seg.tts.dur || sourceDur, seed: seed + 1 })
         : null,
-      source: toneUrl({ hz: speakerHz(seg.speaker, 0), dur: sourceDur, seed }),
+      /*
+       * One file, many windows exactly the shape `Projects.enrich` sends:
+       * `media.source` is the whole source track with a `#t=start,end` fragment
+       * naming this line's place in it, and `source_window` states the same two
+       * numbers outright.
+       *
+       * It used to be a tone as long as the *segment* under a window in
+       * whole-track coordinates, which is two coordinate systems in one pair of
+       * fields: `toggleClip` seeks to 219s in a 2.4s clip, playback ends on the
+       * spot, and every Orig button in the demo was dead while the live server's
+       * were fine. The fragment keeps the URL per-segment, which is what the row
+       * compares to decide whether *this* line's A is the one sounding.
+       */
+      source: `${sourceTrackUrl(seg.speaker)}#t=${seg.start.toFixed(3)},${seg.end.toFixed(3)}`,
       source_window: [seg.start, seg.end],
       // Server rule verbatim: a dub-wanted line wearing a keep-slice is a
-      // fallback, not a dub (dubbing_app/projects.py).
-      fallback: Boolean(
-        !seg.keep && (seg.place?.clip ?? "").split("/").pop()?.startsWith("keep_"),
-      ),
+      // fallback, not a dub (dubbing_app/projects.py). Both names, because the
+      // server reads both: `fit_keep_` is the same slice after `timeline`
+      // rate-fitted it, and a fitted original is still not a dub.
+      fallback: !seg.keep && (placed.startsWith("keep_") || placed.startsWith("fit_keep_")),
     },
   };
 }

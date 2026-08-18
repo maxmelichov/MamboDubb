@@ -26,7 +26,7 @@ def test_legacy_iw_behaves_like_he():
 
 
 def test_other_sources_use_the_vanilla_turbo():
-    for src in ("ru", "en", "es", "ar", "id"):
+    for src in ("ru", "en", "es", "ar", "id", "it", "pt", "zh", "ja", "ko"):
         local, hub = transcript.source_asr_paths(src)
         assert local == transcript.SRC_ASR_MODEL, src
         assert local.name == "faster-whisper-large-v3-turbo-ct2", src
@@ -49,9 +49,93 @@ def test_yiddish_and_indonesian_include_legacy_codes():
     assert fetch._lang_prefs("id") == ("in-orig", "id-orig", "in", "id")
 
 
+def test_chinese_and_portuguese_include_the_codes_youtube_actually_labels():
+    # YouTube labels these tracks by script or by region and almost never by the
+    # bare code. `rank()` matches a preference literally, so without the variants
+    # a Chinese video's own captions are invisible and the run falls back to ASR.
+    assert fetch._lang_prefs("zh") == (
+        "zh-orig", "zh-Hans-orig", "zh-Hant-orig", "zh-CN-orig", "zh-TW-orig",
+        "zh", "zh-Hans", "zh-Hant", "zh-CN", "zh-TW")
+    assert fetch._lang_prefs("pt") == (
+        "pt-orig", "pt-BR-orig", "pt-PT-orig", "pt", "pt-BR", "pt-PT")
+    # The bare code stays first: an unqualified track is the best match there is.
+    assert fetch._lang_prefs("zh")[0] == "zh-orig" and fetch._lang_prefs("pt")[5] == "pt-PT"
+
+
 def test_unlisted_codes_are_passed_through():
     assert fetch._lang_prefs("ru") == ("ru-orig", "ru")
+
+
+class _FakeDownloadError(Exception):
+    pass
+
+
+class _LadderYDL:
+    """Stands in for yt_dlp: refuses the web client, serves the android one."""
+
+    calls: list[tuple[dict, str]] = []
+
+    def __init__(self, opts):
+        self.opts = opts
+        _LadderYDL.calls.append((opts.get("extractor_args") or {}, opts["format"]))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def extract_info(self, url, download=True):
+        clients = (self.opts.get("extractor_args") or {}).get("youtube", {}) \
+            .get("player_client")
+        if not clients:
+            raise _FakeDownloadError("HTTP Error 403: Forbidden")
+        import pathlib
+        out = self.opts["outtmpl"].replace("%(ext)s", "mp4")
+        pathlib.Path(out).write_bytes(b"x")
+        return {"title": f"via {clients[0]}"}
+
+
+def _fake_yt_dlp(monkeypatch):
+    import sys as _sys
+    import types
+
+    mod = types.ModuleType("yt_dlp")
+    mod.YoutubeDL = _LadderYDL
+    mod.utils = types.SimpleNamespace(DownloadError=_FakeDownloadError)
+    monkeypatch.setitem(_sys.modules, "yt_dlp", mod)
+
+
+def test_a_403_from_the_web_client_falls_through_to_the_next(tmp_path, monkeypatch):
+    # Mid-2026 YouTube began refusing the web client's stream URLs outright;
+    # the ladder is what keeps a plain `python -m dubbing <url>` working.
+    _fake_yt_dlp(monkeypatch)
+    _LadderYDL.calls = []
+    path, title = fetch._download_video("https://example.test/v", tmp_path)
+    assert path.name == "source_video.mp4"
+    assert title == "via android"
+    assert len(_LadderYDL.calls) == 2                    # web failed, android served
+    assert _LadderYDL.calls[0][0] == {}                  # first rung is the plain web client
+    assert _LadderYDL.calls[1][0]["youtube"]["player_client"] == ["android"]
+
+
+def test_every_rung_failing_is_a_clean_refusal_naming_the_error(tmp_path, monkeypatch):
+    _fake_yt_dlp(monkeypatch)
+
+    def always_403(self, url, download=True):
+        raise _FakeDownloadError("HTTP Error 403: Forbidden")
+
+    monkeypatch.setattr(_LadderYDL, "extract_info", always_403)
+    _LadderYDL.calls = []
+    import pytest
+
+    with pytest.raises(SystemExit) as err:
+        fetch._download_video("https://example.test/v", tmp_path)
+    assert "403" in str(err.value)
+    assert len(_LadderYDL.calls) == len(fetch._VIDEO_ATTEMPTS)
     assert fetch._lang_prefs("en") == ("en-orig", "en")
+    for lang in ("it", "ja", "ko"):
+        assert fetch._lang_prefs(lang) == (f"{lang}-orig", lang)
 
 
 def test_fetch_aliases_mirror_transcript_lid_aliases():
@@ -283,3 +367,78 @@ def test_echoed_word_dropped_but_real_repetition_kept():
     real = [{"t": 10.0, "end": 10.6, "text": "מסוכנים."},
             {"t": 11.1, "end": 11.7, "text": "מסוכנים."}]
     assert drop(real) == real
+
+
+# ------------------------------------------ the declared source language is checked
+
+def _voiced(text, n=8):
+    return [{"start": i * 5.0, "end": i * 5.0 + 5.0, "text": text} for i in range(n)]
+
+
+def test_a_japanese_video_declared_english_is_reported():
+    from dubbing import report
+
+    segs = _voiced("首相は今日の記者会見で新しい経済政策を発表しました。")
+    got = report.declared_source_mismatch({"source": {"src_lang": "en"}}, segs)
+    assert got == {"declared": "en", "in_source_script": 0.0}
+    # ...and the truthful declaration passes silently.
+    assert report.declared_source_mismatch({"source": {"src_lang": "ja"}}, segs) is None
+
+
+def test_korean_and_chinese_declarations_are_checked_the_same_way():
+    from dubbing import report
+
+    ko = _voiced("국무총리는 오늘 기자회견을 열었습니다")
+    assert report.declared_source_mismatch({"source": {"src_lang": "ja"}}, ko)
+    assert report.declared_source_mismatch({"source": {"src_lang": "ko"}}, ko) is None
+    zh = _voiced("首相今天举行了记者会并宣布了新的经济政策")
+    assert report.declared_source_mismatch({"source": {"src_lang": "he"}}, zh)
+    assert report.declared_source_mismatch({"source": {"src_lang": "zh"}}, zh) is None
+
+
+def test_zh_and_ja_cannot_be_told_apart_and_the_check_does_not_pretend_to():
+    # Han and kana share one script bucket, so a Chinese video declared Japanese
+    # is invisible here — the same blind spot a German video declared English has.
+    from dubbing import report
+
+    zh = _voiced("首相今天举行了记者会并宣布了新的经济政策")
+    assert report.declared_source_mismatch({"source": {"src_lang": "ja"}}, zh) is None
+
+
+# ------------------------------------------------ the pair the CLI will accept
+
+def test_cli_accepts_every_supported_language_and_the_legacy_alias():
+    from dubbing import cli
+
+    for src in cli.SRC_LANGS:
+        assert cli.parse_args(["v.mp4", "--src", src]).src == src
+    for tgt in cli.TGT_LANGS:
+        assert cli.parse_args(["v.mp4", "--tgt", tgt]).tgt == tgt
+    # argparse checks `choices` before `normalize_lang` runs, so the legacy
+    # spelling has to be a choice or the alias dies at the front door.
+    args = cli.parse_args(["v.mp4", "--src", "iw", "--tgt", "iw"])
+    assert (args.src, args.tgt) == ("iw", "iw")
+    assert cli.normalize_lang(args.src) == "he"
+
+
+def test_cli_refuses_a_language_this_pipeline_cannot_dub():
+    import pytest
+
+    from dubbing import cli
+
+    for argv in (["v.mp4", "--src", "jp"],        # a typo for ja
+                 ["v.mp4", "--src", "klingon"],
+                 ["v.mp4", "--tgt", "xx"],
+                 ["v.mp4", "--tgt", "ar"]):       # Arabic reads, but has no voice
+        with pytest.raises(SystemExit):
+            cli.parse_args(argv)
+
+
+def test_the_untyped_language_sentinel_survives_the_choices():
+    # `resolve_settings` distinguishes "not typed" (keep this run's languages)
+    # from "typed the default", and argparse must not check the None default
+    # against `choices` — that would make every bare re-run a usage error.
+    from dubbing import cli
+
+    args = cli.parse_args(["v.mp4"])
+    assert args.src is None and args.tgt is None

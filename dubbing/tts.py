@@ -55,7 +55,7 @@ from . import audio
 from . import hebrew as hebrew_mod
 from . import script as script_mod
 from . import ttsopts
-from .script import count_letters, same_script, script_for
+from .script import count_letters, same_script, script_for, speech_units
 from .ttsopts import TtsOpts
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -117,8 +117,10 @@ MAX_TRIES = 3
 
 _LATIN_RUN = re.compile(r"[A-Za-z0-9][A-Za-z0-9''\-.]*")
 _CHROME = re.compile(r"[\[\(][^\]\)]{0,40}[\]\)]")
-# CJK punctuation → the ASCII marks prepare_text understands.
-_CJK_PUNCT = str.maketrans("。，！？；：、", ".,!?;:,")
+# CJK punctuation → the ASCII marks prepare_text understands. The table itself
+# lives in `script`, because `segments.SENTENCE_END` reads the same one: what
+# ends a Japanese sentence for the segmenter must end it for the voice too.
+_CJK_PUNCT = str.maketrans(script_mod.CJK_PUNCT)
 
 _RUN_RES: dict[str, re.Pattern] = {"latin": _LATIN_RUN}
 
@@ -185,13 +187,6 @@ def word_overlap(target: str, heard: str, lang: str = "en") -> float:
     return common / len(a)
 
 
-def _speech_units(text: str, lang: str) -> int:
-    """How many speakable units the text has: words, or characters for CJK/hangul."""
-    if script_for(lang) in ("cjk", "hangul"):
-        return max(1, sum(1 for ch in text or "" if ch.isalnum()))
-    return max(1, len((text or "").split()))
-
-
 def clip_exceeds_slot(clip_sec: float, slot_sec: float) -> bool:
     """A clip so much longer than its segment that placement cannot recover.
 
@@ -205,7 +200,7 @@ def clip_exceeds_slot(clip_sec: float, slot_sec: float) -> bool:
 
 def clone_length_ok(sec: float, text: str, lang: str = "en") -> bool:
     char_based = script_for(lang) in ("cjk", "hangul")
-    units = _speech_units(text, lang)
+    units = speech_units(text, lang)
     if sec <= 0.05:
         return False
     spu = sec / units
@@ -220,7 +215,7 @@ def clone_length_ok(sec: float, text: str, lang: str = "en") -> bool:
 
 
 def max_new_tokens(text: str, lang: str = "en") -> int:
-    units = _speech_units(text, lang)
+    units = speech_units(text, lang)
     sec = units * 0.25 + 2.5 if script_for(lang) in ("cjk", "hangul") else units * 0.65 + 2.5
     return max(96, min(2048, int(sec * CODEC_HZ)))
 
@@ -1507,7 +1502,17 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
                 # plays its original slice exactly what the editor promises
                 # of a failed translation and stays failed until the user
                 # re-translates it.
-                if keep_needs_slice(seg, workdir):
+                #
+                # `keep_needs_slice` alone is the wrong guard here: it answers
+                # False for ANY clip on disk with matching opts — including
+                # the segment's old *synthesis* of a translation mark_failed
+                # has since popped. That clip would then stay in place
+                # speaking the previous line while this print claims the
+                # original plays. The record must already BE a keep slice for
+                # the skip to be honest.
+                rec_clip = str((seg.get("tts") or {}).get("clip") or "")
+                is_slice = rec_clip.rsplit("/", 1)[-1].startswith("keep_")
+                if not is_slice or keep_needs_slice(seg, workdir):
                     seg["tts"] = engine.keep_clip(seg)
                 print(f"  tts: seg {seg['id']} has no translation the original "
                       "plays until it is re-translated", file=sys.stderr)

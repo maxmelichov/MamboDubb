@@ -81,8 +81,9 @@ import type { CreateProjectRequest, ProjectSummary } from "../lib/types";
 // handle these sources, but the synthesizer voices Qwen3-TTS's ten languages
 // plus Hebrew (a LoRA over the same checkpoint; the server refuses a Hebrew
 // target with the download command if the adapter isn't installed). Arabic is
-// still source-only offering it as a target would create a project whose tts
-// stage can only fail, so the two lists stay deliberately different.
+// the one language left on this list and off the other offering it as a
+// target would create a project whose tts stage can only fail, so the two lists
+// stay deliberately different.
 const SRC_LANGS = [
   ["he", "Hebrew"],
   ["en", "English"],
@@ -91,6 +92,11 @@ const SRC_LANGS = [
   ["fr", "French"],
   ["es", "Spanish"],
   ["de", "German"],
+  ["it", "Italian"],
+  ["pt", "Portuguese"],
+  ["zh", "Chinese"],
+  ["ja", "Japanese"],
+  ["ko", "Korean"],
 ] as const;
 
 // The editor's job bar counts "stage 3 of 9"; this is the same nine, one line

@@ -307,8 +307,12 @@ def test_the_stage_tags_moved():
     # translation changes what translate produces; neither may replay old output.
     # v16, not v15: a second line of work claimed v15 for the honest-failure
     # records, so the merged tag moves past both claims rather than picking one.
-    assert manifest.STAGE_TAGS["tts"] == "tts/v16"
-    assert manifest.STAGE_TAGS["translate"] == "translate/v36"
+    # v17: a dub-wanted line with no translation now replaces a stale *synthesis*
+    # with its original-audio slice, which changes what this stage produces.
+    assert manifest.STAGE_TAGS["tts"] == "tts/v17"
+    # v36: script-derived gloss floors, negations and shorten budgets (CJK/hangul).
+    # v37: "%" survives into every TTS target's own vocabulary.
+    assert manifest.STAGE_TAGS["translate"] == "translate/v37"
 
 
 def test_ipa_is_not_a_manifest_field():

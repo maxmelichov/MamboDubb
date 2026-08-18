@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
-from . import MANUAL_REASON, STAGES, manifest, ttsopts
+from . import MANUAL_REASON, STAGES, manifest, script, ttsopts
 
 Progress = Callable[[float, str], None]
 
@@ -121,6 +121,26 @@ def _require(m: dict[str, Any], uid: str) -> dict[str, Any]:
     if seg is None:
         raise SegmentNotFound(f"no segment {uid!r}")
     return seg
+
+
+def _still_present(m: dict[str, Any], uids: Sequence[str]) -> list[dict[str, Any]]:
+    """The named segments that still exist, skipping (and naming) the rest.
+
+    For the batch jobs only. A queued retranslate/resynthesize holds uids the
+    user is free to delete before the job's turn comes — `guard_structural`
+    refuses edits against a *running* job, not a queued one — and dying on the
+    first missing uid threw away every other segment's work in the batch. An
+    edit addressed to one segment still raises: there, "no segment" is the
+    whole answer.
+    """
+    segs = []
+    for uid in uids:
+        seg = find(m, uid)
+        if seg is None:
+            print(f"  edit: segment {uid!r} no longer exists skipped", file=sys.stderr)
+            continue
+        segs.append(seg)
+    return segs
 
 
 # --------------------------------------------------------------- invalidation
@@ -423,13 +443,18 @@ def split(m: dict[str, Any], uid: str, at: float) -> tuple[str, str]:
     have nothing to say. Both halves are new segments with new uids, and everything
     generated from the old text (translation, clip, placement) is dropped: none of
     it describes either half.
+
+    "Word" is `script.split_words`, not `.split()`: Japanese and Chinese text has
+    no word spaces, so splitting on them would make every CJK segment one word
+    and unsplittable. There the unit is the character, and the halves rejoin
+    without a space, exactly as the segmenter wrote the line.
     """
     seg = _require(m, uid)
     at = round(float(at), 3)
     start, end = float(seg["start"]), float(seg["end"])
     if not (start < at < end):
         raise EditError(f"split point {at} is not inside [{start}, {end}]")
-    words = (seg.get("text") or "").split()
+    words = script.split_words(seg.get("text") or "")
     if len(words) < 2:
         raise EditError("cannot split a segment of fewer than two words without "
                         "leaving a half with no text")
@@ -437,9 +462,10 @@ def split(m: dict[str, Any], uid: str, at: float) -> tuple[str, str]:
     k = round(len(words) * (at - start) / (end - start))
     k = max(1, min(len(words) - 1, int(k)))
 
-    left = _derived(seg, start=start, end=at, text=" ".join(words[:k]))
-    right = _derived(seg, start=at, end=end, text=" ".join(words[k:]))
-    assert (left["text"] + " " + right["text"]).split() == words, "split lost a word"
+    left = _derived(seg, start=start, end=at, text=script.join_words(words[:k]))
+    right = _derived(seg, start=at, end=end, text=script.join_words(words[k:]))
+    assert script.split_words(
+        script.join_words([left["text"], right["text"]])) == words, "split lost a word"
 
     i = index_of(m, uid)
     m["segments"][i:i + 1] = [left, right]
@@ -757,7 +783,7 @@ def retranslate(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
     """
     from . import numwords, translate
 
-    segs = [_require(m, uid) for uid in uids]
+    segs = _still_present(m, uids)
     if not segs:
         return {}
     if respect_locked:
@@ -923,7 +949,7 @@ def resynthesize(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
     from . import tts as tts_mod
 
     counts = {"synthesized": 0, "fell_back": 0, "kept": 0}
-    segs = [_require(m, uid) for uid in uids]
+    segs = _still_present(m, uids)
     if not segs:
         return ResynthResult({}, {**counts, "deferred_placement": False})
     out: dict[str, dict[str, Any]] = {}

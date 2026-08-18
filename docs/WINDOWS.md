@@ -86,8 +86,9 @@ uv run mambodubb --port 4400        # → http://127.0.0.1:4400
 | **Console encoding** | The CLI, the server and both workers force UTF-8 on stdio; a `chcp 1252` console cannot otherwise print a Hebrew line. |
 | **Tool lookup** | `ffmpeg`/`ffprobe`/`sox` are resolved with `shutil.which`, which honours `PATHEXT` — the `.exe` suffix is never assumed or spelled out. |
 
-Everything else — the manifest, the caching, every invariant in
-[AGENTS.md](../AGENTS.md) — is identical. Run directories are portable between
+Everything else — the manifest, the caching, every pipeline invariant
+(see [APP_ARCHITECTURE.md](APP_ARCHITECTURE.md), Non-negotiables) — is
+identical. Run directories are portable between
 platforms except for absolute paths recorded in `m["files"]["video"]` for runs
 whose input lived outside the run directory.
 

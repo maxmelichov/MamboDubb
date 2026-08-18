@@ -87,7 +87,7 @@ def test_chinese_percent_is_a_prefix_and_digits_stay():
 
 
 def test_korean_percent_in_its_own_script():
-    assert spell_numbers("인구의 65%가", "ko") == "인구의 육십오 퍼센트가"
+    assert spell_numbers("인구의 65%가", "ko") == "인구의 육십오퍼센트가"
 
 
 def test_cjk_times_and_ranges_still_untouched():
@@ -150,3 +150,21 @@ def test_run_en_target_always_spells_the_final_english(monkeypatch, tmp_path):
                       "keep_reason": None}]
     translate.run(m, tmp_path, source="he", target="en")
     assert m["segments"][0]["text_en"] == "He lost five hundred and four soldiers."
+
+
+def test_percent_reads_in_the_new_target_languages():
+    # The table's fallback is English, so a target missing from it spoke the word
+    # "percent" in the middle of an Italian or Japanese line.
+    assert spell_numbers("circa 20%", "it") == "circa venti per cento"
+    assert spell_numbers("cerca de 20%", "pt") == "cerca de vinte por cento"
+    # No space where the script has none between its words.
+    assert spell_numbers("20%", "ja") == "二十パーセント"
+    assert spell_numbers("20%", "ko") == "이십퍼센트"
+
+
+def test_chinese_has_no_spelling_so_only_the_percent_sign_is_voiced():
+    # num2words has no zh: plain digits stay untouched (the voice reads them
+    # natively), but "%" still becomes the spoken prefix over the kept digits —
+    # tts.prepare_text strips the symbol, so leaving it would silence the word.
+    assert spell_numbers("20% 的人", "zh") == "百分之20 的人"
+    assert spell_numbers("有 20 人", "zh") == "有 20 人"
