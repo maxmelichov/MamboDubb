@@ -17,8 +17,9 @@ imperfect.
 
 Deliberately conservative: times ("6:30"), ranges and hyphen compounds
 ("2010-2015", "mid-1990s"), and non-English decimals are left as digits rather
-than risk a wrong reading; an unsupported num2words language returns the text
-unchanged.
+than risk a wrong reading; an unsupported num2words language (ja, zh) keeps its
+digits — the TTS voice reads those natively — except that "%" still becomes the
+language's spoken percent word, because `tts.prepare_text` strips the symbol.
 """
 
 from __future__ import annotations
@@ -27,15 +28,48 @@ import re
 
 from num2words import num2words
 
+from . import script as _script
+
+
+def _spaceless(ch: str) -> bool:
+    """A CJK/kana/hangul character. Those scripts write without spaces, so a
+    digit next to such a letter is ordinary prose — not a glued token like
+    "1990s" or "A4"."""
+    o = ord(ch)
+    return any(lo <= o <= hi
+               for bucket in ("cjk", "hangul")
+               for lo, hi in _script._RANGES[bucket])
+
 # The language's word for "%", appended after the spelled cardinal. Small table,
-# English fallback general vocabulary, not per-video content.
+# English fallback general vocabulary, not per-video content. Covers every
+# Qwen3-TTS target: a fallback English "percent" inside a non-Latin line is
+# stripped by tts.prepare_text and the dub silently loses the word.
 _PERCENT = {
     "en": "percent",
     "ru": "процентов",
     "es": "por ciento",
     "fr": "pour cent",
     "de": "Prozent",
+    "it": "per cento",
+    "pt": "por cento",
+    "ja": "パーセント",
+    "ko": "퍼센트",
 }
+
+# Chinese reads a percentage as a prefix: 百分之六十五 ("65 of a hundred parts").
+_PERCENT_PREFIX = {"zh": "百分之"}
+
+# Scripts written without spaces glue the percent word straight onto the number.
+_PERCENT_NO_SPACE = {"ja", "zh"}
+
+
+def _percent_words(number_words: str, lang: str) -> str:
+    """`number_words` with the language's word for "%" attached correctly."""
+    prefix = _PERCENT_PREFIX.get(lang)
+    if prefix is not None:
+        return prefix + number_words
+    sep = "" if lang in _PERCENT_NO_SPACE else " "
+    return number_words + sep + _PERCENT.get(lang, _PERCENT["en"])
 
 # A number token: thousands-separated integer, decimal, or plain integer —
 # optionally trailed by "%", a short attached non-Latin grammatical suffix
@@ -47,7 +81,14 @@ _TOKEN = re.compile(
 )
 
 
-def _convert(token: str, num: str, suffix: str, lang: str) -> str:
+def _convert(token: str, num: str, suffix: str, lang: str, spellable: bool) -> str:
+    if not spellable:
+        # num2words has no such language (ja, zh): the digits stay — the TTS
+        # voice reads them natively — but "%" must still become a spoken word,
+        # because tts.prepare_text strips the symbol from the synthesis text.
+        if "%" in suffix:
+            return _percent_words(num, lang)
+        return token
     if "." in num:
         if lang != "en":
             return token  # non-English decimals stay digits rather than risk it
@@ -64,7 +105,7 @@ def _convert(token: str, num: str, suffix: str, lang: str) -> str:
         if words is None:
             words = num2words(n, lang=lang)
     if "%" in suffix:
-        words += " " + _PERCENT.get(lang, _PERCENT["en"])
+        words = _percent_words(words, lang)
     # Any other matched suffix (grammatical "-м", ordinal "th") is dropped: the
     # nominative cardinal is the safe spoken form, and the target-hop model
     # inflects words it is never asked to convert digits.
@@ -83,8 +124,13 @@ def spell_numbers(text: str, lang: str = "en") -> str:
         return text
     try:
         num2words(1, lang=lang)
+        spellable = True
     except NotImplementedError:
-        return text
+        # No spelling for this language, but "%" still needs its spoken word
+        # (tts.prepare_text strips the symbol); everything else stays as-is.
+        if "%" not in text:
+            return text
+        spellable = False
 
     def repl(m: re.Match[str]) -> str:
         start, end = m.start(), m.end()
@@ -92,12 +138,13 @@ def spell_numbers(text: str, lang: str = "en") -> str:
         after = text[end] if end < len(text) else ""
         if before in (":", "-") or after in (":", "-"):  # time, range, compound
             return m.group(0)
-        if before.isalnum() or after.isalpha():        # glued into a word
+        if ((before.isalnum() and not _spaceless(before))
+                or (after.isalpha() and not _spaceless(after))):  # glued: "1990s"
             return m.group(0)
         if before == "." and start >= 2 and text[start - 2].isdigit():
             return m.group(0)                          # tail of a 1.2.3 chain
         if after == "." and end + 1 < len(text) and text[end + 1].isdigit():
             return m.group(0)                          # head of a 1.2.3 chain
-        return _convert(m.group(0), m.group(1), m.group(2) or "", lang)
+        return _convert(m.group(0), m.group(1), m.group(2) or "", lang, spellable)
 
     return _TOKEN.sub(repl, text)

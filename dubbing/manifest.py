@@ -37,7 +37,7 @@ STAGE_TAGS = {
     # line is the source line and no translator loads.
     # v35: a segment translates from its OWN language (`translate.segment_langs`),
     # and a failed translation no longer overrules the user's "dub it".
-    "translate": "translate/v35",
+    "translate": "translate/v36",
     # Two lines each claimed tts/v15 for different logic (the Hebrew LoRA vs the
     # honest-failure records), so the merged tag moves past both.
     # v16: Hebrew targets synthesize from stressed IPA through the Qwen3-TTS Hebrew

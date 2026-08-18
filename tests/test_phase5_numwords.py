@@ -62,6 +62,39 @@ def test_unsupported_num2words_language_returns_text_unchanged():
     assert spell_numbers("504 things", "xx") == "504 things"
 
 
+# ----------------------------------------------- percent survives every target
+
+def test_percent_word_exists_for_every_tts_target():
+    # tts.prepare_text strips anything outside the target script, so a fallback
+    # English "percent" inside a ja/ko/zh line silently vanishes from the dub.
+    from dubbing.tts import prepare_text
+    for lang in ("en", "zh", "de", "it", "pt", "es", "ja", "ko", "fr", "ru"):
+        spoken = prepare_text(spell_numbers("65%", lang), lang)
+        assert "65" not in spoken or lang == "zh"   # spelled (zh keeps digits)
+        assert "percent" not in spoken or lang == "en"  # no English fallback
+
+
+def test_japanese_percent_spelled_despite_no_spaces():
+    # Kana next to a digit is ordinary prose, not a glued token like "1990s".
+    assert spell_numbers("アサドは65%を支配していた", "ja") == \
+        "アサドは六十五パーセントを支配していた"
+
+
+def test_chinese_percent_is_a_prefix_and_digits_stay():
+    # num2words has no zh: digits stay (the voice reads them natively) but the
+    # "%" must become the spoken prefix before prepare_text strips the symbol.
+    assert spell_numbers("占了65%的人口", "zh") == "占了百分之65的人口"
+
+
+def test_korean_percent_in_its_own_script():
+    assert spell_numbers("인구의 65%가", "ko") == "인구의 육십오 퍼센트가"
+
+
+def test_cjk_times_and_ranges_still_untouched():
+    assert spell_numbers("6:30", "ja") == "6:30"
+    assert spell_numbers("2010-2015", "ja") == "2010-2015"
+
+
 # --------------------------------------------------- target-language safety net
 
 def test_russian_digit_with_grammatical_suffix_becomes_nominative_cardinal():

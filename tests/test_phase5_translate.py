@@ -175,7 +175,9 @@ def test_translate_stage_tag_bumped():
     # v34: a same-language pair translates by identity, with no model loaded.
     # v35: a segment translates from its OWN language, and a failed translation
     # no longer overrules the user's "dub it".
-    assert manifest.STAGE_TAGS["translate"] == "translate/v35"
+    # v36: "%" becomes the target's own spoken word for every TTS target —
+    # ja/ko/zh percentages no longer vanish, it/pt no longer say "percent".
+    assert manifest.STAGE_TAGS["translate"] == "translate/v36"
 
 
 # ------------------------------------------------------- per-segment gloss gating

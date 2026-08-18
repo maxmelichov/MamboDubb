@@ -308,7 +308,7 @@ def test_the_stage_tags_moved():
     # v16, not v15: a second line of work claimed v15 for the honest-failure
     # records, so the merged tag moves past both claims rather than picking one.
     assert manifest.STAGE_TAGS["tts"] == "tts/v16"
-    assert manifest.STAGE_TAGS["translate"] == "translate/v35"
+    assert manifest.STAGE_TAGS["translate"] == "translate/v36"
 
 
 def test_ipa_is_not_a_manifest_field():
