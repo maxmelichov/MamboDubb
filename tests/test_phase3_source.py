@@ -64,6 +64,75 @@ def test_chinese_and_portuguese_include_the_codes_youtube_actually_labels():
 
 def test_unlisted_codes_are_passed_through():
     assert fetch._lang_prefs("ru") == ("ru-orig", "ru")
+
+
+class _FakeDownloadError(Exception):
+    pass
+
+
+class _LadderYDL:
+    """Stands in for yt_dlp: refuses the web client, serves the android one."""
+
+    calls: list[tuple[dict, str]] = []
+
+    def __init__(self, opts):
+        self.opts = opts
+        _LadderYDL.calls.append((opts.get("extractor_args") or {}, opts["format"]))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def extract_info(self, url, download=True):
+        clients = (self.opts.get("extractor_args") or {}).get("youtube", {}) \
+            .get("player_client")
+        if not clients:
+            raise _FakeDownloadError("HTTP Error 403: Forbidden")
+        import pathlib
+        out = self.opts["outtmpl"].replace("%(ext)s", "mp4")
+        pathlib.Path(out).write_bytes(b"x")
+        return {"title": f"via {clients[0]}"}
+
+
+def _fake_yt_dlp(monkeypatch):
+    import sys as _sys
+    import types
+
+    mod = types.ModuleType("yt_dlp")
+    mod.YoutubeDL = _LadderYDL
+    mod.utils = types.SimpleNamespace(DownloadError=_FakeDownloadError)
+    monkeypatch.setitem(_sys.modules, "yt_dlp", mod)
+
+
+def test_a_403_from_the_web_client_falls_through_to_the_next(tmp_path, monkeypatch):
+    # Mid-2026 YouTube began refusing the web client's stream URLs outright;
+    # the ladder is what keeps a plain `python -m dubbing <url>` working.
+    _fake_yt_dlp(monkeypatch)
+    _LadderYDL.calls = []
+    path, title = fetch._download_video("https://example.test/v", tmp_path)
+    assert path.name == "source_video.mp4"
+    assert title == "via android"
+    assert len(_LadderYDL.calls) == 2                    # web failed, android served
+    assert _LadderYDL.calls[0][0] == {}                  # first rung is the plain web client
+    assert _LadderYDL.calls[1][0]["youtube"]["player_client"] == ["android"]
+
+
+def test_every_rung_failing_is_a_clean_refusal_naming_the_error(tmp_path, monkeypatch):
+    _fake_yt_dlp(monkeypatch)
+
+    def always_403(self, url, download=True):
+        raise _FakeDownloadError("HTTP Error 403: Forbidden")
+
+    monkeypatch.setattr(_LadderYDL, "extract_info", always_403)
+    _LadderYDL.calls = []
+    import pytest
+
+    with pytest.raises(SystemExit) as err:
+        fetch._download_video("https://example.test/v", tmp_path)
+    assert "403" in str(err.value)
+    assert len(_LadderYDL.calls) == len(fetch._VIDEO_ATTEMPTS)
     assert fetch._lang_prefs("en") == ("en-orig", "en")
     for lang in ("it", "ja", "ko"):
         assert fetch._lang_prefs(lang) == (f"{lang}-orig", lang)

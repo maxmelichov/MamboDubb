@@ -51,18 +51,45 @@ def _lang_prefs(lang: str) -> tuple[str, ...]:
     return tuple([f"{a}-orig" for a in alias] + alias)
 
 
+# Tried in order until one succeeds. YouTube periodically starts refusing the
+# web client's stream URLs outright (HTTP 403, mid-2026: PO-token enforcement),
+# while the android client keeps serving — but only muxed formats, so the
+# fallback trades stream quality for working at all. The ladder is generic
+# retry policy, not a per-site hack: each rung is (extractor_args, format).
+_VIDEO_ATTEMPTS: tuple[tuple[dict, str], ...] = (
+    ({}, "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"),
+    ({"youtube": {"player_client": ["android"]}}, "best[ext=mp4]/best"),
+    ({"youtube": {"player_client": ["ios"]}}, "best[ext=mp4]/best"),
+)
+
+
 def _download_video(url: str, workdir: Path) -> tuple[Path, str]:
     import yt_dlp
 
-    opts = {
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-        "outtmpl": str(workdir / "source_video.%(ext)s"),
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-    }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
+    last: Exception | None = None
+    for i, (extractor_args, fmt) in enumerate(_VIDEO_ATTEMPTS):
+        opts = {
+            "format": fmt,
+            "outtmpl": str(workdir / "source_video.%(ext)s"),
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+        }
+        if extractor_args:
+            opts["extractor_args"] = extractor_args
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+            break
+        except yt_dlp.utils.DownloadError as exc:
+            last = exc
+            if i + 1 < len(_VIDEO_ATTEMPTS):
+                client = (extractor_args.get("youtube", {}).get("player_client")
+                          or ["web"])[0]
+                print(f"  fetch: download via {client} client failed ({exc}) "
+                      "retrying with the next client", file=sys.stderr)
+    else:
+        raise SystemExit(f"yt-dlp could not download {url}: {last}")
     found = sorted(workdir.glob("source_video.*"))
     found = [p for p in found if p.suffix.lower() in VIDEO_EXTS]
     if not found:
