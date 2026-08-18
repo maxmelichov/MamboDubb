@@ -33,3 +33,5 @@ CLAUDE.md
 # Claude workspace files — local tooling, not part of the project
 .claude/
 CLAUDE.md
+.cursor/
+AGENTS.md

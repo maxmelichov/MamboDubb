@@ -137,8 +137,11 @@ faster-whisper (ASR + verification), Gemma (translation, via MLX), Qwen3-TTS
 sequentially and never co-exist in memory, so 16–32 GB of unified memory is enough.
 
 Guarantees the pipeline enforces on itself: no second of audible speech is ever
-silently dropped, dubbed lines never overlap, and every synthesized take is
-verified by a second ASR pass before it is accepted.
+silently dropped, dubbed lines never overlap, transcription only ever listens to
+the separated voice track so background music can never become invented lines,
+and every synthesized take is verified by a second ASR pass before it is
+accepted. Anything the pipeline could not account for is named in the run's
+`report.json` instead of glossed over.
 
 ## Credits
 
