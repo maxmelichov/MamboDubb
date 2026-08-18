@@ -110,14 +110,15 @@ for the rest of the session. The traffic is plain HTTP; treat the LAN mode as
 
 | | |
 |---|---|
-| **Spoken language (source)** | Hebrew, English, Arabic, Russian, French, Spanish, German |
+| **Spoken language (source)** | Hebrew, English, Arabic, Russian, French, Spanish, German, Italian, Portuguese, Chinese, Japanese, Korean |
 | **Dub into (target)** | English, Russian, French, Spanish, German, Italian, Portuguese, Chinese, Japanese, Korean, **Hebrew** |
 
 Targets are bounded by what Qwen3-TTS can speak. Hebrew is not one of its ten
 languages; it is added by a LoRA over the same checkpoint (one extra download —
 see [docs/setup.md](docs/setup.md)), which is switched off again for the other
-ten, so there is no second synthesiser and nothing about them changes. Arabic is
-still source-only.
+ten, so there is no second synthesiser and nothing about them changes. Every
+target can also be a source; Arabic is the one language that goes the other way
+only — it can be heard and translated, never spoken, so it is still source-only.
 
 Source and target may be the same language (`--src he --tgt he`). That is a dub,
 not a no-op: every line is re-voiced in the speaker's cloned voice, with no

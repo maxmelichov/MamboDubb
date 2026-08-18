@@ -43,7 +43,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import audio, manifest
+from . import audio, manifest, script
 
 MIN_GAP = 0.10        # silence between two placed clips that the source separated
 MIN_SEAM = 0.005      # …and between two that ran together: inaudible, but enough
@@ -366,6 +366,7 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
         genre: str = "documentary") -> None:
     rates = rates_for_genre(genre)
     media_end = float(m["source"].get("duration") or math.inf)
+    run_tgt = (m.get("source") or {}).get("tgt_lang") or "en"
     by_id = {s["id"]: s for s in m["segments"]}
     items = build_items(m)
     by_index = {it["id"]: i for i, it in enumerate(items)}
@@ -394,8 +395,13 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
             slot = items[j + 1]["source_start"] - places[j]["start"]
             budget = max(0.5, slot) * rates.rate_pref
             ratio = max(0.5, min(0.95, budget / max(items[j]["dur"], 0.1)))
-            words = len((by_id[items[j]["id"]].get("text_en") or "").split())
-            requests[items[j]["id"]] = max(3, int(words * ratio))
+            # Speech units, not `.split()` words: a Japanese line is one "word",
+            # so the budget came out 3 for every CJK segment and `shorten` — which
+            # compares against the same count — refused every rewrite. This
+            # stage's only rescue for a late line was dead for zh/ja/ko.
+            units = script.speech_units(by_id[items[j]["id"]].get("text_en") or "",
+                                        by_id[items[j]["id"]].get("tgt_lang") or run_tgt)
+            requests[items[j]["id"]] = max(3, int(units * ratio))
             items[j]["shortened"] = True   # attempted at most once per segment
         if not requests:
             break
@@ -423,14 +429,15 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
             if not record:
                 continue
             seg, it = by_id[seg_id], items[by_index[seg_id]]
-            before = len(seg["text_en"].split())
+            tgt = seg.get("tgt_lang") or run_tgt
+            before = script.speech_units(seg["text_en"], tgt)
             # Kept local to this stage: `text_en` belongs to the translator, and
             # rewriting it would make the next run shorten an already-short line.
             spoken[seg_id] = texts[seg_id]
             it["dur"], it["clip"] = float(record["dur"]), record["clip"]
             changed = True
             print(f"  timeline: shortened seg {seg_id} {before}→"
-                  f"{len(texts[seg_id].split())} words", file=sys.stderr)
+                  f"{script.speech_units(texts[seg_id], tgt)} units", file=sys.stderr)
         if not changed:
             break
         places = place(items, rates, media_end)

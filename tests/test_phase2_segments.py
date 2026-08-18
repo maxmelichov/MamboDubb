@@ -482,3 +482,80 @@ def test_measured_six_turn_courtroom_matrix_splits():
         [0.19, 0.33, 0.20, 0.20, 0.20, 1.00],
     ]
     assert segments._split_embedding_clusters(sims) == [0, 1, 0, 1, 0, 1]
+
+
+# ------------------------------------------------- CJK sources: shape of the text
+
+def test_sentence_end_knows_the_cjk_terminators():
+    # Without these a Japanese read has no interior sentence end at all: the
+    # grouping loop never splits it, and the length splitter then cuts it
+    # mid-clause into the two 6.9s chunks that produced the audible prosody jump.
+    assert segments.SENTENCE_END.search("発表しました。")
+    assert segments.SENTENCE_END.search("そうですか？")
+    assert segments.SENTENCE_END.search("すごい！")
+    assert segments.SENTENCE_END.search("举行了记者会。")
+    assert segments.SENTENCE_END.search("と言った。」")      # quoted speech
+    # Separators are not ends: the ideographic comma keeps the clause open.
+    assert not segments.SENTENCE_END.search("首相は今日、")
+    assert not segments.SENTENCE_END.search("首相は")
+    # …and everything it already knew still ends a sentence.
+    assert segments.SENTENCE_END.search("done.")
+    assert segments.SENTENCE_END.search('he said."')
+    assert segments.SENTENCE_END.search("אמר.")
+
+
+def test_a_japanese_read_segments_one_segment_per_sentence():
+    # Three sentences spoken without a pause long enough to split (GAP_SPLIT is
+    # 0.70s): only the terminators can separate them. As one group they were a
+    # single 6s span that the length splitter carved mid-clause instead.
+    spec = []
+    tokens = (["首相", "は", "今日", "会見", "した。"]
+              + ["新しい", "経済", "政策", "を", "発表した。"]
+              + ["市場", "は", "これ", "を", "歓迎した。"])
+    for i, tok in enumerate(tokens):
+        spec.append((round(i * 0.4, 3), tok))
+    segs = segments.words_to_segments(mkwords(spec), "ja", "en")
+    assert len(segs) == 3
+    assert segs[0]["text"] == "首相は今日会見した。"
+    assert segs[1]["text"] == "新しい経済政策を発表した。"
+    assert segs[2]["text"] == "市場はこれを歓迎した。"
+
+
+def test_cjk_word_tokens_join_without_the_spaces_the_language_has_not():
+    assert script.join_words(["これ", "は", "テスト", "です", "。"]) == "これはテストです。"
+    assert script.join_words(["ISIS", "を", "支援"]) == "ISISを支援"
+    assert script.join_words(["hello", "world"]) == "hello world"
+    # Korean is written WITH spaces — only its particles glue on, inside a word.
+    assert script.join_words(["안녕", "하세요"]) == "안녕 하세요"
+    assert script.join_words(["שלום", "עולם"]) == "שלום עולם"
+    assert script.join_words(["", "  ", "solo"]) == "solo"
+
+
+def test_split_words_is_the_inverse_join_words_needs():
+    for text in ("これはテストです。", "hello world", "안녕 하세요",
+                 "ISISを支援した", "שלום עולם"):
+        assert script.join_words(script.split_words(text)) == text
+    assert script.split_words("これは") == ["こ", "れ", "は"]
+    assert script.split_words("hello world") == ["hello", "world"]
+
+
+def test_cjk_and_hangul_are_measured_in_characters_not_words():
+    assert script.speech_units("one two three", "en") == 3
+    assert script.speech_units("首相は今日会見した", "ja") == 9
+    assert script.speech_units("首相今天举行了记者会", "zh") == 10
+    assert script.speech_units("가지 않습니다", "ko") == 6
+    # Never zero: every caller divides by it.
+    assert script.speech_units("", "ja") == 1
+    assert script.speech_units("。", "ja") == 1
+
+
+def test_cjk_shares_one_bucket_while_hangul_stands_apart():
+    assert script.same_script("ja", "zh")        # kana+Han vs Han: one bucket
+    assert not script.same_script("ja", "ko")
+    assert not script.same_script("zh", "en")
+    assert script.same_script("it", "pt")        # both Latin: no script signal
+    assert segments.text_bucket("東京", "ja", "en") == "source"
+    assert segments.text_bucket("Tokyo", "ja", "en") == "target"
+    assert segments.text_bucket("서울", "ko", "en") == "source"
+    assert segments.text_bucket("東京", "ja", "zh") is None    # same bucket
+    assert segments.text_bucket("ciao", "it", "pt") is None    # same script

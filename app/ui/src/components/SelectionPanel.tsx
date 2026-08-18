@@ -48,7 +48,13 @@ import {
   TextInput,
 } from "./ui";
 import { cn } from "../lib/classNames";
-import { duration as fmtDuration, percent, speakerLabel, timecode } from "../lib/format";
+import {
+  duration as fmtDuration,
+  languageName,
+  percent,
+  speakerLabel,
+  timecode,
+} from "../lib/format";
 import {
   keepReason,
   lockedFields,
@@ -61,7 +67,28 @@ import {
 } from "../lib/segments";
 import type { Segment, SegmentPatch, TtsOpts } from "../lib/types";
 
-const LANGS = ["", "he", "en", "ar", "ru", "fr", "es", "de"];
+/*
+ * Two lists, because one could not say the true thing: what the ASR and the
+ * translator can READ is Arabic plus every dub target, while what Qwen3-TTS can
+ * SPEAK is that set minus Arabic. A single array offered Arabic as a per-segment
+ * target, which is a line whose tts can only fail. `""` leads both lists — it is
+ * "inherit", and the empty string is what *clears* an override (see below).
+ */
+const SRC_LANGS = ["", "he", "en", "ar", "ru", "fr", "es", "de", "it", "pt", "zh", "ja", "ko"];
+const TGT_LANGS = ["", "en", "he", "ru", "fr", "es", "de", "it", "pt", "zh", "ja", "ko"];
+
+/** The picker's own option list — codes in the value, names on the screen. */
+function LangOptions({ langs }: { langs: string[] }) {
+  return (
+    <>
+      {langs.map((lang) => (
+        <option key={lang || "inherit"} value={lang}>
+          {lang ? languageName(lang) : "inherit"}
+        </option>
+      ))}
+    </>
+  );
+}
 
 export function SelectionPanel({
   seg,
@@ -304,26 +331,20 @@ export function SelectionPanel({
             */}
             <Field label="Spoken">
               <Select
+                aria-label="Spoken in this line"
                 value={seg.src_lang ?? ""}
                 onChange={(event) => onPatch({ src_lang: event.currentTarget.value })}
               >
-                {LANGS.map((lang) => (
-                  <option key={lang || "inherit"} value={lang}>
-                    {lang || "inherit"}
-                  </option>
-                ))}
+                <LangOptions langs={SRC_LANGS} />
               </Select>
             </Field>
             <Field label="Translate into">
               <Select
+                aria-label="Translate this line into"
                 value={seg.tgt_lang ?? ""}
                 onChange={(event) => onPatch({ tgt_lang: event.currentTarget.value })}
               >
-                {LANGS.map((lang) => (
-                  <option key={lang || "inherit"} value={lang}>
-                    {lang || "inherit"}
-                  </option>
-                ))}
+                <LangOptions langs={TGT_LANGS} />
               </Select>
             </Field>
           </div>

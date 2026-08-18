@@ -179,11 +179,44 @@ def test_create_project_refuses_an_option_the_cli_cannot_take(client, outputs):
     assert sorted(p.name for p in outputs.iterdir()) == [NAME]
 
 
+def test_create_project_refuses_a_language_the_pipeline_cannot_dub(client, outputs):
+    """A bad language code is worse than a bad genre: `script.script_for` answers
+    "latin" for anything it does not know, so a project created with "jp" would
+    not fail — it would run to the end with every script-derived verdict (keep vs
+    dub, gloss matching, source-leak detection) quietly built on a lie."""
+    url = "https://youtu.be/abc"
+    for field, bad in (("src_lang", "jp"),          # a typo for ja
+                       ("src_lang", "klingon"),
+                       ("tgt_lang", "xx"),
+                       ("tgt_lang", "ar")):         # Arabic reads, but has no voice
+        r = client.post("/api/projects", json={"source": url, field: bad})
+        assert r.status_code == 400, (field, bad)
+        env = envelope_of(r)
+        assert env["code"] == "invalid_request" and field in env["message"]
+    assert sorted(p.name for p in outputs.iterdir()) == [NAME]
+
+
+def test_create_project_accepts_the_languages_that_opened(client, outputs, fake):
+    from dubbing import cli
+
+    body = {"source": "https://youtu.be/abc", "src_lang": "ja",
+            "tgt_lang": "pt", "name": "japt"}
+    r = client.post("/api/projects", json=body)
+    assert r.status_code == 201
+    assert wait_until(lambda: fake.calls, 5.0)
+    args = cli.parse_args(ops.full_run_argv(Path(fake.calls[0][2]["workdir"]),
+                                            fake.calls[0][2]["source"]))
+    assert (args.src, args.tgt) == ("ja", "pt")
+    assert manifest.load(outputs / "japt")["source"]["src_lang"] == "ja"
+
+
 @pytest.mark.parametrize("flag,dest,literal", [
     ("--genre", "genre", app_mod.Genre),
     ("--register", "register", app_mod.Register),
     ("--transcript", "transcript", app_mod.Transcript),
     ("--tts-model", "tts_model", app_mod.TtsModel),
+    ("--src", "src", app_mod.SrcLang),
+    ("--tgt", "tgt", app_mod.TgtLang),
 ])
 def test_create_project_options_are_exactly_the_cli_choices(flag, dest, literal, capsys):
     """`dubbing.cli` cannot be imported here it drags in torch so the choice

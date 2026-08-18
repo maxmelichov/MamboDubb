@@ -45,12 +45,22 @@ STAGE_TAGS = {
     # v39: a confident audio-LID witness naming a non-target language outranks
     # the "already target script" clause, exactly as a named span witness does —
     # nameless English lines in a he→de run were kept as "already German".
-    "segments": "segments/v39",
+    # v40: CJK opens as a source. `SENTENCE_END` knows the fullwidth enders
+    # (。！？, from `script.CJK_PUNCT` — the table TTS already read), so a Japanese
+    # read splits per sentence instead of into mid-clause length chunks; and word
+    # tokens join through `script.join_words`, which writes Han/kana without the
+    # spaces neither language has.
+    "segments": "segments/v40",
     # v34: a same-language pair (he→he, en→en) translates by identity the target
     # line is the source line and no translator loads.
     # v35: a segment translates from its OWN language (`translate.segment_langs`),
     # and a failed translation no longer overrules the user's "dub it".
-    "translate": "translate/v35",
+    # v36: the --context gloss floors are per script bucket instead of the
+    # Hebrew-calibrated 4/5 (a 2-character 首相 could never match, and Korean
+    # agglutination beat the exact-word rung), `_has_negation` reads Korean
+    # negations glued inside a word, and `shorten`'s budget is in speech units —
+    # counting `.split()` words made every CJK rewrite fail its own length check.
+    "translate": "translate/v36",
     # Two lines each claimed tts/v15 for different logic (the Hebrew LoRA vs the
     # honest-failure records), so the merged tag moves past both.
     # v16: Hebrew targets synthesize from stressed IPA through the Qwen3-TTS Hebrew
@@ -70,7 +80,11 @@ STAGE_TAGS = {
     # placement policy — never tempo-stretched (they are original audio, cut to
     # exactly their span; stretching also renamed them fit_keep_*, dropping the
     # UI's fallback flag).
-    "timeline": "timeline/v15",
+    # v16: the shorten budget asked for is in speech units (`script.speech_units`),
+    # so a CJK line is measured in characters. As words it was always 1, the budget
+    # floored at 3, and `shorten` refused every rewrite — this stage's only rescue
+    # for a late line was dead for zh/ja/ko.
+    "timeline": "timeline/v16",
     "mix": "mix/v9",
     # v3: honest failure accounting verify.unverified, degraded, overrun,
     # shorten_abandoned, subtitles_failed, stale_locked_clips alongside the

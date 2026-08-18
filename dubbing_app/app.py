@@ -44,6 +44,13 @@ Genre = Literal["documentary", "movie"]
 Register = Literal["narration", "dialogue"]
 Transcript = Literal["auto", "captions", "asr"]
 TtsModel = Literal["1.7b"]  # 0.6b is retired for new runs; old manifests that recorded it still re-run
+# `cli.SRC_CHOICES` / `cli.TGT_CHOICES`, sorted, legacy aliases included. An
+# unrecognised code is worse here than an unrecognised genre: `script.script_for`
+# answers "latin" for anything it does not know, so a project created with "jp"
+# would run to completion with every script-derived verdict quietly wrong,
+# instead of failing.
+SrcLang = Literal["ar", "de", "en", "es", "fr", "he", "it", "iw", "ja", "ko", "pt", "ru", "zh"]
+TgtLang = Literal["de", "en", "es", "fr", "he", "it", "iw", "ja", "ko", "pt", "ru", "zh"]
 
 
 # ---------------------------------------------------------------------------
@@ -56,8 +63,8 @@ class Strict(BaseModel):
 
 class CreateProject(Strict):
     source: str
-    src_lang: str = "he"
-    tgt_lang: str = "en"
+    src_lang: SrcLang = "he"
+    tgt_lang: TgtLang = "en"
     duration: float | None = None
     name: str | None = None
     context: str | None = None

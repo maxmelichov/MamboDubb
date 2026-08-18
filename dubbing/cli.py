@@ -28,6 +28,33 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # reaches the manifest otherwise `--src iw --tgt he` looks like a cross-language pair.
 LANG_ALIASES = {"iw": "he", "ji": "yi", "in": "id"}
 
+# The languages this pipeline is actually built for: a source needs an ASR that
+# reads it and a `script` bucket that is true of it; a target needs a Qwen3-TTS
+# voice as well (which is why Arabic reads but does not speak).
+#
+# They are `choices` on --src/--tgt because `script.script_for` answers "latin"
+# for anything it does not know: a mistyped `--src jp` would not fail, it would
+# quietly claim the video is written in Latin script, and every script-derived
+# verdict downstream — keep vs dub, gloss matching, source-leak detection —
+# would inherit the lie. Refusing the typo at the command line is the only place
+# it is still cheap.
+SRC_LANGS = ("he", "en", "ar", "ru", "fr", "es", "de", "it", "pt", "zh", "ja", "ko")
+TGT_LANGS = ("en", "he", "ru", "fr", "es", "de", "it", "pt", "zh", "ja", "ko")
+
+
+def _lang_choices(langs: tuple[str, ...]) -> tuple[str, ...]:
+    """`langs` plus the legacy spellings `normalize_lang` folds into them.
+
+    argparse checks `choices` before `normalize_lang` ever runs (it is applied in
+    `main`, after the parse), so `--src iw` has to be accepted *here* or the alias
+    the whole pipeline goes out of its way to support would die at the front door.
+    """
+    return tuple(sorted(set(langs) | {a for a, c in LANG_ALIASES.items() if c in langs}))
+
+
+SRC_CHOICES = _lang_choices(SRC_LANGS)
+TGT_CHOICES = _lang_choices(TGT_LANGS)
+
 
 def normalize_lang(code: str) -> str:
     code = (code or "").strip().lower()
@@ -73,8 +100,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # bare re-run must keep THIS run's languages and cap, and argparse filling
     # in he/en/full-length is indistinguishable from the user typing them. The
     # he→en/full-length effective defaults are applied in `resolve_settings`.
-    p.add_argument("--src", default=None, help="source language code (default: he)")
-    p.add_argument("--tgt", default=None, help="target language code (default: en)")
+    # `choices` is safe beside `default=None`: argparse only checks a value it
+    # actually parsed, never the default, so the None sentinel resolve_settings
+    # depends on still reaches it untouched.
+    p.add_argument("--src", default=None, choices=SRC_CHOICES,
+                   help="source language code (default: he)")
+    p.add_argument("--tgt", default=None, choices=TGT_CHOICES,
+                   help="target language code (default: en)")
     p.add_argument("--duration", type=float, default=None,
                    help="only dub the first N seconds (0 = the whole video, "
                         "which also clears a recorded cap on a re-run)")

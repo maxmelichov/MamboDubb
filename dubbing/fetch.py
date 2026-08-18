@@ -38,7 +38,16 @@ def is_url(source: str) -> bool:
 def _lang_prefs(lang: str) -> tuple[str, ...]:
     # YouTube still uses legacy ISO-639 codes for a few languages (mirrors
     # transcript._LID_ALIAS): "iw" Hebrew, "ji" Yiddish, "in" Indonesian.
-    alias = {"he": ["iw", "he"], "yi": ["ji", "yi"], "id": ["in", "id"]}.get(lang, [lang])
+    # Chinese and Portuguese are the other shape of the same problem: YouTube
+    # labels their tracks by script or region ("zh-Hans", "pt-BR") and almost
+    # never by the bare code, and `rank()` below matches a preference literally —
+    # so without the variants listed here a Chinese video's own captions are
+    # invisible and the run falls back to ASR.
+    alias = {
+        "he": ["iw", "he"], "yi": ["ji", "yi"], "id": ["in", "id"],
+        "zh": ["zh", "zh-Hans", "zh-Hant", "zh-CN", "zh-TW"],
+        "pt": ["pt", "pt-BR", "pt-PT"],
+    }.get(lang, [lang])
     return tuple([f"{a}-orig" for a in alias] + alias)
 
 

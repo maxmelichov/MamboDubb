@@ -11,6 +11,12 @@ languages written differently (he/en, en/ru, he/ar); for same-script pairs
 (en→es, ru→uk) it cannot discriminate and callers must fall back to LID —
 `same_script()` tells them when. CJK gets one shared bucket: Japanese mixes kana
 with Han and the han bucket alone cannot separate zh from ja.
+
+The other thing a script decides is how text is *shaped*: where a sentence ends
+(`CJK_SENTENCE_END`), whether words take spaces between them (`join_words` /
+`split_words`), and what one unit of speech is (`speech_units` — a word, or a
+character where there are no word boundaries). Those live here too, so the
+segmenter, the translator, the timeline and TTS cannot each guess differently.
 """
 
 from __future__ import annotations
@@ -53,6 +59,33 @@ _LANG_SCRIPT: dict[str, str] = {
 }
 
 
+# CJK/fullwidth punctuation, and the ASCII mark each one stands for. One table,
+# because two stages ask the same question of it: the segmenter's `SENTENCE_END`
+# (where does a Japanese sentence end?) and `tts.prepare_text` (which marks may
+# the voice see?). They disagreed once — the segmenter knew only ASCII "." and a
+# Japanese read therefore had no interior sentence end at all.
+CJK_PUNCT: dict[str, str] = {
+    "。": ".", "｡": ".", "！": "!", "？": "?", "，": ",", "、": ",",
+    "；": ";", "：": ":",
+}
+# The subset of it that ends a sentence rather than separating clauses.
+CJK_SENTENCE_END = "".join(k for k, v in CJK_PUNCT.items() if v in ".!?")
+
+# Characters that need no space beside them: Han, kana, and the CJK/fullwidth
+# punctuation and forms that go with them. Chinese and Japanese are written
+# without word spaces, so a space at either side of one of these is a space the
+# language does not have. Korean is deliberately absent — hangul IS written with
+# spaces, and only its particles glue onto the preceding word.
+_UNSPACED_RANGES: tuple[tuple[int, int], ...] = (
+    (0x3000, 0x303F),   # CJK symbols and punctuation (。、「」…)
+    (0x3040, 0x30FF),   # hiragana + katakana
+    (0x31F0, 0x31FF),   # katakana phonetic extensions
+    (0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xF900, 0xFAFF),   # Han
+    (0xFF00, 0xFF60),   # fullwidth forms
+    (0xFF61, 0xFF9F),   # halfwidth katakana and punctuation
+)
+
+
 def script_for(lang: str) -> str:
     """The script bucket a language is written in ("latin" for unknown codes)."""
     return _LANG_SCRIPT.get((lang or "").lower(), "latin")
@@ -61,6 +94,63 @@ def script_for(lang: str) -> str:
 def same_script(lang_a: str, lang_b: str) -> bool:
     """True when script detection cannot tell the two languages apart."""
     return script_for(lang_a) == script_for(lang_b)
+
+
+def unspaced(ch: str) -> bool:
+    """True when `ch` is written without spaces around it (Han, kana, CJK marks)."""
+    return bool(ch) and any(lo <= ord(ch) <= hi for lo, hi in _UNSPACED_RANGES)
+
+
+def join_words(parts: list[str] | tuple[str, ...]) -> str:
+    """Join word tokens into one line, without a space across a CJK seam.
+
+    ASR and captions hand Japanese and Chinese back one token at a time, and
+    space-joining them writes text no reader of either language would produce
+    ("これ は テスト です 。"). That text is what the translator is shown, what
+    `_not_a_translation` counts `\\w+` tokens of, and what `relevant_context`
+    matches a gloss against — all three read it as a dozen one-character words.
+    The seam decides, not a language code: a space is dropped only when the
+    character on one side of it belongs to a script that has no word spaces.
+    """
+    out = ""
+    for part in parts:
+        part = (part or "").strip()
+        if not part:
+            continue
+        if out and not (unspaced(out[-1]) or unspaced(part[0])):
+            out += " "
+        out += part
+    return out
+
+
+def split_words(text: str) -> list[str]:
+    """The units `join_words` would put back together: words, CJK per character."""
+    out: list[str] = []
+    run = ""
+    for ch in text or "":
+        if unspaced(ch) or ch.isspace():
+            if run:
+                out.append(run)
+                run = ""
+            if not ch.isspace():
+                out.append(ch)
+            continue
+        run += ch
+    if run:
+        out.append(run)
+    return out
+
+
+def speech_units(text: str, lang: str) -> int:
+    """How many speakable units the text has: words, or characters for CJK/hangul.
+
+    The pipeline's length budgets — clone plausibility, token ceilings, how much
+    shorter a rewrite must be — are all "how much speech is this?", and `.split()`
+    answers 1 for a whole Japanese sentence. Every one of them goes through here.
+    """
+    if script_for(lang) in ("cjk", "hangul"):
+        return max(1, sum(1 for ch in text or "" if ch.isalnum()))
+    return max(1, len((text or "").split()))
 
 
 def count_letters(text: str, script: str) -> int:

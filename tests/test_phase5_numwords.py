@@ -117,3 +117,19 @@ def test_run_en_target_always_spells_the_final_english(monkeypatch, tmp_path):
                       "keep_reason": None}]
     translate.run(m, tmp_path, source="he", target="en")
     assert m["segments"][0]["text_en"] == "He lost five hundred and four soldiers."
+
+
+def test_percent_reads_in_the_new_target_languages():
+    # The table's fallback is English, so a target missing from it spoke the word
+    # "percent" in the middle of an Italian or Japanese line.
+    assert spell_numbers("circa 20%", "it") == "circa venti per cento"
+    assert spell_numbers("cerca de 20%", "pt") == "cerca de vinte por cento"
+    # No space where the script has none between its words.
+    assert spell_numbers("20%", "ja") == "二十パーセント"
+    assert spell_numbers("20%", "ko") == "이십퍼센트"
+
+
+def test_chinese_has_no_spelling_at_all_so_its_digits_are_left_alone():
+    # num2words has no zh: `spell_numbers` returns the text untouched rather
+    # than inventing a reading (the percent prefix is there for whoever adds it).
+    assert spell_numbers("20% 的人", "zh") == "20% 的人"

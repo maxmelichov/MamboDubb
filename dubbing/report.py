@@ -117,11 +117,16 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
     for s in kept:
         keep_reasons[s["keep_reason"] or "?"] = keep_reasons.get(s["keep_reason"] or "?", 0) + 1
 
+    # Retention is measured in speech units (characters for a CJK/Korean target),
+    # like every other length budget: `.split()` counts a whole Japanese line as
+    # one word, and every shortening then reported a retention of exactly 1.0.
+    run_tgt = (m.get("source") or {}).get("tgt_lang") or "en"
     shortened = [{
         "id": s["id"], "start": s["start"],
         "before": s["text_en"], "after": s["place"]["spoken"],
-        "retention": round(len(s["place"]["spoken"].split())
-                           / max(1, len(s["text_en"].split())), 2),
+        "retention": round(
+            script.speech_units(s["place"]["spoken"], s.get("tgt_lang") or run_tgt)
+            / max(1, script.speech_units(s["text_en"], s.get("tgt_lang") or run_tgt)), 2),
     } for s in segments if (s.get("place") or {}).get("spoken")]
 
     # "unverified" is its own verdict: the clip cleared the length guard and no

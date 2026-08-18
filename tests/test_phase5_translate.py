@@ -175,7 +175,9 @@ def test_translate_stage_tag_bumped():
     # v34: a same-language pair translates by identity, with no model loaded.
     # v35: a segment translates from its OWN language, and a failed translation
     # no longer overrules the user's "dub it".
-    assert manifest.STAGE_TAGS["translate"] == "translate/v35"
+    # v36: the gloss floors, `_has_negation` and `shorten`'s budget are all
+    # script-derived, so zh/ja/ko sources and targets are judged in their own unit.
+    assert manifest.STAGE_TAGS["translate"] == "translate/v36"
 
 
 # ------------------------------------------------------- per-segment gloss gating
@@ -552,3 +554,124 @@ def test_run_leaves_a_locked_dub_untranslated_instead_of_asserting(monkeypatch,
     seg = m["segments"][0]
     assert seg["keep"] is False and not seg.get("text_en")
     assert keep.apply_passthrough(m["segments"]) == []      # nothing to flip back
+
+
+# ------------------------------------ gloss gating for the scripts Hebrew is not
+
+def test_gloss_matches_a_two_character_japanese_word():
+    # The floors were calibrated on Hebrew, where 4 letters is a short word. A
+    # Japanese or Chinese word is one or two characters (首相 = prime minister),
+    # so under the old floor no gloss in a zh/ja note ever reached a prompt and
+    # the whole --context feature was dead for those sources.
+    ctx = "NHK evening news; 首相 means the prime minister"
+    hit = translate.relevant_context(ctx, "首相は今日会見した。", "ja")
+    assert "prime minister" in hit and "NHK evening news" in hit
+    miss = translate.relevant_context(ctx, "東京は雨です。", "ja")
+    assert "prime minister" not in miss and "NHK evening news" in miss
+
+
+def test_gloss_matches_a_chinese_word_inside_an_unspaced_sentence():
+    ctx = "首相 means the prime minister"
+    assert "prime minister" in translate.relevant_context(
+        ctx, "首相今天举行了记者会", "zh")
+    assert translate.relevant_context(ctx, "市场今天下跌了", "zh") == ""
+
+
+def test_a_single_character_gloss_never_matches_loosely():
+    # One Han character occurs inside unrelated compounds everywhere — exactly
+    # the run-wide leak the Hebrew floors were raised to stop.
+    ctx = "米 means the United States"
+    assert translate.relevant_context(ctx, "新しい経済政策を発表した。", "ja") == ""
+
+
+def test_gloss_matches_an_agglutinated_korean_word():
+    # Korean glues its particles onto the noun: the gloss names 국무총리 and the
+    # line says 국무총리는, so the exact-word rung could never fire.
+    ctx = "국무총리 is the prime minister"
+    assert "prime minister" in translate.relevant_context(
+        ctx, "국무총리는 오늘 회견했다", "ko")
+
+
+def test_a_korean_gloss_matches_by_prefix_not_by_free_substring():
+    # Prefix keeps the precision the Hebrew floors bought: a shorter word that
+    # merely occurs inside the spoken one is not this segment's gloss.
+    ctx = "총리 is the prime minister"
+    assert translate.relevant_context(ctx, "국무총리는 오늘 회견했다", "ko") == ""
+
+
+def test_latin_sources_still_pass_the_whole_note_through():
+    # The short-circuit for a Latin-script source is untouched: there is no
+    # gloss/background signal to gate on, so the note is never trimmed.
+    ctx = "Italian documentary; presidente means the president"
+    for src, spoken in (("it", "Il presidente ha parlato"),
+                        ("pt", "O presidente falou ontem")):
+        assert translate.relevant_context(ctx, spoken, src) == ctx
+        # ...including for a segment the gloss has nothing to do with.
+        assert translate.relevant_context(ctx, "Buongiorno a tutti", src) == ctx
+
+
+# ------------------------------------------------------------------- negations
+
+def test_has_negation_reads_the_korean_negation_glued_inside_a_word():
+    assert translate._has_negation("가지 않습니다", "ko")
+    assert translate._has_negation("돈이 없어요", "ko")
+    assert not translate._has_negation("여기로 갑니다", "ko")
+
+
+def test_has_negation_regressions_for_the_languages_that_already_worked():
+    assert translate._has_negation("我不知道", "zh")
+    assert not translate._has_negation("我知道", "zh")
+    assert translate._has_negation("知りません", "ja")
+    assert not translate._has_negation("私は行きます", "ja")
+    assert translate._has_negation("אני לא יודע", "he")
+    assert not translate._has_negation("אני יודע", "he")
+    assert translate._has_negation("I don't know", "en")
+    assert not translate._has_negation("I know", "en")
+
+
+# --------------------------------------------------- shorten's length budget
+
+def test_shorten_measures_a_japanese_line_in_characters(monkeypatch):
+    # `.split()` calls a whole Japanese line one word, so `have` was 1, every
+    # rewrite failed `n >= have`, and the timeline's shorten rescue could never
+    # succeed for a CJK target.
+    long_line = "首相は今日の記者会見で新しい経済政策を発表しました。"
+    short_line = "首相が新しい経済政策を発表した。"
+    assert len(long_line.split()) == len(short_line.split()) == 1
+    seen = {}
+
+    def fake_run(p, m, instruction, n):
+        seen["i"] = instruction
+        return short_line
+
+    monkeypatch.setattr(translate, "_run", fake_run)
+    out = translate.shorten(None, None, "首相は…", long_line, 14,
+                            source="ja", target="ja")
+    assert out == short_line
+    # ...and the budget is spoken in the unit it was measured in.
+    assert "14 characters" in seen["i"]
+
+
+def test_shorten_still_counts_words_for_a_latin_target(monkeypatch):
+    seen = {}
+
+    short_line = "Il presidente ha annunciato la nuova politica economica"
+
+    def fake_run(p, m, instruction, n):
+        seen["i"] = instruction
+        return short_line
+
+    monkeypatch.setattr(translate, "_run", fake_run)
+    out = translate.shorten(None, None, "…",
+                            "Il presidente della repubblica ha annunciato oggi la "
+                            "nuova politica economica del governo", 8,
+                            source="it", target="it")
+    assert out == short_line
+    assert "8 words" in seen["i"]
+
+
+def test_shorten_refuses_a_rewrite_that_is_not_shorter_in_units(monkeypatch):
+    line = "首相が新しい経済政策を発表した。"
+    monkeypatch.setattr(translate, "_run", lambda *a, **k: line)
+    assert translate.shorten(None, None, "首相は…", line, 8,
+                             source="ja", target="ja") is None

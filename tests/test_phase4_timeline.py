@@ -289,3 +289,76 @@ def test_media_end_never_truncates_audio():
     p = timeline.place([dict(item)], media_end=10.0)[0]
     held = 6.0 / p["rate"]
     assert abs((p["end"] - p["start"]) - held) < 0.02
+
+
+# ----------------------------------------- (f) the shorten budget is in speech units
+
+def cjk_overrunning_manifest(tgt="ja"):
+    """A dub far too long for its slot, in a language written without spaces."""
+    from dubbing import manifest
+
+    m = manifest.new({"input": "x", "src_lang": "ja", "tgt_lang": tgt})
+    m["source"]["duration"] = 30.0
+    m["segments"] = [
+        {"id": 0, "start": 0.0, "end": 2.0, "speaker": "S0", "keep": False,
+         "keep_reason": None, "text": "首相は…",
+         "text_en": "首相は今日の記者会見で新しい経済政策を発表しました。",
+         "tts": {"clip": "clips/a.wav", "dur": 9.0}},
+        {"id": 1, "start": 2.0, "end": 4.0, "speaker": "S1", "keep": False,
+         "keep_reason": None, "text": "市場は…", "text_en": "市場はこれを歓迎した。",
+         "tts": {"clip": "clips/b.wav", "dur": 1.0}},
+    ]
+    manifest.ensure_uids(m["segments"])
+    return m
+
+
+def test_shorten_budget_for_a_cjk_target_is_asked_for_in_characters(monkeypatch,
+                                                                    tmp_path):
+    # `.split()` counts a whole Japanese line as one word, so the budget was
+    # `max(3, int(1 * ratio))` = 3 for every segment — and `shorten`, measuring
+    # the same way, then found every rewrite too long. This stage's only rescue
+    # for a late line was permanently dead for zh/ja/ko.
+    asked = {}
+    monkeypatch.setattr(timeline.audio, "atempo", lambda *a, **k: None)
+    monkeypatch.setattr(timeline.audio, "duration", lambda p: 7.0)
+    m = cjk_overrunning_manifest()
+
+    def shorten_many(reqs):
+        asked.update({s["id"]: n for s, n in reqs})
+        return {}
+
+    timeline.run(m, tmp_path, shorten_many=shorten_many, resynth_many=lambda x: {})
+    # 24 characters of Japanese, scaled by the slot ratio — not the floor of 3.
+    assert asked and asked[0] > 3
+
+
+def test_shorten_budget_for_a_latin_target_is_unchanged(monkeypatch, tmp_path):
+    asked = {}
+    monkeypatch.setattr(timeline.audio, "atempo", lambda *a, **k: None)
+    monkeypatch.setattr(timeline.audio, "duration", lambda p: 7.0)
+    m = cjk_overrunning_manifest(tgt="en")
+    m["segments"][0]["text_en"] = "one two three four five six seven eight nine ten"
+
+    def shorten_many(reqs):
+        asked.update({s["id"]: n for s, n in reqs})
+        return {}
+
+    timeline.run(m, tmp_path, shorten_many=shorten_many, resynth_many=lambda x: {})
+    assert asked and asked[0] <= 10          # a fraction of the line's ten words
+
+
+def test_a_segments_own_target_language_decides_its_budget(monkeypatch, tmp_path):
+    # The editor's per-segment `tgt_lang` override is the language the line is
+    # actually in; the run's pair is only the default.
+    asked = {}
+    monkeypatch.setattr(timeline.audio, "atempo", lambda *a, **k: None)
+    monkeypatch.setattr(timeline.audio, "duration", lambda p: 7.0)
+    m = cjk_overrunning_manifest(tgt="en")
+    m["segments"][0]["tgt_lang"] = "ja"
+
+    def shorten_many(reqs):
+        asked.update({s["id"]: n for s, n in reqs})
+        return {}
+
+    timeline.run(m, tmp_path, shorten_many=shorten_many, resynth_many=lambda x: {})
+    assert asked and asked[0] > 3            # measured as Japanese, not as one word

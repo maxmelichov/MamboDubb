@@ -310,7 +310,8 @@ def test_the_stage_tags_moved():
     # v17: a dub-wanted line with no translation now replaces a stale *synthesis*
     # with its original-audio slice, which changes what this stage produces.
     assert manifest.STAGE_TAGS["tts"] == "tts/v17"
-    assert manifest.STAGE_TAGS["translate"] == "translate/v35"
+    # v36: script-derived gloss floors, negations and shorten budgets (CJK/hangul).
+    assert manifest.STAGE_TAGS["translate"] == "translate/v36"
 
 
 def test_ipa_is_not_a_manifest_field():

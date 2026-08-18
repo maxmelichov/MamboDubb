@@ -61,7 +61,14 @@ LONE_WORD_GAP = 1.5    # ...except a single-word stub: one word is almost never 
                        # interjection ("קשרות" → a stray "Relations" mid-pause), so
                        # it may cross a dramatic pause to rejoin its sentence
 WORD_MAX = 0.80        # a word never occupies more than this
-SENTENCE_END = re.compile(r"[.!?…]['\"»׳״]?$")
+# Sentence terminators in any script, optionally followed by one closing quote.
+# The CJK/fullwidth enders come from `script.CJK_PUNCT`, the same table
+# `tts.prepare_text` reads: without them a Japanese read has no interior sentence
+# end at all, so the grouping loop below never splits it and hands the length
+# splitter mid-clause chunks — precisely the prosody jump this module's header
+# says the sentence rule exists to prevent (a news read came out as two 6.9s
+# fragments where it has three sentences).
+SENTENCE_END = re.compile(f"[.!?…{script.CJK_SENTENCE_END}]['\"»׳״」』]?$")
 
 KEEP_TAIL_MAX = 2.5      # longest trailing original audio a keep segment may reclaim
 KEEP_TAIL_FLOOR = 0.008  # vocal energy above this is still speech, not a pause
@@ -318,7 +325,12 @@ def _make(words: list[dict[str, Any]], ends: list[float]) -> dict[str, Any]:
         "start": round(words[0]["t"], 3),
         "end": round(ends[-1], 3),
         "speaker": max(votes.items(), key=lambda kv: kv[1])[0],
-        "text": " ".join(w["text"] for w in words),
+        # Seam-aware, not " ".join: Han/kana tokens carry no space between them
+        # (see `script.join_words`). Space-joining them wrote the segment text a
+        # Japanese source reaches the translator as — and made the claim in
+        # `translate._not_a_translation` (that a CJK source has too few `\w+`
+        # tokens to judge) false, since every character was its own token.
+        "text": script.join_words([w["text"] for w in words]),
         "_words": words,
         "_ends": ends,
     }
@@ -675,7 +687,7 @@ def splice_foreign_spans(segs: list[dict[str, Any]], spans: list[dict[str, Any]]
                         if end > a + WORD_OVERLAP and w["t"] < b - WORD_OVERLAP]
                 if not said:
                     continue
-                piece["text"] = " ".join(said)
+                piece["text"] = script.join_words(said)
             trimmed.add(id(piece))
             kept.append(piece)
 
@@ -764,7 +776,7 @@ def _absorb_trim_remnants(segs: list[dict[str, Any]], trimmed: set[int],
         first, second = (host, seg) if host_i < i else (seg, host)
         host["start"] = min(host["start"], seg["start"])
         host["end"] = max(host["end"], seg["end"])
-        host["text"] = " ".join(t for t in (first.get("text"), second.get("text")) if t)
+        host["text"] = script.join_words([first.get("text") or "", second.get("text") or ""])
         del out[i]
     return out
 

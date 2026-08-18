@@ -421,6 +421,12 @@ check(
   "Hebrew is a dub target, so a same-language pair is expressible",
   optionsOf(dubInto).includes("he"),
 );
+check(
+  // The ASR reads these five and the translator has always taken them; only the
+  // picker was short, so a Japanese video could be started only from the CLI.
+  "the five languages the source list used to be missing are offerable",
+  ["ja", "zh", "ko", "it", "pt"].every((code) => optionsOf(srcLangSelect).includes(code)),
+);
 
 /*
  * Where the transcript comes from.
@@ -2433,6 +2439,33 @@ check("picking inherit clears the override", /inherit → en/.test(timing.textCo
 check(
   "…and the translation made under the old pair goes with it",
   rowFor(23).textContent.includes("not translated yet"),
+);
+
+/*
+ * The per-segment pair is two lists too.
+ *
+ * It was one shared array, which is a list that cannot say the true thing: it
+ * offered Arabic as a line's dub target, and a line whose target the voice
+ * cannot speak is a tts stage that can only fail — the same asymmetry the import
+ * screen already keeps.
+ */
+const overrideOptions = (label) =>
+  [...timing.querySelector(`select[aria-label="${label}"]`).options].map((o) => o.value);
+check(
+  "the line's spoken list reads what the import screen's does",
+  ["ar", "ja", "zh", "ko", "it", "pt"].every((code) =>
+    overrideOptions("Spoken in this line").includes(code),
+  ),
+);
+check(
+  "…and the line's dub target refuses the one voice cannot speak",
+  !overrideOptions("Translate this line into").includes("ar") &&
+    overrideOptions("Translate this line into").includes("ja"),
+);
+check(
+  "…both keeping inherit, the only value that clears an override",
+  overrideOptions("Spoken in this line")[0] === "" &&
+    overrideOptions("Translate this line into")[0] === "",
 );
 
 /*

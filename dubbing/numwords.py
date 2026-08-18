@@ -27,6 +27,8 @@ import re
 
 from num2words import num2words
 
+from .script import script_for
+
 # The language's word for "%", appended after the spelled cardinal. Small table,
 # English fallback general vocabulary, not per-video content.
 _PERCENT = {
@@ -35,7 +37,16 @@ _PERCENT = {
     "es": "por ciento",
     "fr": "pour cent",
     "de": "Prozent",
+    "it": "per cento",
+    "pt": "por cento",
+    "ja": "パーセント",
+    "ko": "퍼센트",
 }
+# Chinese writes the percent word *before* the number: 20% is 百分之二十, never
+# 二十百分之. (num2words has no zh at all today, so `spell_numbers` returns the
+# text untouched and this never fires — it is here so the table is not a trap
+# for whoever adds zh spelling.)
+_PERCENT_PREFIX = {"zh": "百分之"}
 
 # A number token: thousands-separated integer, decimal, or plain integer —
 # optionally trailed by "%", a short attached non-Latin grammatical suffix
@@ -64,7 +75,12 @@ def _convert(token: str, num: str, suffix: str, lang: str) -> str:
         if words is None:
             words = num2words(n, lang=lang)
     if "%" in suffix:
-        words += " " + _PERCENT.get(lang, _PERCENT["en"])
+        if lang in _PERCENT_PREFIX:
+            words = _PERCENT_PREFIX[lang] + words
+        else:
+            # No space in a script that has none between its words (二十パーセント).
+            sep = "" if script_for(lang) in ("cjk", "hangul") else " "
+            words += sep + _PERCENT.get(lang, _PERCENT["en"])
     # Any other matched suffix (grammatical "-м", ordinal "th") is dropped: the
     # nominative cardinal is the safe spoken form, and the target-hop model
     # inflects words it is never asked to convert digits.

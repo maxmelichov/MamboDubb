@@ -616,6 +616,20 @@ def test_split_preserves_every_word():
     assert [s["id"] for s in m["segments"]] == [0, 1, 2]
 
 
+def test_split_cuts_a_japanese_line_by_character_and_rejoins_without_a_space():
+    # The segmenter writes Han/kana without word spaces (`script.join_words`), so
+    # `.split()` calls the whole line one word and every CJK segment became
+    # unsplittable in the editor. The unit there is the character.
+    m = two_segs()
+    uid = m["segments"][0]["uid"]
+    m["segments"][0]["text"] = "首相は今日会見した"
+    edit.split(m, uid, 1.0)
+    left, right = m["segments"][0], m["segments"][1]
+    assert left["text"] + right["text"] == "首相は今日会見した"
+    assert " " not in left["text"] and " " not in right["text"]
+    assert left["text"] and right["text"]
+
+
 def test_split_drops_what_was_made_from_the_whole_line():
     m = two_segs()
     a, b = edit.split(m, m["segments"][0]["uid"], 1.0)
