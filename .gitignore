@@ -29,3 +29,7 @@ demucs_out/
 .claude/worktrees/
 AGENTS.md
 CLAUDE.md
+
+# Claude workspace files — local tooling, not part of the project
+.claude/
+CLAUDE.md
