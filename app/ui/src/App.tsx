@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-
 import { BootPanel } from "./components/BootPanel";
 import { EditorPage } from "./pages/EditorPage";
 import { ImportPage } from "./pages/ImportPage";
+import { RunsPage } from "./pages/RunsPage";
 import { SetupPage } from "./pages/SetupPage";
 import { api, initApiBase, USE_FIXTURES } from "./lib/api";
 import { isDesktop } from "./lib/desktop";
@@ -15,7 +16,11 @@ export default function App() {
     <>
       <SetupGate />
       <Routes>
-        <Route path="/" element={<ImportPage />} />
+        {/* Home is the runs list; the import form moved to /new. A workspace
+            with zero runs still lands on "/" — RunsPage's empty state is the
+            invitation to start one, so no route-level redirect is needed. */}
+        <Route path="/" element={<RunsPage />} />
+        <Route path="/new" element={<ImportPage />} />
         <Route path="/setup" element={<SetupPage />} />
         <Route path="/editor/:name" element={<EditorPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />

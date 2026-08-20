@@ -22,7 +22,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { ChevronLeft, Clapperboard, Moon, SlidersHorizontal, Sun } from "lucide-react";
+import { ChevronLeft, Clapperboard, Moon, Plus, SlidersHorizontal, Sun } from "lucide-react";
 import { USE_FIXTURES } from "../lib/api";
 import { cn } from "../lib/classNames";
 import { currentTheme, onThemeChange, setTheme, type Theme } from "../lib/theme";
@@ -114,18 +114,32 @@ export function PageShell({
 }
 
 /**
- * The shell's navigation: two cells in a pill, one filled with ink.
+ * The shell's navigation: three cells in a pill, one filled with ink.
  *
- * It is two links and not three because there are exactly two places this shell
- * goes the runs and the machine's readiness. The editor is not on it: you get
- * there by opening a run, and a nav cell for "the run you are not in" is a dead
- * control on both screens that show this bar.
+ * It was two — Runs and Setup — back when "/" was the import form with the
+ * runs squeezed in beside it, so "Runs" was really "the form, plus the list if
+ * you looked right". Now that starting a dub and finding an old one are
+ * separate pages, each gets a cell: New dub is the doing place, Runs is the
+ * home, Setup is the machine's readiness. The editor is still not on it: you
+ * get there by opening a run, and a nav cell for "the run you are not in" is a
+ * dead control on every screen that shows this bar.
+ *
+ * Runs wears the ink whenever neither of the other two does, so an unknown
+ * path reads as "you are at home" rather than as a pill with no answer.
  */
 function ShellNav() {
   const path = useLocation().pathname;
   return (
     <Segmented aria-label="Sections">
-      <Link to="/" className={segmentedCell(path !== "/setup")} title="Every run in the workspace">
+      <Link to="/new" className={segmentedCell(path === "/new")} title="Start a new dub">
+        <Plus className="h-3.5 w-3.5" aria-hidden />
+        New dub
+      </Link>
+      <Link
+        to="/"
+        className={segmentedCell(path !== "/setup" && path !== "/new")}
+        title="Every run in the workspace"
+      >
         <Clapperboard className="h-3.5 w-3.5" aria-hidden />
         Runs
       </Link>
