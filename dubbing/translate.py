@@ -1964,13 +1964,24 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
                 s["text_en"] = text.strip()
     finally:
         free(model)
+        # In-process MLX weights die only with this frame's names: a `del`
+        # inside `free` drops the callee's reference and ours keeps the 9 GB
+        # pool alive through the clear. Drop them here, then clear.
+        processor = None
+        model = None
+        free_cache()
     manifest.save(workdir, m)
     _assert_translated(segments)
 
 
 def free(model) -> None:
-    import gc
+    """Release a worker-backed translator; a no-op for in-process MLX.
 
+    The MLX path cannot be freed from here — the caller's reference keeps the
+    weights alive across this call, so `mx.clear_cache()` would run while the
+    pool is still in use and reclaim nothing. The caller must drop its own
+    names and then call `free_cache()`.
+    """
     if isinstance(model, WorkerHandle):
         if model.own_gpu and model._proc.poll() is None:
             return  # resident on its own GPU stays hot for the next stage
@@ -1981,8 +1992,18 @@ def free(model) -> None:
             torch.cuda.empty_cache()
         except Exception:
             pass
-        return
-    del model
+
+
+def free_cache() -> None:
+    """Return the MLX pool to the OS once the weights are unreferenced.
+
+    Call only after every name bound to the model is gone (`model = None` in
+    the caller): `gc.collect()` then finds the weights dead, and
+    `mx.clear_cache()` hands the now-unused buffers back instead of leaving
+    ~9 GB of `other allocations` for the tts stage to trip over.
+    """
+    import gc
+
     gc.collect()
     try:
         import mlx.core as mx

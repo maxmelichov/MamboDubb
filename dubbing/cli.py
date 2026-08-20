@@ -496,6 +496,11 @@ def _retimers(m, workdir: Path, engine, args):
                           "(no safe shorter translation)", file=sys.stderr)
         finally:
             translate.free(model)
+            # MLX frees nothing while this frame still names the weights; drop
+            # our references first, then clear the pool for the resynth pass.
+            processor = None
+            model = None
+            translate.free_cache()
         return out
 
     def resynth_many(items):
