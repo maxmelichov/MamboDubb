@@ -874,6 +874,11 @@ def retranslate(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
                       file=sys.stderr)
     finally:
         translate.free(model)
+        # MLX frees nothing while this frame still names the weights; drop our
+        # references first, then clear the pool before the resynth loads TTS.
+        processor = None
+        model = None
+        translate.free_cache()
     # Say what happened. A job that translated nothing and reported "translated 1
     # segment(s)" is how a line goes round the flip-and-retry loop forever: the
     # user is told the work is done and hears no change.

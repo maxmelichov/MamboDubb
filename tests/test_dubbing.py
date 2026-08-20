@@ -1509,6 +1509,26 @@ def test_own_gpu_worker_is_persistent_and_reused(monkeypatch):
     monkeypatch.setattr(translate, "_WORKER", None)  # do not leak into other tests
 
 
+def test_free_leaves_mlx_release_to_the_caller(monkeypatch):
+    # free() cannot release in-process MLX weights: the caller's reference
+    # survives the call, so clearing the pool from inside it reclaims nothing
+    # and ~9 GB stays resident into the tts stage. On a non-worker model it
+    # must therefore be a pure no-op; the clear belongs to free_cache(), run
+    # only after the caller has dropped its own names.
+    import types
+
+    cleared = []
+    fake_core = types.SimpleNamespace(clear_cache=lambda: cleared.append(True))
+    fake_mlx = types.ModuleType("mlx")
+    fake_mlx.core = fake_core
+    monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", fake_core)
+    translate.free(object())
+    assert not cleared
+    translate.free_cache()
+    assert cleared
+
+
 def test_worker_handle_protocol_round_trip(tmp_path):
     # A stand-in worker that speaks the real protocol ready line, then one JSON
     # response per request exercises spawn, framing, flushing and id matching
