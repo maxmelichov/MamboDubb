@@ -83,6 +83,20 @@ WORD_OVERLAP = 0.05      # a word must overlap a piece by more than this to belo
 FOREIGN_MIN_WORDS = 3  # a shorter target-script run is an embedded token (acronym/
                        # brand) inside source speech, not a target-language passage
 
+# A stranded opening fragment: speech under loud music lands in Demucs's
+# background stem, so ASR hears a line's first word or two and then nothing
+# until the music drops ("בשנת" at 6.3s, its own "2013" only at 13.9s). Dubbed
+# in place the orphan plays as a dangling word, a long wait, then a sentence
+# starting mid-clause worse than either a clean gap or the whole line. The
+# fix folds the orphan's *text* into the following segment, so the line is
+# voiced once, whole, at the later timestamp (see merge_stranded_fragments).
+ORPHAN_MAX_WORDS = 2   # more words is a clause that can stand on its own
+ORPHAN_MAX_SEC = 2.0   # spoken longer than this it was a deliberate utterance
+ORPHAN_GAP_MIN = 2.0   # the tear must be a real uncovered window (the report's
+                       # GAP_MIN_SEC), not a pause _merge_stubs already bridges
+ORPHAN_GAP_MAX = 8.0   # past this the next segment is another thought entirely,
+                       # and prepending the orphan would corrupt it
+
 TURN_GAP_SPLIT = 0.8   # silence between two diarization turns that forces a split:
                        # pyannote's segmentation hears the pause even when clustering
                        # gives both turns the same label, while Whisper's word timings
@@ -781,15 +795,72 @@ def _absorb_trim_remnants(segs: list[dict[str, Any]], trimmed: set[int],
     return out
 
 
+def merge_stranded_fragments(segs: list[dict[str, Any]], src: str = "he",
+                             tgt: str = "en") -> list[dict[str, Any]]:
+    """Fold a torn-off opening fragment into the segment that continues it. Pure.
+
+    When loud music buries a line's middle, Demucs routes that speech into the
+    background stem and the transcript tears: a one-word opener ("בשנת"), a long
+    untranscribed window, then the continuation ("2013, אני אז מפקד..."). Dubbing
+    the opener in place strands it a fragment, a pause, a sentence starting at
+    a number so its text moves into the following segment instead and the line
+    is voiced once, whole, at the later timestamp.
+
+    Deliberately conservative, because a wrong merge corrupts a healthy line: the
+    orphan must be tiny (ORPHAN_MAX_WORDS / ORPHAN_MAX_SEC), must not end a
+    sentence (a complete "כן." before a scene change is not a fragment), must not
+    be an interjection beat, and the gap to the next segment must be a genuine
+    tear (ORPHAN_GAP_MIN..ORPHAN_GAP_MAX) never a pause _merge_stubs would have
+    bridged. Both sides must be dubbed (not keep, no user passthrough), share a
+    speaker, and not sit across a script change. The absorbing segment keeps its
+    own timing and records the orphan's span under `merged_from`, which is how
+    `unsegmented_words` still counts the orphan's words as heard.
+    """
+    out = list(segs)
+    i = len(out) - 2
+    while i >= 0:
+        seg, nxt = out[i], out[i + 1]
+        text = (seg.get("text") or "").strip()
+        gap = nxt["start"] - seg["end"]
+        ok = (
+            bool(text) and (nxt.get("text") or "").strip()
+            and not seg.get("keep") and not nxt.get("keep")
+            and seg.get("passthrough") is None and nxt.get("passthrough") is None
+            and seg["speaker"] == nxt["speaker"]
+            and len(text.split()) <= ORPHAN_MAX_WORDS
+            and seg["end"] - seg["start"] <= ORPHAN_MAX_SEC
+            and ORPHAN_GAP_MIN <= gap <= ORPHAN_GAP_MAX
+            and not SENTENCE_END.search(text)
+            and not all(_is_interjection_token(w, src, tgt) for w in text.split())
+        )
+        if ok:
+            sa = text_bucket(text, src, tgt)
+            sb = text_bucket(nxt["text"], src, tgt)
+            ok = not (sa and sb and sa != sb)
+        if ok:
+            merged = dict(nxt)
+            merged["text"] = script.join_words([text, nxt["text"]])
+            merged["merged_from"] = (
+                [{"start": seg["start"], "end": seg["end"], "text": text}]
+                + list(nxt.get("merged_from") or []))
+            out[i : i + 2] = [merged]
+        i -= 1
+    return out
+
+
 def unsegmented_words(words: list[dict[str, Any]], segs: list[dict[str, Any]],
                       spans: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Transcript words that no segment covers.
 
     A segment is the only route audio has to the output, so a word left out here
     is a word the viewer never hears. Words inside a target-language span are
-    exempt: those were deliberately replaced by the captions' own words.
+    exempt: those were deliberately replaced by the captions' own words. A span
+    a segment absorbed as `merged_from` counts as covered too its words are
+    voiced inside the absorbing segment's text, just at a later timestamp.
     """
-    ranges = sorted((s["start"], s["end"]) for s in segs)
+    ranges = sorted([(s["start"], s["end"]) for s in segs]
+                    + [(f["start"], f["end"])
+                       for s in segs for f in (s.get("merged_from") or [])])
     # Span edges are approximate they come from caption word onsets so a word
     # just outside one is still that passage's speech and is covered by its audio.
     edge = 1.0
@@ -830,7 +901,15 @@ def diarize(vocals: Path, *, note: Callable[[str], None] | None = None
             pipeline.to(torch.device("cuda:0"))
         elif torch.backends.mps.is_available():
             pipeline.to(torch.device("mps"))
-        output = pipeline(str(vocals))
+        # Hand pyannote samples, not a path: given a path it decodes via
+        # torchcodec, whose dylib is pinned to an FFmpeg major, so a routine
+        # `brew upgrade ffmpeg` silently kills diarization. The stem is a file
+        # we wrote ourselves and soundfile is already a hard dependency.
+        import soundfile as sf
+
+        samples, sample_rate = sf.read(str(vocals), dtype="float32", always_2d=True)
+        output = pipeline({"waveform": torch.from_numpy(samples.T),
+                           "sample_rate": sample_rate})
         annotation = getattr(output, "speaker_diarization", output)
         return [
             {"speaker": spk, "start": round(float(turn.start), 3), "end": round(float(turn.end), 3)}
@@ -1237,6 +1316,15 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
     # lines; letting those seconds fall to the background bed is far smoother. Their
     # (sub-two-letter) words carry no meaning, so nothing is lost.
     segs = [s for s in segs if s.get("keep_reason") != "no_text"]
+
+    # A line torn in two by music (its middle buried in the background stem)
+    # leaves a stranded opening word; fold its text into the continuation so the
+    # line is voiced once, whole (see merge_stranded_fragments).
+    before = len(segs)
+    segs = merge_stranded_fragments(segs, src_lang, tgt_lang)
+    if len(segs) < before:
+        print(f"  segments: merged {before - len(segs)} stranded fragment(s) "
+              "into their continuation", file=sys.stderr)
     for i, seg in enumerate(segs):
         seg["id"] = i
 

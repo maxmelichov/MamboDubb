@@ -1203,8 +1203,17 @@ class _Synth:
         self._prompts: dict[str, Any] = {}
 
     def _load(self):
+        import contextlib
+        import io
+
         import torch
-        from qwen_tts import Qwen3TTSModel
+
+        # qwen_tts eagerly imports its 25Hz tokenizer, whose module prints an
+        # asterisk banner telling non-CUDA users to install flash-attn (which
+        # has no macOS build, and this pipeline only loads 12Hz checkpoints).
+        # Swallow stdout for just the import; real import errors still raise.
+        with contextlib.redirect_stdout(io.StringIO()):
+            from qwen_tts import Qwen3TTSModel
 
         if self._model is not None:
             return self._model

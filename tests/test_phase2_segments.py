@@ -559,3 +559,73 @@ def test_cjk_shares_one_bucket_while_hangul_stands_apart():
     assert segments.text_bucket("서울", "ko", "en") == "source"
     assert segments.text_bucket("東京", "ja", "zh") is None    # same bucket
     assert segments.text_bucket("ciao", "it", "pt") is None    # same script
+
+
+# --------------------------------------------- stranded fragments (issue #8)
+
+def _orphan_pair():
+    # The issue's exact shape: music buries the middle of one line, so the
+    # transcript tears into a one-word opener and its continuation 5.85s later.
+    return [
+        {"id": 0, "start": 6.29, "end": 8.03, "speaker": "S0",
+         "text": "בשנת", "keep": False},
+        {"id": 1, "start": 13.88, "end": 20.36, "speaker": "S0",
+         "text": "2013, אני אז מפקד אוגדה 36", "keep": False},
+    ]
+
+
+def test_stranded_opener_merges_into_its_continuation():
+    segs = segments.merge_stranded_fragments(_orphan_pair())
+    assert len(segs) == 1
+    # Voiced once, whole, at the later timestamp: the absorber keeps its timing.
+    assert segs[0]["text"] == "בשנת 2013, אני אז מפקד אוגדה 36"
+    assert (segs[0]["start"], segs[0]["end"]) == (13.88, 20.36)
+    # ...and remembers where the orphan came from, for the editor and for
+    # unsegmented_words, which must still count its words as heard.
+    assert segs[0]["merged_from"] == [{"start": 6.29, "end": 8.03, "text": "בשנת"}]
+
+
+def test_merged_from_keeps_the_orphan_s_words_covered():
+    segs = segments.merge_stranded_fragments(_orphan_pair())
+    words = [{"t": 6.3, "text": "בשנת"}, {"t": 13.9, "text": "2013"}]
+    assert segments.unsegmented_words(words, segs, []) == []
+
+
+def test_normal_adjacent_segments_are_never_merged():
+    # A short line before an ordinary pause is not a torn fragment: the gap is
+    # below ORPHAN_GAP_MIN, so both segments survive untouched.
+    segs = [
+        {"id": 0, "start": 6.29, "end": 8.03, "speaker": "S0",
+         "text": "בשנת", "keep": False},
+        {"id": 1, "start": 8.9, "end": 15.0, "speaker": "S0",
+         "text": "2013 קרה משהו", "keep": False},
+    ]
+    assert segments.merge_stranded_fragments(segs) == segs
+
+
+def test_a_complete_short_sentence_is_not_a_fragment():
+    # "כן." ends its own sentence; a scene change after it is a gap, not a tear.
+    segs = _orphan_pair()
+    segs[0]["text"] = "כן."
+    assert len(segments.merge_stranded_fragments(segs)) == 2
+
+
+def test_no_merge_across_a_speaker_change_or_into_a_keep():
+    other = _orphan_pair()
+    other[1]["speaker"] = "S1"
+    assert len(segments.merge_stranded_fragments(other)) == 2
+    kept = _orphan_pair()
+    kept[1]["keep"] = True          # keep plays original audio; text added to it
+    assert len(segments.merge_stranded_fragments(kept)) == 2   # would never be voiced
+
+
+def test_a_wordy_or_long_or_distant_opener_stands_alone():
+    wordy = _orphan_pair()
+    wordy[0]["text"] = "בשנת ההיא של המלחמה"          # a clause, not a torn word
+    assert len(segments.merge_stranded_fragments(wordy)) == 2
+    slow = _orphan_pair()
+    slow[0]["end"] = 8.9                              # 2.6s: a deliberate utterance
+    assert len(segments.merge_stranded_fragments(slow)) == 2
+    far = _orphan_pair()
+    far[1]["start"] = 16.5                            # past ORPHAN_GAP_MAX
+    assert len(segments.merge_stranded_fragments(far)) == 2

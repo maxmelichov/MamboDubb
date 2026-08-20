@@ -1114,6 +1114,9 @@ export function EditorPage() {
             splitAt={splitAt}
             onSelect={selectFromTimeline}
             onSeek={transport.seek}
+            // The strip's drag is the panel's Move button by another gesture:
+            // the same PATCH, optimistic with the same rollback (`useProject`).
+            onRetime={(uid, start, end) => void actions.patch(uid, { start, end })}
             onViewport={onViewport}
             onZoomIn={zoomIn}
             onZoomOut={zoomOut}

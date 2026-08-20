@@ -2232,6 +2232,56 @@ def test_setup_model_check_reports_size(tmp_path):
     assert "downloads on use" in missing["detail"]
 
 
+def test_setup_uv_probe_mirrors_the_shells_fallback_chain(tmp_path, monkeypatch):
+    """The shell's `find_uv()` found uv and started this server with it, and the
+    server's bare `shutil.which` then reported the tool missing and required.
+    The Python probe honours the same override and the same off-PATH homes."""
+    from dubbing_app import setup as setup_mod
+
+    fake = tmp_path / "uv"
+    fake.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("DUBSTUDIO_UV_PATH", str(fake))
+    assert setup_mod.find_uv() == str(fake)
+
+    # Off PATH entirely (a Finder-launched .app): the `~/.local/bin` that uv's
+    # own installer uses still answers. A dangling override is ignored, not
+    # trusted, and the literal Homebrew paths are emptied so a machine that has
+    # uv installed there cannot make this pass for the wrong reason.
+    monkeypatch.setenv("DUBSTUDIO_UV_PATH", str(tmp_path / "gone"))
+    monkeypatch.setattr(setup_mod, "UV_FALLBACKS", ())
+    monkeypatch.setattr(setup_mod.shutil, "which", lambda exe: None)
+    home = tmp_path / "home"
+    local = home / ".local" / "bin"
+    local.mkdir(parents=True)
+    (local / "uv").write_text("#!/bin/sh\n")
+    monkeypatch.setattr(setup_mod.Path, "home", lambda: home)
+    assert setup_mod.find_uv() == str(local / "uv")
+
+
+def test_setup_demucs_passes_from_the_hf_cache(tmp_path, monkeypatch):
+    """demucs 4.x fetches `htdemucs_ft` from the Hub into the HF cache, not the
+    torch hub cache; probing only the latter made this a row that could never
+    pass on a working install."""
+    from dubbing_app import setup as setup_mod
+
+    monkeypatch.setenv("TORCH_HOME", str(tmp_path / "torch"))  # no `.th` anywhere
+    hub = tmp_path / "hf"
+    blobs = hub / "models--adefossez--HTDemucs-ft" / "blobs"
+    blobs.mkdir(parents=True)
+    monkeypatch.setenv("HF_HUB_CACHE", str(hub))
+    # An empty `blobs/` is an interrupted fetch, not a model.
+    assert setup_mod.demucs_check()["ok"] is False
+    (blobs / "0a1b").write_bytes(b"x" * 1024)
+    row = setup_mod.demucs_check()
+    assert row["ok"] is True and row["bytes"] == 1024
+    assert "HTDemucs-ft" in row["path"]
+
+    # `HF_HOME` alone resolves the way huggingface_hub does: cache under `hub/`.
+    monkeypatch.delenv("HF_HUB_CACHE")
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf_home"))
+    assert setup_mod.hf_hub_cache() == tmp_path / "hf_home" / "hub"
+
+
 # ---------------------------------------------------------------------------
 # installing a missing tool from the app
 # ---------------------------------------------------------------------------

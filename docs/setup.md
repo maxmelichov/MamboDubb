@@ -6,20 +6,20 @@
 - [uv](https://docs.astral.sh/uv/) (`brew install uv`)
 - [ffmpeg](https://ffmpeg.org/) (`brew install ffmpeg`)
 - [SoX](http://sox.sourceforge.net/) (`brew install sox`) Qwen3-TTS text normalization
+- [Node](https://nodejs.org/) + [pnpm](https://pnpm.io/) (`brew install node pnpm`) to build the editor UI
 - Hugging Face account + token (for the gated **Pyannote** diarization models)
 
 ## Install
 
 ```bash
-cd DubbingQwen
+cd MamboDubb
 uv sync
 cp .env.example .env      # then set HF_TOKEN=hf_...
 ```
 
 Accept the Pyannote model terms once per account:
 
-- https://huggingface.co/pyannote/speaker-diarization-3.1
-- https://huggingface.co/pyannote/segmentation-3.0
+- https://huggingface.co/pyannote/speaker-diarization-community-1
 
 Without a token the pipeline still runs diarization falls back to a single speaker
 and the report says so.
@@ -29,11 +29,11 @@ and the report says so.
 All local, under `models/`:
 
 ```bash
-# Translation Gemma 4 12B, quantisation-aware 4-bit, run through MLX (~11 GB).
-# For a tighter memory budget use gemma-4-12B-it-4bit (~6.3 GB) instead and point
-# translate.MODEL_PATH at it; see the trade-off in dubbing/translate.py.
-uv run hf download mlx-community/gemma-4-12B-it-qat-4bit \
-  --local-dir models/gemma-4-12B-it-qat-4bit
+# Translation Gemma 4 12B, 6-bit, run through MLX (~9.7 GB). Below 6 bits this
+# model does not hold Hebrew (the 4-bit reads fluently and gets it wrong, which
+# is worse); see the scoring table in dubbing/translate.py before trading down.
+uv run hf download mlx-community/gemma-4-12B-it-6bit \
+  --local-dir models/gemma-4-12B-it-6bit
 
 # Speech synthesis, zero-shot voice cloning
 uv run hf download Qwen/Qwen3-TTS-12Hz-1.7B-Base \
@@ -43,9 +43,17 @@ uv run hf download Qwen/Qwen3-TTS-12Hz-1.7B-Base \
 uv run hf download Systran/faster-whisper-base.en \
   --local-dir models/faster-whisper-base.en
 
-# Source-language ASR only needed for videos that have no captions
+# Multilingual ASR used to verify clips in any non-English target
+uv run hf download Systran/faster-whisper-base \
+  --local-dir models/faster-whisper-base
+
+# Hebrew-source ASR only needed for videos that have no captions
 uv run hf download ivrit-ai/whisper-large-v3-turbo-ct2 \
   --local-dir models/whisper-large-v3-turbo-ct2
+
+# Every other source language reads with the vanilla multilingual turbo model
+uv run hf download deepdml/faster-whisper-large-v3-turbo-ct2 \
+  --local-dir models/faster-whisper-large-v3-turbo-ct2
 ```
 
 Demucs (`htdemucs_ft`) and Pyannote download themselves on first use.

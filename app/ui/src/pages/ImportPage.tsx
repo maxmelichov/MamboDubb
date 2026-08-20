@@ -13,8 +13,13 @@
  *   paragraphs. It ends with the sentence that says which of these choices are
  *   final because two of them are, and a screen that does not say so is asking
  *   people to guess whether a run is a commitment.
- * - **Existing runs** full width underneath, as cards. The only other thing
- *   you can do from this screen is re-open one.
+ * - **Your runs** the third column on a wide window, full width underneath on
+ *   a narrow one. The only other thing you can do from this screen is re-open
+ *   one, and it used to live below both tall regions — off the bottom of every
+ *   maximised window, which read as "there are no old runs" to anyone who did
+ *   not think to scroll. A column keeps it on screen next to the form; when
+ *   the list outgrows the viewport the *list* scrolls, inside its own column,
+ *   so the region's heading never leaves the fold.
  *
  * The context note is not decoration. Translation quality moves measurably with
  * a sentence about who and what the video is about and how names are spelled —
@@ -218,7 +223,11 @@ export function ImportPage() {
     // button says Start dubbing — a display title over all three was the page
     // explaining itself to people already using it.
     <PageShell width="wide">
-      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_21rem] xl:grid-cols-[minmax(0,1fr)_24rem]">
+      {/* Three regions in one grid: at `lg` the card and the rail share the
+          row and the runs span underneath; at `xl` the runs become the third
+          column, so nothing on this screen is ever hidden below the fold. The
+          rail gives back its extra `xl` width (24rem → 21rem) to pay for it. */}
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_21rem] xl:grid-cols-[minmax(0,1fr)_21rem_20rem]">
         {/* ------------------------------------------------------- the card */}
         <Card
           data-region="new-dub"
@@ -568,6 +577,70 @@ export function ImportPage() {
             </p>
           </CardSection>
         </Card>
+        {/* ---------------------------------------------------------- runs */}
+        {/* Sticky at `xl` so the column holds its place while a long page
+            scrolls, capped to the viewport so a long list scrolls *inside*
+            the column the heading is the thing that must never leave the
+            screen, because an unseen heading is an unknown feature. */}
+        <section
+          data-region="runs"
+          className="flex min-h-0 flex-col gap-3.5 lg:col-span-2 xl:sticky xl:top-5 xl:col-span-1 xl:max-h-[calc(100vh-2.5rem)] xl:self-start"
+        >
+          <div className="flex items-baseline justify-between gap-3 px-1">
+            <SectionLabel icon={Clapperboard}>Your runs</SectionLabel>
+            <span className="text-[11px] tabular-nums text-muted">
+              {projects && projects.length > 0
+                ? `${projects.length} ${projects.length === 1 ? "run" : "runs"} in outputs/`
+                : ""}
+            </span>
+          </div>
+
+          {projects == null ? (
+            <Card className="rounded-3xl">
+              <div className="flex items-center gap-3 px-6 py-7 text-[13px] text-muted">
+                <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
+                Reading outputs/…
+              </div>
+            </Card>
+          ) : listError ? (
+            <Card className="rounded-3xl">
+              <Empty
+                className="py-9"
+                icon={PlugZap}
+                title="Can't reach the studio server"
+                action={
+                  <Button size="sm" onClick={() => setReloads((n) => n + 1)}>
+                    Try again
+                  </Button>
+                }
+              >
+                Existing runs live on the server, and it did not answer:{" "}
+                <span className="text-secondary">{listError}</span>. Start it with{" "}
+                <code className="font-mono text-secondary">uv run python -m dubbing_app.server</code>,
+                then try again.
+              </Empty>
+            </Card>
+          ) : projects.length === 0 ? (
+            <Card className="rounded-3xl">
+              <Empty className="py-9" icon={Clapperboard} title="No runs yet">
+                Every dub you start lands here, resumable. Fill in the card and press{" "}
+                <em>Start dubbing</em> to make the first one.
+              </Empty>
+            </Card>
+          ) : (
+            // A strip of padding on every side of the scroll box, so the hover
+            // lift and the card shadows are not shaved off at its edges.
+            <ul className="grid gap-4 p-0.5 sm:grid-cols-2 xl:min-h-0 xl:flex-1 xl:grid-cols-1 xl:overflow-y-auto xl:pr-1.5">
+              {projects.map((project) => (
+                <ProjectCard
+                  key={project.name}
+                  project={project}
+                  onOpen={() => navigate(`/editor/${encodeURIComponent(project.name)}`)}
+                />
+              ))}
+            </ul>
+          )}
+        </section>
       </div>
 
       {error ? (
@@ -575,62 +648,6 @@ export function ImportPage() {
           {error}
         </ErrorBlock>
       ) : null}
-
-      {/* ------------------------------------------------------------ runs */}
-      <section data-region="runs" className="flex flex-col gap-3.5">
-        <div className="flex items-baseline justify-between gap-3 px-1">
-          <SectionLabel icon={Clapperboard}>Existing runs</SectionLabel>
-          <span className="text-[11px] tabular-nums text-muted">
-            {projects && projects.length > 0
-              ? `${projects.length} ${projects.length === 1 ? "run" : "runs"} in outputs/`
-              : ""}
-          </span>
-        </div>
-
-        {projects == null ? (
-          <Card className="rounded-3xl">
-            <div className="flex items-center gap-3 px-6 py-7 text-[13px] text-muted">
-              <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
-              Reading outputs/…
-            </div>
-          </Card>
-        ) : listError ? (
-          <Card className="rounded-3xl">
-            <Empty
-              className="py-9"
-              icon={PlugZap}
-              title="Can't reach the studio server"
-              action={
-                <Button size="sm" onClick={() => setReloads((n) => n + 1)}>
-                  Try again
-                </Button>
-              }
-            >
-              Existing runs live on the server, and it did not answer:{" "}
-              <span className="text-secondary">{listError}</span>. Start it with{" "}
-              <code className="font-mono text-secondary">uv run python -m dubbing_app.server</code>,
-              then try again.
-            </Empty>
-          </Card>
-        ) : projects.length === 0 ? (
-          <Card className="rounded-3xl">
-            <Empty className="py-9" icon={Clapperboard} title="No runs yet">
-              Every dub you start lands here, resumable. Fill in the card above and press{" "}
-              <em>Start dubbing</em> to make the first one.
-            </Empty>
-          </Card>
-        ) : (
-          <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {projects.map((project) => (
-              <ProjectCard
-                key={project.name}
-                project={project}
-                onOpen={() => navigate(`/editor/${encodeURIComponent(project.name)}`)}
-              />
-            ))}
-          </ul>
-        )}
-      </section>
     </PageShell>
   );
 }

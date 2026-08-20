@@ -164,10 +164,38 @@ TOOLS: dict[str, tuple[str, str, str]] = {
 }
 
 
+# `uv` discovery, kept byte-for-byte in step with `find_uv()` in the shell's
+# `workspace.rs`: same env override, same literal paths, same order. Two
+# different rules for the same tool is exactly the bug this exists to close —
+# the Rust side found uv, started this server with it, and the server then
+# reported the tool that launched it as missing and required.
+UV_PATH_ENV = "DUBSTUDIO_UV_PATH"
+UV_FALLBACKS = ("/opt/homebrew/bin/uv", "/usr/local/bin/uv")
+
+
+def find_uv() -> str | None:
+    """Where `uv` actually is, not just where PATH says. A Finder-launched .app
+    inherits almost none of the user's shell PATH on macOS, and uv's own
+    installer puts the binary in `~/.local/bin` — which is why `shutil.which`
+    alone answers "missing" on a machine where uv is running the server."""
+    override = (os.environ.get(UV_PATH_ENV) or "").strip()
+    if override and Path(override).is_file():
+        return override
+    for candidate in UV_FALLBACKS:
+        if Path(candidate).is_file():
+            return candidate
+    found = shutil.which("uv")
+    if found:
+        return found
+    local = Path.home() / ".local" / "bin" / "uv"
+    return str(local) if local.is_file() else None
+
+
 def tool(id_: str, label: str, exe: str, why: str, *,
          severity: str = BLOCKING) -> dict[str, Any]:
     """One tool row. `shutil.which` is the whole probe — it honours PATHEXT, so
     `ffmpeg.exe` on Windows answers to the same lookup as `ffmpeg` elsewhere.
+    The one exception is `uv`, which gets `find_uv()`'s fuller chain (above).
 
     A missing row carries **this platform's** install command, because that is
     the only actionable half of "not on PATH" and the row is where a user with
@@ -175,7 +203,7 @@ def tool(id_: str, label: str, exe: str, why: str, *,
     only where that command can run unattended)."""
     from dubbing import tools as tool_recipes
 
-    found = shutil.which(exe)
+    found = find_uv() if exe == "uv" else shutil.which(exe)
     detail = found or f"{exe} not on PATH {why}"
     if not found:
         command = tool_recipes.command(id_)
@@ -364,19 +392,53 @@ def g2p_check() -> dict[str, Any]:
                  detail, severity=OPTIONAL, path=str(hebrew.G2P_DIR), bytes=size)
 
 
+def hf_hub_cache() -> Path:
+    """Where huggingface_hub keeps models, resolved the way the library does:
+    `HF_HUB_CACHE` wins, then `HF_HOME` (cache lives under its `hub/`), then
+    the default. Restating the library's rule here is the price of rule one —
+    importing huggingface_hub just to ask a path would pull it into every
+    `GET /api/setup`."""
+    hub_cache = (os.environ.get("HF_HUB_CACHE") or "").strip()
+    if hub_cache:
+        return Path(hub_cache)
+    hf_home = (os.environ.get("HF_HOME") or "").strip()
+    if hf_home:
+        return Path(hf_home) / "hub"
+    return Path.home() / ".cache" / "huggingface" / "hub"
+
+
 def demucs_check() -> dict[str, Any]:
-    """Optional by contract: Demucs fetches `htdemucs_ft` into the torch hub
-    cache the first time `stems` runs, so absence is a slow first run, not a
-    broken install and not a worse dub."""
+    """Optional by contract: Demucs fetches `htdemucs_ft` the first time `stems`
+    runs, so absence is a slow first run, not a broken install and not a worse
+    dub.
+
+    Two caches, because demucs changed homes: 3.x keeps `.th` weights under the
+    torch hub cache, 4.x fetches from the Hugging Face Hub into the HF cache as
+    `models--adefossez--*` (with the payload under `blobs/`). Probing only the
+    old one made this a row that could never pass on a working install."""
     from dubbing import stems
 
-    cache = Path(os.environ.get("TORCH_HOME") or (Path.home() / ".cache" / "torch")) / "hub"
-    present = cache.is_dir() and any(cache.rglob("*.th"))
-    size = dir_size(cache) if present else 0
-    detail = (f"{stems.MODEL} cache: {human_bytes(size)} in {cache}" if present
+    torch_cache = Path(os.environ.get("TORCH_HOME") or (Path.home() / ".cache" / "torch")) / "hub"
+    found: Path | None = None
+    if torch_cache.is_dir() and any(torch_cache.rglob("*.th")):
+        found = torch_cache
+    else:
+        hf_cache = hf_hub_cache()
+        if hf_cache.is_dir():
+            for repo in sorted(hf_cache.glob("models--adefossez--*")):
+                blobs = repo / "blobs"
+                if blobs.is_dir() and any(blobs.iterdir()):
+                    found = repo
+                    break
+    present = found is not None
+    size = dir_size(found) if found is not None else 0
+    detail = (f"{stems.MODEL} cache: {human_bytes(size)} in {found}" if present
               else f"{stems.MODEL} not downloaded yet fetched on the first stems run")
+    # The missing row points at the HF cache: that is where a 4.x download will
+    # actually land, and the torch hub path would send the user somewhere the
+    # weights will never appear.
     return check("model.demucs", "Demucs stem separation", present, detail,
-                 severity=OPTIONAL, path=str(cache), bytes=size)
+                 severity=OPTIONAL, path=str(found or hf_hub_cache()), bytes=size)
 
 
 # ---------------------------------------------------------------------------
@@ -430,4 +492,5 @@ def report(outputs: Path) -> dict[str, Any]:
 
 
 __all__ = ["report", "probe", "git_commit", "human_bytes", "dir_size", "env_path",
+           "find_uv", "hf_hub_cache",
            "blocking_stage", "TOOLS", "BLOCKING", "DEGRADES", "OPTIONAL", "SEVERITIES"]
