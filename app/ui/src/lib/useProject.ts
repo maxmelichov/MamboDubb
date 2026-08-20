@@ -12,6 +12,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, api } from "./api";
 import { applyPatch } from "./patch";
+import { capture, emptyHistory, matches, remember } from "./useHistory";
+import type { HistoryEntry } from "./useHistory";
 import { isPending } from "./types";
 import type {
   Job,
@@ -103,6 +105,17 @@ export type ProjectActions = {
   resume: () => Promise<void>;
   /** `batch` stops every job the same gesture queued, not just this one. */
   cancel: (id: string, batch?: boolean) => Promise<void>;
+  /**
+   * ⌘Z / ⌘⇧Z, resolved to a sentence.
+   *
+   * The return value is the whole interface: an undo whose row is off-screen
+   * is invisible, and an undo that *refused* — a barrier, a stale entry, an
+   * empty stack — is indistinguishable from one that worked unless something
+   * says so. The caller shows the sentence; this layer decides what happened.
+   * See `useHistory.ts` for what the stacks hold and why splits block them.
+   */
+  undo: () => Promise<string>;
+  redo: () => Promise<string>;
   reload: () => Promise<void>;
   dismissError: () => void;
 };
@@ -128,6 +141,22 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
   }, [segments]);
   const [stage, setStage] = useState<StageProgress | null>(null);
   const [log, setLog] = useState<LogEvent[]>([]);
+
+  /*
+   * Undo history, in refs on purpose. The stacks never draw anything, and
+   * `applying` is the recursion guard: undo goes through the very same `patch`
+   * and `structural` actions the original gestures used — that reuse is what
+   * keeps undo optimistic, rolled back and error-barred like everything else —
+   * so without the flag every undo would record itself as a fresh edit and ⌘Z
+   * would bounce between two states forever instead of walking back through
+   * many. The inverse an application *does* mint goes to the opposite stack,
+   * pushed explicitly by `shift`.
+   */
+  const history = useRef(emptyHistory());
+  const applying = useRef(false);
+  const record = useCallback((entry: HistoryEntry | null) => {
+    if (!applying.current) remember(history.current, entry);
+  }, []);
 
   // Refs so the event handler stays stable across renders.
   const nameRef = useRef(name);
@@ -332,6 +361,9 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
         const updated = await api.patchSegment(name, uid, body);
         setSegments((current) => current.map((seg) => (seg.uid === uid ? updated : seg)));
         setEdited(true);
+        // After the server said yes, never before: a rolled-back edit is not a
+        // thing that happened, so it must not be a thing ⌘Z re-does either.
+        if (before) record(capture(before, updated, body));
         refreshProject();
         return updated;
       } catch (err) {
@@ -342,11 +374,14 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
         return null;
       }
     },
-    [name, refreshProject],
+    [name, record, refreshProject],
   );
 
   /**
-   * Returns whether the edit landed; the error bar still gets every failure.
+   * Returns the list the edit produced, or null; the error bar still gets
+   * every failure. (Callers that only need "did it land" test for null — the
+   * list itself is for the ones that must know what was minted, which is how
+   * undo learns the uid a re-created segment came back under.)
    *
    * `land` names the line to select afterwards. Every one of these edits leaves
    * the reviewer looking at a list that has moved under them, and the selection
@@ -358,7 +393,7 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
     async (
       run: () => Promise<Segment[]>,
       land?: (before: Segment[], after: Segment[]) => string | null,
-    ): Promise<boolean> => {
+    ): Promise<Segment[] | null> => {
       const before = segmentsRef.current;
       try {
         const after = await run();
@@ -369,10 +404,10 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
         refreshProject();
         const uid = land?.(before, after) ?? null;
         if (uid) setSelectedUid(uid);
-        return true;
+        return after;
       } catch (err) {
         setError(describe(err));
-        return false;
+        return null;
       }
     },
     [refreshProject],
@@ -380,38 +415,64 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
 
   const split = useCallback(
     async (uid: string, at: number) => {
-      await structural(
+      const after = await structural(
         () => api.splitSegment(name, uid, at),
         (before, after) => landed(before, after, uid),
       );
+      // No inverse exists — see `useHistory.ts`. The barrier is the honest
+      // record: reached by ⌘Z it explains itself, where skipping it would send
+      // older inverses at a run whose uids the split just re-minted.
+      if (after) record({ kind: "barrier", op: "split" });
     },
-    [name, structural],
+    [name, record, structural],
   );
 
   const merge = useCallback(
     async (uid: string, uidB: string) => {
-      await structural(
+      const after = await structural(
         () => api.mergeSegments(name, uid, uidB),
         (before, after) => landed(before, after, uid),
       );
+      if (after) record({ kind: "barrier", op: "merge" });
     },
-    [name, structural],
+    [name, record, structural],
   );
 
   const add = useCallback(
-    (segment: NewSegment) => structural(() => api.addSegment(name, segment), landed),
-    [name, structural],
+    async (segment: NewSegment) => {
+      const before = segmentsRef.current;
+      const after = await structural(() => api.addSegment(name, segment), landed);
+      if (after) {
+        // The inverse of claiming a span is retiring it, and DELETE needs the
+        // uid the server just minted — which is why `structural` returns the
+        // list instead of a boolean.
+        const minted = landed(before, after);
+        record(minted ? { kind: "delete", uid: minted } : null);
+      }
+      return after != null;
+    },
+    [name, record, structural],
   );
 
   const remove = useCallback(
     async (uid: string) => {
-      await structural(() => api.removeSegment(name, uid));
+      // Captured before the DELETE, because afterwards nothing on the client
+      // remembers the line. Exactly the shape `POST /segments` accepts — the
+      // undo is the add composer's own request with the dead line's values.
+      const gone = segmentsRef.current.find((seg) => seg.uid === uid);
+      const after = await structural(() => api.removeSegment(name, uid));
+      if (after && gone) {
+        record({
+          kind: "create",
+          segment: { start: gone.start, end: gone.end, text: gone.text, speaker: gone.speaker },
+        });
+      }
       // Whether or not the call succeeded, the panel must not be left pointing
       // at a uid that no longer names anything. `setSelectedUid` is a no-op when
       // something else was selected.
       setSelectedUid((current) => (current === uid ? null : current));
     },
-    [name, structural],
+    [name, record, structural],
   );
 
   /*
@@ -429,6 +490,92 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
       }
     },
     [],
+  );
+
+  /**
+   * One step through history, in either direction.
+   *
+   * Take the top entry, apply it through the ordinary actions, and push what
+   * *applying it* minted onto the opposite stack — the redo of a PATCH is
+   * `capture` run over the segment the undo just hit, the redo of a re-created
+   * line is a DELETE of the uid the server just answered with. One interpreter
+   * for both directions, so undo and redo cannot drift apart.
+   *
+   * Refusals, in order of how they are held:
+   * - a barrier is *peeked*, never popped: the history behind a split is over,
+   *   and it stays there saying so rather than pretending to be walkable;
+   * - a stale entry (the line changed under it — see `matches`) is popped and
+   *   dropped: applying it would overwrite newer truth, keeping it would jam
+   *   the stack on an entry that can never apply;
+   * - a failed request pushes its entry back, because a 409 while a job runs
+   *   is about *now* — the same ⌘Z deserves to work once the queue drains.
+   */
+  const shift = useCallback(
+    async (direction: "undo" | "redo"): Promise<string> => {
+      const stacks = history.current;
+      const [from, to] =
+        direction === "undo" ? [stacks.done, stacks.undone] : [stacks.undone, stacks.done];
+      const did = direction === "undo" ? "Undid" : "Redid";
+      const entry = from[from.length - 1];
+      if (!entry) return `Nothing to ${direction}`;
+      if (entry.kind === "barrier") {
+        const what = entry.op === "edit" ? "that edit" : `the ${entry.op}`;
+        return `Can't ${direction} past ${what} — that step isn't reversible`;
+      }
+      from.pop();
+      applying.current = true;
+      try {
+        switch (entry.kind) {
+          case "patch": {
+            const seg = segmentsRef.current.find((s) => s.uid === entry.uid);
+            if (!seg || !matches(seg, entry.expect)) {
+              return `The line changed since that edit — ${direction} skipped it`;
+            }
+            const saved = await patch(entry.uid, entry.body);
+            if (!saved) {
+              from.push(entry);
+              return `${direction === "undo" ? "Undo" : "Redo"} failed — see the error bar`;
+            }
+            to.push(capture(seg, saved, entry.body) ?? { kind: "barrier", op: "edit" });
+            setSelectedUid(entry.uid);
+            return `${did} the edit to #${saved.id}`;
+          }
+          case "create": {
+            const before = segmentsRef.current;
+            const after = await structural(() => api.addSegment(name, entry.segment), landed);
+            if (!after) {
+              from.push(entry);
+              return "Couldn't restore the line — see the error bar";
+            }
+            const minted = landed(before, after);
+            if (minted) to.push({ kind: "delete", uid: minted });
+            const line = after.find((s) => s.uid === minted);
+            return `Restored deleted line${line ? ` #${line.id}` : ""}`;
+          }
+          case "delete": {
+            const seg = segmentsRef.current.find((s) => s.uid === entry.uid);
+            if (!seg) return `That line is already gone — ${direction} skipped it`;
+            const payload: NewSegment = {
+              start: seg.start,
+              end: seg.end,
+              text: seg.text,
+              speaker: seg.speaker,
+            };
+            const after = await structural(() => api.removeSegment(name, entry.uid));
+            if (!after) {
+              from.push(entry);
+              return "Couldn't remove the line — see the error bar";
+            }
+            to.push({ kind: "create", segment: payload });
+            setSelectedUid((current) => (current === entry.uid ? null : current));
+            return `${did === "Undid" ? "Removed added" : "Removed"} line #${seg.id}`;
+          }
+        }
+      } finally {
+        applying.current = false;
+      }
+    },
+    [name, patch, structural],
   );
 
   const actions = useMemo<ProjectActions>(
@@ -468,10 +615,12 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
           setError(describe(err));
         }
       },
+      undo: () => shift("undo"),
+      redo: () => shift("redo"),
       reload: load,
       dismissError: () => setError(null),
     }),
-    [add, load, merge, name, patch, remove, split, submit],
+    [add, load, merge, name, patch, remove, shift, split, submit],
   );
 
   /*

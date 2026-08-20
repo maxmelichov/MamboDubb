@@ -1308,6 +1308,38 @@ check(
 );
 
 /*
+ * ⌘Z, immediately, while the commit above is the newest entry on the stack:
+ * one press puts the pipeline's sentence back, one ⌘⇧Z re-applies the user's
+ * — which also hands the sections below the exact row state they were written
+ * against. The strip is checked as well as the row, because an undo whose row
+ * is off-screen (or refused — barrier, stale entry) is invisible without it.
+ */
+const chord = (key, extra = {}) =>
+  dom.window.dispatchEvent(
+    new dom.window.KeyboardEvent("keydown", {
+      key,
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+      ...extra,
+    }),
+  );
+chord("z");
+await settle(300);
+check(
+  "ctrl+z puts back the sentence the edit replaced",
+  rowFor(2).textContent.includes("The Qatari threat") &&
+    !rowFor(2).textContent.includes("Edited by hand."),
+);
+check(
+  "…and says what it did",
+  /Undid/.test(document.querySelector("[data-history-notice]")?.textContent ?? ""),
+);
+chord("z", { shiftKey: true });
+await settle(300);
+check("ctrl+shift+z re-applies the edit", rowFor(2).textContent.includes("Edited by hand."));
+
+/*
  * Closing a field you only opened to read must cost nothing.
  *
  * `edit.set_text` invalidates the clip and the placement and stamps a lock, so

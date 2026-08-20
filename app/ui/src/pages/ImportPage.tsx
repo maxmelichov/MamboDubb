@@ -4,9 +4,14 @@
  *
  * The shape is a studio composition, not a form in a column. Two regions:
  *
- * - **New dub** the generous card. It holds the two things you *type*: the
- *   source, and the context note. The single primary action sits in a sunken
- *   band at its foot, bottom-right, so it reads as the card's conclusion.
+ * - **New dub** the card. It holds the two things you *type*: the source, and
+ *   the context note. The single primary action sits in a sunken band directly
+ *   under them, bottom-right, so it reads as the card's conclusion — and the
+ *   card ends there. It used to stretch to match the rail's height, which put
+ *   a void under the context field and the Start button below the fold at
+ *   1280×800: the screen's one action was the thing you had to scroll for.
+ *   Now the grid is `items-start`, the card is exactly as tall as its content,
+ *   and the rail scrolls by itself when it is the taller one.
  * - **Options** the rail beside it. Five labelled groups, hairlined apart:
  *   languages, genre, register, transcript, scope. Nothing here is typed prose;
  *   it is all picking, which is why it is a rail and not a second column of
@@ -38,6 +43,7 @@ import { useNavigate } from "react-router-dom";
 import {
   ArrowRight,
   Captions,
+  ChevronDown,
   Clapperboard,
   Film,
   FileVideo,
@@ -190,160 +196,186 @@ export function ImportPage() {
     <PageShell width="wide">
       {/* Two regions in one grid: at `lg` the card and the rail share the row.
           The rail gets its full 24rem back — the runs column it used to pay
-          for is a page of its own now. */}
-      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_24rem]">
-        {/* ------------------------------------------------------- the card */}
-        <Card
-          data-region="new-dub"
-          className="flex flex-col overflow-hidden rounded-3xl p-0 shadow-lift"
-        >
-          <CardSection className="pt-6">
-            {/*
-              The only field on this screen that must be filled in, and the only
-              one that said nothing about it. Every other control has a default,
-              so the screen read as "all optional" right up to the moment Start
-              dubbing answered with a refusal a rule learned by breaking it.
-            */}
-            <div className="flex items-baseline gap-2">
-              <SectionLabel icon={FileVideo}>Source</SectionLabel>
-              <span
-                data-required
-                className="text-[10px] font-bold uppercase tracking-[0.14em]"
-                style={{ color: "var(--color-critical)" }}
-              >
-                * required
-              </span>
-            </div>
-            <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-              <TextInput
-                className="h-12 flex-1 rounded-xl px-4 text-[14px]"
-                value={form.source}
-                required
-                aria-required="true"
-                aria-label="Source"
-                placeholder="https://www.youtube.com/watch?v=… or /Users/you/clip.mp4"
-                onChange={(event) => update({ source: event.currentTarget.value })}
-              />
-              <Button size="lg" className="h-12 rounded-xl" onClick={() => void chooseFile()}>
-                <FolderOpen className="h-4 w-4" />
-                Choose file
-              </Button>
-              <input
-                ref={fileRef}
-                type="file"
-                accept="video/*,audio/*"
-                className="hidden"
-                onChange={(event) => {
-                  const file = event.currentTarget.files?.[0];
-                  if (file) update({ source: file.name });
-                }}
-              />
-            </div>
-            <p className="mt-2.5 max-w-2xl text-[12px] leading-relaxed text-muted">
-              {desktop ? (
-                <>
-                  A URL, or a local file <em>Choose file</em> opens a real file dialog and fills
-                  in the full path.
-                </>
-              ) : (
-                <>
-                  A URL, or an absolute path to a local file. The browser cannot read a file's real
-                  path, so <em>Choose file</em> only fills in the name paste the full path, or use
-                  the desktop app.
-                </>
-              )}
-            </p>
-          </CardSection>
-
-          <Divider />
-
-          {/* A bordered field like every other input on the page. It was
-              borderless when it filled the whole card, but at three rows an
-              edge is what says "type here" without one it read as a caption
-              under the section label. */}
-          <CardSection className="flex flex-1 flex-col pb-6">
-            {/*
-              The label leads with the word that answers the question the field
-              raises. Source is marked required in red beside its own label, so
-              a second unmarked field of the same size directly under it reads as
-              the second half of one form and a user who does not know what to
-              write in it stops there. "Optional" first, because that is the
-              part that unblocks them; the sentence under the field still says
-              it is the cheapest thing on the screen.
-            */}
-            <SectionLabel icon={PencilLine}>Optional Context</SectionLabel>
-            <TextArea
-              autoGrow
-              rows={3}
-              className="mt-2 min-h-20 resize-none rounded-xl text-[13.5px]"
-              aria-label="Context"
-              value={form.context ?? ""}
-              placeholder="Who and what this is about, and how names are spelled. For example: a news interview about the housing market; the host is Dana (she), the guest is Prof. Ronen Levi (he) keep these spellings."
-              onChange={(event) => update({ context: event.currentTarget.value })}
-            />
-            <p className="mt-3 text-[11.5px] leading-relaxed text-muted">
-              The single cheapest thing on this screen: a sentence of context materially
-              improves the translation.
-            </p>
-
-            {/* The card's lower half. The context field above stopped
-                pretending to need the whole card, and blank card is not a
-                composition what fills it is the answer to the question every
-                first run asks at exactly this moment: what is that button about
-                to do, and why will it take a while. `mt-auto` parks it at the
-                card's foot, so the slack lands between it and the context note
-                rather than under the Start band. */}
-            <div className="mt-auto pt-7" data-pipeline-glance>
-              <SectionLabel icon={Workflow}>What a run does nine stages</SectionLabel>
-              <ol className="mt-3.5 grid gap-x-5 gap-y-3 sm:grid-cols-3">
-                {PIPELINE_GLANCE.map(([stage, does], index) => (
-                  <li key={stage} className="flex gap-2.5">
-                    <span className="font-mono text-[10px] font-bold tabular-nums leading-[1.8] text-muted">
-                      {String(index + 1).padStart(2, "0")}
-                    </span>
-                    <span className="min-w-0">
-                      <span className="block text-[12px] font-semibold text-secondary">{stage}</span>
-                      <span className="mt-0.5 block text-[11px] leading-relaxed text-muted">
-                        {does}
-                      </span>
-                    </span>
-                  </li>
-                ))}
-              </ol>
-            </div>
-          </CardSection>
-
-          <CardSection
-            tone="sunken"
-            className="flex flex-col gap-4 border-t border-border sm:flex-row sm:items-center sm:justify-between"
+          for is a page of its own now. `items-start` is what keeps the Start
+          button above the fold: without it the grid stretches the short card
+          to the tall rail's height, and the slack lands as a void between the
+          context field and the action band. */}
+      <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_24rem]">
+        {/* ------------------------------------------------- the left column */}
+        {/* The card and, under it, the glance. They share a column so the
+            glance fills the room the card no longer stretches into on a tall
+            viewport, while staying after the Start band in reading order. */}
+        <div className="flex min-w-0 flex-col gap-5">
+          <Card
+            data-region="new-dub"
+            className="flex flex-col overflow-hidden rounded-3xl p-0 shadow-lift"
           >
-            <p className="max-w-sm text-[12px] leading-relaxed text-muted">
-              One job runs at a time; the editor opens straight away with live progress.
-            </p>
-            <Button
-              variant="primary"
-              size="lg"
-              className="rounded-xl px-6"
-              onClick={start}
-              disabled={starting}
+            <CardSection className="pt-6">
+              {/*
+                The only field on this screen that must be filled in, and the only
+                one that said nothing about it. Every other control has a default,
+                so the screen read as "all optional" right up to the moment Start
+                dubbing answered with a refusal a rule learned by breaking it.
+              */}
+              <div className="flex items-baseline gap-2">
+                <SectionLabel icon={FileVideo}>Source</SectionLabel>
+                <span
+                  data-required
+                  className="text-[10px] font-bold uppercase tracking-[0.14em]"
+                  style={{ color: "var(--color-critical)" }}
+                >
+                  * required
+                </span>
+              </div>
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                <TextInput
+                  className="h-12 flex-1 rounded-xl px-4 text-[14px]"
+                  value={form.source}
+                  required
+                  aria-required="true"
+                  aria-label="Source"
+                  placeholder="https://www.youtube.com/watch?v=… or /Users/you/clip.mp4"
+                  onChange={(event) => update({ source: event.currentTarget.value })}
+                />
+                <Button size="lg" className="h-12 rounded-xl" onClick={() => void chooseFile()}>
+                  <FolderOpen className="h-4 w-4" />
+                  Choose file
+                </Button>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept="video/*,audio/*"
+                  className="hidden"
+                  onChange={(event) => {
+                    const file = event.currentTarget.files?.[0];
+                    if (file) update({ source: file.name });
+                  }}
+                />
+              </div>
+              <p className="mt-2.5 max-w-2xl text-[12px] leading-relaxed text-muted">
+                {desktop ? (
+                  <>
+                    A URL, or a local file <em>Choose file</em> opens a real file dialog and fills
+                    in the full path.
+                  </>
+                ) : (
+                  <>
+                    A URL, or an absolute path to a local file. The browser cannot read a file's real
+                    path, so <em>Choose file</em> only fills in the name paste the full path, or use
+                    the desktop app.
+                  </>
+                )}
+              </p>
+            </CardSection>
+
+            <Divider />
+
+            {/* A bordered field like every other input on the page. It was
+                borderless when it filled the whole card, but at three rows an
+                edge is what says "type here" without one it read as a caption
+                under the section label. */}
+            <CardSection className="pb-6">
+              {/*
+                The label leads with the word that answers the question the field
+                raises. Source is marked required in red beside its own label, so
+                a second unmarked field of the same size directly under it reads as
+                the second half of one form and a user who does not know what to
+                write in it stops there. "Optional" first, because that is the
+                part that unblocks them; the sentence under the field still says
+                it is the cheapest thing on the screen.
+              */}
+              <SectionLabel icon={PencilLine}>Optional Context</SectionLabel>
+              <TextArea
+                autoGrow
+                rows={3}
+                className="mt-2 min-h-20 resize-none rounded-xl text-[13.5px]"
+                aria-label="Context"
+                value={form.context ?? ""}
+                placeholder="Who and what this is about, and how names are spelled. For example: a news interview about the housing market; the host is Dana (she), the guest is Prof. Ronen Levi (he) keep these spellings."
+                onChange={(event) => update({ context: event.currentTarget.value })}
+              />
+              <p className="mt-3 text-[11.5px] leading-relaxed text-muted">
+                The single cheapest thing on this screen: a sentence of context materially
+                improves the translation.
+              </p>
+            </CardSection>
+
+            <CardSection
+              tone="sunken"
+              className="flex flex-col gap-4 border-t border-border sm:flex-row sm:items-center sm:justify-between"
             >
-              {starting ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Starting…
-                </>
-              ) : (
-                <>
-                  Start dubbing
-                  <ArrowRight className="h-4 w-4" />
-                </>
-              )}
-            </Button>
-          </CardSection>
-        </Card>
+              <p className="max-w-sm text-[12px] leading-relaxed text-muted">
+                One job runs at a time; the editor opens straight away with live progress.
+              </p>
+              <Button
+                variant="primary"
+                size="lg"
+                className="rounded-xl px-6"
+                onClick={start}
+                disabled={starting}
+              >
+                {starting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Starting…
+                  </>
+                ) : (
+                  <>
+                    Start dubbing
+                    <ArrowRight className="h-4 w-4" />
+                  </>
+                )}
+              </Button>
+            </CardSection>
+          </Card>
+
+          {/*
+            What that button is about to do, and why it will take a while. This
+            used to fill the primary card's lower half, which made it a wall
+            between the context field and the Start band — reference material
+            gating the screen's one action below the fold. It is an answer to a
+            question, not a step in the form, so it now follows the card as a
+            closed disclosure: the summary line is visible for the first-run
+            user who has the question, one click opens the nine lines, and
+            nobody scrolls past them to start their fourth dub.
+          */}
+          <details
+            data-pipeline-glance
+            className="group overflow-hidden rounded-2xl border border-border bg-surface"
+          >
+            <summary className="flex cursor-pointer select-none items-center gap-2 px-5 py-3.5 text-muted transition-colors hover:text-secondary [&::-webkit-details-marker]:hidden">
+              <Workflow className="h-3.5 w-3.5" />
+              <span className="text-[11px] font-bold uppercase tracking-[0.14em]">
+                What a run does nine stages
+              </span>
+              <ChevronDown className="ml-auto h-4 w-4 transition-transform group-open:rotate-180" />
+            </summary>
+            <ol className="grid gap-x-5 gap-y-3 border-t border-border px-5 pb-5 pt-4 sm:grid-cols-3">
+              {PIPELINE_GLANCE.map(([stage, does], index) => (
+                <li key={stage} className="flex gap-2.5">
+                  <span className="font-mono text-[10px] font-bold tabular-nums leading-[1.8] text-muted">
+                    {String(index + 1).padStart(2, "0")}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block text-[12px] font-semibold text-secondary">{stage}</span>
+                    <span className="mt-0.5 block text-[11px] leading-relaxed text-muted">
+                      {does}
+                    </span>
+                  </span>
+                </li>
+              ))}
+            </ol>
+          </details>
+        </div>
 
         {/* ------------------------------------------------------- the rail */}
-        <Card data-region="options" className="flex flex-col overflow-hidden rounded-3xl p-0">
+        {/* The rail is the tall region now that the card stopped matching it,
+            so at `lg` it caps itself to the viewport and scrolls its own
+            overflow — the page never has to scroll on the rail's account. */}
+        <Card
+          data-region="options"
+          className="flex flex-col overflow-hidden rounded-3xl p-0 lg:max-h-[calc(100dvh-7.5rem)] lg:overflow-y-auto"
+        >
           <CardSection className="px-5 pt-6 sm:px-5">
             <SectionLabel icon={Languages}>Languages</SectionLabel>
             <div className="mt-3 grid grid-cols-2 gap-3">
