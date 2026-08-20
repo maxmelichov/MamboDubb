@@ -1,4 +1,4 @@
-//! The workspace: a DubbingQwen checkout on disk that the shell runs the studio
+//! The workspace: a MamboDubb checkout on disk that the shell runs the studio
 //! server out of.
 //!
 //! Unlike MamboRambo, the sidecar is not a bundled binary the pipeline is a ~10 GB
@@ -30,7 +30,7 @@ pub struct WorkspaceReport {
     pub path: String,
     /// The directory itself is there.
     pub exists: bool,
-    /// It looks like a DubbingQwen checkout: `pyproject.toml` + `dubbing_app/`.
+    /// It looks like a MamboDubb checkout: `pyproject.toml` + `dubbing_app/`.
     pub has_project: bool,
     /// A `.venv` with an interpreter absent is only a slow first run, not an error.
     pub has_venv: bool,
@@ -59,7 +59,7 @@ pub fn inspect_workspace(path: &Path, uv: Option<&Path>) -> WorkspaceReport {
     }
 }
 
-/// The marker files that make a directory a DubbingQwen checkout rather than any
+/// The marker files that make a directory a MamboDubb checkout rather than any
 /// old folder the user pointed at.
 pub fn is_project_dir(path: &Path) -> bool {
     path.join("pyproject.toml").is_file() && path.join("dubbing_app").is_dir()
@@ -121,8 +121,25 @@ pub fn default_workspace() -> PathBuf {
         return PathBuf::from(raw);
     }
     home_dir()
-        .map(|home| home.join("Documents/DubbingQwen"))
-        .unwrap_or_else(|| PathBuf::from("DubbingQwen"))
+        .map(|home| default_workspace_in(&home))
+        .unwrap_or_else(|| PathBuf::from("MamboDubb"))
+}
+
+/// The rename-aware half, split out so a test can hand it a fake home. The
+/// repo was renamed DubbingQwen → MamboDubb, so a fresh install resolves to
+/// `Documents/MamboDubb` — but a checkout cloned under the old name keeps
+/// working: the pre-rename directory wins only when it exists and the new
+/// name does not.
+fn default_workspace_in(home: &Path) -> PathBuf {
+    let preferred = home.join("Documents/MamboDubb");
+    if preferred.is_dir() {
+        return preferred;
+    }
+    let legacy = home.join("Documents/DubbingQwen");
+    if legacy.is_dir() {
+        return legacy;
+    }
+    preferred
 }
 
 fn store(app: &tauri::AppHandle) -> Result<std::sync::Arc<Store<Wry>>, String> {
@@ -176,7 +193,7 @@ pub async fn set_workspace(app: tauri::AppHandle, path: String) -> Result<Worksp
     }
     if !is_project_dir(&path) {
         return Err(format!(
-            "{} does not look like a DubbingQwen checkout (needs pyproject.toml and dubbing_app/)",
+            "{} does not look like a MamboDubb checkout (needs pyproject.toml and dubbing_app/)",
             path.display()
         ));
     }
@@ -284,6 +301,38 @@ mod tests {
         let report = inspect_workspace(dir.path(), None);
         assert!(report.has_venv);
         assert_eq!(venv_python(dir.path()), Some(python));
+    }
+
+    #[test]
+    fn the_default_prefers_the_post_rename_name() {
+        let home = TempDir::new("home-both");
+        fs::create_dir_all(home.path().join("Documents/MamboDubb")).unwrap();
+        fs::create_dir_all(home.path().join("Documents/DubbingQwen")).unwrap();
+        assert_eq!(
+            default_workspace_in(home.path()),
+            home.path().join("Documents/MamboDubb")
+        );
+    }
+
+    #[test]
+    fn a_pre_rename_checkout_still_resolves() {
+        let home = TempDir::new("home-legacy");
+        fs::create_dir_all(home.path().join("Documents/DubbingQwen")).unwrap();
+        assert_eq!(
+            default_workspace_in(home.path()),
+            home.path().join("Documents/DubbingQwen")
+        );
+    }
+
+    #[test]
+    fn with_neither_directory_the_default_is_the_new_name() {
+        // A first launch on a machine with no checkout at all: point at where
+        // the README will tell the user to clone, not at the pre-rename path.
+        let home = TempDir::new("home-empty");
+        assert_eq!(
+            default_workspace_in(home.path()),
+            home.path().join("Documents/MamboDubb")
+        );
     }
 
     #[test]
