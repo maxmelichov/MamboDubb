@@ -619,6 +619,26 @@ def test_no_merge_across_a_speaker_change_or_into_a_keep():
     assert len(segments.merge_stranded_fragments(kept)) == 2   # would never be voiced
 
 
+def test_no_merge_into_a_spliced_foreign_lang_span():
+    # An English orphan before a spliced French span (--dub-foreign) must stand
+    # alone: text_bucket sees two Latin scripts and shrugs, but the `lang` tag
+    # says the neighbour speaks French — merging would voice "and" in the
+    # French line's voice, in French. Mirrors the barrier trim-remnant
+    # absorption enforces.
+    segs = [
+        {"id": 0, "start": 6.29, "end": 8.03, "speaker": "S0",
+         "text": "and", "keep": False},
+        {"id": 1, "start": 13.88, "end": 20.36, "speaker": "S0",
+         "text": "voilà pourquoi nous sommes ici", "lang": "fr", "keep": False},
+    ]
+    assert len(segments.merge_stranded_fragments(segs, "en", "es")) == 2
+    # Control: strip the lang tag and the same shape merges — the barrier is
+    # the tag, not the text.
+    plain = [dict(s) for s in segs]
+    del plain[1]["lang"]
+    assert len(segments.merge_stranded_fragments(plain, "en", "es")) == 1
+
+
 def test_a_wordy_or_long_or_distant_opener_stands_alone():
     wordy = _orphan_pair()
     wordy[0]["text"] = "בשנת ההיא של המלחמה"          # a clause, not a torn word

@@ -106,6 +106,8 @@ type DragSession = {
   originStart: number;
   originEnd: number;
   grabX: number;
+  /** The pointer that began the drag moves and releases from any other are not ours. */
+  pointerId: number;
   /** The free window the drag may not leave: prev.end to next.start. */
   min: number;
   max: number;
@@ -334,13 +336,27 @@ export function Timeline({
    * unlike the scrubber above: the grab starts on a <button> whose click must
    * still fire when the press turns out to be a selection, and capturing on it
    * re-targets the lane's own events for no gain the listeners are attached
-   * for exactly one drag and removed on release.
+   * for exactly one drag and removed when it ends, however it ends: release,
+   * cancellation, or this strip unmounting under it.
    */
   const [preview, setPreview] = useState<{ uid: string } & Span | null>(null);
   const dragRef = useRef<DragSession | null>(null);
+  // The playhead through a ref, like `pxRef` above: `spanAt` runs inside
+  // window listeners that outlive the render they were created in, and a
+  // snap target frozen at pointer-down time is the playhead of a second ago.
+  const timeRef = useRef(currentTime);
+  timeRef.current = currentTime;
+  // Tearing the strip down mid-drag (a run switch) must not strand the window
+  // listeners: with `moved` latched, the next click anywhere on the page would
+  // land in `onUp` and commit a retime from that click's clientX.
+  const abortDragRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => abortDragRef.current?.(), []);
 
   const beginDrag = (seg: Segment, mode: DragMode, event: React.PointerEvent) => {
     if (event.button !== 0 || busyUids.includes(seg.uid)) return;
+    // One drag at a time: a second pointer landing mid-drag (a stray touch, a
+    // second finger) must not stack a second set of window listeners.
+    if (dragRef.current) return;
     // The free window: the neighbours by *time*, not by list order the drag
     // must never draw an overlap, because the server refuses one outright.
     let min = 0;
@@ -356,6 +372,7 @@ export function Timeline({
       originStart: seg.start,
       originEnd: seg.end,
       grabX: event.clientX,
+      pointerId: event.pointerId,
       min,
       max,
       moved: false,
@@ -365,13 +382,20 @@ export function Timeline({
 
     /** Where the span is with the pointer at `clientX` snapped, then clamped. */
     const spanAt = (clientX: number): Span => {
-      const dt = (clientX - session.grabX) / pxPerSecond;
-      // Snap when within a grab's width of a neighbour's edge or the playhead —
-      // the three positions a retime is usually aiming for. Otherwise round to
-      // 10ms: nobody drags to 12.3456s on purpose. Clamping comes *after*, so a
-      // snap or a rounding can never push an edge across a neighbour.
+      // `pxRef`/`timeRef`, not the props: this closure outlives its render,
+      // and a wheel zoom or plain playback mid-drag would otherwise leave it
+      // converting pixels and snapping to the playhead as of pointer-down.
+      // `min`/`max` do stay press-time neighbours cannot move while this
+      // drag holds the pointer, so a fresher wall would be the same wall.
+      const dt = (clientX - session.grabX) / pxRef.current;
+      // Snap when within a grab's width of a neighbour's edge, the playhead,
+      // or the edge's own origin the positions a retime is usually aiming
+      // for, and the origin so a jitter never registers as an edit. Otherwise
+      // round to 10ms: nobody drags to 12.3456s on purpose. Clamping comes
+      // *after*, so a snap or a rounding can never push an edge across a
+      // neighbour.
       const snap = (t: number, edges: number[]): number => {
-        const tolerance = 8 / pxPerSecond;
+        const tolerance = 8 / pxRef.current;
         for (const edge of edges) if (Math.abs(t - edge) <= tolerance) return edge;
         return Math.round(t * 100) / 100;
       };
@@ -380,7 +404,7 @@ export function Timeline({
       if (session.mode === "move") {
         const span = originEnd - originStart;
         const start = clamp(
-          snap(originStart + dt, [min, max - span, currentTime]),
+          snap(originStart + dt, [min, max - span, timeRef.current, originStart]),
           min,
           max - span,
         );
@@ -388,35 +412,64 @@ export function Timeline({
       }
       if (session.mode === "start") {
         const start = clamp(
-          snap(originStart + dt, [min, currentTime]),
+          snap(originStart + dt, [min, timeRef.current, originStart]),
           min,
           originEnd - MIN_SPAN,
         );
         return { start, end: originEnd };
       }
-      const end = clamp(snap(originEnd + dt, [max, currentTime]), originStart + MIN_SPAN, max);
+      const end = clamp(
+        snap(originEnd + dt, [max, timeRef.current, originEnd]),
+        originStart + MIN_SPAN,
+        max,
+      );
       return { start: originStart, end };
     };
 
+    // One teardown for every way the drag can end. `onUp` is the only path
+    // that also saves; a cancelled pointer (the trackpad taking the gesture
+    // back, a touch the browser reclaims for scrolling) and an unmount both
+    // abort drop the preview and walk away, never commit.
+    const finish = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      abortDragRef.current = null;
+      dragRef.current = null;
+      setPreview(null);
+    };
     const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== session.pointerId) return;
       if (Math.abs(ev.clientX - session.grabX) > DRAG_SLOP_PX) session.moved = true;
       if (session.moved) setPreview({ uid: session.uid, ...spanAt(ev.clientX) });
     };
     const onUp = (ev: PointerEvent) => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      dragRef.current = null;
-      setPreview(null);
+      if (ev.pointerId !== session.pointerId) return;
+      finish();
       // A press that never travelled is the mark's click selection, already
       // done above and saving it would stamp a bounds edit on nothing.
       if (!session.moved) return;
       const span = spanAt(ev.clientX);
-      if (span.start !== session.originStart || span.end !== session.originEnd) {
-        onRetime(session.uid, span.start, span.end);
+      // Belt to the origin-snap's braces: a span within half the 10ms grid of
+      // where it started is the same span, not an edit. Without this, a 4px
+      // jitter press commits 6.29 over an origin of 6.293 and the server's
+      // set_bounds unlocks the line and throws away its finished TTS.
+      if (
+        Math.abs(span.start - session.originStart) < 0.005 &&
+        Math.abs(span.end - session.originEnd) < 0.005
+      ) {
+        return;
       }
+      onRetime(session.uid, span.start, span.end);
+    };
+    const onCancel = (ev: PointerEvent) => {
+      if (ev.pointerId !== session.pointerId) return;
+      finish();
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    abortDragRef.current = finish;
   };
 
   return (

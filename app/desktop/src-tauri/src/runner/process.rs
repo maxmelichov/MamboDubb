@@ -73,6 +73,10 @@ impl RunnerProcess {
         let mut cmd = Command::new(uv);
         cmd.args(server_args(workspace, &outputs))
             .current_dir(workspace)
+            // Hand the resolved `uv` down to the child: the Python probe reads
+            // DUBSTUDIO_UV_PATH first, so its own hand-copied fallback chain
+            // becomes a courtesy fallback for standalone (non-shell) runs.
+            .env(crate::workspace::UV_PATH_ENV, uv)
             // Piped, not null: the server watches this pipe (`--exit-on-stdin-close`)
             // and EOF is how it learns the shell died even when the pid chain lies
             // (a surviving `uv` wrapper, a SIGKILL that skipped Drop). We never

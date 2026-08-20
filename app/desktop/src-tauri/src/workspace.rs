@@ -128,17 +128,20 @@ pub fn default_workspace() -> PathBuf {
 /// The rename-aware half, split out so a test can hand it a fake home. The
 /// repo was renamed DubbingQwen → MamboDubb, so a fresh install resolves to
 /// `Documents/MamboDubb` — but a checkout cloned under the old name keeps
-/// working: the pre-rename directory wins only when it exists and the new
-/// name does not.
+/// working: the pre-rename directory wins only when it is an actual checkout
+/// and the new name is not. A bare `is_dir` check is not enough here: a stray
+/// empty `MamboDubb` folder would shadow a real legacy checkout and leave
+/// onboarding stuck on a directory with nothing in it.
 fn default_workspace_in(home: &Path) -> PathBuf {
     let preferred = home.join("Documents/MamboDubb");
-    if preferred.is_dir() {
+    if is_project_dir(&preferred) {
         return preferred;
     }
     let legacy = home.join("Documents/DubbingQwen");
-    if legacy.is_dir() {
+    if is_project_dir(&legacy) {
         return legacy;
     }
+    // Neither is a checkout: point at where the README tells the user to clone.
     preferred
 }
 
@@ -306,21 +309,47 @@ mod tests {
     #[test]
     fn the_default_prefers_the_post_rename_name() {
         let home = TempDir::new("home-both");
-        fs::create_dir_all(home.path().join("Documents/MamboDubb")).unwrap();
-        fs::create_dir_all(home.path().join("Documents/DubbingQwen")).unwrap();
-        assert_eq!(
-            default_workspace_in(home.path()),
-            home.path().join("Documents/MamboDubb")
-        );
+        let preferred = home.path().join("Documents/MamboDubb");
+        let legacy = home.path().join("Documents/DubbingQwen");
+        fs::create_dir_all(&preferred).unwrap();
+        fs::create_dir_all(&legacy).unwrap();
+        make_checkout(&preferred);
+        make_checkout(&legacy);
+        assert_eq!(default_workspace_in(home.path()), preferred);
     }
 
     #[test]
     fn a_pre_rename_checkout_still_resolves() {
         let home = TempDir::new("home-legacy");
+        let legacy = home.path().join("Documents/DubbingQwen");
+        fs::create_dir_all(&legacy).unwrap();
+        make_checkout(&legacy);
+        assert_eq!(default_workspace_in(home.path()), legacy);
+    }
+
+    #[test]
+    fn a_stray_empty_new_dir_does_not_shadow_a_legacy_checkout() {
+        // The failure this guards against: an empty `MamboDubb` folder (a stray
+        // Finder creation, an aborted clone) next to a real pre-rename checkout.
+        // Preferring it on bare existence would block onboarding on nothing.
+        let home = TempDir::new("home-shadow");
+        let legacy = home.path().join("Documents/DubbingQwen");
+        fs::create_dir_all(home.path().join("Documents/MamboDubb")).unwrap();
+        fs::create_dir_all(&legacy).unwrap();
+        make_checkout(&legacy);
+        assert_eq!(default_workspace_in(home.path()), legacy);
+    }
+
+    #[test]
+    fn with_neither_a_checkout_the_default_is_the_new_name() {
+        // Two bare directories, neither a checkout: nothing to rescue, so point
+        // at the post-rename name the README tells the user to clone into.
+        let home = TempDir::new("home-bare");
+        fs::create_dir_all(home.path().join("Documents/MamboDubb")).unwrap();
         fs::create_dir_all(home.path().join("Documents/DubbingQwen")).unwrap();
         assert_eq!(
             default_workspace_in(home.path()),
-            home.path().join("Documents/DubbingQwen")
+            home.path().join("Documents/MamboDubb")
         );
     }
 

@@ -1806,8 +1806,7 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
     # (run-derived, never per-video config): each hop is told the spellings its
     # own language already established, so a recurring name stays one name.
     established: dict[str, list[str]] = {"en": [], target: []}
-    processor, model, device = load()
-    try:
+    with loaded() as h:
         for n, seg in enumerate(dub, 1):
             if not needs_translation(seg):
                 continue
@@ -1855,9 +1854,9 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
             if seg_pivot:
                 # src→en→tgt: the English hop is the measured-good line; the
                 # direct pair substitutes entities and bleeds neighbours (A/B'd).
-                mid = generate(processor, model, seg["text"], source=seg_src,
+                mid = generate(h.processor, h.model, seg["text"], source=seg_src,
                                target="en", context=seg_ctx,
-                               preceding=preceding, device=device,
+                               preceding=preceding, device=h.device,
                                register=register, genre=genre,
                                names=tuple(canonical_names(established["en"])))
                 if not is_target_text(mid, "en"):
@@ -1878,10 +1877,10 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
                     # measured safe 0 semantic breaks on 17 controls including
                     # every entity-swap guard line and fixed «запись»→«въезд»,
                     # a dangling «её», and a chameleon incoherence.
-                    text = generate(processor, model, mid, source="en",
+                    text = generate(h.processor, h.model, mid, source="en",
                                     target=seg_tgt, context=seg_ctx,
                                     preceding=prev_mid,
-                                    device=device, register=register, genre=genre,
+                                    device=h.device, register=register, genre=genre,
                                     names=tuple(canonical_names(
                                         established.setdefault(seg_tgt, []))),
                                     numbers_spelled=True, asr_source=False)
@@ -1893,9 +1892,9 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
                 en_direct = seg_src == "en" and seg_tgt != "en"
                 if en_direct:
                     src_text = numwords.spell_numbers(src_text, "en")
-                text = generate(processor, model, src_text, source=seg_src,
+                text = generate(h.processor, h.model, src_text, source=seg_src,
                                 target=seg_tgt, context=seg_ctx,
-                                preceding=preceding, device=device,
+                                preceding=preceding, device=h.device,
                                 register=register, genre=genre,
                                 names=tuple(canonical_names(
                                     established.setdefault(seg_tgt, []))),
@@ -1930,16 +1929,16 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
             seg_lang, seg_tgt = segment_langs(seg, source, target)
             seg_ctx = relevant_context(context, seg["text"], seg_lang)
             if pivot_via_english(seg_lang, seg_tgt):
-                mid = generate(processor, model, seg["text"], source=seg_lang,
-                               target="en", context=seg_ctx, device=device,
+                mid = generate(h.processor, h.model, seg["text"], source=seg_lang,
+                               target="en", context=seg_ctx, device=h.device,
                                genre=genre)
                 text = "" if not is_target_text(mid, "en") else generate(
-                    processor, model, numwords.spell_numbers(mid.strip(), "en"),
-                    source="en", target=seg_tgt, context=seg_ctx, device=device,
+                    h.processor, h.model, numwords.spell_numbers(mid.strip(), "en"),
+                    source="en", target=seg_tgt, context=seg_ctx, device=h.device,
                     numbers_spelled=True, asr_source=False, genre=genre)
             else:
-                text = generate(processor, model, seg["text"], source=seg_lang,
-                                target=seg_tgt, context=seg_ctx, device=device,
+                text = generate(h.processor, h.model, seg["text"], source=seg_lang,
+                                target=seg_tgt, context=seg_ctx, device=h.device,
                                 genre=genre)
             text = _finalize_numbers(text, seg_tgt)
             seg["text_en"] = text.strip() if is_target_text(text, seg_tgt) else "…"
@@ -1958,18 +1957,12 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
         if todo and rev:
             table = canonical_names(
                 [n for s in rev for n in _name_occurrences(s["text_en"], target)])
-            for s, text in zip(rev, revise_run(processor, model,
+            for s, text in zip(rev, revise_run(h.processor, h.model,
                                                [s["text_en"] for s in rev],
                                                target=target, names=table)):
                 s["text_en"] = text.strip()
-    finally:
-        free(model)
-        # In-process MLX weights die only with this frame's names: a `del`
-        # inside `free` drops the callee's reference and ours keeps the 9 GB
-        # pool alive through the clear. Drop them here, then clear.
-        processor = None
-        model = None
-        free_cache()
+    # Teardown (drop refs, collect, clear the MLX pool) is `loaded.__exit__`'s
+    # job — the handle owned the only names, so leaving the block IS the free.
     manifest.save(workdir, m)
     _assert_translated(segments)
 
@@ -2011,3 +2004,40 @@ def free_cache() -> None:
         mx.clear_cache()
     except Exception:
         pass
+
+
+class loaded:
+    """The translator scoped to a `with` block, torn down in the only order
+    that actually frees it.
+
+    `with loaded() as h:` — use `h.processor` / `h.model` / `h.device` at the
+    call sites directly. The handle holds the ONLY strong references to the
+    weights; unpacking them into caller locals recreates the leak this class
+    exists to end (the local outlives `__exit__`'s nulling, so `gc.collect()`
+    finds the weights alive and `mx.clear_cache()` reclaims nothing — ~9 GB
+    of `other allocations` for the tts stage to trip over).
+
+    Exit runs the ritual that used to be pasted into three finally blocks:
+    `free(model)` first (the WorkerHandle path — an own-GPU worker stays hot
+    for the next stage), then null this handle's own attributes (the drop),
+    then `free_cache()` (the collect + clear). One copy, one order.
+    """
+
+    def __init__(self, device: str | None = None):
+        self._device_arg = device
+        self.processor = None
+        self.model = None
+        self.device = None
+
+    def __enter__(self) -> "loaded":
+        self.processor, self.model, self.device = load(self._device_arg)
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        free(self.model)
+        # MLX frees nothing while any name still binds the weights; this
+        # handle owns the only names, so nulling them here IS the caller
+        # dropping its references. Only then does the pool clear reclaim.
+        self.processor = None
+        self.model = None
+        free_cache()

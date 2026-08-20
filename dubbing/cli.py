@@ -465,7 +465,6 @@ def _retimers(m, workdir: Path, engine, args):
     def shorten_many(requests):
         if translate.exclusive_device():
             engine.close()
-        processor, model, device = translate.load()
         segs = m["segments"]
         # preceding is SOURCE-language text by convention see translate._PRECEDING.
         before = {s["id"]: prev["text"] for prev, s in zip(segs, segs[1:])}
@@ -475,32 +474,27 @@ def _retimers(m, workdir: Path, engine, args):
                       for prev, s in zip(segs, segs[1:])}
         pivot = translate.pivot_via_english(args.src, args.tgt)
         out: dict[int, str | None] = {}
-        try:
+        with translate.loaded() as h:
             for seg, max_words in requests:
                 if pivot and (seg.get("text_mid") or "").strip():
                     out[seg["id"]] = translate.shorten(
-                        processor, model, seg["text_mid"], seg["text_en"], max_words,
-                        source="en", target=args.tgt,
+                        h.processor, h.model, seg["text_mid"], seg["text_en"],
+                        max_words, source="en", target=args.tgt,
                         context=m["source"].get("context") or "",
-                        preceding=before_mid.get(seg["id"], ""), device=device,
+                        preceding=before_mid.get(seg["id"], ""), device=h.device,
                     )
                 else:
                     out[seg["id"]] = translate.shorten(
-                        processor, model, seg["text"], seg["text_en"], max_words,
-                        source=args.src, target=args.tgt,
+                        h.processor, h.model, seg["text"], seg["text_en"],
+                        max_words, source=args.src, target=args.tgt,
                         context=m["source"].get("context") or "",
-                        preceding=before.get(seg["id"], ""), device=device,
+                        preceding=before.get(seg["id"], ""), device=h.device,
                     )
                 if not out[seg["id"]]:
                     print(f"  timeline: seg {seg['id']} kept full length "
                           "(no safe shorter translation)", file=sys.stderr)
-        finally:
-            translate.free(model)
-            # MLX frees nothing while this frame still names the weights; drop
-            # our references first, then clear the pool for the resynth pass.
-            processor = None
-            model = None
-            translate.free_cache()
+        # `translate.loaded.__exit__` drops the only names, collects, and
+        # clears the pool for the resynth pass — the ritual lives there now.
         return out
 
     def resynth_many(items):

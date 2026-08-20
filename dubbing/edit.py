@@ -813,8 +813,7 @@ def retranslate(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
                 cli.normalize_lang((m.get("source") or {}).get("tgt_lang") or "en"))
     failed: list[dict[str, Any]] = []
     _progress(progress, 0.0, f"loading translator for {len(segs)} segment(s)")
-    processor, model, device = translate.load()
-    try:
+    with translate.loaded() as h:
         for n, seg in enumerate(segs):
             _progress(progress, n / len(segs), f"translating {n + 1}/{len(segs)}")
             source, target = _langs(m, seg)
@@ -824,17 +823,17 @@ def retranslate(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
             seg_ctx = translate.relevant_context(context, seg["text"], source)
             mid = ""
             if pivot:
-                mid = translate.generate(processor, model, seg["text"], source=source,
+                mid = translate.generate(h.processor, h.model, seg["text"], source=source,
                                          target="en", context=seg_ctx, preceding=preceding,
-                                         device=device, register=register, genre=genre,
+                                         device=h.device, register=register, genre=genre,
                                          names=_established(m, "en"))
                 if not translate.is_target_text(mid, "en"):
                     text = ""
                 else:
                     mid = numwords.spell_numbers(mid.strip(), "en")
-                    text = translate.generate(processor, model, mid, source="en",
+                    text = translate.generate(h.processor, h.model, mid, source="en",
                                               target=target, context=seg_ctx,
-                                              preceding="", device=device,
+                                              preceding="", device=h.device,
                                               register=register, genre=genre,
                                               names=_established(m, target),
                                               numbers_spelled=True, asr_source=False)
@@ -843,9 +842,9 @@ def retranslate(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
                 en_direct = source == "en" and target != "en"
                 if en_direct:
                     src_text = numwords.spell_numbers(src_text, "en")
-                text = translate.generate(processor, model, src_text, source=source,
+                text = translate.generate(h.processor, h.model, src_text, source=source,
                                           target=target, context=seg_ctx,
-                                          preceding=preceding, device=device,
+                                          preceding=preceding, device=h.device,
                                           register=register, genre=genre,
                                           names=_established(m, target),
                                           numbers_spelled=en_direct)
@@ -872,13 +871,8 @@ def retranslate(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
                          else "still untranslated (the user asked for a dub)")
                 print(f"  edit: seg {seg['id']} failed to translate → {where}",
                       file=sys.stderr)
-    finally:
-        translate.free(model)
-        # MLX frees nothing while this frame still names the weights; drop our
-        # references first, then clear the pool before the resynth loads TTS.
-        processor = None
-        model = None
-        translate.free_cache()
+    # `translate.loaded.__exit__` drops the only names, collects, and clears
+    # the pool before the resynth loads TTS — the ritual lives there now.
     # Say what happened. A job that translated nothing and reported "translated 1
     # segment(s)" is how a line goes round the flip-and-retry loop forever: the
     # user is told the work is done and hears no change.
