@@ -107,7 +107,12 @@ import type {
 } from "../lib/types";
 import type { StageProgress } from "../lib/useProject";
 
-const ZOOM_STEPS = [0.5, 1, 2, 4, 8, 16, 32];
+// The button ladder. 32 px/s was the old ceiling and it made fine retiming a
+// guess — a 100 ms nudge was three pixels. 256 px/s puts a syllable on screen.
+// The ladder is what +/− walk; the pinch/⌘-scroll zoom moves freely between
+// the fit floor and ZOOM_MAX and is not snapped to it.
+const ZOOM_STEPS = [0.5, 1, 2, 4, 8, 16, 32, 64, 128, 256];
+const ZOOM_MAX = ZOOM_STEPS[ZOOM_STEPS.length - 1];
 
 /** The run's own audio, written by `fetch` (dubbing/fetch.py) long before `mix`. */
 const SOURCE_AUDIO = "source.wav";
@@ -395,6 +400,17 @@ export function EditorPage() {
   const zoomFit = useCallback(() => {
     const floor = fitRef.current;
     if (floor != null) setZoom(floor);
+  }, []);
+  // The continuous zoom: a multiplicative factor from a pinch or ⌘/Ctrl-scroll
+  // on the strip, clamped to the same floor the − button lands on and to
+  // ZOOM_MAX. Multiplicative because zoom is perceptually a ratio — the same
+  // gesture should feel the same at 2 px/s and at 200.
+  const zoomBy = useCallback((factor: number) => {
+    setZoom((z) => {
+      const floor = fitRef.current;
+      const lo = floor != null ? Math.min(floor, ZOOM_MAX) : ZOOM_STEPS[0];
+      return Math.min(ZOOM_MAX, Math.max(lo, z * factor));
+    });
   }, []);
 
   /**
@@ -1120,6 +1136,7 @@ export function EditorPage() {
             onViewport={onViewport}
             onZoomIn={zoomIn}
             onZoomOut={zoomOut}
+            onZoomBy={zoomBy}
             onFit={zoomFit}
             onSplit={(at) => selected && void actions.split(selected.uid, at)}
           />

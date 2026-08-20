@@ -74,7 +74,7 @@
  * once, so it is the only one that can say *where* the eleven matches are.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Minus, Plus, Scissors } from "lucide-react";
 import { cn } from "../lib/classNames";
 import { timecode } from "../lib/format";
@@ -148,6 +148,7 @@ export function Timeline({
   onViewport,
   onZoomIn,
   onZoomOut,
+  onZoomBy,
   onFit,
   onSplit,
 }: {
@@ -203,6 +204,8 @@ export function Timeline({
   onViewport: (width: number) => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
+  /** Continuous zoom by a multiplicative factor — the pinch / ⌘-scroll path. */
+  onZoomBy: (factor: number) => void;
   onFit: () => void;
   onSplit: (at: number) => void;
 }) {
@@ -243,6 +246,47 @@ export function Timeline({
     observer.observe(el);
     return () => observer.disconnect();
   }, [onViewport]);
+
+  /*
+   * Pinch and ⌘/Ctrl-scroll zoom, anchored under the cursor.
+   *
+   * A trackpad pinch arrives as a wheel event with `ctrlKey` set — that is the
+   * browser convention, not a modifier the user held — so one handler covers
+   * both gestures. The zoom itself lives in the page (it owns the +/− ladder
+   * too); what this component owns is the anchor: the moment the gesture
+   * fires, remember which second of the run is under the pointer and where on
+   * screen it sits, and when the new scale comes back down as a prop, put that
+   * second back under the pointer. Without the anchor every zoom recentres on
+   * 0:00 and zooming into minute 14 means finding minute 14 again.
+   *
+   * A native non-passive listener, not React's `onWheel`: the default has to
+   * be prevented (a ctrl-scroll zooms the whole page otherwise) and passive
+   * listeners cannot do that.
+   */
+  const pxRef = useRef(pxPerSecond);
+  pxRef.current = pxPerSecond;
+  const zoomAnchor = useRef<{ time: number; x: number } | null>(null);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      const x = event.clientX - el.getBoundingClientRect().left;
+      zoomAnchor.current = { time: (el.scrollLeft + x) / pxRef.current, x };
+      // Exponential: equal wheel travel is an equal zoom *ratio* at any scale.
+      onZoomBy(Math.exp(-event.deltaY * 0.0015));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [onZoomBy]);
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const anchor = zoomAnchor.current;
+    if (!el || !anchor) return;
+    zoomAnchor.current = null;
+    el.scrollLeft = Math.max(0, anchor.time * pxPerSecond - anchor.x);
+  }, [pxPerSecond]);
 
   // The timeline follows playback: keep the playhead on screen without
   // fighting a user who is scrolling somewhere else.
@@ -611,7 +655,14 @@ export function Timeline({
             <span className="flex w-12 items-center justify-center bg-raised font-mono text-[11px] tabular-nums text-muted">
               {zoomLabel(pxPerSecond)}px/s
             </span>
-            <Button variant="ghost" size="xs" onClick={onZoomIn} aria-label="Zoom in">
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={onZoomIn}
+              disabled={pxPerSecond >= 256 - 1e-6}
+              title="Zoom in — or pinch / ⌘-scroll the strip for any scale"
+              aria-label="Zoom in"
+            >
               <Plus className="h-3 w-3" />
             </Button>
           </ButtonGroup>
