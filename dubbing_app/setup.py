@@ -20,12 +20,16 @@ Report shape::
 
     {"ok": bool, "checks": [{"id", "label", "ok", "detail", "required": bool,
                              "severity": "blocking"|"degrades"|"optional",
-                             "installable": bool, "path"?, "bytes"?}, ...]}
+                             "installable": bool, "path"?, "bytes"?,
+                             "hub"?, "download_bytes"?}, ...]}
 
 `installable` is the server's answer to "can the app fix this for me?" true for
-exactly the ids `dubbing_app.install` has an argv for. The UI needs it as a flag
-rather than a list of its own, or the two sides drift and a button appears on a
-row whose `POST /api/setup/install` is a 400.
+exactly the ids `dubbing_app.install` has an argv for plus the models in
+`model_downloads()`, the hub snapshots the app can fetch itself. The UI needs it
+as a flag rather than a list of its own, or the two sides drift and a button
+appears on a row whose `POST /api/setup/install` is a 400. A downloadable model
+row also carries `hub` and `download_bytes`, so the button can say what it costs
+("Download (~9.7 GB)") before it is pressed.
 
 `ok` is the conjunction of the **required** checks only.
 
@@ -215,17 +219,24 @@ def tool(id_: str, label: str, exe: str, why: str, *,
 def probe(id_: str) -> dict[str, Any] | None:
     """One check, by id or None if it is not one this can answer alone.
 
-    Only the tools are here, and that is the whole point: a check that needs the
-    outputs root (`disk`) or a pipeline import (the models) is not a thing the
-    app installs, so nothing ever asks for it here. `dubbing_app.install` calls
-    this when its subprocess exits, so the row the UI redraws is a fresh
-    `shutil.which` and not the package manager's opinion of itself.
+    Exactly the ids the app can install: the tools, re-checked with a fresh
+    `shutil.which`, and the hub-snapshot models, re-`stat`ed on disk. A check
+    that is neither (`disk`, the token, the self-downloading caches) is nothing
+    the install slot ever finishes, so nothing ever asks for it here.
+    `dubbing_app.install` calls this when its worker exits, so the row the UI
+    redraws is fresh evidence and not the worker's opinion of itself.
     """
     from .install import INSTALLERS
 
     spec = TOOLS.get(id_)
     if spec is None:
-        return None
+        if id_ not in model_downloads():
+            return None
+        row = next((c for c in model_checks() if c["id"] == id_), None)
+        if row is None:
+            return None
+        return {**row, "installable": True,
+                **({"stage": blocking_stage(id_)} if row["severity"] == BLOCKING else {})}
     # Same row `report` would produce, `installable` and `stage` included: a
     # client that drops this straight into its list must not get a shape one key
     # short it would redraw a REQUIRED row as an untagged one.
@@ -235,13 +246,15 @@ def probe(id_: str) -> dict[str, Any] | None:
 
 
 def model(id_: str, label: str, path: Path, *, severity: str = BLOCKING,
-          note: str = "", hub: str = "") -> dict[str, Any]:
+          note: str = "", hub: str = "", hub_bytes: int = 0) -> dict[str, Any]:
     """A model directory's presence and size. `path` always comes from the
     pipeline module that loads it, so this cannot describe a stale location.
 
     A missing row's whole job is to be actionable: when the hub repo is known,
-    the detail carries the exact download command, backticked so the UI sets it
-    as code. "Missing" without the command is a scavenger hunt.
+    the detail carries the exact download command (backticked so the UI sets it
+    as code) and the row carries `hub` and `download_bytes`, which is what lets
+    the Setup screen label its button "Download (~9.7 GB)" instead of just
+    "Download". "Missing" without the command or the size is a scavenger hunt.
     """
     present = path.is_dir() and any(path.iterdir()) if path.is_dir() else False
     size = dir_size(path) if present else 0
@@ -250,8 +263,13 @@ def model(id_: str, label: str, path: Path, *, severity: str = BLOCKING,
     else:
         detail = f"missing: {path}" + (f" {note}" if note else "")
         if hub:
-            detail += f". Fetch it: `uv run hf download {hub} --local-dir {path}`"
-    return check(id_, label, present, detail, severity=severity, path=str(path), bytes=size)
+            approx = f" (~{human_bytes(hub_bytes)})" if hub_bytes else ""
+            detail += f". Fetch it{approx}: `uv run hf download {hub} --local-dir {path}`"
+    extra: dict[str, Any] = {"path": str(path), "bytes": size}
+    if hub:
+        extra["hub"] = hub
+        extra["download_bytes"] = hub_bytes
+    return check(id_, label, present, detail, severity=severity, **extra)
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +336,51 @@ def disk_check(outputs: Path) -> dict[str, Any]:
                  severity=OPTIONAL, path=str(outputs), bytes=usage.free)
 
 
+def model_downloads() -> dict[str, dict[str, Any]]:
+    """id → the hub snapshot that fills that check's directory.
+
+    Exactly the models a plain `snapshot_download(repo_id, local_dir=path)`
+    satisfies: public repos whose on-disk layout IS the repo layout, into the
+    same path the pipeline constant names. Not pyannote (gated, a token, and a
+    pipeline of repos), not Demucs or the Hebrew G2P (they fetch their own
+    caches on first use) those stay 400 at `POST /api/setup/install`.
+
+    The hub ids are the pipeline's own where the pipeline has one
+    (`translate.HUB_ID`, `tts.TTS_MODELS[...]["hub"]`, `transcript.*_HUB`,
+    `hebrew.ADAPTER_HUB`); the ASR fallbacks mirror `tts._ASR_CANDIDATES` and
+    the LID id is the documented source of `models/lang-id-voxlingua107-ecapa`
+    (docs/MULTILANG_PLAN.md). `bytes` is the download size measured from real
+    installs approximate on purpose, good enough for a button label and a
+    progress denominator, never for accounting.
+    """
+    from dubbing import hebrew, transcript, translate, tts
+
+    out: dict[str, dict[str, Any]] = {
+        "model.translate": {"hub": translate.HUB_ID, "path": translate.MODEL_PATH,
+                            "bytes": 9_700_000_000},
+    }
+    tts_bytes = {"1.7b": 4_500_000_000, "0.6b": 2_500_000_000}
+    for key, spec in tts.TTS_MODELS.items():
+        out[f"model.tts.{key}"] = {"hub": spec["hub"],
+                                   "path": tts.REPO_ROOT / "models" / spec["dir"],
+                                   "bytes": tts_bytes.get(key, 0)}
+    out.update({
+        "model.asr.he": {"hub": transcript.WHISPER_HUB, "path": transcript.WHISPER_MODEL,
+                         "bytes": 1_600_000_000},
+        "model.asr.src": {"hub": transcript.SRC_ASR_HUB, "path": transcript.SRC_ASR_MODEL,
+                          "bytes": 1_600_000_000},
+        "model.asr.en": {"hub": "Systran/faster-whisper-base.en",  # tts._ASR_CANDIDATES
+                         "path": transcript.EN_ASR_MODEL, "bytes": 150_000_000},
+        "model.asr.tgt": {"hub": "Systran/faster-whisper-base",    # tts._ASR_CANDIDATES_MULTI
+                          "path": transcript.TARGET_ASR_MODEL, "bytes": 150_000_000},
+        "model.lid": {"hub": "speechbrain/lang-id-voxlingua107-ecapa",
+                      "path": transcript.LID_MODEL, "bytes": 100_000_000},
+        "model.tts.he": {"hub": hebrew.ADAPTER_HUB, "path": hebrew.ADAPTER_DIR,
+                         "bytes": 250_000_000},
+    })
+    return out
+
+
 def model_checks() -> list[dict[str, Any]]:
     """Every model directory the pipeline opens, read from its own constants.
 
@@ -333,39 +396,46 @@ def model_checks() -> list[dict[str, Any]]:
     """
     from dubbing import hebrew, transcript, translate, tts
 
+    downloads = model_downloads()
+
+    def m(id_: str, label: str, path: Path, **kw: Any) -> dict[str, Any]:
+        # Hub repo and size come from the one table, so a row and the install
+        # slot can never disagree about where a model comes from or how big it is.
+        d = downloads.get(id_)
+        if d:
+            kw.setdefault("hub", d["hub"])
+            kw.setdefault("hub_bytes", d["bytes"])
+        return model(id_, label, path, **kw)
+
     out = [
-        model("model.translate", "Translation model (Gemma 4 12B)", translate.MODEL_PATH,
-              note=f"downloads from {translate.HUB_ID} on first use"),
+        m("model.translate", "Translation model (Gemma 4 12B)", translate.MODEL_PATH,
+          note=f"downloads from {translate.HUB_ID} on first use"),
     ]
     for key, spec in tts.TTS_MODELS.items():
         default = key == tts.DEFAULT_TTS_MODEL
-        out.append(model(f"model.tts.{key}", f"TTS checkpoint {key}"
-                         + (" (default)" if default else ""),
-                         tts.REPO_ROOT / "models" / spec["dir"],
-                         severity=BLOCKING if default else OPTIONAL,
-                         note=f"downloads from {spec['hub']} on first use"))
+        out.append(m(f"model.tts.{key}", f"TTS checkpoint {key}"
+                     + (" (default)" if default else ""),
+                     tts.REPO_ROOT / "models" / spec["dir"],
+                     severity=BLOCKING if default else OPTIONAL,
+                     note=f"downloads from {spec['hub']} on first use"))
     out += [
-        model("model.asr.he", "Source ASR Hebrew (ivrit-ai)", transcript.WHISPER_MODEL,
-              severity=OPTIONAL, note="only for Hebrew sources without captions",
-              hub=transcript.WHISPER_HUB),
-        model("model.asr.src", "Source ASR multilingual", transcript.SRC_ASR_MODEL,
-              severity=OPTIONAL, note="only for non-Hebrew sources without captions",
-              hub=transcript.SRC_ASR_HUB),
-        model("model.asr.en", "Target ASR English (clip verification)",
-              transcript.EN_ASR_MODEL,
-              note="without it generated clips are never verified",
-              hub="Systran/faster-whisper-base.en"),
-        model("model.asr.tgt", "Target ASR multilingual", transcript.TARGET_ASR_MODEL,
-              severity=OPTIONAL, note="only for non-English targets",
-              hub="Systran/faster-whisper-base"),
-        model("model.lid", "Language ID (VoxLingua107)", transcript.LID_MODEL,
-              severity=DEGRADES, note="without it foreign-speech detection is skipped"),
+        m("model.asr.he", "Source ASR Hebrew (ivrit-ai)", transcript.WHISPER_MODEL,
+          severity=OPTIONAL, note="only for Hebrew sources without captions"),
+        m("model.asr.src", "Source ASR multilingual", transcript.SRC_ASR_MODEL,
+          severity=OPTIONAL, note="only for non-Hebrew sources without captions"),
+        m("model.asr.en", "Target ASR English (clip verification)",
+          transcript.EN_ASR_MODEL,
+          note="without it generated clips are never verified"),
+        m("model.asr.tgt", "Target ASR multilingual", transcript.TARGET_ASR_MODEL,
+          severity=OPTIONAL, note="only for non-English targets"),
+        m("model.lid", "Language ID (VoxLingua107)", transcript.LID_MODEL,
+          severity=DEGRADES, note="without it foreign-speech detection is skipped"),
         # Hebrew is a dub TARGET only with both of these. Optional every other
         # target runs without them but a Hebrew run is refused up front when
         # either is missing, so the report is where a user finds out first.
-        model("model.tts.he", "Hebrew TTS adapter (Qwen3-TTS LoRA)", hebrew.ADAPTER_DIR,
-              severity=OPTIONAL,
-              note=f"only for Hebrew targets {hebrew.ADAPTER_DOWNLOAD}"),
+        m("model.tts.he", "Hebrew TTS adapter (Qwen3-TTS LoRA)", hebrew.ADAPTER_DIR,
+          severity=OPTIONAL,
+          note=f"only for Hebrew targets {hebrew.ADAPTER_DOWNLOAD}"),
         g2p_check(),
     ]
     return out
@@ -475,13 +545,14 @@ def report(outputs: Path) -> dict[str, Any]:
     # its re-probe, and the one-directional import is what keeps that honest.
     from .install import INSTALLERS
 
+    downloads = model_downloads()
     checks: list[dict[str, Any]] = [tool(id_, *spec) for id_, spec in TOOLS.items()]
     checks.append(hf_token_check())
     checks += model_checks()
     checks.append(demucs_check())
     checks.append(disk_check(Path(outputs)))
     for c in checks:
-        c["installable"] = c["id"] in INSTALLERS
+        c["installable"] = c["id"] in INSTALLERS or c["id"] in downloads
         # Only on the rows where it means something: a `stage` on an optional
         # row would read as "this is where it will bite you", which is exactly
         # the false urgency `severity` exists to stop.
@@ -492,5 +563,5 @@ def report(outputs: Path) -> dict[str, Any]:
 
 
 __all__ = ["report", "probe", "git_commit", "human_bytes", "dir_size", "env_path",
-           "find_uv", "hf_hub_cache",
+           "find_uv", "hf_hub_cache", "model_downloads",
            "blocking_stage", "TOOLS", "BLOCKING", "DEGRADES", "OPTIONAL", "SEVERITIES"]

@@ -44,6 +44,12 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": {
+      "payload/workspace/": "workspace/"
+    },
+    "externalBin": [
+      "binaries/uv"
+    ],
     "category": "Video",
     "publisher": "Maxim Melichov",
     "copyright": "Copyright (c) 2026 Maxim Melichov",

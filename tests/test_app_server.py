@@ -2310,21 +2310,23 @@ def test_setup_marks_the_rows_the_app_can_install(client):
     winget can run unattended, `sudo apt-get` cannot (see `dubbing/tools.py`),
     so on Linux the honest answer is no buttons at all."""
     from dubbing import tools
+    from dubbing_app import setup as setup_mod
 
     checks = client.get("/api/setup").json()["checks"]
     installable = {c["id"] for c in checks if c["installable"]}
-    assert installable == set(install_mod.INSTALLERS)
-    assert installable == set(tools.auto_installers())
-    assert installable <= {"ffmpeg", "sox"}
+    assert installable == set(install_mod.INSTALLERS) | set(setup_mod.model_downloads())
+    assert installable & set(tools.recipes()) == set(tools.auto_installers())
+    # And never the rows no table covers: gated pipelines and self-fetching caches.
+    assert {"model.demucs", "model.g2p.he", "hf_token", "disk"}.isdisjoint(installable)
     assert all(isinstance(c["installable"], bool) for c in checks)
 
 
 def test_install_refuses_an_id_it_has_no_recipe_for(client):
-    """A model is gigabytes and a Hugging Face login; the refusal has to hand
-    the user the command instead of pretending there is a button for it."""
+    """A model no snapshot satisfies (gated pyannote, self-fetching Demucs and
+    G2P) still gets no button; the refusal hands the user what to do instead."""
     from dubbing import tools
 
-    for bad in ("model.translate", "hf_token", "disk", "rm -rf /"):
+    for bad in ("model.demucs", "model.g2p.he", "hf_token", "disk", "rm -rf /"):
         r = client.post("/api/setup/install", json={"id": bad})
         assert r.status_code == 400, bad
         message = r.json()["error"]["message"]
@@ -2408,7 +2410,13 @@ def test_probe_returns_the_same_row_shape_the_report_does(client):
     probed = setup_mod.probe("sox")
     assert set(probed) == set(row)
     assert probed["installable"] is ("sox" in install_module.INSTALLERS)
-    assert setup_mod.probe("model.translate") is None and setup_mod.probe("nope") is None
+    assert setup_mod.probe("model.demucs") is None and setup_mod.probe("nope") is None
+    # The downloadable models answer too, with the same shape as their report row.
+    model_row = next(c for c in client.get("/api/setup").json()["checks"]
+                     if c["id"] == "model.translate")
+    model_probed = setup_mod.probe("model.translate")
+    assert set(model_probed) == set(model_row)
+    assert model_probed["installable"] is True
 
 
 def test_install_that_exits_nonzero_is_a_failure_with_its_output():
@@ -2681,3 +2689,135 @@ def test_a_job_keeps_its_clip_when_the_verdict_did_not_move(outputs):
     merged = ops.find(journal.m, uid)
     assert merged["tts"] == {"clip": "clips/new.wav", "dur": 1.0}
     assert merged["text_en"] == "hand corrected"
+
+
+# ---------------------------------------------------------------------------
+# model downloads through the install slot
+# ---------------------------------------------------------------------------
+# `snapshot_download` is the only thing here that would ever move bytes, so
+# every test swaps it for a fake that writes a few hundred bytes to a tmp dir.
+# What is asserted is the plumbing: which ids are accepted, what the progress
+# looks like on the wire, and what the server believes once the fetch returns.
+
+
+@pytest.fixture()
+def hub_stub(monkeypatch, tmp_path):
+    """The translate model, made tiny: its path points into tmp, and the fetch
+    is a fake that writes 400 bytes, waits on `gate`, then writes 600 more.
+    `step` fires once the first bytes are on disk, so a test can assert on
+    mid-download progress without sleeping."""
+    from dubbing import translate
+
+    local = tmp_path / "hub-model"
+    gate = threading.Event()
+    step = threading.Event()
+
+    def fake_download(repo_id, local_dir, **kwargs):
+        assert repo_id == translate.HUB_ID           # the table's id, never the client's
+        Path(local_dir).mkdir(parents=True, exist_ok=True)
+        (Path(local_dir) / "weights.bin").write_bytes(b"x" * 400)
+        step.set()
+        assert gate.wait(10.0)
+        (Path(local_dir) / "rest.bin").write_bytes(b"y" * 600)
+
+    monkeypatch.setattr(translate, "MODEL_PATH", local)
+    monkeypatch.setattr(install_mod, "snapshot_download", fake_download)
+    return {"local": local, "gate": gate, "step": step}
+
+
+def test_setup_model_rows_carry_hub_and_download_size(client):
+    """"Download" without a size is the blind spinner this feature was refused
+    over; the row carries the repo and the approximate cost up front."""
+    from dubbing import translate
+    from dubbing_app import setup as setup_mod
+
+    checks = {c["id"]: c for c in client.get("/api/setup").json()["checks"]}
+    row = checks["model.translate"]
+    assert row["hub"] == translate.HUB_ID
+    assert row["download_bytes"] == setup_mod.model_downloads()["model.translate"]["bytes"]
+    assert row["download_bytes"] > 0 and row["installable"] is True
+    # The models no snapshot satisfies carry no hub and no button.
+    assert "hub" not in checks["model.demucs"]
+    assert checks["model.demucs"]["installable"] is False
+
+
+def test_download_reports_progress_and_reprobes_the_row(client, hub_stub):
+    from dubbing_app import setup as setup_mod
+
+    total = setup_mod.model_downloads()["model.translate"]["bytes"]
+    r = client.post("/api/setup/install", json={"id": "model.translate"})
+    assert r.status_code == 202 and r.json()["running"] is True
+    assert r.json()["tail"][0].startswith("$ snapshot_download(")
+    assert any("resumes" in line for line in r.json()["tail"])   # say it up front
+
+    assert hub_stub["step"].wait(10.0)
+    body = client.get("/api/setup/install").json()
+    assert body["running"] is True
+    assert body["bytes_done"] == 400                 # the directory, measured
+    assert body["bytes_total"] == total              # the table's estimate
+
+    hub_stub["gate"].set()
+    assert client.app.state.installer.wait(10.0)
+    body = client.get("/api/setup/install").json()
+    assert body["running"] is False and body["ok"] is True and body["error"] is None
+    assert body["bytes_done"] == 1000
+    # The row the UI redraws is a fresh stat of the directory, not the fetch's
+    # word for it — same rule as the tools.
+    assert body["check"]["id"] == "model.translate" and body["check"]["ok"] is True
+    assert body["check"]["installable"] is True
+
+
+def test_download_holds_the_one_install_slot(client, hub_stub, stub_installers):
+    """One slot for tools and models alike: two downloads share one disk and
+    the screen has one progress row."""
+    stub_installers()
+    client.post("/api/setup/install", json={"id": "model.translate"})
+    assert hub_stub["step"].wait(10.0)
+    for id_ in ("ffmpeg", "model.translate"):
+        r = client.post("/api/setup/install", json={"id": id_})
+        assert r.status_code == 409 and r.json()["error"]["code"] == "busy", id_
+    hub_stub["gate"].set()
+    assert client.app.state.installer.wait(10.0)
+
+
+def test_tool_install_status_carries_no_byte_fields(client, stub_installers):
+    """`bytes_done` against a brew would be a number with no meaning; the keys
+    exist only while the slot holds a download."""
+    stub_installers()
+    client.post("/api/setup/install", json={"id": "ffmpeg"})
+    assert client.app.state.installer.wait(10.0)
+    body = client.get("/api/setup/install").json()
+    assert "bytes_done" not in body and "bytes_total" not in body
+
+
+def test_download_failure_keeps_partials_and_promises_resume(monkeypatch, tmp_path):
+    """A torn-off download is not a wasted download; the error says so, because
+    "failed" alone reads as "start over" to a user staring at 81 GB."""
+    def explode(**kwargs):
+        raise RuntimeError("connection reset by peer")
+
+    monkeypatch.setattr(install_mod, "snapshot_download", explode)
+    inst = install_mod.Installer(lambda id_: None,
+                                 downloads={"model.x": {"hub": "org/x",
+                                                        "path": tmp_path / "x",
+                                                        "bytes": 10}})
+    inst.start("model.x")
+    assert inst.wait(10.0)
+    status = inst.status()
+    assert status["ok"] is False
+    assert "RuntimeError" in status["error"] and "resumes" in status["error"]
+
+
+def test_download_that_completes_but_fails_its_probe_is_not_success(monkeypatch, tmp_path):
+    """Same honesty rule as the tools: the fetch returning is a claim about the
+    fetch, and the check is the only thing allowed to say Ready."""
+    monkeypatch.setattr(install_mod, "snapshot_download", lambda **kw: None)
+    inst = install_mod.Installer(lambda id_: {"id": id_, "ok": False, "label": "x",
+                                              "detail": "missing"},
+                                 downloads={"model.x": {"hub": "org/x",
+                                                        "path": tmp_path / "x",
+                                                        "bytes": 10}})
+    inst.start("model.x")
+    assert inst.wait(10.0)
+    status = inst.status()
+    assert status["ok"] is False and "still fails" in status["error"]

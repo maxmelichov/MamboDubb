@@ -1,22 +1,35 @@
-"""Installing the missing command-line tools from inside the app.
+"""Installing the missing tools — and downloading the missing models — from
+inside the app.
 
-The Setup screen's job is to say what this machine is missing. For a model that
-is enough the check's detail line carries the command, and nothing else could
-honestly be offered for a ten-gigabyte download that wants a Hugging Face login
-and half an hour. For `ffmpeg` and `sox` it is not: they are one package-manager
-line away (`brew install` on a Mac, `winget install` on Windows), the user is
-looking at a red row that says so, and asking them to find a terminal is asking
-them to leave the app to type a line the app already knows. Where that line
-needs a terminal anyway — `sudo apt-get`, which asks for a password — there is
-no button and the detail line carries the command; see `dubbing/tools.py`.
+The Setup screen's job is to say what this machine is missing. For `ffmpeg` and
+`sox` the fix is one package-manager line away (`brew install` on a Mac,
+`winget install` on Windows), the user is looking at a red row that says so,
+and asking them to find a terminal is asking them to leave the app to type a
+line the app already knows. Where that line needs a terminal anyway — `sudo
+apt-get`, which asks for a password — there is no button and the detail line
+carries the command; see `dubbing/tools.py`.
+
+The models used to be refused here on principle: auto-downloading gigabytes
+behind a spinner is not an install button, and this docstring said so. That
+principle was never about the gigabytes — it was about the *blindness*. What a
+shipped app can offer honestly is different in every way that mattered: the
+row says how big the download is before the button is pressed, the status
+reports bytes done against bytes expected while it runs, `snapshot_download`
+resumes a torn-off attempt instead of starting over, and the id still maps to
+a server-side table (`setup.model_downloads()`) that names the repo and the
+directory — nothing the client sends chooses either. A user who installed a
+DMG so as never to open a terminal is not served by a detail line that ends in
+`uv run hf download`; they are served by a button that says what it costs.
 
 Four rules shape this module, each of them a refusal:
 
-* **The id maps to a hardcoded argv.** Nothing the client sends is ever executed
-  or interpolated the request body is a strict model with one field, and that
-  field is looked up in `INSTALLERS`. An id that is not in the table is a 400
-  that says how to install it by hand; a *model* id is refused the same way,
-  because auto-downloading gigabytes behind a spinner is not an install button.
+* **The id maps to a hardcoded action.** Nothing the client sends is ever
+  executed or interpolated the request body is a strict model with one field,
+  and that field is looked up in `INSTALLERS` (tools → argv) or in
+  `setup.model_downloads()` (models → hub repo + local dir). An id in neither
+  table is a 400 that says how to install it by hand — which still covers the
+  models no snapshot can satisfy: pyannote (gated), Demucs and the Hebrew G2P
+  (they fetch their own caches on first use).
 * **At most one install at a time, process-wide.** Not for memory (a `brew` runs
   nothing of ours) but because two package managers writing the same prefix is a
   broken prefix, and because the screen can only honestly show one spinner.
@@ -41,6 +54,7 @@ import subprocess
 import threading
 import time
 from collections import deque
+from pathlib import Path
 from typing import Any, Callable
 
 from dubbing import tools
@@ -79,10 +93,26 @@ MANAGERS: dict[str, str] = {
 TAIL_LINES = 200
 
 # A hung package manager must not hold the one slot forever. Half an hour is
-# past any real `brew install` and well short of "the user gave up".
+# past any real `brew install` and well short of "the user gave up". Only the
+# subprocess installs get this: a model download is *expected* to take longer
+# than any brew, there is no child to kill, and killing it would throw away
+# nothing anyway — `snapshot_download` resumes from the partial files.
 TIMEOUT = 1800.0
 
 Probe = Callable[[str], dict[str, Any] | None]
+
+
+def snapshot_download(**kwargs: Any) -> Any:
+    """`huggingface_hub.snapshot_download`, imported when first used.
+
+    Deferred because rule one of `setup.py` holds here too: the tool installs
+    never need huggingface_hub, and a `GET /api/setup` must not pay its import.
+    Module-level so a test swaps the whole thing with one monkeypatch and no
+    bytes ever move.
+    """
+    from huggingface_hub import snapshot_download as fetch
+
+    return fetch(**kwargs)
 
 
 def manual_command(id_: str, recipes: dict[str, tuple[str, ...]] | None = None) -> str | None:
@@ -101,13 +131,17 @@ class Installer:
     `probe` re-reads a single check by id (`setup.probe`); `recipes` overrides
     the module table, which is how the tests get a stub argv instead of a real
     package manager. Left unset it reads `INSTALLERS` *at call time*, so
-    monkeypatching either the name or its contents works.
+    monkeypatching either the name or its contents works. `downloads` is the
+    same override for the model table (`setup.model_downloads()`), for tests
+    that want a tiny repo pointed at a tmp dir instead of 9.7 GB at `models/`.
     """
 
     def __init__(self, probe: Probe, recipes: dict[str, tuple[str, ...]] | None = None,
-                 spawn: Callable[..., subprocess.Popen] | None = None):
+                 spawn: Callable[..., subprocess.Popen] | None = None,
+                 downloads: dict[str, dict[str, Any]] | None = None):
         self._probe = probe
         self._recipes = recipes
+        self._downloads = downloads
         self._spawn = spawn or subprocess.Popen
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -119,10 +153,24 @@ class Installer:
         self._check: dict[str, Any] | None = None
         self._started: float | None = None
         self._finished: float | None = None
+        # Set only while the slot holds a model download: where the bytes land
+        # and how many are expected. `status()` reads the directory's size off
+        # disk each poll — hf's tqdm has nowhere to draw, and the filesystem is
+        # the one progress source that cannot disagree with reality.
+        self._dl_dir: Path | None = None
+        self._dl_total: int | None = None
 
     @property
     def recipes(self) -> dict[str, tuple[str, ...]]:
         return self._recipes if self._recipes is not None else INSTALLERS
+
+    @property
+    def downloads(self) -> dict[str, dict[str, Any]]:
+        if self._downloads is not None:
+            return self._downloads
+        from . import setup
+
+        return setup.model_downloads()
 
     # -- api ---------------------------------------------------------------
 
@@ -130,13 +178,35 @@ class Installer:
         """Begin installing `id_`. Raises the 400/409 the UI renders."""
         argv = self.recipes.get(id_)
         if argv is None:
-            raise invalid(self._refusal(id_))
+            spec = self.downloads.get(id_)
+            if spec is None:
+                raise invalid(self._refusal(id_))
+            return self._start_download(id_, spec)
         manager = argv[0]
         if shutil.which(manager) is None:
             template = MANAGERS.get(manager,
                                     "`{manager}` is not on PATH install `{command}` by hand.")
             raise invalid(template.format(tool=id_, command=" ".join(argv), manager=manager))
+        return self._begin(id_, ["$ " + " ".join(argv)],
+                           target=self._run, args=(id_, tuple(argv)))
 
+    def _start_download(self, id_: str, spec: dict[str, Any]) -> dict[str, Any]:
+        """Claim the slot for a hub snapshot. Same slot as the tools — the
+        screen has one progress row, and two downloads share one disk and one
+        pipe anyway."""
+        from . import setup
+
+        hub, local_dir = str(spec["hub"]), Path(spec["path"])
+        total = int(spec.get("bytes") or 0)
+        lines = [f"$ snapshot_download({hub!r}, local_dir={str(local_dir)!r})",
+                 (f"downloading ~{setup.human_bytes(total)}; " if total else "downloading; ")
+                 + "partial files are kept, so an interrupted download resumes where it stopped"]
+        return self._begin(id_, lines, target=self._run_download,
+                           args=(id_, hub, local_dir), dl_dir=local_dir, dl_total=total)
+
+    def _begin(self, id_: str, lines: list[str], *, target: Callable[..., None],
+               args: tuple, dl_dir: Path | None = None,
+               dl_total: int | None = None) -> dict[str, Any]:
         with self._lock:
             if self._running:
                 raise busy(f"an install is already running ({self._id}); "
@@ -148,18 +218,31 @@ class Installer:
             self._check = None
             self._started = time.time()
             self._finished = None
+            self._dl_dir = dl_dir
+            self._dl_total = dl_total
             self._tail.clear()
-            self._tail.append("$ " + " ".join(argv))
-            self._thread = threading.Thread(target=self._run, args=(id_, tuple(argv)),
+            self._tail.extend(lines)
+            self._thread = threading.Thread(target=target, args=args,
                                             name=f"install-{id_}", daemon=True)
             self._thread.start()
         return self.status()
 
     def status(self) -> dict[str, Any]:
         with self._lock:
-            return {"running": self._running, "id": self._id, "ok": self._ok,
+            body = {"running": self._running, "id": self._id, "ok": self._ok,
                     "error": self._error, "tail": list(self._tail), "check": self._check,
                     "started": self._started, "finished": self._finished}
+            dl_dir, dl_total = self._dl_dir, self._dl_total
+        if dl_dir is not None:
+            from . import setup
+
+            # Walked outside the lock: `dir_size` on a directory mid-download is
+            # real I/O, and a poll must not stall the writer to count its bytes.
+            # `bytes_total` is the table's estimate, so done/total can overshoot
+            # 100% by a little — a progress bar clamps, accounting never asks.
+            body["bytes_done"] = setup.dir_size(dl_dir)
+            body["bytes_total"] = dl_total
+        return body
 
     def wait(self, timeout: float = 5.0) -> bool:
         """Join the install thread. For tests and shutdown, never for a request."""
@@ -181,10 +264,12 @@ class Installer:
                            if cmd and cmd not in
                            {" ".join(a) for a in self.recipes.values()})
         return (f"{id_!r} cannot be installed from the app. The only installs it "
-                f"runs are {offered or 'none'}. Everything else is by hand: "
+                f"runs are {offered or 'none'} and the hub-snapshot model "
+                "downloads. Everything else is by hand: "
                 + (f"the tools with {byhand}, and " if byhand else "")
-                + "the models download themselves on first use and the command is "
-                "in that check's detail line run it in a terminal from the repo.")
+                + "the remaining models download themselves on first use — where "
+                "a command is needed it is in that check's detail line run it "
+                "in a terminal from the repo.")
 
     def _env(self) -> dict[str, str]:
         # Non-interactive, because there is no terminal to answer a prompt on and
@@ -221,6 +306,25 @@ class Installer:
             killer.cancel()
         self._finish(id_, ok, error)
 
+    def _run_download(self, id_: str, hub: str, local_dir: Path) -> None:
+        """The worker behind a model install: one `snapshot_download` into the
+        directory the pipeline will read. No timeout, deliberately — 81 GB on
+        home DSL is slower than any brew, there is no child process to kill,
+        and an abandoned attempt costs nothing because the next one resumes
+        from the partial files.
+        """
+        ok, error = False, None
+        try:
+            # Looked up as a module global so a test's monkeypatch is what runs.
+            snapshot_download(repo_id=hub, local_dir=str(local_dir))
+            ok = True
+            self._line("download complete")
+        except Exception as exc:                       # network, auth, disk — all of it
+            error = (f"{type(exc).__name__}: {exc} partial files are kept, "
+                     "so starting the install again resumes the download")
+            self._line(error)
+        self._finish(id_, ok, error)
+
     @staticmethod
     def _kill(proc: subprocess.Popen) -> None:
         try:
@@ -242,9 +346,14 @@ class Installer:
             error = error or f"could not re-check {id_}: {type(exc).__name__}: {exc}"
         if ok and check is not None and not check.get("ok"):
             ok = False
-            error = error or (f"`{' '.join(self.recipes.get(id_, ()))}` succeeded but "
-                              f"{id_} is still not there restart the app so it picks "
-                              "up the new PATH.")
+            if id_ in self.recipes:
+                error = error or (f"`{' '.join(self.recipes.get(id_, ()))}` succeeded but "
+                                  f"{id_} is still not there restart the app so it picks "
+                                  "up the new PATH.")
+            else:
+                error = error or (f"the download finished but {id_} still fails its "
+                                  "check the files may be incomplete; start the "
+                                  "install again and it resumes what is missing.")
         with self._lock:
             self._running = False
             self._ok = ok
@@ -253,4 +362,4 @@ class Installer:
             self._finished = time.time()
 
 
-__all__ = ["INSTALLERS", "Installer", "manual_command"]
+__all__ = ["INSTALLERS", "Installer", "manual_command", "snapshot_download"]

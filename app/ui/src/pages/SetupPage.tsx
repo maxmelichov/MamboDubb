@@ -22,10 +22,16 @@
  *   because a command that has to be retyped from a screenshot is a command
  *   that gets retyped wrong.
  * - **A row the server can fix gets a button.** `installable` comes from the
- *   server (it is the key set of `install.INSTALLERS`), never from a list kept
- *   here a copy would drift and put a button on a row whose POST is a 400.
- *   Two binaries qualify; a ten-gigabyte model does not, and its detail line
- *   stays the whole answer.
+ *   server (the key set of `install.INSTALLERS` plus `setup.model_downloads()`),
+ *   never from a list kept here a copy would drift and put a button on a row
+ *   whose POST is a 400. Two binaries qualify, and so do the hub-snapshot
+ *   models: a fresh install is mostly red model rows, and for a user who chose
+ *   a DMG so as never to open a terminal, the Download button IS the happy
+ *   path. The button carries the price ("Download · ~9.7 GB"), the poll draws
+ *   a real bar (bytes on disk against the estimate), and a torn-off attempt
+ *   resumes the server keeps the partial files, and the Retry says so.
+ *   Where no snapshot can help gated pyannote, self-fetching caches the
+ *   detail line stays the whole answer.
  * - **Do not nag.** The gate in App.tsx routes here only when the server says
  *   `ok: false`. Otherwise this screen exists but is never in the way.
  *
@@ -79,6 +85,23 @@ const SEVERITY_META: Record<
   optional: { word: "Optional", token: "var(--color-muted)", tone: "neutral", wash: false },
 };
 
+/**
+ * `9700000000` → `9.7 GB`, the same rounding as the server's `human_bytes`.
+ *
+ * The server formats the sizes it puts in *sentences* (`detail`), but the
+ * numbers `download_bytes`, `bytes_done` arrive raw because the UI has to
+ * do arithmetic on them (a percent, a sum for the header line) before it can
+ * say them. One formatter, matched to the server's, so "~9.7 GB" on the button
+ * and "9.7 GB" in the detail line never disagree about the same model.
+ */
+function humanBytes(n: number): string {
+  for (const unit of ["B", "KB", "MB", "GB"] as const) {
+    if (n < 1024) return unit === "B" || unit === "KB" ? `${Math.round(n)} ${unit}` : `${n.toFixed(1)} ${unit}`;
+    n /= 1024;
+  }
+  return `${n.toFixed(1)} TB`;
+}
+
 /** The earliest stage a failing blocking row would stop a run at, if any. */
 function firstBlockingStage(checks: SetupCheck[]): string | null {
   const stages = checks
@@ -126,6 +149,26 @@ export function SetupPage() {
   useEffect(() => {
     void recheck();
   }, [recheck]);
+
+  /*
+   * Pick up an install that was already running when this screen mounted.
+   *
+   * A model download is tens of minutes on real bandwidth, and the user will
+   * navigate away and back or reload the shell before it finishes. The slot
+   * lives in the server, so the only thing lost by a reload was the *display*
+   * of it and a screen that shows a Download button for a model the server
+   * is half-way through fetching invites the exact double-start the 409 exists
+   * to refuse. One GET on mount; a server that has never run anything answers
+   * `running: false` and this is a no-op.
+   */
+  useEffect(() => {
+    void api
+      .installStatus()
+      .then((current) => setInstall((prev) => prev ?? current))
+      .catch(() => {
+        // An older server without the endpoint: nothing was running anyway.
+      });
+  }, []);
 
   /*
    * The install poll.
@@ -194,6 +237,19 @@ export function SetupPage() {
   const optional = failing.filter((check) => severityOf(check) === "optional");
   const stopsAt = firstBlockingStage(checks);
 
+  /*
+   * The one-time cost, added up.
+   *
+   * A fresh install is several red model rows, each with its own gigabytes,
+   * and a user meeting that list for the first time has one question the rows
+   * answer only by mental arithmetic: how much, in total, before this app
+   * works? One line at the top "3 models to download, ~28 GB total" is
+   * that answer, and saying it once up front is what makes each row's own
+   * button read as a step rather than a fresh demand.
+   */
+  const toDownload = failing.filter((check) => check.installable && check.hub);
+  const downloadTotal = toDownload.reduce((sum, check) => sum + (check.download_bytes ?? 0), 0);
+
   return (
     // No hero — the nav pill says Setup and the Readiness card leads.
     <PageShell>
@@ -225,6 +281,14 @@ export function SetupPage() {
                   "No answer"
                 )}
               </p>
+              {toDownload.length > 0 ? (
+                <p className="mt-1 text-[12px] leading-relaxed text-secondary" data-downloads>
+                  {toDownload.length === 1
+                    ? `1 model to download, ~${humanBytes(downloadTotal)}`
+                    : `${toDownload.length} models to download, ~${humanBytes(downloadTotal)} total`}{" "}
+                  <span className="text-muted">one time, from inside the app</span>
+                </p>
+              ) : null}
             </div>
             {status ? (
               <span className="font-mono text-2xl tabular-nums text-muted">
@@ -418,18 +482,55 @@ function CheckRow({
             <Detail text={check.detail} />
           </p>
         ) : null}
-        {/* This row's button, while it runs: one spinner, the word, and the last
-            line of output. An install is minutes long and the poll is seconds
-            long, so the last line is the only honest progress there is a bar
-            would have to invent the fraction. */}
+        {/* This row's button, while it runs. Two shapes, because the two
+            installs have different honest progress:
+
+            A *tool* install gets one spinner, the word, and the last line of
+            output an install is minutes long and the poll is seconds long,
+            so the last line is the only progress there is; a bar would have to
+            invent the fraction.
+
+            A *model download* gets a real bar, because here the fraction is
+            not invented: the server re-walks the target directory each poll
+            (`bytes_done`) against the table's estimate (`bytes_total`). The
+            estimate can undershoot, so the fraction is clamped a bar at
+            101% reads as a bug in the one minute the download is finishing. */}
         {installing ? (
-          <p className="mt-1.5 flex items-center gap-2 text-[12px]">
-            <Loader2 aria-hidden className="h-3 w-3 shrink-0 animate-spin text-secondary" />
-            <span className="shrink-0 font-semibold text-secondary">Installing…</span>
-            <span className="truncate font-mono text-[11.5px] text-muted">
-              {lastLine(install) ?? "starting"}
-            </span>
-          </p>
+          install.bytes_done != null ? (
+            <div className="mt-2 max-w-md" data-download-progress>
+              <div className="flex items-baseline justify-between gap-3 text-[12px]">
+                <span className="flex items-center gap-2 font-semibold text-secondary">
+                  <Loader2 aria-hidden className="h-3 w-3 shrink-0 animate-spin" />
+                  Downloading…
+                </span>
+                <span className="font-mono text-[11.5px] tabular-nums text-muted">
+                  {humanBytes(install.bytes_done)}
+                  {install.bytes_total
+                    ? ` of ~${humanBytes(install.bytes_total)} · ${Math.min(
+                        100,
+                        Math.floor((install.bytes_done / install.bytes_total) * 100),
+                      )}%`
+                    : ""}
+                </span>
+              </div>
+              <Progress
+                className="mt-1.5"
+                value={
+                  install.bytes_total
+                    ? Math.min(1, install.bytes_done / install.bytes_total)
+                    : null
+                }
+              />
+            </div>
+          ) : (
+            <p className="mt-1.5 flex items-center gap-2 text-[12px]">
+              <Loader2 aria-hidden className="h-3 w-3 shrink-0 animate-spin text-secondary" />
+              <span className="shrink-0 font-semibold text-secondary">Installing…</span>
+              <span className="truncate font-mono text-[11.5px] text-muted">
+                {lastLine(install) ?? "starting"}
+              </span>
+            </p>
+          )
         ) : null}
         {/* It failed: the reason is in the output, and it is never the first
             line. The whole tail is here rather than a summary, because the
@@ -442,6 +543,16 @@ function CheckRow({
             <pre className="mt-1 max-h-36 overflow-auto rounded-md bg-sunken px-2.5 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-secondary">
               {install.tail.join("\n")}
             </pre>
+            {/* Only under a torn-off download: the fear Retry has to answer is
+                "do I pay the gigabytes again?", and the answer is the server's
+                (`snapshot_download` keeps partial files), said where the user
+                decides whether to press it. A failed brew has no partials and
+                no such fear, so it gets no such sentence. */}
+            {check.hub ? (
+              <p className="mt-1 text-[12px] text-muted">
+                Resumes where it left off the bytes already downloaded are kept.
+              </p>
+            ) : null}
           </>
         ) : null}
       </div>
@@ -459,8 +570,21 @@ function CheckRow({
           onClick={() => onInstall(check.id)}
           title={busy ? "One install at a time" : undefined}
         >
-          <Download className="h-3.5 w-3.5" />
-          Install
+          {failed ? (
+            <RefreshCw className="h-3.5 w-3.5" />
+          ) : (
+            <Download className="h-3.5 w-3.5" />
+          )}
+          {/* The label is the price tag. A tool is seconds and says "Install";
+              a model is gigabytes and says so before the click, from the same
+              `download_bytes` the server puts in the detail sentence. After a
+              failure it says "Retry" the resume note beside the error is
+              what makes that word safe to press. */}
+          {failed
+            ? "Retry"
+            : check.hub
+              ? `Download${check.download_bytes ? ` · ~${humanBytes(check.download_bytes)}` : ""}`
+              : "Install"}
         </Button>
       ) : null}
     </li>
