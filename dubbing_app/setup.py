@@ -392,19 +392,53 @@ def g2p_check() -> dict[str, Any]:
                  detail, severity=OPTIONAL, path=str(hebrew.G2P_DIR), bytes=size)
 
 
+def hf_hub_cache() -> Path:
+    """Where huggingface_hub keeps models, resolved the way the library does:
+    `HF_HUB_CACHE` wins, then `HF_HOME` (cache lives under its `hub/`), then
+    the default. Restating the library's rule here is the price of rule one —
+    importing huggingface_hub just to ask a path would pull it into every
+    `GET /api/setup`."""
+    hub_cache = (os.environ.get("HF_HUB_CACHE") or "").strip()
+    if hub_cache:
+        return Path(hub_cache)
+    hf_home = (os.environ.get("HF_HOME") or "").strip()
+    if hf_home:
+        return Path(hf_home) / "hub"
+    return Path.home() / ".cache" / "huggingface" / "hub"
+
+
 def demucs_check() -> dict[str, Any]:
-    """Optional by contract: Demucs fetches `htdemucs_ft` into the torch hub
-    cache the first time `stems` runs, so absence is a slow first run, not a
-    broken install and not a worse dub."""
+    """Optional by contract: Demucs fetches `htdemucs_ft` the first time `stems`
+    runs, so absence is a slow first run, not a broken install and not a worse
+    dub.
+
+    Two caches, because demucs changed homes: 3.x keeps `.th` weights under the
+    torch hub cache, 4.x fetches from the Hugging Face Hub into the HF cache as
+    `models--adefossez--*` (with the payload under `blobs/`). Probing only the
+    old one made this a row that could never pass on a working install."""
     from dubbing import stems
 
-    cache = Path(os.environ.get("TORCH_HOME") or (Path.home() / ".cache" / "torch")) / "hub"
-    present = cache.is_dir() and any(cache.rglob("*.th"))
-    size = dir_size(cache) if present else 0
-    detail = (f"{stems.MODEL} cache: {human_bytes(size)} in {cache}" if present
+    torch_cache = Path(os.environ.get("TORCH_HOME") or (Path.home() / ".cache" / "torch")) / "hub"
+    found: Path | None = None
+    if torch_cache.is_dir() and any(torch_cache.rglob("*.th")):
+        found = torch_cache
+    else:
+        hf_cache = hf_hub_cache()
+        if hf_cache.is_dir():
+            for repo in sorted(hf_cache.glob("models--adefossez--*")):
+                blobs = repo / "blobs"
+                if blobs.is_dir() and any(blobs.iterdir()):
+                    found = repo
+                    break
+    present = found is not None
+    size = dir_size(found) if found is not None else 0
+    detail = (f"{stems.MODEL} cache: {human_bytes(size)} in {found}" if present
               else f"{stems.MODEL} not downloaded yet fetched on the first stems run")
+    # The missing row points at the HF cache: that is where a 4.x download will
+    # actually land, and the torch hub path would send the user somewhere the
+    # weights will never appear.
     return check("model.demucs", "Demucs stem separation", present, detail,
-                 severity=OPTIONAL, path=str(cache), bytes=size)
+                 severity=OPTIONAL, path=str(found or hf_hub_cache()), bytes=size)
 
 
 # ---------------------------------------------------------------------------
@@ -458,5 +492,5 @@ def report(outputs: Path) -> dict[str, Any]:
 
 
 __all__ = ["report", "probe", "git_commit", "human_bytes", "dir_size", "env_path",
-           "find_uv",
+           "find_uv", "hf_hub_cache",
            "blocking_stage", "TOOLS", "BLOCKING", "DEGRADES", "OPTIONAL", "SEVERITIES"]

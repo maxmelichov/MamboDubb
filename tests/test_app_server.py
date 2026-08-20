@@ -2258,6 +2258,42 @@ def test_setup_uv_probe_mirrors_the_shells_fallback_chain(tmp_path, monkeypatch)
     assert setup_mod.find_uv() == str(local / "uv")
 
 
+def test_setup_demucs_passes_from_the_hf_cache(tmp_path, monkeypatch):
+    """demucs 4.x fetches `htdemucs_ft` from the Hub into the HF cache, not the
+    torch hub cache; probing only the latter made this a row that could never
+    pass on a working install."""
+    from dubbing_app import setup as setup_mod
+
+    monkeypatch.setenv("TORCH_HOME", str(tmp_path / "torch"))  # no `.th` anywhere
+    hub = tmp_path / "hf"
+    blobs = hub / "models--adefossez--HTDemucs-ft" / "blobs"
+    blobs.mkdir(parents=True)
+    monkeypatch.setenv("HF_HUB_CACHE", str(hub))
+    # An empty `blobs/` is an interrupted fetch, not a model.
+    assert setup_mod.demucs_check()["ok"] is False
+    (blobs / "0a1b").write_bytes(b"x" * 1024)
+    row = setup_mod.demucs_check()
+    assert row["ok"] is True and row["bytes"] == 1024
+    assert "HTDemucs-ft" in row["path"]
+
+    # `HF_HOME` alone resolves the way huggingface_hub does: cache under `hub/`.
+    monkeypatch.delenv("HF_HUB_CACHE")
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf_home"))
+    assert setup_mod.hf_hub_cache() == tmp_path / "hf_home" / "hub"
+
+
+# ---------------------------------------------------------------------------
+# installing a missing tool from the app
+# ---------------------------------------------------------------------------
+#
+# Not one of these runs a package manager. The id → argv table is the only
+# executable thing in the feature, so every test here swaps it for a shell stub
+# and asserts on the plumbing around it: what is refused, what is serialised,
+# and what the server believes once the process has exited.
+
+STUB = ("/bin/sh", "-c", "echo installing; exit 0")
+
+
 @pytest.fixture()
 def stub_installers(monkeypatch):
     """The app's own installer, pointed at a shell stub instead of `brew`."""
