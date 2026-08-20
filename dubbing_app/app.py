@@ -172,9 +172,10 @@ class RunBody(Strict):
 class InstallBody(Strict):
     """One field, and it is a *key*, never a command.
 
-    `id` is looked up in `install.INSTALLERS`; a miss is a 400. Strict-extra is
-    what keeps a hopeful `{"id": "ffmpeg", "argv": [...]}` from ever being read,
-    let alone run.
+    `id` is looked up in `install.INSTALLERS` (tools) and then in
+    `setup.model_downloads()` (hub-snapshot models); a miss in both is a 400.
+    Strict-extra is what keeps a hopeful `{"id": "ffmpeg", "argv": [...]}` — or
+    a `repo_id` of the client's choosing — from ever being read, let alone run.
     """
 
     id: str
@@ -397,9 +398,10 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
 
     @app.post("/api/setup/install", status_code=202)
     def start_install(body: InstallBody) -> dict[str, Any]:
-        """Install one missing tool. `id` is a key into a hardcoded argv table —
-        nothing from the body is ever executed. 400 for anything not in it, 409
-        while another install is running."""
+        """Install one missing tool, or download one missing model. `id` is a
+        key into a server-side table (argv for the tools, hub repo + local dir
+        for the models) — nothing from the body is ever executed. 400 for
+        anything in neither table, 409 while another install is running."""
         return installer.start(body.id)
 
     @app.get("/api/setup/install")
@@ -408,7 +410,9 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
 
         Polled rather than streamed: setup has no project, so it has no event
         stream, and an install measured in minutes is served fine by a 2 s poll.
-        Carries a freshly probed check row once the process has exited.
+        Carries a freshly probed check row once the worker has exited; while a
+        model download runs it also carries `bytes_done`/`bytes_total`, the
+        directory's size on disk against the table's estimate.
         """
         return installer.status()
 

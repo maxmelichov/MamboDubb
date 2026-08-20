@@ -4,12 +4,25 @@ A Tauri 2 shell around the studio server. It is the third layer of the stack in
 [docs/APP_ARCHITECTURE.md](../../docs/APP_ARCHITECTURE.md), and it changes nothing about
 the other two: the UI still speaks HTTP to the server, the server still owns the pipeline.
 
-## Why there is no bundled sidecar
+## What is bundled, and what is not
 
-MamboRambo ships its engine as a compiled binary inside the .app. Ours cannot: the
-pipeline is a ~10 GB Python environment plus tens of gigabytes of model weights. So the
-shell holds a **workspace** the path to a DubbingQwen checkout and runs the server
-out of it:
+MamboRambo ships its engine as a compiled binary inside the .app. Ours cannot ship
+*whole*: the pipeline is a ~1.7 GB Python environment plus ~81 GB of model weights. What
+the .dmg **does** ship is everything a clean Mac needs to build the rest by itself:
+
+- **the pipeline source** (~2.5 MB before the Qwen3-TTS submodule, ~18 MB with it):
+  `dubbing/`, `dubbing_app/`, `editor/`, `translator/`, `third_party/`, plus
+  `pyproject.toml`, `uv.lock`, `.python-version`, `.env.example` and `README.md` (the
+  last two trees and the README are load-bearing: `uv sync` builds the project wheel).
+  Staged by `scripts/stage_desktop_payload.py` into `src-tauri/payload/workspace/` and
+  bundled as a resource, `Contents/Resources/workspace` in the .app.
+- **`uv` itself** (~35 MB), as a Tauri sidecar (`externalBin`), which lands next to the
+  app binary at `Contents/MacOS/uv`. No Homebrew, no terminal.
+
+Weights are still **not** bundled — `models/` is downloaded on demand into the
+workspace — and the `.venv` is built on the user's machine by the first `uv sync`.
+
+The shell still holds a **workspace** and runs the server out of it:
 
 ```
 uv run --project <workspace> python -m dubbing_app.server \
@@ -22,15 +35,31 @@ moment of spawn (a first run is a multi-minute `uv sync`, and that is the only s
 life while we wait). The child is killed on drop and on app exit; the server's own
 parent-pid watchdog is the second belt.
 
-`uv` is found via `DUBSTUDIO_UV_PATH`, then `/opt/homebrew/bin/uv`, `/usr/local/bin/uv`,
-then `PATH`, then `~/.local/bin/uv`. The literal Homebrew path matters: an .app launched
-from Finder inherits almost none of the user's shell `PATH`.
+What changed is where the workspace comes from. On the first `get_workspace()` /
+`start_server()` with nothing stored and no checkout at the default path, `provision.rs`
+copies the bundled payload to `~/Library/Application Support/MamboDubb/workspace`
+(the .app is read-only and `uv sync` writes `.venv` next to the pyproject; the copy also
+forces owner-write back onto every file, since `fs::copy` would preserve the bundle's
+read-only modes) and stores that as the workspace. The copy is versioned by a
+`.mambodubb-payload` marker: on app upgrade the payload-owned entries are replaced
+wholesale, dir by dir, while `.venv`, `.env`, `models/` and `outputs/` are never
+touched. Precedence, deliberately: a stored workspace wins (so `set_workspace` remains
+the escape hatch for anyone running their own checkout — provisioning never touches a
+user-chosen path), then an existing checkout at the default `Documents/` location, then
+provisioning; a dev build with no staged payload falls back to the default path and the
+setup screen reports it not-ready, same as before.
+
+`uv` is found via `DUBSTUDIO_UV_PATH`, then the bundled sidecar (resolved next to
+`current_exe`, which covers both the .app and `tauri dev`), then `/opt/homebrew/bin/uv`,
+`/usr/local/bin/uv`, then `PATH`, then `~/.local/bin/uv`. The literal Homebrew path
+still matters for brew-only dev setups: an .app launched from Finder inherits almost
+none of the user's shell `PATH`.
 
 ## Commands (all `Result<T, String>`)
 
 | command | returns | notes |
 |---|---|---|
-| `get_workspace()` | `WorkspaceReport` | the stored workspace, or the default |
+| `get_workspace()` | `WorkspaceReport` | the stored workspace, or the default; provisions the bundled payload on a fresh install |
 | `check_workspace(path)` | `WorkspaceReport` | inspect without storing |
 | `set_workspace(path)` | `WorkspaceReport` | refuses a directory that is not a checkout |
 | `start_server()` | `ServerInfo` | idempotent; starts or returns the running one |
@@ -194,12 +223,22 @@ uv run --script scripts/build_desktop.py build --debug   # .app + .dmg under src
 
 cd app/desktop && pnpm install && pnpm tauri dev     # the same, by hand
 cd app/desktop && pnpm tauri build --debug
-cd app/desktop/src-tauri && cargo test               # the pure pieces
+cd app/desktop/src-tauri && cargo test               # the pure pieces (stage first, see below)
 
 uv run --script scripts/make_icons.py --check        # icons still match icon.svg
+uv run --script scripts/stage_desktop_payload.py     # payload + uv sidecar, by hand
 ```
 
-`pretauri` runs `build_desktop.py check` before every `pnpm tauri …`; `beforeBuildCommand`
-runs `build_desktop.py ui`, which builds `app/ui` and copies `dist/` to `app/desktop/dist`.
-If `app/ui` has never been built, `check` writes a placeholder `index.html` there so the
-Tauri CLI has something to bundle.
+`pretauri` runs `build_desktop.py check` and then `stage_desktop_payload.py` before
+every `pnpm tauri …`; `beforeBuildCommand` runs `build_desktop.py ui`, which builds
+`app/ui` and copies `dist/` to `app/desktop/dist`. If `app/ui` has never been built,
+`check` writes a placeholder `index.html` there so the Tauri CLI has something to
+bundle.
+
+A bare `cargo check` / `cargo test` in `src-tauri` needs the staging script to have run
+at least once: `tauri-build` resolves the `externalBin` sidecar at compile time, so
+`binaries/uv-<triple>` has to exist. Both `payload/` and `binaries/` are build products
+(the script writes a `.gitignore` into each) and are re-staged from scratch every run.
+Staging fails if the `third_party/Qwen3-TTS` submodule is not checked out, because the
+provisioned workspace could never `uv sync` without it; `--skip-missing-submodule`
+downgrades that to a warning for CI that only compiles.

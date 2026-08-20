@@ -185,9 +185,11 @@ export const api = {
   },
 
   /**
-   * Install one missing tool. The body is an *id* from the checklist, never a
-   * command the server maps it to a hardcoded argv and 400s anything else, so
-   * the worst a bad call can do is fail.
+   * Install one missing tool or download one missing model. The body is an
+   * *id* from the checklist, never a command the server maps it to a
+   * hardcoded argv (`install.INSTALLERS`) or a hub snapshot
+   * (`setup.model_downloads()`) and 400s anything else, so the worst a bad
+   * call can do is fail.
    */
   startInstall(id: string): Promise<SetupInstall> {
     if (USE_FIXTURES) return fixtures.startInstall(id);

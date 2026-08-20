@@ -75,17 +75,24 @@ pub fn venv_python(path: &Path) -> Option<PathBuf> {
     candidates.into_iter().find(|candidate| candidate.is_file())
 }
 
-/// Find `uv`: explicit override, then Homebrew's usual spots, then `PATH`.
+/// Find `uv`: explicit override, then the bundled sidecar, then Homebrew's usual
+/// spots, then `PATH`.
 ///
-/// A bundled .app inherits almost nothing of the user's shell `PATH` on macOS, so the
-/// literal Homebrew path matters more than it looks that is the case that works when
-/// the app is launched from Finder.
+/// The sidecar is the case that matters for a real install: the .dmg bundles `uv` via
+/// Tauri `externalBin`, which lands next to the app binary (`Contents/MacOS/uv`), so a
+/// clean Mac needs no Homebrew at all. The rest of the chain is for dev runs and for
+/// users who prefer their own uv — and a bundled .app inherits almost nothing of the
+/// user's shell `PATH` on macOS, so the literal Homebrew path matters more than it
+/// looks: that is the case that works when a brew-only setup launches from Finder.
 pub fn find_uv() -> Option<PathBuf> {
     if let Some(raw) = env::var_os(UV_PATH_ENV) {
         let path = PathBuf::from(raw);
         if path.is_file() {
             return Some(path);
         }
+    }
+    if let Some(path) = sidecar_uv() {
+        return Some(path);
     }
     for candidate in UV_FALLBACKS {
         let path = PathBuf::from(candidate);
@@ -103,6 +110,17 @@ pub fn find_uv() -> Option<PathBuf> {
 }
 
 const UV_FALLBACKS: &[&str] = &["/opt/homebrew/bin/uv", "/usr/local/bin/uv"];
+
+/// The `uv` Tauri bundles as an `externalBin` sidecar. Sidecars are placed next to the
+/// app executable — `Contents/MacOS/` in the .app, `target/debug/` under `tauri dev` —
+/// so resolving from `current_exe` covers both without needing an app handle (which is
+/// what keeps `find_uv` callable from plain tests).
+fn sidecar_uv() -> Option<PathBuf> {
+    let exe = env::current_exe().ok()?;
+    let name = if cfg!(target_os = "windows") { "uv.exe" } else { "uv" };
+    let candidate = exe.parent()?.join(name);
+    candidate.is_file().then_some(candidate)
+}
 
 fn find_in_path(binary_name: &str) -> Option<PathBuf> {
     let path_var = env::var_os("PATH")?;
@@ -147,14 +165,17 @@ fn store(app: &tauri::AppHandle) -> Result<std::sync::Arc<Store<Wry>>, String> {
         .map_err(|err| format!("failed to open settings store: {err}"))
 }
 
-/// The configured workspace: what the user set, else the default.
-pub fn stored_workspace(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let stored = store(app)?
+/// The workspace the user explicitly chose, if any. `None` means nothing was ever
+/// stored — which is what lets first-launch provisioning tell "fresh install" apart
+/// from "user pointed us at a checkout".
+pub fn stored_workspace_setting(app: &tauri::AppHandle) -> Result<Option<PathBuf>, String> {
+    Ok(store(app)?
         .get(WORKSPACE_KEY)
         .and_then(|value| value.as_str().map(str::to_string))
-        .filter(|value| !value.trim().is_empty());
-    Ok(stored.map(PathBuf::from).unwrap_or_else(default_workspace))
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from))
 }
+
 
 pub fn store_workspace(app: &tauri::AppHandle, path: &Path) -> Result<(), String> {
     let store = store(app)?;
@@ -171,8 +192,14 @@ pub fn store_workspace(app: &tauri::AppHandle, path: &Path) -> Result<(), String
 
 #[tauri::command]
 pub async fn get_workspace(app: tauri::AppHandle) -> Result<WorkspaceReport, String> {
-    let path = stored_workspace(&app)?;
-    Ok(inspect_workspace(&path, find_uv().as_deref()))
+    // Off the async runtime: on a first launch this is where provisioning copies the
+    // bundled source (~40 MB) into Application Support.
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = crate::provision::resolve_workspace(&app)?;
+        Ok(inspect_workspace(&path, find_uv().as_deref()))
+    })
+    .await
+    .map_err(|err| format!("failed to join workspace task: {err}"))?
 }
 
 #[tauri::command]

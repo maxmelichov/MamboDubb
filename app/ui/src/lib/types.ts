@@ -485,12 +485,30 @@ export type SetupCheck = {
   /** `severity === "blocking"`, as the server has always sent it. */
   required?: boolean;
   /**
-   * The server has an argv for this one, so the row may offer a button. It is a
+   * The server can fix this one itself, so the row may offer a button. It is a
    * server flag rather than a list in the UI on purpose: a hardcoded list here
-   * drifts from `install.INSTALLERS` there, and the first symptom is an Install
-   * button whose POST is a 400.
+   * drifts from `install.INSTALLERS` (tools) and `setup.model_downloads()`
+   * (hub snapshots) there, and the first symptom is a button whose POST is a
+   * 400.
    */
   installable?: boolean;
+  /** Where this check looked a binary's path, a model's directory. */
+  path?: string | null;
+  /** Model rows: bytes on disk when present, 0 when missing. */
+  bytes?: number;
+  /**
+   * Downloadable model rows only: the hub repo the app would fetch. Its
+   * presence is what turns the row's button from "Install" into "Download"
+   * a tool is seconds and a model is gigabytes, and the label has to say
+   * which before the click.
+   */
+  hub?: string;
+  /**
+   * Downloadable model rows only: the download's size, measured from real
+   * installs. Approximate on purpose good for a button label ("~9.7 GB")
+   * and a progress denominator, never for accounting.
+   */
+  download_bytes?: number;
 };
 
 /** `ok` is the whole checklist's verdict false means the app is not usable. */
@@ -512,4 +530,18 @@ export type SetupInstall = {
   error: string | null;
   tail: string[];
   check: SetupCheck | null;
+  /** Epoch seconds, server clock. Null before anything has ever run. */
+  started?: number | null;
+  finished?: number | null;
+  /**
+   * Model downloads only: the two numbers behind a real progress bar.
+   * `bytes_done` is the target directory's size on disk, re-walked each poll
+   * the one progress source that cannot disagree with reality and
+   * `bytes_total` is the table's estimate, so done/total can overshoot 100%
+   * by a little. A bar clamps; accounting never asks. Absent entirely while
+   * the slot holds a tool install, which is how the row knows to show the
+   * tail line instead.
+   */
+  bytes_done?: number;
+  bytes_total?: number | null;
 };

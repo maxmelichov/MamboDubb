@@ -6,7 +6,8 @@ use tauri::{Manager, State};
 pub use dto::ServerInfo;
 pub use process::RunnerState;
 
-use crate::workspace::{find_uv, inspect_workspace, stored_workspace};
+use crate::provision::resolve_workspace;
+use crate::workspace::{find_uv, inspect_workspace};
 use process::RunnerProcess;
 
 /// Start the studio server out of the configured workspace, or return the one already
@@ -89,7 +90,9 @@ fn ensure_server(app: &tauri::AppHandle) -> Result<ServerInfo, String> {
         *guard = None;
     }
 
-    let workspace = stored_workspace(app)?;
+    // Provisions on a fresh install (`ensure_server` already runs on a blocking
+    // thread, so the copy is fine here); a stored or default checkout passes through.
+    let workspace = resolve_workspace(app)?;
     let uv = find_uv();
     let report = inspect_workspace(&workspace, uv.as_deref());
     if !report.ready {

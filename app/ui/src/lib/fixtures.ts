@@ -332,19 +332,23 @@ export function health(): Promise<Health> {
 }
 
 /**
- * `GET /api/setup`, deliberately mixed: a fresh machine with the big models
- * already fetched but neither command-line tool, no HF token and no Demucs
- * weights. A checklist where everything passes demos nothing, and the failure
+ * `GET /api/setup`, deliberately mixed: a fresh machine with neither
+ * command-line tool, no HF token, and the models in every state the screen has
+ * to draw. A checklist where everything passes demos nothing, and the failure
  * rows are where the copy has to earn its keep each one says what to do, not
  * just that it is missing.
  *
- * The two tool rows are the *installable* ones, which is the state the Install
- * button only exists for: `ffmpeg` and `sox` are one `brew install` away, so the
- * app offers to run it. Everything else below is missing in a way no button can
- * fix a gated token, a download the pipeline does for itself and must
- * therefore show no button at all.
+ * The tool rows are one `brew install` away, so the app offers to run it. The
+ * model rows cover the whole surface on purpose: one already on disk (a size,
+ * no button), one downloadable and idle (the "Download · ~9.7 GB" price tag),
+ * one *mid-download when the page mounts* (seeded below the state a user who
+ * reloaded during an 81 GB fetch comes back to, and the one that proves the
+ * page picks a running install back up), and one no button can fix (Demucs
+ * fetches its own cache; the detail line's command is the whole answer). Plus
+ * the token, which no download satisfies at all.
  */
 export function setup(): Promise<SetupStatus> {
+  seedDownload();
   const checks = setupChecks();
   // `ok` is the conjunction of the BLOCKING checks only, exactly as
   // `setup.report` computes it. It used to be `every(c => c.ok)`, which made the
@@ -395,6 +399,65 @@ function toolRow(id: string, stage: Stage): SetupCheck {
   };
 }
 
+/**
+ * The downloadable models, mirroring `setup.model_downloads()`: the id maps to
+ * a hub repo, a directory and an approximate size, and `installable: true` is
+ * what puts the Download button on the row. Two of them, in the two states the
+ * button has: idle with its price tag, and mid-download (see `seedDownload`).
+ */
+const MODEL_ROWS: Record<
+  string,
+  { label: string; stage: Stage; hub: string; dir: string; bytes: number; here: string }
+> = {
+  "model.translate": {
+    label: "Translation model (Gemma 3 12B)",
+    stage: "translate",
+    hub: "mlx-community/gemma-3-12b-it-qat-4bit",
+    dir: "gemma-3-12b-it-qat-4bit",
+    bytes: 9_700_000_000,
+    here: "9.0 GB in models/gemma-3-12b-it-qat-4bit",
+  },
+  "model.tts.1.7b": {
+    label: "TTS checkpoint 1.7b (default)",
+    stage: "tts",
+    hub: "mlx-community/Qwen3-TTS-1.7B-4bit",
+    dir: "qwen3-tts-1.7b",
+    bytes: 4_500_000_000,
+    here: "4.2 GB in models/qwen3-tts-1.7b",
+  },
+};
+
+/** One downloadable model row, in whichever state this fake session has it. */
+function modelRow(id: string): SetupCheck {
+  const row = MODEL_ROWS[id];
+  const ok = installed.has(id);
+  const approx = fixtureBytes(row.bytes);
+  return {
+    id,
+    label: row.label,
+    ok,
+    installable: true,
+    severity: "blocking",
+    required: true,
+    stage: row.stage,
+    hub: row.hub,
+    download_bytes: row.bytes,
+    detail: ok
+      ? row.here
+      : `missing: models/${row.dir} downloads from ${row.hub} on first use. ` +
+        `Fetch it (~${approx}): \`uv run hf download ${row.hub} --local-dir models/${row.dir}\``,
+  };
+}
+
+/** `4500000000` → `4.5 GB`, the server's `human_bytes` rounding. */
+function fixtureBytes(n: number): string {
+  for (const unit of ["B", "KB", "MB", "GB"] as const) {
+    if (n < 1024) return unit === "B" || unit === "KB" ? `${Math.round(n)} ${unit}` : `${n.toFixed(1)} ${unit}`;
+    n /= 1024;
+  }
+  return `${n.toFixed(1)} TB`;
+}
+
 function setupChecks(): SetupCheck[] {
   const rows: SetupCheck[] = [
     toolRow("ffmpeg", "fetch"),
@@ -409,37 +472,23 @@ function setupChecks(): SetupCheck[] {
         "to one voice. Accept Pyannote's model terms, then add `HF_TOKEN=hf_…` to " +
         "`/Users/you/DubbingQwen/.env`",
     },
+    modelRow("model.translate"),
+    modelRow("model.tts.1.7b"),
     {
-      id: "model_translate",
-      label: "Translation model Gemma 3 12B (MLX, 4-bit)",
-      ok: true,
-      severity: "blocking",
-      stage: "translate",
-      detail: "6.9 GB models/gemma-3-12b-it-qat-4bit",
-    },
-    {
-      id: "model_tts",
-      label: "Speech model Qwen3-TTS 1.7B",
+      id: "model.asr.en",
+      label: "Target ASR English (clip verification)",
       ok: true,
       severity: "blocking",
       stage: "tts",
-      detail: "3.4 GB models/qwen3-tts-1.7b",
+      detail: "145 MB in models/faster-whisper-base.en",
     },
     {
-      id: "model_asr",
-      label: "Transcription model faster-whisper large-v3",
-      ok: true,
-      severity: "blocking",
-      stage: "tts",
-      detail: "3.1 GB models/faster-whisper-large-v3",
-    },
-    {
-      id: "model_stems",
+      id: "model.demucs",
       label: "Stem separation Demucs htdemucs",
       ok: false,
       severity: "optional",
       detail:
-        "Not in models/demucs. Fetched on the first stems run. " +
+        "htdemucs_ft not downloaded yet fetched on the first stems run. " +
         "Run `uv run python -m dubbing.stems --download` to get it now (320 MB).",
     },
     {
@@ -488,13 +537,18 @@ export function startInstall(id: string): Promise<SetupInstall> {
       new ApiError("busy", `an install is already running (${installState.id}); one at a time`, 409),
     );
   }
+  if (id in MODEL_ROWS) {
+    startDownload(id);
+    return delay(structuredClone(installState));
+  }
   if (!(id in TOOL_ROWS)) {
     return Promise.reject(
       new ApiError(
         "invalid_request",
         `'${id}' cannot be installed from the app. The only installs it runs are ` +
-          "`brew install ffmpeg`, `brew install sox`. Everything else is by hand " +
-          "the command is in that check's detail line.",
+          "`brew install ffmpeg`, `brew install sox` and the hub-snapshot model " +
+          "downloads. Everything else is by hand the command is in that " +
+          "check's detail line.",
         400,
       ),
     );
@@ -512,7 +566,76 @@ export function startInstall(id: string): Promise<SetupInstall> {
 }
 
 export function installStatus(): Promise<SetupInstall> {
+  seedDownload();
   return delay(structuredClone(installState));
+}
+
+/**
+ * A model download, at fixture speed.
+ *
+ * Same contract as the server's: the slot goes `running` with `bytes_done`
+ * against `bytes_total`, the poll watches the number climb (the server
+ * re-walks the directory; this ticks a counter), and the finish re-probes the
+ * row. Compressed to a few seconds so the smoke test and the demo can watch
+ * the bar actually move and then the row turn Ready.
+ */
+function startDownload(id: string, from = 0): void {
+  const row = MODEL_ROWS[id];
+  installState = {
+    running: true,
+    id,
+    ok: null,
+    error: null,
+    tail: [
+      `$ snapshot_download('${row.hub}', local_dir='models/${row.dir}')`,
+      `downloading ~${fixtureBytes(row.bytes)}; partial files are kept, so an ` +
+        "interrupted download resumes where it stopped",
+    ],
+    check: null,
+    bytes_done: from,
+    bytes_total: row.bytes,
+  };
+  void runDownload(id);
+}
+
+async function runDownload(id: string): Promise<void> {
+  const row = MODEL_ROWS[id];
+  // ~3% per tick: enough polls that the bar visibly climbs, done in seconds.
+  const step = Math.round(row.bytes * 0.03);
+  while (installState.running && installState.id === id) {
+    await sleep(INSTALL_TICK_MS);
+    if (!installState.running || installState.id !== id) return;
+    const done = Math.min(row.bytes, (installState.bytes_done ?? 0) + step);
+    installState = { ...installState, bytes_done: done };
+    if (done >= row.bytes) break;
+  }
+  if (installState.id !== id) return;
+  installed.add(id);
+  installState = {
+    ...installState,
+    running: false,
+    ok: true,
+    tail: [...installState.tail, "download complete"],
+    check: modelRow(id),
+    bytes_done: row.bytes,
+  };
+}
+
+/**
+ * The state the page cannot reach by clicking: an install that was already
+ * running when it mounted. Seeded on the first `setup()` or `installStatus()`
+ * call the moment fixture mode is actually looked at as the default TTS
+ * checkpoint mid-download, 40% in, so the mount-time pickup, the live bar and
+ * the one-at-a-time greying of every other button are all on screen without a
+ * click. It finishes on its own, which demos the last transition too.
+ */
+let downloadSeeded = false;
+
+function seedDownload(): void {
+  if (downloadSeeded || installState.running) return;
+  downloadSeeded = true;
+  const id = "model.tts.1.7b";
+  startDownload(id, Math.round(MODEL_ROWS[id].bytes * 0.4));
 }
 
 async function runInstall(id: string): Promise<void> {

@@ -4,7 +4,7 @@
   "version": "0.1.3",
   "type": "module",
   "scripts": {
-    "pretauri": "uv run --script ../../scripts/build_desktop.py check",
+    "pretauri": "uv run --script ../../scripts/build_desktop.py check && uv run --script ../../scripts/stage_desktop_payload.py",
     "tauri": "tauri",
     "dev": "pnpm --dir ../ui dev",
     "build": "uv run --script ../../scripts/build_desktop.py ui"

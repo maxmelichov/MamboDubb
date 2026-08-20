@@ -551,7 +551,7 @@ check("failing checks explain themselves", /HF_TOKEN/.test(setup) && /htdemucs|D
 // them literally puts punctuation in the middle of a command to be copied.
 check("commands render as code, not backticks", !setup.includes("`"));
 check("model sizes are shown", /GB/.test(setup));
-check("a mixed result is counted", /4 of 8 need attention/.test(setup));
+check("a mixed result is counted", /6 of 8 need attention/.test(setup));
 check("no continue while something is missing", ![...document.querySelectorAll("button")].some((b) =>
   b.textContent.includes("Continue to projects"),
 ));
@@ -583,13 +583,13 @@ check(
   "the three grades are three different situations",
   severityOf("ffmpeg") === "blocking" &&
     severityOf("hf_token") === "degrades" &&
-    severityOf("model_stems") === "optional",
+    severityOf("model.demucs") === "optional",
 );
 check(
   "…and each says its grade as a word, never as a hue alone",
   /Required/.test(document.querySelector('[data-check="ffmpeg"]').textContent) &&
     /Degrades/.test(document.querySelector('[data-check="hf_token"]').textContent) &&
-    /Optional/.test(document.querySelector('[data-check="model_stems"]').textContent),
+    /Optional/.test(document.querySelector('[data-check="model.demucs"]').textContent),
 );
 check(
   "a blocking row names the stage it stops",
@@ -637,11 +637,29 @@ check("…and says it did", /Copied/.test(tokenCopy.getAttribute("title")));
 const rowOf = (id) => document.querySelector(`[data-check="${id}"]`);
 const installButton = (id) =>
   [...(rowOf(id)?.querySelectorAll("button") ?? [])].find((b) => /Install/.test(b.textContent));
+const downloadButton = (id) =>
+  [...(rowOf(id)?.querySelectorAll("button") ?? [])].find((b) => /Download/.test(b.textContent));
+
+// The fixture seeds the default TTS checkpoint mid-download at mount — an
+// install this page never clicked, picked up from the status poll alone.
+check("a download already running is picked up at mount",
+  /%|GB/.test(rowOf("model.tts.1.7b").textContent));
+// It holds the one install slot; everything below clicks buttons, so let it
+// finish first (40% seeded, ~3% a tick — done in under three seconds).
+for (let waited = 0; waited < 8000; waited += 200) {
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  if (/Ready/.test(rowOf("model.tts.1.7b").textContent)) break;
+}
+check("…and the seeded download lands as Ready", /Ready/.test(rowOf("model.tts.1.7b").textContent));
 
 check("a missing installable row offers to install itself",
   Boolean(installButton("ffmpeg")) && Boolean(installButton("sox")));
 check("a row nothing can install offers no button",
-  !installButton("hf_token") && !installButton("model_stems") && !installButton("model_translate"));
+  !installButton("hf_token") && !installButton("model.demucs") && !downloadButton("model.demucs"));
+// A hub-snapshot model is the one kind of gigabyte the app now fetches itself,
+// and the button must say the price before the click.
+check("a downloadable model row offers a sized Download button",
+  Boolean(downloadButton("model.translate")) && /GB/.test(downloadButton("model.translate").textContent));
 check("a passing row offers no button", !installButton("disk"));
 
 const fixtureCalls = globalThis.__DUBBING_FIXTURE_CALLS__;
@@ -670,7 +688,7 @@ check("…and a click on it starts nothing", fixtureCalls.install === before + 1
 await new Promise((resolve) => setTimeout(resolve, 1400));
 check("the installed row turns Ready", /Ready/.test(rowOf("ffmpeg").textContent));
 check("…and drops its Install button", !installButton("ffmpeg"));
-check("…and the count comes down", /3 of 8 need attention/.test(root.textContent));
+check("…and the count comes down", /4 of 8 need attention/.test(root.textContent));
 check("the other row can be installed again", installButton("sox").disabled === false);
 
 /*
@@ -683,6 +701,15 @@ check("the other row can be installed again", installButton("sox").disabled === 
  * installed the machine IS ready, with a token still missing and a Demucs cache
  * still un-downloaded, and the screen has to say both halves of that.
  */
+downloadButton("model.translate").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+await new Promise((resolve) => setTimeout(resolve, 300));
+check("a clicked download shows a live byte count, not a spinner",
+  /%|GB/.test(rowOf("model.translate").textContent));
+for (let waited = 0; waited < 10000; waited += 250) {
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  if (/Ready/.test(rowOf("model.translate").textContent)) break;
+}
+check("…and lands as Ready", /Ready/.test(rowOf("model.translate").textContent));
 installButton("sox").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
 await new Promise((resolve) => setTimeout(resolve, 1400));
 check(
@@ -704,7 +731,7 @@ check(
 );
 check(
   "…while the two rows that are still red keep their own grades",
-  rowSeverity("hf_token") === "degrades" && rowSeverity("model_stems") === "optional",
+  rowSeverity("hf_token") === "degrades" && rowSeverity("model.demucs") === "optional",
 );
 
 const recheck = [...document.querySelectorAll("button")].find((b) =>
