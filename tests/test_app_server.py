@@ -2232,16 +2232,30 @@ def test_setup_model_check_reports_size(tmp_path):
     assert "downloads on use" in missing["detail"]
 
 
-# ---------------------------------------------------------------------------
-# installing a missing tool from the app
-# ---------------------------------------------------------------------------
-#
-# Not one of these runs a package manager. The id → argv table is the only
-# executable thing in the feature, so every test here swaps it for a shell stub
-# and asserts on the plumbing around it: what is refused, what is serialised,
-# and what the server believes once the process has exited.
+def test_setup_uv_probe_mirrors_the_shells_fallback_chain(tmp_path, monkeypatch):
+    """The shell's `find_uv()` found uv and started this server with it, and the
+    server's bare `shutil.which` then reported the tool missing and required.
+    The Python probe honours the same override and the same off-PATH homes."""
+    from dubbing_app import setup as setup_mod
 
-STUB = ("/bin/sh", "-c", "echo installing; exit 0")
+    fake = tmp_path / "uv"
+    fake.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("DUBSTUDIO_UV_PATH", str(fake))
+    assert setup_mod.find_uv() == str(fake)
+
+    # Off PATH entirely (a Finder-launched .app): the `~/.local/bin` that uv's
+    # own installer uses still answers. A dangling override is ignored, not
+    # trusted, and the literal Homebrew paths are emptied so a machine that has
+    # uv installed there cannot make this pass for the wrong reason.
+    monkeypatch.setenv("DUBSTUDIO_UV_PATH", str(tmp_path / "gone"))
+    monkeypatch.setattr(setup_mod, "UV_FALLBACKS", ())
+    monkeypatch.setattr(setup_mod.shutil, "which", lambda exe: None)
+    home = tmp_path / "home"
+    local = home / ".local" / "bin"
+    local.mkdir(parents=True)
+    (local / "uv").write_text("#!/bin/sh\n")
+    monkeypatch.setattr(setup_mod.Path, "home", lambda: home)
+    assert setup_mod.find_uv() == str(local / "uv")
 
 
 @pytest.fixture()
