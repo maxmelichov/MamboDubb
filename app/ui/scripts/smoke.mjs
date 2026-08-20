@@ -293,20 +293,27 @@ check(
 );
 
 const root = document.getElementById("root");
-/* The hero is gone on purpose: the nav pill says Runs, the card says what it
-   does, and a display title with a lede over both was the page explaining
-   itself to people already using it. */
+/*
+ * Home is the RUNS page now, not the import form. The nav pill always said
+ * "Runs" about "/", and the screen answered with "start something new" — the
+ * observed failure was a user re-running yesterday's dub because the list was
+ * a third column they never noticed. The form lives at /new; what "/" owes on
+ * first paint is the list itself, full width, plus the one button that leads
+ * to the form. The hero stays gone on both pages.
+ */
 check(
   "home screen renders without hero copy",
   root.textContent.length > 0 &&
     !/Entirely on this machine/.test(root.textContent) &&
     !/Point it at a video/.test(root.textContent),
 );
-check("…and still carries the new-dub card", root.querySelector('[data-region="new-dub"]') != null);
-check("…whose action still says what it starts", /Start dubbing/.test(root.textContent));
-/* Context is the one optional field sitting under a required one of the same
-   size, and it says so in the label rather than three lines below it. */
-check("the context field leads with Optional", /Optional Context/.test(root.textContent));
+check("home is the runs list, not the form", root.querySelector('[data-region="runs"]') != null &&
+  root.querySelector('[data-region="new-dub"]') == null);
+check(
+  "…with one card per run in outputs/",
+  document.querySelectorAll('[data-region="runs"] li').length === 3,
+);
+check("…and the list is counted in words", /3 runs in outputs\//.test(root.textContent));
 
 /*
  * The toggle itself, driven through the DOM. jsdom does not run index.html's
@@ -372,17 +379,32 @@ const runs = root.textContent;
 check("runs say how far they got", /Complete/.test(runs) && /Running translate/.test(runs));
 check("a failed run names the stage", /Failed at fetch/.test(runs));
 check("runs say when they last moved", /just now|hours? ago|days? ago/.test(runs));
-check("context field is present", /Context/.test(root.textContent));
 check("setup is reachable from the header", /Setup/.test(root.textContent));
+
+/*
+ * The door to the form. The nav pill carries a "New dub" cell, but the page's
+ * own primary action is a real button at the head of the list — this drives
+ * that one, because it is the path a user who landed on the list and wants to
+ * start something will actually take, and it must land on the form, not on a
+ * dead route.
+ */
+const newDubButton = [...document.querySelectorAll("button")].find((b) =>
+  b.textContent.includes("New dub"),
+);
+check("the runs page offers New dub as its primary action", newDubButton != null);
+newDubButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+await new Promise((resolve) => setTimeout(resolve, 300));
+check("…and it navigates to the form", dom.window.location.pathname === "/new");
 
 /*
  * The import screen's composition, pinned structurally.
  *
- * The screen is three regions and not one column: the primary "new dub" card,
- * the options rail beside it, and existing runs full width underneath. jsdom
- * has no layout, so what can honestly be asserted is that all three exist and
- * hold what they claim to a redesign that quietly drops the rail, or houses
- * the runs inside the form card, fails here rather than in a screenshot.
+ * The screen is two regions and not one column: the primary "new dub" card and
+ * the options rail beside it — the runs are a page of their own now, at "/".
+ * jsdom has no layout, so what can honestly be asserted is that both regions
+ * exist and hold what they claim to a redesign that quietly drops the rail,
+ * or that moves the runs list back into this screen, fails here rather than in
+ * a screenshot.
  */
 check("the brand chip carries the drawn mark", document.querySelector("[data-brand] img") != null);
 check(
@@ -390,11 +412,11 @@ check(
   document.querySelector('[data-region="new-dub"]') != null &&
     document.querySelector('[data-region="options"]') != null,
 );
-check("existing runs are a region of their own", document.querySelector('[data-region="runs"]') != null);
-check(
-  "…with one card per run in outputs/",
-  document.querySelectorAll('[data-region="runs"] li').length === 3,
-);
+check("…whose action says what it starts", /Start dubbing/.test(root.textContent));
+check("the runs list stays on its own page", document.querySelector('[data-region="runs"]') == null);
+/* Context is the one optional field sitting under a required one of the same
+   size, and it says so in the label rather than three lines below it. */
+check("the context field leads with Optional", /Optional Context/.test(root.textContent));
 
 /*
  * The two language lists are *different lists*, and that is not a typo to be
@@ -743,8 +765,8 @@ await new Promise((resolve) => setTimeout(resolve, 300));
 check("re-check re-renders the list", document.querySelectorAll("[data-check]").length === 8);
 
 // The gate must not strand the user here: fixture mode never auto-routes, and
-// the import screen is one link away.
-await go("/", 200);
+// the import screen is one link away in the nav pill.
+await go("/new", 200);
 check("setup does not trap navigation", /Start dubbing/.test(root.textContent));
 
 const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -2913,7 +2935,7 @@ check(
  * mutates the fixture store and occupies the one-job queue for the length of a
  * whole pipeline.
  */
-await go("/", 300);
+await go("/new", 300);
 const SOURCE = "https://example.com/watch?v=three_languages";
 check("the import screen still carries the switch", foreignBox() != null);
 setInput(document.querySelector('[aria-label="Source"]'), SOURCE);

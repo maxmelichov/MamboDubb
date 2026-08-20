@@ -2,7 +2,7 @@
  * Import: pick a source, say what language it is and what language it should
  * become, then start a run.
  *
- * The shape is a studio composition, not a form in a column. Three regions:
+ * The shape is a studio composition, not a form in a column. Two regions:
  *
  * - **New dub** the generous card. It holds the two things you *type*: the
  *   source, and the context note. The single primary action sits in a sunken
@@ -13,13 +13,13 @@
  *   paragraphs. It ends with the sentence that says which of these choices are
  *   final because two of them are, and a screen that does not say so is asking
  *   people to guess whether a run is a commitment.
- * - **Your runs** the third column on a wide window, full width underneath on
- *   a narrow one. The only other thing you can do from this screen is re-open
- *   one, and it used to live below both tall regions — off the bottom of every
- *   maximised window, which read as "there are no old runs" to anyone who did
- *   not think to scroll. A column keeps it on screen next to the form; when
- *   the list outgrows the viewport the *list* scrolls, inside its own column,
- *   so the region's heading never leaves the fold.
+ *
+ * The runs used to be a third column here, and this screen used to be "/".
+ * That arrangement made the home screen lead with "start something new" while
+ * the nav pill over it said Runs — and users came back for yesterday's dub,
+ * read the form, and started it again. The runs are now a page of their own
+ * (RunsPage, at "/"), this form lives at /new, and the pill switches between
+ * them. What stays here is only what a *new* run needs.
  *
  * The context note is not decoration. Translation quality moves measurably with
  * a sentence about who and what the video is about and how names are spelled —
@@ -33,12 +33,11 @@
  * invert to ink when picked, the register is a pill.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   ArrowRight,
   Captions,
-  ChevronRight,
   Clapperboard,
   Film,
   FileVideo,
@@ -48,23 +47,18 @@ import {
   MessagesSquare,
   Mic2,
   PencilLine,
-  PlugZap,
   Timer,
   Workflow,
 } from "lucide-react";
 import { PageShell } from "../components/AppShell";
-import { StageTrack } from "../components/StageTrack";
 import {
-  Badge,
   Button,
   Card,
   CardSection,
   Checkbox,
   Divider,
-  Empty,
   ErrorBlock,
   Field,
-  LogoMark,
   NumberInput,
   OptionList,
   OptionRow,
@@ -76,11 +70,8 @@ import {
   TextInput,
 } from "../components/ui";
 import { api } from "../lib/api";
-import { cn } from "../lib/classNames";
 import { isDesktop, pickVideoFile } from "../lib/desktop";
-import { timecode } from "../lib/format";
-import { ago, stageTone, summarizeStages } from "../lib/stages";
-import type { CreateProjectRequest, ProjectSummary } from "../lib/types";
+import type { CreateProjectRequest } from "../lib/types";
 
 // What can be HEARD is broader than what can be SPOKEN: the ASR + translator
 // handle these sources, but the synthesizer voices Qwen3-TTS's ten languages
@@ -158,35 +149,9 @@ export function ImportPage() {
   });
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
-  // Distinct from "no projects": one means the form worked and there is
-  // nothing to open, the other means the server never answered, and telling a
-  // user the first when it was the second is how they end up re-running a
-  // dub they already have.
-  const [listError, setListError] = useState<string | null>(null);
 
   const update = (patch: Partial<CreateProjectRequest>) =>
     setForm((current) => ({ ...current, ...patch }));
-
-  const [reloads, setReloads] = useState(0);
-  useEffect(() => {
-    let cancelled = false;
-    void api
-      .listProjects()
-      .then((list) => {
-        if (cancelled) return;
-        setProjects(list);
-        setListError(null);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setProjects([]);
-        setListError(String(err instanceof Error ? err.message : err));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [reloads]);
 
   /**
    * In the shell, a native dialog gives back the absolute path the pipeline
@@ -219,15 +184,14 @@ export function ImportPage() {
   };
 
   return (
-    // No hero: the nav pill says Runs, the card says what it does, and the
+    // No hero: the nav pill says New dub, the card says what it does, and the
     // button says Start dubbing — a display title over all three was the page
     // explaining itself to people already using it.
     <PageShell width="wide">
-      {/* Three regions in one grid: at `lg` the card and the rail share the
-          row and the runs span underneath; at `xl` the runs become the third
-          column, so nothing on this screen is ever hidden below the fold. The
-          rail gives back its extra `xl` width (24rem → 21rem) to pay for it. */}
-      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_21rem] xl:grid-cols-[minmax(0,1fr)_21rem_20rem]">
+      {/* Two regions in one grid: at `lg` the card and the rail share the row.
+          The rail gets its full 24rem back — the runs column it used to pay
+          for is a page of its own now. */}
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_24rem]">
         {/* ------------------------------------------------------- the card */}
         <Card
           data-region="new-dub"
@@ -577,70 +541,6 @@ export function ImportPage() {
             </p>
           </CardSection>
         </Card>
-        {/* ---------------------------------------------------------- runs */}
-        {/* Sticky at `xl` so the column holds its place while a long page
-            scrolls, capped to the viewport so a long list scrolls *inside*
-            the column the heading is the thing that must never leave the
-            screen, because an unseen heading is an unknown feature. */}
-        <section
-          data-region="runs"
-          className="flex min-h-0 flex-col gap-3.5 lg:col-span-2 xl:sticky xl:top-5 xl:col-span-1 xl:max-h-[calc(100vh-2.5rem)] xl:self-start"
-        >
-          <div className="flex items-baseline justify-between gap-3 px-1">
-            <SectionLabel icon={Clapperboard}>Your runs</SectionLabel>
-            <span className="text-[11px] tabular-nums text-muted">
-              {projects && projects.length > 0
-                ? `${projects.length} ${projects.length === 1 ? "run" : "runs"} in outputs/`
-                : ""}
-            </span>
-          </div>
-
-          {projects == null ? (
-            <Card className="rounded-3xl">
-              <div className="flex items-center gap-3 px-6 py-7 text-[13px] text-muted">
-                <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
-                Reading outputs/…
-              </div>
-            </Card>
-          ) : listError ? (
-            <Card className="rounded-3xl">
-              <Empty
-                className="py-9"
-                icon={PlugZap}
-                title="Can't reach the studio server"
-                action={
-                  <Button size="sm" onClick={() => setReloads((n) => n + 1)}>
-                    Try again
-                  </Button>
-                }
-              >
-                Existing runs live on the server, and it did not answer:{" "}
-                <span className="text-secondary">{listError}</span>. Start it with{" "}
-                <code className="font-mono text-secondary">uv run python -m dubbing_app.server</code>,
-                then try again.
-              </Empty>
-            </Card>
-          ) : projects.length === 0 ? (
-            <Card className="rounded-3xl">
-              <Empty className="py-9" icon={Clapperboard} title="No runs yet">
-                Every dub you start lands here, resumable. Fill in the card and press{" "}
-                <em>Start dubbing</em> to make the first one.
-              </Empty>
-            </Card>
-          ) : (
-            // A strip of padding on every side of the scroll box, so the hover
-            // lift and the card shadows are not shaved off at its edges.
-            <ul className="grid gap-4 p-0.5 sm:grid-cols-2 xl:min-h-0 xl:flex-1 xl:grid-cols-1 xl:overflow-y-auto xl:pr-1.5">
-              {projects.map((project) => (
-                <ProjectCard
-                  key={project.name}
-                  project={project}
-                  onOpen={() => navigate(`/editor/${encodeURIComponent(project.name)}`)}
-                />
-              ))}
-            </ul>
-          )}
-        </section>
       </div>
 
       {error ? (
@@ -649,66 +549,5 @@ export function ImportPage() {
         </ErrorBlock>
       ) : null}
     </PageShell>
-  );
-}
-
-/**
- * One existing run.
- *
- * The row this replaces said the title, the run name, the language pair and the
- * duration everything except the thing you actually came to find out, which
- * is *where this run got to*. A half-finished run and a finished one looked
- * identical, so the only way to tell them apart was to open both. The card
- * carries the pipeline position (nine dots, the shared track), a word for it,
- * and when it last moved.
- *
- * A card rather than a row because the page is wide now: three runs across at
- * 1440px is a composition, and the same three as full-width rows is three
- * hairlines with eleven hundred pixels of nothing in the middle of them.
- */
-function ProjectCard({ project, onOpen }: { project: ProjectSummary; onOpen: () => void }) {
-  const summary = summarizeStages(project.stages);
-  return (
-    <li className="flex">
-      <button
-        type="button"
-        onClick={onOpen}
-        className={cn(
-          "group flex w-full flex-col gap-3 rounded-2xl border border-border bg-surface p-4 text-left",
-          "shadow-card transition-all hover:-translate-y-0.5 hover:border-axis hover:shadow-lift",
-        )}
-      >
-        <span className="flex items-start gap-3">
-          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-border bg-sunken text-muted transition-colors group-hover:border-axis group-hover:text-primary">
-            <LogoMark className="h-4 w-4" />
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-[13.5px] font-semibold text-primary">
-              {project.title}
-            </span>
-            <span className="mt-0.5 block truncate font-mono text-[11px] text-muted">
-              {project.name}
-            </span>
-          </span>
-          <ChevronRight className="mt-1 h-4 w-4 shrink-0 text-muted transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
-        </span>
-
-        <span className="flex flex-wrap items-center gap-2">
-          <Badge tone={stageTone(summary)}>{summary.label}</Badge>
-          <span className="text-[11px] text-muted">{ago(project.mtime)}</span>
-        </span>
-
-        <span className="mt-auto flex items-center justify-between gap-2 border-t border-border pt-3">
-          <StageTrack stages={project.stages} showLabel={false} />
-          <span className="flex shrink-0 items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.14em] text-muted">
-            {project.src_lang} → {project.tgt_lang}
-            <span aria-hidden>·</span>
-            <span className="tabular-nums">
-              {project.duration ? timecode(project.duration, 0) : "—"}
-            </span>
-          </span>
-        </span>
-      </button>
-    </li>
   );
 }
