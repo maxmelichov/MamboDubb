@@ -311,7 +311,8 @@ def test_the_stage_tags_moved():
     # with its original-audio slice, which changes what this stage produces.
     assert manifest.STAGE_TAGS["tts"] == "tts/v17"
     # v36: script-derived gloss floors, negations and shorten budgets (CJK/hangul).
-    assert manifest.STAGE_TAGS["translate"] == "translate/v36"
+    # v37: "%" survives into every TTS target's own vocabulary.
+    assert manifest.STAGE_TAGS["translate"] == "translate/v37"
 
 
 def test_ipa_is_not_a_manifest_field():

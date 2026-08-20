@@ -60,7 +60,10 @@ STAGE_TAGS = {
     # agglutination beat the exact-word rung), `_has_negation` reads Korean
     # negations glued inside a word, and `shorten`'s budget is in speech units —
     # counting `.split()` words made every CJK rewrite fail its own length check.
-    "translate": "translate/v36",
+    # v37: "%" becomes the target's own spoken word for every TTS target (zh as
+    # the 百分之 prefix over kept digits; numbers inside spaceless-script prose
+    # now spell at all) — merged past a parallel claim on v36.
+    "translate": "translate/v37",
     # Two lines each claimed tts/v15 for different logic (the Hebrew LoRA vs the
     # honest-failure records), so the merged tag moves past both.
     # v16: Hebrew targets synthesize from stressed IPA through the Qwen3-TTS Hebrew

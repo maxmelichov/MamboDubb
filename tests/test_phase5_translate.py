@@ -177,7 +177,9 @@ def test_translate_stage_tag_bumped():
     # no longer overrules the user's "dub it".
     # v36: the gloss floors, `_has_negation` and `shorten`'s budget are all
     # script-derived, so zh/ja/ko sources and targets are judged in their own unit.
-    assert manifest.STAGE_TAGS["translate"] == "translate/v36"
+    # v37: "%" becomes the target's own spoken word for every TTS target —
+    # ja/ko/zh percentages no longer vanish, it/pt no longer say "percent".
+    assert manifest.STAGE_TAGS["translate"] == "translate/v37"
 
 
 # ------------------------------------------------------- per-segment gloss gating
