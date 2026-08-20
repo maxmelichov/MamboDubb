@@ -50,7 +50,11 @@ STAGE_TAGS = {
     # read splits per sentence instead of into mid-clause length chunks; and word
     # tokens join through `script.join_words`, which writes Han/kana without the
     # spaces neither language has.
-    "segments": "segments/v40",
+    # v41: `merge_stranded_fragments` runs in the pipeline — a one-word opener
+    # torn off by a buried middle folds into its continuation instead of being
+    # voiced as a stranded beat — and it refuses spliced foreign-language spans,
+    # so an English orphan never rides into a `lang`-tagged neighbour's voice.
+    "segments": "segments/v41",
     # v34: a same-language pair (he→he, en→en) translates by identity the target
     # line is the source line and no translator loads.
     # v35: a segment translates from its OWN language (`translate.segment_langs`),

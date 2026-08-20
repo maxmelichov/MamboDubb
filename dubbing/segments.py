@@ -826,6 +826,7 @@ def merge_stranded_fragments(segs: list[dict[str, Any]], src: str = "he",
             bool(text) and (nxt.get("text") or "").strip()
             and not seg.get("keep") and not nxt.get("keep")
             and seg.get("passthrough") is None and nxt.get("passthrough") is None
+            and not seg.get("lang") and not nxt.get("lang")
             and seg["speaker"] == nxt["speaker"]
             and len(text.split()) <= ORPHAN_MAX_WORDS
             and seg["end"] - seg["start"] <= ORPHAN_MAX_SEC

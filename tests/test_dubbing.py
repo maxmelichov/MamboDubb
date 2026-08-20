@@ -1529,6 +1529,61 @@ def test_free_leaves_mlx_release_to_the_caller(monkeypatch):
     assert cleared
 
 
+def test_loaded_context_nulls_its_refs_before_the_pool_clear(monkeypatch):
+    # `translate.loaded` is the one copy of the teardown that used to be
+    # pasted into three finally blocks. The order is the whole point:
+    # free(model) first (the worker branch), then the handle nulls ITS OWN
+    # attributes — it holds the only strong references — and only then does
+    # free_cache() collect and clear. A clear that runs while the handle
+    # still names the weights reclaims nothing (~9 GB stays resident).
+    import types
+
+    events = []
+    box = {}
+
+    def fake_clear():
+        h = box["h"]
+        # Snapshot the handle's refs AT clear time: both must already be gone.
+        events.append(("clear", h.model, h.processor))
+
+    fake_core = types.SimpleNamespace(clear_cache=fake_clear)
+    fake_mlx = types.ModuleType("mlx")
+    fake_mlx.core = fake_core
+    monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", fake_core)
+
+    proc, model = object(), object()
+    monkeypatch.setattr(translate, "load", lambda device=None: (proc, model, None))
+    monkeypatch.setattr(translate, "free",
+                        lambda m: events.append(("free", m)))
+
+    with translate.loaded() as h:
+        box["h"] = h
+        assert h.processor is proc and h.model is model and h.device is None
+    assert events == [("free", model), ("clear", None, None)]
+    assert h.processor is None and h.model is None
+
+
+def test_loaded_context_tears_down_on_exception_and_reraises(monkeypatch):
+    # An exception mid-translation must not skip the teardown (that is what
+    # finally did), and the manager must not swallow it either.
+    import types
+
+    cleared = []
+    fake_core = types.SimpleNamespace(clear_cache=lambda: cleared.append(True))
+    fake_mlx = types.ModuleType("mlx")
+    fake_mlx.core = fake_core
+    monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", fake_core)
+    monkeypatch.setattr(translate, "load",
+                        lambda device=None: (object(), object(), None))
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with translate.loaded() as h:
+            raise RuntimeError("boom")
+    assert cleared and h.model is None and h.processor is None
+
+
 def test_worker_handle_protocol_round_trip(tmp_path):
     # A stand-in worker that speaks the real protocol ready line, then one JSON
     # response per request exercises spawn, framing, flushing and id matching
