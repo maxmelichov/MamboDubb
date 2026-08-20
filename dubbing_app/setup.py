@@ -164,10 +164,38 @@ TOOLS: dict[str, tuple[str, str, str]] = {
 }
 
 
+# `uv` discovery, kept byte-for-byte in step with `find_uv()` in the shell's
+# `workspace.rs`: same env override, same literal paths, same order. Two
+# different rules for the same tool is exactly the bug this exists to close —
+# the Rust side found uv, started this server with it, and the server then
+# reported the tool that launched it as missing and required.
+UV_PATH_ENV = "DUBSTUDIO_UV_PATH"
+UV_FALLBACKS = ("/opt/homebrew/bin/uv", "/usr/local/bin/uv")
+
+
+def find_uv() -> str | None:
+    """Where `uv` actually is, not just where PATH says. A Finder-launched .app
+    inherits almost none of the user's shell PATH on macOS, and uv's own
+    installer puts the binary in `~/.local/bin` — which is why `shutil.which`
+    alone answers "missing" on a machine where uv is running the server."""
+    override = (os.environ.get(UV_PATH_ENV) or "").strip()
+    if override and Path(override).is_file():
+        return override
+    for candidate in UV_FALLBACKS:
+        if Path(candidate).is_file():
+            return candidate
+    found = shutil.which("uv")
+    if found:
+        return found
+    local = Path.home() / ".local" / "bin" / "uv"
+    return str(local) if local.is_file() else None
+
+
 def tool(id_: str, label: str, exe: str, why: str, *,
          severity: str = BLOCKING) -> dict[str, Any]:
     """One tool row. `shutil.which` is the whole probe — it honours PATHEXT, so
     `ffmpeg.exe` on Windows answers to the same lookup as `ffmpeg` elsewhere.
+    The one exception is `uv`, which gets `find_uv()`'s fuller chain (above).
 
     A missing row carries **this platform's** install command, because that is
     the only actionable half of "not on PATH" and the row is where a user with
@@ -175,7 +203,7 @@ def tool(id_: str, label: str, exe: str, why: str, *,
     only where that command can run unattended)."""
     from dubbing import tools as tool_recipes
 
-    found = shutil.which(exe)
+    found = find_uv() if exe == "uv" else shutil.which(exe)
     detail = found or f"{exe} not on PATH {why}"
     if not found:
         command = tool_recipes.command(id_)
@@ -430,4 +458,5 @@ def report(outputs: Path) -> dict[str, Any]:
 
 
 __all__ = ["report", "probe", "git_commit", "human_bytes", "dir_size", "env_path",
+           "find_uv",
            "blocking_stage", "TOOLS", "BLOCKING", "DEGRADES", "OPTIONAL", "SEVERITIES"]
