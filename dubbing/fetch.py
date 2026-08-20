@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import audio
+from . import audio, tools
 
 
 def localize(video: Path, workdir: Path) -> Path:
@@ -67,6 +67,10 @@ def _download_video(url: str, workdir: Path) -> tuple[Path, str]:
     import yt_dlp
 
     last: Exception | None = None
+    # yt-dlp merges bestvideo+bestaudio by looking ffmpeg up on bare PATH — the
+    # one lookup that misses a static build the app installed into the
+    # workspace. Hand it the resolved one so both find the same binary.
+    ffmpeg = tools.resolve_tool("ffmpeg")
     for i, (extractor_args, fmt) in enumerate(_VIDEO_ATTEMPTS):
         opts = {
             "format": fmt,
@@ -75,6 +79,8 @@ def _download_video(url: str, workdir: Path) -> tuple[Path, str]:
             "no_warnings": True,
             "noplaylist": True,
         }
+        if ffmpeg:
+            opts["ffmpeg_location"] = str(Path(ffmpeg).parent)
         if extractor_args:
             opts["extractor_args"] = extractor_args
         try:

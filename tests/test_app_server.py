@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import threading
 import time
@@ -2117,14 +2118,16 @@ def test_setup_grades_every_check_and_required_is_derived_from_it(client):
     by_id = {c["id"]: c["severity"] for c in checks}
     from dubbing import tts
 
-    assert by_id["ffmpeg"] == by_id["sox"] == by_id["uv"] == "blocking"
+    assert by_id["ffmpeg"] == by_id["uv"] == "blocking"
     assert by_id["model.translate"] == by_id["model.asr.en"] == "blocking"
     assert by_id[f"model.tts.{tts.DEFAULT_TTS_MODEL}"] == "blocking"
     # The run works and is worse: one voice for everybody, no third language found.
     assert by_id["hf_token"] == by_id["model.lid"] == "degrades"
-    # Irrelevant until asked for, or self-downloading.
-    for optional in ("model.asr.he", "model.asr.tgt", "model.tts.he", "model.g2p.he",
-                     "model.demucs", "disk"):
+    # Irrelevant until asked for, or self-downloading. sox is here on evidence:
+    # the only sox caller in the tree is qwen_tts's 25Hz tokenizer, and the
+    # pipeline loads only 12Hz checkpoints — a brewless Mac dubs without it.
+    for optional in ("sox", "model.asr.he", "model.asr.tgt", "model.tts.he",
+                     "model.g2p.he", "model.demucs", "disk"):
         assert by_id[optional] == "optional", optional
 
 
@@ -2346,15 +2349,112 @@ def test_install_body_is_strict(client):
 def test_install_says_where_to_get_homebrew(monkeypatch):
     """The manager that installs the tools cannot itself be installed from here,
     so the refusal names the one URL. Driven straight at `Installer` with a Mac's
-    recipe: the table is the platform's, this rule is not."""
+    recipe: the table is the platform's, this rule is not. Driven with `sox` —
+    the one tool that keeps this refusal, because `ffmpeg` on a brewless Mac
+    takes the static route instead (the test below)."""
     monkeypatch.setattr(install_mod.shutil, "which", lambda exe, *a, **k: None)
     inst = install_mod.Installer(lambda id_: None,
-                                 recipes={"ffmpeg": ("brew", "install", "ffmpeg")})
+                                 recipes={"sox": ("brew", "install", "sox")})
     with pytest.raises(install_mod.invalid("x").__class__) as exc:
-        inst.start("ffmpeg")
+        inst.start("sox")
     message = exc.value.message
     assert exc.value.code == "invalid_request"
-    assert "https://brew.sh" in message and "ffmpeg" in message
+    assert "https://brew.sh" in message and "sox" in message
+
+
+def test_brewless_mac_installs_a_static_ffmpeg_into_the_workspace(monkeypatch, tmp_path):
+    """No Homebrew is the factory state of every Mac, and 'get it from brew.sh'
+    is a terminal plus an admin password — the journey the DMG exists to avoid.
+    The button must fall back to the static build, land both binaries in the
+    workspace tools dir, and pass the re-probe without a restart."""
+    from dubbing import tools
+
+    monkeypatch.setattr(install_mod.shutil, "which", lambda exe, *a, **k: None)
+    monkeypatch.setattr(tools, "platform_key", lambda *a: "darwin")
+    bin_dir = tmp_path / "tools" / "bin"
+    monkeypatch.setenv(tools.TOOLS_DIR_ENV, str(bin_dir))
+
+    fetched = tmp_path / "wheel-cache"
+    fetched.mkdir()
+    def fake_fetch(log):
+        log("fetching (stub)")
+        paths = []
+        for name in ("ffmpeg", "ffprobe"):
+            p = fetched / name
+            p.write_text("#!/bin/sh\nexit 0\n")
+            paths.append(str(p))
+        return tuple(paths)
+    monkeypatch.setattr(install_mod, "fetch_static_ffmpeg", fake_fetch)
+
+    from dubbing_app import setup as setup_mod
+
+    inst = install_mod.Installer(setup_mod.probe,
+                                 recipes={"ffmpeg": ("brew", "install", "ffmpeg")})
+    inst.start("ffmpeg")
+    assert inst.wait(10.0)
+    status = inst.status()
+    assert status["ok"] is True and status["error"] is None
+    # Both binaries copied — not symlinked, `uv sync` prunes the wheel — and runnable.
+    for name in ("ffmpeg", "ffprobe"):
+        installed = bin_dir / name
+        assert installed.is_file() and not installed.is_symlink()
+        assert os.access(installed, os.X_OK)
+    # The re-probed row is fresh evidence: resolve_tool finds tools/bin first.
+    assert status["check"]["ok"] is True
+    assert status["check"]["path"] == str(bin_dir / "ffmpeg")
+    assert any("static" in line for line in status["tail"])
+
+
+def test_resolve_tool_prefers_override_then_workspace_then_path(monkeypatch, tmp_path):
+    """The one lookup every call site uses, in its promised order: a per-tool
+    env override, the workspace tools dir, then PATH — so a static build the
+    app installed beats the shell's PATH, and an explicit override beats both."""
+    from dubbing import tools
+
+    workspace = tmp_path / "tools" / "bin"
+    workspace.mkdir(parents=True)
+    on_path = tmp_path / "path"
+    on_path.mkdir()
+    for where in (workspace / "ffmpeg", on_path / "ffmpeg"):
+        where.write_text("#!/bin/sh\n")
+        where.chmod(0o755)
+    monkeypatch.setenv("PATH", str(on_path))
+    monkeypatch.delenv("DUBSTUDIO_FFMPEG", raising=False)
+    # Pointed at an *empty* dir, not delenv'd: the default is the checkout's own
+    # tools/bin, and this test must not care what a previous install left there.
+    monkeypatch.setenv(tools.TOOLS_DIR_ENV, str(tmp_path / "empty"))
+
+    assert tools.resolve_tool("ffmpeg") == str(on_path / "ffmpeg")   # PATH is the floor
+    monkeypatch.setenv(tools.TOOLS_DIR_ENV, str(workspace))
+    assert tools.resolve_tool("ffmpeg") == str(workspace / "ffmpeg")
+    override = tmp_path / "custom-ffmpeg"
+    override.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("DUBSTUDIO_FFMPEG", str(override))
+    assert tools.resolve_tool("ffmpeg") == str(override)
+    # A dangling override is ignored, never returned: the pipeline would exec it.
+    monkeypatch.setenv("DUBSTUDIO_FFMPEG", str(tmp_path / "gone"))
+    assert tools.resolve_tool("ffmpeg") == str(workspace / "ffmpeg")
+
+
+def test_setup_row_names_the_route_the_button_takes(monkeypatch):
+    """'Install' must say what pressing it does before it is pressed: the
+    package manager when one is there, the workspace static build when not."""
+    from dubbing import tools
+    from dubbing_app import setup as setup_mod
+
+    monkeypatch.setattr(tools, "resolve_tool", lambda name: None)
+    monkeypatch.setattr(tools, "platform_key", lambda *a: "darwin")
+    monkeypatch.setattr(install_mod, "INSTALLERS",
+                        {"ffmpeg": ("brew", "install", "ffmpeg")})
+
+    monkeypatch.setattr(install_mod.shutil, "which",
+                        lambda exe, *a, **k: "/opt/homebrew/bin/brew")
+    with_brew = setup_mod.tool("ffmpeg", "ffmpeg", "ffmpeg", "why")
+    assert "via Homebrew" in with_brew["detail"]
+
+    monkeypatch.setattr(install_mod.shutil, "which", lambda exe, *a, **k: None)
+    without = setup_mod.tool("ffmpeg", "ffmpeg", "ffmpeg", "why")
+    assert "static build into the workspace" in without["detail"]
 
 
 def test_install_is_one_at_a_time(client, stub_installers):
@@ -2821,3 +2921,96 @@ def test_download_that_completes_but_fails_its_probe_is_not_success(monkeypatch,
     assert inst.wait(10.0)
     status = inst.status()
     assert status["ok"] is False and "still fails" in status["error"]
+
+
+# ---------------------------------------------------------------------------
+# HF token in-app (hf-token-ux lane): POST|DELETE /api/setup/hf_token
+# ---------------------------------------------------------------------------
+# The .env write, done by the server so nobody has to find a hidden folder.
+# Everything here redirects `setup.env_path()` into tmp_path by pointing the
+# module's REPO_ROOT there — env_path resolves it per call, so a client built
+# before the monkeypatch still writes where the test looks. The two env vars
+# are cleared first: `hf_token_check` reads them ahead of the file, and a
+# developer machine with HF_TOKEN exported would turn every "not set" claim
+# below into a lie.
+
+from dubbing_app import setup as setup_mod  # noqa: E402
+
+
+@pytest.fixture()
+def env_home(tmp_path, monkeypatch):
+    for var in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(setup_mod, "REPO_ROOT", tmp_path)
+    return tmp_path / ".env"
+
+
+def test_token_save_creates_env_and_flips_the_row(client, env_home):
+    token = "hf_abcdefghijklmnop"
+    r = client.post("/api/setup/hf_token", json={"token": token})
+    assert r.status_code == 200
+    row = r.json()
+    assert row["id"] == "hf_token" and row["ok"] is True
+    # The answer is the row, never the credential — not even a suffix of it.
+    assert token not in r.text
+    assert env_home.read_text() == f"HF_TOKEN={token}\n"
+    # A credential file is nobody else's to read.
+    assert (env_home.stat().st_mode & 0o777) == 0o600
+
+
+def test_token_save_preserves_other_lines_and_replaces_both_spellings(client, env_home):
+    env_home.write_text("# my notes\nOTHER=keep me\nHF_TOKEN=hf_old\n"
+                        "HUGGING_FACE_HUB_TOKEN=hf_older\nQUOTED='v'\n")
+    r = client.post("/api/setup/hf_token", json={"token": "hf_newtoken123"})
+    assert r.status_code == 200
+    lines = env_home.read_text().splitlines()
+    # Hand-written lines survive verbatim — comments, quoting, order.
+    assert lines[:2] == ["# my notes", "OTHER=keep me"]
+    assert "QUOTED='v'" in lines
+    # Exactly one token line remains, and it is the new one. Leaving the old
+    # HUGGING_FACE_HUB_TOKEN behind would shadow nothing today and confuse
+    # everyone the day the new one is deleted.
+    assert lines.count("HF_TOKEN=hf_newtoken123") == 1
+    assert not any(l.startswith(("HF_TOKEN=hf_old", "HUGGING_FACE_HUB_TOKEN")) for l in lines)
+
+
+def test_token_bad_shapes_are_400_and_never_echoed(client, env_home):
+    for bad in ("", "   ", "hf_", "not-a-token", "sk-something",
+                "hf_with space", "hf_with\nnewline", "hf_with\ttab"):
+        r = client.post("/api/setup/hf_token", json={"token": bad})
+        assert r.status_code == 400, bad
+        assert envelope_of(r)["code"] == "invalid_request"
+        # The 400 explains the shape without quoting the paste — an error
+        # message is the one string that ends up in bug reports. Skipped for
+        # the pastes shorter than the `hf_` prefix the message legitimately
+        # names; nothing that short is a secret.
+        if len(bad.strip()) > len("hf_"):
+            assert bad not in envelope_of(r)["message"], bad
+    assert not env_home.exists()
+    # Strict body: an extra field is a 400, same as every other endpoint.
+    r = client.post("/api/setup/hf_token", json={"token": "hf_okokok", "x": 1})
+    assert r.status_code == 400
+
+
+def test_token_delete_removes_only_the_token_lines(client, env_home):
+    env_home.write_text("OTHER=keep me\nHF_TOKEN=hf_gone\nHUGGING_FACE_HUB_TOKEN=hf_also\n")
+    r = client.delete("/api/setup/hf_token")
+    assert r.status_code == 200
+    row = r.json()
+    assert row["id"] == "hf_token" and row["ok"] is False
+    assert env_home.read_text() == "OTHER=keep me\n"
+    # Deleting when there is nothing to delete is not an error — the row is
+    # already telling the truth, and a second click must not turn red.
+    assert client.delete("/api/setup/hf_token").status_code == 200
+
+
+def test_token_save_then_probe_agree(client, env_home):
+    """The row the POST returns and the row GET /api/setup reports are the same
+    fact — a save whose receipt disagreed with the checklist would send the
+    user hunting for a difference that does not exist."""
+    client.post("/api/setup/hf_token", json={"token": "hf_agreement"})
+    checks = {c["id"]: c for c in client.get("/api/setup").json()["checks"]}
+    assert checks["hf_token"]["ok"] is True
+    client.delete("/api/setup/hf_token")
+    checks = {c["id"]: c for c in client.get("/api/setup").json()["checks"]}
+    assert checks["hf_token"]["ok"] is False

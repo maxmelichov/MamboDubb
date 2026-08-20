@@ -242,3 +242,23 @@ at least once: `tauri-build` resolves the `externalBin` sidecar at compile time,
 Staging fails if the `third_party/Qwen3-TTS` submodule is not checked out, because the
 provisioned workspace could never `uv sync` without it; `--skip-missing-submodule`
 downgrades that to a warning for CI that only compiles.
+
+## Releasing
+
+A `.dmg` from `build_desktop.py build` is a **local** artifact: unsigned, so on any
+other Mac Gatekeeper's quarantine turns it into "MamboDubb is damaged and can't be
+opened", curable only by `xattr -dc` in Terminal — the exact step this app exists to
+spare people. The release path is one command:
+
+```bash
+uv run --script scripts/release_dmg.py            # sign + notarize + staple + verify
+uv run --script scripts/release_dmg.py --dry-run  # print the plan, run nothing
+```
+
+It wraps `build_desktop.py build` with the submodule gate, Developer ID signing and
+notarization (Tauri-native, driven by `APPLE_SIGNING_IDENTITY` / `APPLE_ID` /
+`APPLE_PASSWORD` / `APPLE_TEAM_ID`), a stapled ticket on the .dmg container itself,
+and the `codesign` / `spctl` / `stapler` verification Gatekeeper will re-run on the
+user's machine. Without the env vars it still builds, unsigned, behind a loud
+warning. Certificate setup — the one step only a human with the Apple account can do
+— and the full checklist are in [docs/RELEASING.md](../../docs/RELEASING.md).

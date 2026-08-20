@@ -22,12 +22,23 @@ const STDERR_LINE_CAP: usize = 2000;
 
 pub struct RunnerState {
     pub process: Mutex<Option<RunnerProcess>>,
+    /// Serializes `ensure_server`. The `process` lock is deliberately *not* held
+    /// across the spawn a first run blocks on `uv sync` for minutes, and
+    /// `get_server_log` must stay answerable the whole time so this gate is what
+    /// keeps two concurrent start_server calls from racing two spawns.
+    pub start_gate: Mutex<()>,
+    /// The stderr ring for the current (or last) start attempt. Handed to the pump
+    /// thread *before* a `RunnerProcess` exists, because the minutes when there is no
+    /// process yet are exactly the minutes the boot panel needs something to show.
+    pub boot_log: Arc<Mutex<StderrRing>>,
 }
 
 impl Default for RunnerState {
     fn default() -> Self {
         Self {
             process: Mutex::new(None),
+            start_gate: Mutex::new(()),
+            boot_log: Arc::new(Mutex::new(StderrRing::default())),
         }
     }
 }
@@ -39,7 +50,7 @@ pub struct StderrRing {
 }
 
 impl StderrRing {
-    fn push(&mut self, line: &str) {
+    pub fn push(&mut self, line: &str) {
         let mut line = line.trim_end().to_string();
         line.truncate(STDERR_LINE_CAP);
         if self.lines.len() == STDERR_RING_LINES {
@@ -48,7 +59,13 @@ impl StderrRing {
         self.lines.push_back(line);
     }
 
-    fn text(&self) -> String {
+    /// A new attempt starts with an empty tail: the ring is a per-start log, and last
+    /// week's sync progress above today's traceback would read as one long failure.
+    pub fn clear(&mut self) {
+        self.lines.clear();
+    }
+
+    pub fn text(&self) -> String {
         self.lines
             .iter()
             .cloned()
@@ -68,7 +85,15 @@ pub struct RunnerProcess {
 }
 
 impl RunnerProcess {
-    pub fn spawn(uv: &Path, workspace: &Path) -> Result<Self, String> {
+    /// `stderr_ring` is the caller's (in the shell: `RunnerState::boot_log`), not a
+    /// private one, so `get_server_log` can read sync progress while this function is
+    /// still blocking on the ready line. It is cleared here start of attempt, not
+    /// end of last for the same reason `clear` exists at all.
+    pub fn spawn(
+        uv: &Path,
+        workspace: &Path,
+        stderr_ring: Arc<Mutex<StderrRing>>,
+    ) -> Result<Self, String> {
         let outputs = workspace.join("outputs");
         let mut cmd = Command::new(uv);
         cmd.args(server_args(workspace, &outputs))
@@ -102,7 +127,9 @@ impl RunnerProcess {
 
         // Pump stderr from the very start: a first run is a multi-minute `uv sync`, and
         // its progress is the only sign of life while we block on the ready line.
-        let stderr_ring = Arc::new(Mutex::new(StderrRing::default()));
+        if let Ok(mut ring) = stderr_ring.lock() {
+            ring.clear();
+        }
         if let Some(stderr) = child.stderr.take() {
             let ring = stderr_ring.clone();
             std::thread::spawn(move || {
@@ -292,11 +319,16 @@ mod tests {
         assert_eq!(start_error("ctx", "boom", "   "), "ctx: boom");
     }
 
+    fn fresh_ring() -> Arc<Mutex<StderrRing>> {
+        Arc::new(Mutex::new(StderrRing::default()))
+    }
+
     #[test]
     fn spawning_a_missing_uv_fails_without_hanging() {
         let result = RunnerProcess::spawn(
             Path::new("/nonexistent/uv"),
             Path::new("/nonexistent/workspace"),
+            fresh_ring(),
         );
         let err = match result {
             Ok(_) => panic!("spawning a nonexistent uv should not succeed"),
@@ -329,7 +361,7 @@ mod tests {
              echo '{\"status\":\"ready\",\"port\":54321,\"version\":\"0.1.0\"}'\n\
              sleep 30",
         );
-        let mut process = RunnerProcess::spawn(&uv, Path::new(".")).unwrap();
+        let mut process = RunnerProcess::spawn(&uv, Path::new("."), fresh_ring()).unwrap();
         assert_eq!(process.base_url(), "http://127.0.0.1:54321");
         assert_eq!(process.info().version.as_deref(), Some("0.1.0"));
         assert!(process.is_alive());
@@ -345,7 +377,7 @@ mod tests {
             "crash",
             "echo \"ModuleNotFoundError: No module named 'dubbing_app'\" 1>&2\nexit 1",
         );
-        let err = match RunnerProcess::spawn(&uv, Path::new(".")) {
+        let err = match RunnerProcess::spawn(&uv, Path::new("."), fresh_ring()) {
             Ok(_) => panic!("a crashing server should not look ready"),
             Err(err) => err,
         };

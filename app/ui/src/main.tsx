@@ -2,7 +2,6 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
-import { initApiBase } from "./lib/api";
 import { applyTheme, currentTheme } from "./lib/theme";
 
 // Before anything renders. index.html's boot script has normally already done
@@ -13,19 +12,17 @@ applyTheme(currentTheme());
 
 const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
 
-const render = () =>
-  root.render(
-    <React.StrictMode>
-      <BrowserRouter>
-        <App />
-      </BrowserRouter>
-    </React.StrictMode>,
-  );
-
-// Where the server lives has to be known before the first render: `mediaUrl` is
-// called during render and a <video src> cannot await. In a browser this
-// resolves to "" on the spot (same-origin); only in the desktop shell is there
-// an actual round trip, to ask the shell which port the sidecar got.
-void initApiBase()
-  .catch(() => undefined)
-  .then(render);
+// Render immediately; App's boot gate (`useBoot`) resolves the api base and
+// keeps the routes unmounted until it has. It used to be an await here, which
+// was correct about ordering (`mediaUrl` is called during render and a
+// <video src> cannot await) but meant *nothing* rendered while the desktop
+// shell's start_server ran and on a fresh install that is a payload copy
+// plus a multi-minute `uv sync`, spent as a blank window. The gate keeps the
+// ordering and gives the wait a surface (components/BootPanel.tsx).
+root.render(
+  <React.StrictMode>
+    <BrowserRouter>
+      <App />
+    </BrowserRouter>
+  </React.StrictMode>,
+);

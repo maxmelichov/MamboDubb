@@ -355,16 +355,20 @@ def test_the_pipeline_never_hardcodes_a_posix_process_call_outside_the_runner():
 
 def test_external_tools_are_resolved_with_which_not_assumed():
     """`shutil.which` is what makes `ffmpeg` find `ffmpeg.exe`; a bare
-    existence check against a path would not."""
+    existence check against a path would not. The lookup lives in
+    `tools.resolve_tool` now (env override, workspace tools/bin, then PATH),
+    and `which` is still its floor."""
     from dubbing import audio
 
-    assert "shutil.which" in __import__("inspect").getsource(audio.require_tools)
+    inspect = __import__("inspect")
+    assert "resolve_tool" in inspect.getsource(audio.require_tools)
+    assert "shutil.which" in inspect.getsource(tools.resolve_tool)
 
 
 def test_the_ffmpeg_refusal_names_this_platforms_installer(monkeypatch):
     from dubbing import audio
 
-    monkeypatch.setattr(audio.shutil, "which", lambda exe, *a, **k: None)
+    monkeypatch.setattr(audio.tools, "resolve_tool", lambda name: None)
     with pytest.raises(SystemExit) as exc:
         audio.require_tools()
     assert "ffmpeg not found on PATH" in str(exc.value)

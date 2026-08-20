@@ -148,12 +148,21 @@ def dir_size(path: Path) -> int:
 
 
 # The command-line tools, in one table so a single one can be re-checked after
-# an install without re-running (and re-`stat`ing) the whole model report. All
-# three are blocking: without any one of them a run dies partway through, which
-# is the definition this file uses.
-TOOLS: dict[str, tuple[str, str, str]] = {
+# an install without re-running (and re-`stat`ing) the whole model report. A row
+# is (label, exe, why) with an optional fourth element, the severity — blocking
+# when absent, because "a run dies partway through without it" is this file's
+# definition and it is true of ffmpeg and uv.
+TOOLS: dict[str, tuple[str, ...]] = {
     "ffmpeg": ("ffmpeg", "ffmpeg", "every stage shells out to it for audio and video"),
-    "sox": ("SoX", "sox", "Qwen3-TTS text normalization needs it"),
+    # Downgraded from blocking after reading what actually runs: the only sox
+    # caller in the tree is qwen_tts's 25Hz tokenizer (`speech_vq.XVectorExtractor`),
+    # and this pipeline loads only 12Hz checkpoints, whose x-vector path never
+    # touches it. The `sox` *Python* package imports fine with the binary absent
+    # (verified: pysox logs a warning and sets NO_SOX), so a brewless Mac dubs
+    # without it. The row stays so a future 25Hz experiment finds the button.
+    "sox": ("SoX", "sox", "nothing the shipped pipeline runs needs it — only "
+            "qwen_tts's 25Hz tokenizer would, and this pipeline loads 12Hz "
+            "checkpoints", OPTIONAL),
     # Not installable from here `install.MANAGERS` says the same thing about
     # Homebrew: the tool that installs the dependencies cannot be one of them.
     # And it names no stage (see `BLOCKING_STAGE`): a server that is already
@@ -195,24 +204,34 @@ def find_uv() -> str | None:
     return str(local) if local.is_file() else None
 
 
-def tool(id_: str, label: str, exe: str, why: str, *,
+def tool(id_: str, label: str, exe: str, why: str,
          severity: str = BLOCKING) -> dict[str, Any]:
-    """One tool row. `shutil.which` is the whole probe — it honours PATHEXT, so
+    """One tool row. `tools.resolve_tool` is the whole probe — the same lookup
+    every pipeline call site uses: env override, then the workspace `tools/bin`
+    (where the brewless-Mac static build lands), then PATH with PATHEXT, so
     `ffmpeg.exe` on Windows answers to the same lookup as `ffmpeg` elsewhere.
     The one exception is `uv`, which gets `find_uv()`'s fuller chain (above).
 
     A missing row carries **this platform's** install command, because that is
     the only actionable half of "not on PATH" and the row is where a user with
     no button looks for it (`dubbing.tools`; the Setup screen's button exists
-    only where that command can run unattended)."""
+    only where that command can run unattended). Where there *is* a button, the
+    row also says which route pressing it takes — `via Homebrew`, or the static
+    build into the workspace — because a button that might run a package
+    manager or might download a binary is a button nobody can trust."""
     from dubbing import tools as tool_recipes
 
-    found = find_uv() if exe == "uv" else shutil.which(exe)
+    found = find_uv() if exe == "uv" else tool_recipes.resolve_tool(exe)
     detail = found or f"{exe} not on PATH {why}"
     if not found:
         command = tool_recipes.command(id_)
         if command:
             detail += f". Install it: `{command}`"
+        from .install import route
+
+        how = route(id_)
+        if how:
+            detail += f". The Install button installs it {how}"
     return check(id_, label, bool(found), detail, severity=severity, path=found)
 
 
@@ -520,7 +539,9 @@ def demucs_check() -> dict[str, Any]:
 # user whether to fix it now or start the fetch and fix it while it downloads.
 BLOCKING_STAGE: dict[str, str] = {
     "ffmpeg": "fetch",          # the first stage that shells out; they all do
-    "sox": "tts",               # Qwen3-TTS text normalization
+    # sox has no entry: its row is OPTIONAL now (see TOOLS) and `stage` is only
+    # ever attached to blocking rows — a stage on it would be the false urgency
+    # the severity downgrade removed.
     "model.translate": "translate",
     "model.asr.en": "tts",      # clip verification lives inside the tts stage
 }

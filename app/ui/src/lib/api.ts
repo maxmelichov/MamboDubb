@@ -25,6 +25,7 @@ import type {
   Segment,
   SegmentMedia,
   SegmentPatch,
+  SetupCheck,
   SetupInstall,
   SetupStatus,
   StudioEvent,
@@ -200,6 +201,23 @@ export const api = {
   installStatus(): Promise<SetupInstall> {
     if (USE_FIXTURES) return fixtures.installStatus();
     return request<SetupInstall>("/api/setup/install");
+  },
+
+  /**
+   * Save the Hugging Face token into the workspace `.env` — the server does
+   * the file edit, so nobody has to find a hidden folder. The answer is the
+   * re-probed `hf_token` row; the token itself never comes back in any
+   * response, which is the contract that makes a masked input honest.
+   */
+  saveHfToken(token: string): Promise<SetupCheck> {
+    if (USE_FIXTURES) return fixtures.saveHfToken(token);
+    return request<SetupCheck>("/api/setup/hf_token", json({ token }));
+  },
+
+  /** Remove the saved token from `.env`. Same answer shape: the fresh row. */
+  clearHfToken(): Promise<SetupCheck> {
+    if (USE_FIXTURES) return fixtures.clearHfToken();
+    return request<SetupCheck>("/api/setup/hf_token", { method: "DELETE" });
   },
 
   // The server speaks in envelopes ({"projects": [...]}, {"segment": {...}});
