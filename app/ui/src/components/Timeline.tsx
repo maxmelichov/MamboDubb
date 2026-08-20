@@ -51,11 +51,19 @@
  *    hidden inside it.
  *
  * What it gained is its own controls (zoom, Fit, split at the playhead) at the
- * right edge, where they belong, and drag-to-scrub across the whole strip. What
- * it still refuses to do is move anything: `timeline.place()` is the sole
- * authority on where audio goes, so there is no dragging a clip and no trim
- * handle. This is a picture of the placement, and the way to change it is to
- * change what is placed.
+ * right edge, where they belong, and drag-to-scrub across the whole strip.
+ *
+ * The SOURCE lane's marks move now, because they are the one thing here the
+ * user actually owns: a mark there is the segment's *claim* on the source
+ * audio, and dragging it (body to move, edges to trim) sends the same
+ * `PATCH {start, end}` the panel's bounds fields send with the same cost, the
+ * clip and nothing else (`lib/patch.ts`). The neighbours are hard walls the
+ * drag cannot cross overlap is refused by `timeline.place`'s assertion, so it
+ * must be impossible to draw, not merely rejected later and the edges snap to
+ * them and to the playhead, which are the three positions a trim is usually
+ * aiming for. What still refuses to move is the OUTPUT lane: `timeline.place()`
+ * is the sole authority on where audio *lands*, so that lane stays a picture of
+ * the placement, and the way to change it is to change what is placed.
  *
  * Two later additions, both of which make the strip answer a question that was
  * being asked somewhere else. Zoom has a floor the scale at which the run is
@@ -66,7 +74,7 @@
  * once, so it is the only one that can say *where* the eleven matches are.
  */
 
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Minus, Plus, Scissors } from "lucide-react";
 import { cn } from "../lib/classNames";
 import { timecode } from "../lib/format";
@@ -82,6 +90,28 @@ import type { Peaks, Segment } from "../lib/types";
 
 const TICK_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
 const MIN_MARK_PX = 3;
+/** The shortest span a trim can leave behind, in seconds see `edit.set_bounds`. */
+const MIN_SPAN = 0.1;
+/** How far a press travels before it is a drag and no longer a click, in px. */
+const DRAG_SLOP_PX = 3;
+
+/** Which part of a source mark the pointer grabbed. */
+type DragMode = "move" | "start" | "end";
+
+/** One retiming drag, from pointer-down to pointer-up. */
+type DragSession = {
+  uid: string;
+  mode: DragMode;
+  /** The span as it was when the pointer went down. */
+  originStart: number;
+  originEnd: number;
+  grabX: number;
+  /** The free window the drag may not leave: prev.end to next.start. */
+  min: number;
+  max: number;
+  /** Crossed the slop threshold at least once so releasing is a save. */
+  moved: boolean;
+};
 /** The lane-label gutter wide enough for "OUTPUT" at the tracked-out size. */
 const GUTTER = "w-16";
 
@@ -114,6 +144,7 @@ export function Timeline({
   splitAt,
   onSelect,
   onSeek,
+  onRetime,
   onViewport,
   onZoomIn,
   onZoomOut,
@@ -162,6 +193,12 @@ export function Timeline({
   splitAt: number | null;
   onSelect: (uid: string) => void;
   onSeek: (time: number) => void;
+  /**
+   * A source mark was dragged somewhere new same contract as the panel's
+   * bounds fields: both ends, already clamped against the neighbours here,
+   * because the server refuses an overlap rather than fixing one.
+   */
+  onRetime: (uid: string, start: number, end: number) => void;
   /** How wide the scrolling area is, so the page can work out the fit zoom. */
   onViewport: (width: number) => void;
   onZoomIn: () => void;
@@ -244,6 +281,98 @@ export function Timeline({
     if ((event.target as HTMLElement).closest("[data-mark]")) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     seekFromClientX(event.clientX);
+  };
+
+  /*
+   * Retiming a source mark. The preview span lives in state so the mark under
+   * the pointer redraws; everything else about the drag lives in a ref because
+   * nothing needs to render it. Window listeners rather than pointer capture,
+   * unlike the scrubber above: the grab starts on a <button> whose click must
+   * still fire when the press turns out to be a selection, and capturing on it
+   * re-targets the lane's own events for no gain the listeners are attached
+   * for exactly one drag and removed on release.
+   */
+  const [preview, setPreview] = useState<{ uid: string } & Span | null>(null);
+  const dragRef = useRef<DragSession | null>(null);
+
+  const beginDrag = (seg: Segment, mode: DragMode, event: React.PointerEvent) => {
+    if (event.button !== 0 || busyUids.includes(seg.uid)) return;
+    // The free window: the neighbours by *time*, not by list order the drag
+    // must never draw an overlap, because the server refuses one outright.
+    let min = 0;
+    let max = total;
+    for (const other of segments) {
+      if (other.uid === seg.uid) continue;
+      if (other.end <= seg.start) min = Math.max(min, other.end);
+      if (other.start >= seg.end) max = Math.min(max, other.start);
+    }
+    const session: DragSession = {
+      uid: seg.uid,
+      mode,
+      originStart: seg.start,
+      originEnd: seg.end,
+      grabX: event.clientX,
+      min,
+      max,
+      moved: false,
+    };
+    dragRef.current = session;
+    onSelect(seg.uid);
+
+    /** Where the span is with the pointer at `clientX` snapped, then clamped. */
+    const spanAt = (clientX: number): Span => {
+      const dt = (clientX - session.grabX) / pxPerSecond;
+      // Snap when within a grab's width of a neighbour's edge or the playhead —
+      // the three positions a retime is usually aiming for. Otherwise round to
+      // 10ms: nobody drags to 12.3456s on purpose. Clamping comes *after*, so a
+      // snap or a rounding can never push an edge across a neighbour.
+      const snap = (t: number, edges: number[]): number => {
+        const tolerance = 8 / pxPerSecond;
+        for (const edge of edges) if (Math.abs(t - edge) <= tolerance) return edge;
+        return Math.round(t * 100) / 100;
+      };
+      const clamp = (t: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, t));
+      const { originStart, originEnd, min, max } = session;
+      if (session.mode === "move") {
+        const span = originEnd - originStart;
+        const start = clamp(
+          snap(originStart + dt, [min, max - span, currentTime]),
+          min,
+          max - span,
+        );
+        return { start, end: start + span };
+      }
+      if (session.mode === "start") {
+        const start = clamp(
+          snap(originStart + dt, [min, currentTime]),
+          min,
+          originEnd - MIN_SPAN,
+        );
+        return { start, end: originEnd };
+      }
+      const end = clamp(snap(originEnd + dt, [max, currentTime]), originStart + MIN_SPAN, max);
+      return { start: originStart, end };
+    };
+
+    const onMove = (ev: PointerEvent) => {
+      if (Math.abs(ev.clientX - session.grabX) > DRAG_SLOP_PX) session.moved = true;
+      if (session.moved) setPreview({ uid: session.uid, ...spanAt(ev.clientX) });
+    };
+    const onUp = (ev: PointerEvent) => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      dragRef.current = null;
+      setPreview(null);
+      // A press that never travelled is the mark's click selection, already
+      // done above and saving it would stamp a bounds edit on nothing.
+      if (!session.moved) return;
+      const span = spanAt(ev.clientX);
+      if (span.start !== session.originStart || span.end !== session.originEnd) {
+        onRetime(session.uid, span.start, span.end);
+      }
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
   };
 
   return (
@@ -364,13 +493,15 @@ export function Timeline({
               <Mark
                 key={seg.uid}
                 seg={seg}
-                start={seg.start}
-                end={seg.end}
+                start={preview?.uid === seg.uid ? preview.start : seg.start}
+                end={preview?.uid === seg.uid ? preview.end : seg.end}
                 pxPerSecond={pxPerSecond}
                 selected={seg.uid === selectedUid}
                 busy={busyUids.includes(seg.uid)}
                 dim={matchedUids != null && !matchedUids.has(seg.uid)}
+                dragging={preview?.uid === seg.uid}
                 onSelect={onSelect}
+                onDrag={(mode, event) => beginDrag(seg, mode, event)}
               />
             ))}
           </Lane>
@@ -398,13 +529,22 @@ export function Timeline({
 
           {/* Playhead sits above both lanes so the drift between them is
               legible, and it is the most salient thing on the strip: full ink
-              against washed marks, with a head wide enough to grab by eye. */}
+              against washed marks, with a faint halo so it survives crossing a
+              solid run of selected fills. The head is a real grab handle now —
+              "where is the video" was being answered by a hairline, and a
+              hairline is what people told us they could not find. It takes the
+              pointer (the line stays transparent to it, so marks under the
+              wire stay clickable) and a press on it falls through to the
+              lane's scrubber, which is exactly what grabbing a playhead means. */}
           <div
             data-playhead
-            className="pointer-events-none absolute top-0 bottom-0 z-20 w-[1.5px] -translate-x-[0.75px] bg-primary"
+            className="pointer-events-none absolute top-0 bottom-0 z-20 w-[2px] -translate-x-[1px] bg-primary shadow-[0_0_0_1px_var(--color-surface),0_0_8px_var(--color-primary)]"
             style={{ left: currentTime * pxPerSecond }}
           >
-            <div className="absolute -left-[3.25px] top-0 h-2.5 w-2 rounded-b-[3px] bg-primary" />
+            <div
+              title={`Playhead ${timecode(currentTime)} drag to scrub`}
+              className="pointer-events-auto absolute -left-[5px] top-0 h-3.5 w-3 cursor-ew-resize rounded-b-[4px] bg-primary shadow-[0_1px_3px_rgba(0,0,0,0.35)]"
+            />
           </div>
         </div>
       </div>
@@ -572,7 +712,9 @@ function Mark({
   busy,
   muted,
   dim,
+  dragging,
   onSelect,
+  onDrag,
 }: {
   seg: Segment;
   start: number;
@@ -583,7 +725,14 @@ function Mark({
   muted?: boolean;
   /** A search is running and this line is not in it. */
   dim?: boolean;
+  /** This mark is mid-retime and `start`/`end` are the preview span. */
+  dragging?: boolean;
   onSelect: (uid: string) => void;
+  /**
+   * Source lane only the OUTPUT lane's marks stay a picture, so they never
+   * pass this and never grow handles.
+   */
+  onDrag?: (mode: DragMode, event: React.PointerEvent) => void;
 }) {
   const state = segmentState(seg);
   const meta = STATE_META[state];
@@ -591,12 +740,17 @@ function Mark({
   // reading as one block.
   const width = Math.max(MIN_MARK_PX, (end - start) * pxPerSecond - 2);
   const showIcon = width > 18;
+  // No handles on a sliver: at 14px the two 5px grips leave 4px of body, and a
+  // grab meant as a move becomes a trim. The whole mark still moves.
+  const showHandles = onDrag != null && !busy && width > 14;
 
   return (
     <button
       type="button"
       data-mark
+      data-dragging={dragging ? "" : undefined}
       onClick={() => onSelect(seg.uid)}
+      onPointerDown={onDrag ? (event) => onDrag("move", event) : undefined}
       aria-label={`Segment ${seg.id}, ${meta.label}, ${timecode(start)} to ${timecode(end)}`}
       aria-pressed={selected}
       className={cn(
@@ -608,6 +762,10 @@ function Mark({
         "hover:inset-y-1.5 hover:ring-2 hover:ring-accent/45",
         selected && "z-10 ring-2 ring-accent ring-offset-1 ring-offset-surface",
         busy && "animate-pulse",
+        // Draggable marks say so with the cursor; while a job holds the line
+        // the grab is refused (`beginDrag`), so the hand would be a lie.
+        onDrag && !busy && (dragging ? "cursor-grabbing" : "cursor-grab"),
+        dragging && "z-10 ring-2 ring-accent",
         // A mark in the OUTPUT lane with nothing placed under it is a
         // *prediction*, not a placement, so it is drawn as one.
         muted && "border-dashed opacity-55",
@@ -638,6 +796,44 @@ function Mark({
           state={state}
           className="pointer-events-none absolute left-[3px] top-1/2 h-2 w-2 -translate-y-1/2 opacity-90"
         />
+      ) : null}
+      {/*
+        The trim grips. Spans, not buttons a button inside a button is
+        invalid HTML and the keyboard path to a precise trim is the panel's
+        bounds fields anyway. `stopPropagation` keeps a grab on the edge from
+        also being a grab on the body, which would turn every trim into a move.
+      */}
+      {showHandles ? (
+        <>
+          <span
+            data-handle="start"
+            aria-hidden
+            onPointerDown={(event) => {
+              event.stopPropagation();
+              onDrag?.("start", event);
+            }}
+            className={cn(
+              "absolute inset-y-0 left-0 w-[5px] cursor-ew-resize opacity-0 transition-opacity",
+              "group-hover/mark:opacity-100",
+              (selected || dragging) && "opacity-100",
+            )}
+            style={{ backgroundColor: `color-mix(in srgb, ${meta.token} 55%, transparent)` }}
+          />
+          <span
+            data-handle="end"
+            aria-hidden
+            onPointerDown={(event) => {
+              event.stopPropagation();
+              onDrag?.("end", event);
+            }}
+            className={cn(
+              "absolute inset-y-0 right-0 w-[5px] cursor-ew-resize opacity-0 transition-opacity",
+              "group-hover/mark:opacity-100",
+              (selected || dragging) && "opacity-100",
+            )}
+            style={{ backgroundColor: `color-mix(in srgb, ${meta.token} 55%, transparent)` }}
+          />
+        </>
       ) : null}
     </button>
   );

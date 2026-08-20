@@ -393,7 +393,7 @@ export function SelectionPanel({
                 onConfirm={() => prev && onMerge(prev.uid)}
               >
                 <Merge className="h-3.5 w-3.5" />
-                Previous
+                Merge with previous
               </ConfirmButton>
               <ConfirmButton
                 size="sm"
@@ -409,7 +409,7 @@ export function SelectionPanel({
                 onConfirm={() => next && onMerge(next.uid)}
               >
                 <Merge className="h-3.5 w-3.5" />
-                Next
+                Merge with next
               </ConfirmButton>
             </div>
           </div>

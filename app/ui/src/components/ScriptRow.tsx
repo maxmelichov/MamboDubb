@@ -68,7 +68,7 @@ import {
   subtitleOnly,
   verifyConcern,
 } from "../lib/segments";
-import { StateIcon, TextArea } from "./ui";
+import { Eyebrow, StateIcon, TextArea } from "./ui";
 import type { Segment } from "../lib/types";
 
 export type EditTarget = { uid: string; field: "text" | "text_en" } | null;
@@ -187,7 +187,10 @@ function Row({
             // ones that shipped and are untouched.
             "bg-accent/[0.07] ring-1 ring-inset ring-accent/25 dark:bg-accent/10 dark:ring-accent/45"
           : now
-            ? "bg-primary/[0.045]"
+            ? // 4.5% was the number people could not see the one wash on the
+              // screen whose whole job is "you are here". 8% is still under the
+              // selection, and the meta line's playing chip carries the word.
+              "bg-primary/[0.08]"
             : "hover:bg-sunken",
         busy && "animate-pulse",
       )}
@@ -199,12 +202,14 @@ function Row({
           : `color-mix(in srgb, ${meta.token} var(--state-rule), transparent)`,
       }}
     >
-      {/* The playhead's tick, painted over the state stripe: short, so it does
-          not read as the selection's full-height rule. */}
+      {/* The playhead's tick, painted over the state stripe: shorter than the
+          selection's full-height rule so the two stay two facts, but no longer
+          a sliver it is the same ink and nearly the same weight as the
+          timeline's playhead, because it is the same object seen in the list. */}
       {now && !selected ? (
         <span
           aria-hidden
-          className="pointer-events-none absolute top-1/2 h-6 w-[3px] -translate-y-1/2 rounded-e-sm bg-primary"
+          className="pointer-events-none absolute top-1/2 h-9 w-[3px] -translate-y-1/2 rounded-e-sm bg-primary"
           style={{ insetInlineStart: -3 }}
         />
       ) : null}
@@ -250,6 +255,22 @@ function Row({
               gate for a label. There is no legend on screen any more, so this
               is the encoding's only spelling out. */}
           <span className="shrink-0 text-secondary">{meta.short}</span>
+          {/*
+            "You are here", in a word. The wash and the tick are the same fact
+            drawn quietly, and quietly was the complaint: a reviewer glancing
+            back from the video could not find the row the audio was on. A
+            solid ink chip is the one loud thing on the meta line, and it is
+            loud on exactly one row at a time.
+          */}
+          {now ? (
+            <span
+              data-playing-chip
+              className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary px-1.5 py-px text-[9px] font-bold uppercase tracking-[0.08em] text-on-primary"
+            >
+              <Play className="h-2 w-2 fill-current" aria-hidden />
+              Playing
+            </span>
+          ) : null}
           {/*
             A soft verification is a *concern*, and it was drawn in the colour
             of furniture: the same muted grey as the timecode beside it, on a
@@ -763,9 +784,16 @@ function RowMenu({
     };
   }, [open, setOpen]);
 
-  const item = (label: string, run: () => void) => (
+  /*
+   * Every item carries a `title` saying what pressing it *does* the label is
+   * a verb phrase, the tooltip is the consequence. It is a tooltip and not a
+   * second line inside the button because the smoke test reads these items by
+   * their exact textContent, and because a menu of two-line entries is a panel.
+   */
+  const item = (label: string, hint: string, run: () => void) => (
     <button
       type="button"
+      title={hint}
       onClick={() => {
         setOpen(false);
         run();
@@ -782,6 +810,7 @@ function RowMenu({
         ref={trigger}
         type="button"
         aria-label={`More actions for segment ${seg.id}`}
+        title="More actions for this line"
         aria-expanded={open}
         onClick={(event) => {
           event.stopPropagation();
@@ -797,14 +826,41 @@ function RowMenu({
               role="menu"
               onMouseDown={(event) => event.stopPropagation()}
               style={{ top: at?.top ?? 0, left: at?.left ?? 0 }}
-              className="fixed z-50 w-50 rounded-xl border border-border bg-raised p-1 shadow-pop"
+              className="fixed z-50 w-56 rounded-xl border border-border bg-raised p-1 shadow-pop"
             >
-              {item("Correct transcript", onCorrect)}
+              {/* Two groups, each named: which *text* the row holds, and which
+                  *audio* plays there. Three items did not need headers to fit;
+                  they needed headers to say which of the two questions each
+                  one answers, because "Correct transcript" beside "Dub this
+                  line" reads as one list of unlike things. */}
+              <Eyebrow className="px-2 pb-1 pt-1.5">Transcript</Eyebrow>
+              {item(
+                "Correct transcript",
+                "Edit the original line as heard the reference text, not the translation",
+                onCorrect,
+              )}
+              <Eyebrow className="px-2 pb-1 pt-1.5">Audio for this span</Eyebrow>
               {/* A failed line is keep=true only because the pipeline gave up;
                   "Keep original audio" here settles that as the user's verdict
                   instead of being hidden behind the boolean. */}
-              {pipelineFailed(seg) ? item("Keep original audio", onSettleKeep) : null}
-              {item(seg.keep ? "Dub this line" : "Keep original audio", onToggleKeep)}
+              {pipelineFailed(seg)
+                ? item(
+                    "Keep original audio",
+                    "Settle this failed line as a keep: the original audio plays here, on purpose",
+                    onSettleKeep,
+                  )
+                : null}
+              {seg.keep
+                ? item(
+                    "Dub this line",
+                    "Replace the original audio with a synthesized voice queues translate + voice",
+                    onToggleKeep,
+                  )
+                : item(
+                    "Keep original audio",
+                    "Play this span as recorded, no dub discards this line's translation",
+                    onToggleKeep,
+                  )}
             </div>,
             document.body,
           )
