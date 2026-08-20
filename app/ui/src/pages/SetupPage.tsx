@@ -42,7 +42,7 @@
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowRight, Check, Copy, Download, Loader2, RefreshCw, X } from "lucide-react";
+import { ArrowRight, Check, Copy, Download, ExternalLink, Loader2, RefreshCw, X } from "lucide-react";
 import { PageShell } from "../components/AppShell";
 import {
   Badge,
@@ -52,6 +52,7 @@ import {
   ErrorBlock,
   Eyebrow,
   Progress,
+  TextInput,
 } from "../components/ui";
 import { USE_FIXTURES, api } from "../lib/api";
 import { cn } from "../lib/classNames";
@@ -327,6 +328,7 @@ export function SetupPage() {
                 install={install?.id === check.id ? install : null}
                 busy={running}
                 onInstall={startInstall}
+                onRecheck={recheck}
               />
             ))}
           </ul>
@@ -412,6 +414,7 @@ function CheckRow({
   install,
   busy,
   onInstall,
+  onRecheck,
 }: {
   check: SetupCheck;
   /** This row's install, or null the page hands each row only its own. */
@@ -419,6 +422,8 @@ function CheckRow({
   /** Any install is running. One at a time, so every other button greys out. */
   busy: boolean;
   onInstall: (id: string) => void;
+  /** Re-run the whole checklist a token save can only turn rows green. */
+  onRecheck: () => void;
 }) {
   const Glyph = check.ok ? Check : X;
   const installing = install?.running === true;
@@ -482,6 +487,11 @@ function CheckRow({
             <Detail text={check.detail} />
           </p>
         ) : null}
+        {/* The one row whose fix is a paste, not a download. The field lives in
+            the row so "where do I put it" never comes up the server writes
+            the .env, and the detail line above stops being an instruction the
+            moment this ships. */}
+        {check.id === "hf_token" ? <HfTokenField ok={check.ok} onChanged={onRecheck} /> : null}
         {/* This row's button, while it runs. Two shapes, because the two
             installs have different honest progress:
 
@@ -588,6 +598,145 @@ function CheckRow({
         </Button>
       ) : null}
     </li>
+  );
+}
+
+/**
+ * The gated pipeline: `dubbing/segments.py DIARIZATION_MODEL`, said here so the
+ * "accept the terms" link points at the exact page whose Accept button matters.
+ * A different repo would mean pyannote moved, and this link is the one thing on
+ * this screen that would silently rot so it is named once, next to its source.
+ */
+const PYANNOTE_REPO = "pyannote/speaker-diarization-community-1";
+
+/**
+ * The token, pasted instead of hand-edited.
+ *
+ * Until now this row's fix was the detail sentence: find a hidden folder, open
+ * a dotfile, add a line — the only step of setup that still assumed a terminal.
+ * The field replaces the instruction: paste, Save, and the *server* writes the
+ * `.env` it will actually read. Three honesty rules:
+ *
+ * - **Say what it buys, and what skipping costs.** Per-speaker voices, and
+ *   "runs still work, everyone shares one voice". A field that reads as
+ *   required would block users who do not care yet.
+ * - **Masked, and never echoed.** `type=password`, and the server's answer is
+ *   the re-probed row a saved token cannot be read back out of this app.
+ * - **The row is the receipt.** On save the whole checklist re-probes; the
+ *   badge flipping to Ready is the server saying it found the token where the
+ *   pipeline will look, which no local success state can claim.
+ */
+function HfTokenField({ ok, onChanged }: { ok: boolean; onChanged: () => void }) {
+  const [token, setToken] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = useCallback(async () => {
+    if (!token.trim() || saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await api.saveHfToken(token);
+      setToken(""); // Its work is done; a credential does not linger in state.
+      onChanged();
+    } catch (err) {
+      // The server's sentence is written around the token, never with it.
+      setError(String(err instanceof Error ? err.message : err));
+    } finally {
+      setSaving(false);
+    }
+  }, [token, saving, onChanged]);
+
+  const remove = useCallback(async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await api.clearHfToken();
+      onChanged();
+    } catch (err) {
+      setError(String(err instanceof Error ? err.message : err));
+    } finally {
+      setSaving(false);
+    }
+  }, [onChanged]);
+
+  if (ok) {
+    // Saved. One quiet way out — the row above already says Ready, and the
+    // re-probe after Remove is what says whether removing worked (a token set
+    // in the shell's environment survives any file edit, and the row will say
+    // so by staying green).
+    return (
+      <button
+        type="button"
+        data-token-remove
+        disabled={saving}
+        onClick={() => void remove()}
+        className="mt-1.5 rounded-md text-[12px] font-semibold text-secondary underline underline-offset-4 transition-colors hover:text-primary disabled:opacity-50"
+      >
+        Remove token
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-2 max-w-2xl" data-token-field>
+      <p className="text-[12px] leading-relaxed text-secondary">
+        With a token, speaker separation can tell voices apart and each speaker keeps their own
+        voice in the dub. Without one, runs still work everyone just speaks in a single voice.
+        Two steps, both free:{" "}
+        <a
+          href={`https://huggingface.co/${PYANNOTE_REPO}`}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-baseline gap-0.5 font-semibold text-primary underline underline-offset-4 hover:opacity-80"
+        >
+          accept the {PYANNOTE_REPO} terms
+          <ExternalLink aria-hidden className="h-3 w-3 self-center" />
+        </a>{" "}
+        , then{" "}
+        <a
+          href="https://huggingface.co/settings/tokens"
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-baseline gap-0.5 font-semibold text-primary underline underline-offset-4 hover:opacity-80"
+        >
+          create a read token
+          <ExternalLink aria-hidden className="h-3 w-3 self-center" />
+        </a>{" "}
+        and paste it here. The app writes it to the right file itself.
+      </p>
+      <form
+        className="mt-2 flex items-center gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void save();
+        }}
+      >
+        <TextInput
+          // A credential field: masked, and with every browser affordance that
+          // could store or "improve" the paste turned off.
+          type="password"
+          autoComplete="off"
+          spellCheck={false}
+          data-token-input
+          className="h-8 max-w-xs font-mono text-[12px]"
+          placeholder="hf_..."
+          value={token}
+          disabled={saving}
+          onChange={(event) => setToken(event.target.value)}
+          aria-label="Hugging Face token"
+        />
+        <Button size="sm" type="submit" data-token-save disabled={saving || !token.trim()}>
+          {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+          Save
+        </Button>
+      </form>
+      {error ? (
+        <p className="mt-1.5 text-[12px] leading-relaxed" style={{ color: "var(--color-critical)" }} data-token-error>
+          {error}
+        </p>
+      ) : null}
+    </div>
   );
 }
 

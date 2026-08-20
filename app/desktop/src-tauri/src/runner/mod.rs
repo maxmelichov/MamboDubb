@@ -48,17 +48,21 @@ pub async fn get_server_url(state: State<'_, RunnerState>) -> Result<Option<Serv
     Ok(None)
 }
 
-/// The tail of the server's stderr, for the error panel.
+/// The tail of the server's stderr, for the boot panel and the error panel.
+///
+/// Reads the boot ring, not the process table: the live process shares the same
+/// ring, and the ring exists *before* the process does, so this answers all through
+/// the minutes a first-run `start_server` spends blocking on `uv sync` which is
+/// when the UI polls it hardest. It must therefore never wait on `process` (held
+/// only for moments now, but why queue) and never on `start_gate` (held for the
+/// whole start).
 #[tauri::command]
 pub async fn get_server_log(state: State<'_, RunnerState>) -> Result<String, String> {
-    let guard = state
-        .process
+    let ring = state
+        .boot_log
         .lock()
         .map_err(|_| "runner state lock poisoned".to_string())?;
-    Ok(guard
-        .as_ref()
-        .map(|process| process.recent_stderr())
-        .unwrap_or_default())
+    Ok(ring.text())
 }
 
 pub fn stop_managed_server(app: &tauri::AppHandle) {
@@ -75,21 +79,43 @@ pub fn stop_managed_server(app: &tauri::AppHandle) {
 
 fn ensure_server(app: &tauri::AppHandle) -> Result<ServerInfo, String> {
     let state = app.state::<RunnerState>();
-    let mut guard = state
-        .process
+    // One starter at a time. The slow part below runs *outside* the `process` lock
+    // so `get_server_log` keeps answering during a first-run sync; this gate is what
+    // replaces the exclusion that lock used to provide.
+    let _starting = state
+        .start_gate
         .lock()
         .map_err(|_| "runner state lock poisoned".to_string())?;
-    if let Some(process) = guard.as_mut() {
-        if process.is_alive() {
-            return Ok(process.info());
+    {
+        let mut guard = state
+            .process
+            .lock()
+            .map_err(|_| "runner state lock poisoned".to_string())?;
+        if let Some(process) = guard.as_mut() {
+            if process.is_alive() {
+                return Ok(process.info());
+            }
+            let stderr = process.recent_stderr();
+            if !stderr.is_empty() {
+                eprintln!("studio server exited; recent stderr:\n{stderr}");
+            }
+            *guard = None;
         }
-        let stderr = process.recent_stderr();
-        if !stderr.is_empty() {
-            eprintln!("studio server exited; recent stderr:\n{stderr}");
-        }
-        *guard = None;
     }
 
+    let result = start_fresh(app, &state);
+    if let Err(err) = &result {
+        // The webview's desktop seam maps a rejected command to a null base URL and
+        // the reason to a console.warn nobody reads; the ring is the one channel the
+        // boot panel actually shows, so the reason lands there too.
+        if let Ok(mut ring) = state.boot_log.lock() {
+            ring.push(&format!("[start error] {err}"));
+        }
+    }
+    result
+}
+
+fn start_fresh(app: &tauri::AppHandle, state: &RunnerState) -> Result<ServerInfo, String> {
     // Provisions on a fresh install (`ensure_server` already runs on a blocking
     // thread, so the copy is fine here); a stored or default checkout passes through.
     let workspace = resolve_workspace(app)?;
@@ -100,9 +126,13 @@ fn ensure_server(app: &tauri::AppHandle) -> Result<ServerInfo, String> {
     }
     let uv = uv.expect("ready implies uv was found");
 
-    let process = RunnerProcess::spawn(&uv, &workspace)?;
+    // The shared ring, so the sync's progress is readable while spawn blocks.
+    let process = RunnerProcess::spawn(&uv, &workspace, state.boot_log.clone())?;
     let info = process.info();
-    *guard = Some(process);
+    *state
+        .process
+        .lock()
+        .map_err(|_| "runner state lock poisoned".to_string())? = Some(process);
     Ok(info)
 }
 

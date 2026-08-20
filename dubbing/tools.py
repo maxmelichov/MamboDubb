@@ -22,7 +22,17 @@ Two facts per recipe, and the second one is what the app reads:
 
 from __future__ import annotations
 
+import os
+import shutil
 import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# Where the app puts binaries it installed itself (the brewless-Mac static
+# ffmpeg). Inside the workspace, not in /usr/local: no sudo, no PATH edits, and
+# deleting the workspace deletes everything the app ever added to this machine.
+TOOLS_DIR_ENV = "DUBSTUDIO_TOOLS_DIR"
 
 # platform key → tool id → the argv that installs it.
 RECIPES: dict[str, dict[str, tuple[str, ...]]] = {
@@ -108,11 +118,44 @@ def utf8_stdio(streams=None) -> None:
             pass
 
 
+def tools_bin() -> Path:
+    """The workspace-local bin dir, whether or not anything is in it yet.
+
+    `REPO_ROOT/tools/bin` — and in the packaged app REPO_ROOT *is* the
+    workspace, because provisioning copies this source tree there. The env
+    override exists for the same reason `DUBSTUDIO_UV_PATH` does: a test (or an
+    unusual deployment) points it somewhere real without touching the checkout.
+    """
+    override = (os.environ.get(TOOLS_DIR_ENV) or "").strip()
+    return Path(override) if override else REPO_ROOT / "tools" / "bin"
+
+
+def resolve_tool(name: str) -> str | None:
+    """Where `name` actually is, or None. The one lookup every call site uses.
+
+    Order: a per-tool env override (`DUBSTUDIO_FFMPEG=/path/to/ffmpeg`), then
+    the workspace tools dir, then PATH. The middle step is the point: a static
+    build the app installed for a brewless Mac lives in `tools/bin`, and a bare
+    `subprocess.run(["ffmpeg", ...])` would never find it — PATH belongs to the
+    shell the app was not launched from. `shutil.which` stays last so a real
+    Homebrew/winget install keeps winning exactly when it is on PATH.
+    """
+    override = (os.environ.get(f"DUBSTUDIO_{name.upper()}") or "").strip()
+    if override and Path(override).is_file():
+        return override
+    exe = name + (".exe" if platform_key() == "win32" else "")
+    local = tools_bin() / exe
+    if local.is_file() and os.access(local, os.X_OK):
+        return str(local)
+    return shutil.which(name)
+
+
 def install_hint(id_: str, platform: str | None = None) -> str:
     """A sentence naming the command, or the empty string when there is none."""
     cmd = command(id_, platform)
     return f"install it with `{cmd}`" if cmd else ""
 
 
-__all__ = ["RECIPES", "UNATTENDED", "auto_installers", "command", "install_hint",
-           "platform_key", "recipe", "recipes", "unattended", "utf8_stdio"]
+__all__ = ["RECIPES", "TOOLS_DIR_ENV", "UNATTENDED", "auto_installers", "command",
+           "install_hint", "platform_key", "recipe", "recipes", "resolve_tool",
+           "tools_bin", "unattended", "utf8_stdio"]

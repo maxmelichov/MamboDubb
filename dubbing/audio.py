@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -15,25 +14,30 @@ SR = 44100  # working rate for everything that ends up in the mix
 
 
 def require_tools() -> None:
-    # `shutil.which` and not a bare exec: it honours PATHEXT, so this finds
-    # `ffmpeg.exe` on Windows, and the message names the command *this* platform
-    # installs it with rather than a Mac's.
+    # `resolve_tool` and not a bare exec: it checks the workspace `tools/bin`
+    # (where a brewless Mac's static build lives) before PATH, honours PATHEXT
+    # so this finds `ffmpeg.exe` on Windows, and the message names the command
+    # *this* platform installs it with rather than a Mac's.
     for tool in ("ffmpeg", "ffprobe"):
-        if shutil.which(tool) is None:
+        if tools.resolve_tool(tool) is None:
             hint = tools.command("ffmpeg")
             raise SystemExit(f"{tool} not found on PATH"
                              + (f" ({hint})" if hint else ""))
 
 
 def run(cmd: list[str]) -> None:
-    res = subprocess.run(cmd, capture_output=True, text=True)
+    # Every ffmpeg in the pipeline funnels through here (fetch, tts, mix), so
+    # this one line is what lets them all find a workspace-installed build.
+    res = subprocess.run([tools.resolve_tool(cmd[0]) or cmd[0], *cmd[1:]],
+                         capture_output=True, text=True)
     if res.returncode != 0:
         raise RuntimeError(f"{cmd[0]} failed: {res.stderr[-1500:]}")
 
 
 def duration(path: Path) -> float:
     out = subprocess.check_output(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+        [tools.resolve_tool("ffprobe") or "ffprobe", "-v", "error",
+         "-show_entries", "format=duration",
          "-of", "default=nw=1:nk=1", str(path)],
         text=True,
     ).strip()
@@ -42,7 +46,7 @@ def duration(path: Path) -> float:
 
 def decode_mono(path: Path, sr: int, *, start: float = 0.0, end: float | None = None) -> np.ndarray:
     """Decode (a slice of) any audio file to a mono float32 array at `sr`."""
-    cmd = ["ffmpeg", "-v", "error"]
+    cmd = [tools.resolve_tool("ffmpeg") or "ffmpeg", "-v", "error"]
     if start:
         cmd += ["-ss", f"{start:.3f}"]
     cmd += ["-i", str(path)]

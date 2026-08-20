@@ -181,6 +181,50 @@ class InstallBody(Strict):
     id: str
 
 
+class HfTokenBody(Strict):
+    """One field, and it is a *credential*.
+
+    It is validated for shape, written to the workspace `.env`, and that is the
+    whole life it has in this process: never logged, never echoed back (the
+    response is the re-probed check row, which says "set" and nothing else),
+    never stored anywhere a `GET` could read it out again. The 400s below are
+    worded around the token, not with it — an error message is the easiest
+    place to leak a secret, because it is the one string everyone pastes into
+    a bug report.
+    """
+
+    token: str
+
+
+# The two spellings `hf_token_check` accepts, so a delete that removed only one
+# would leave the row green and the user certain they had removed it.
+_HF_TOKEN_KEYS = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")
+
+
+def _rewrite_env_token(path: Path, token: str | None) -> None:
+    """Swap (or drop, `token=None`) the token lines in `.env`, and touch nothing
+    else the file may hold other variables the user put there by hand, and a
+    writer that rewrote them from parsed values would strip their comments and
+    quoting. Line surgery, not serialization. Creates the file when absent; the
+    workspace directory already exists (the server is running out of it).
+    """
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        lines = []
+    kept = [line for line in lines
+            if not ("=" in line and line.partition("=")[0].strip() in _HF_TOKEN_KEYS)]
+    if token is not None:
+        kept.append(f"HF_TOKEN={token}")
+    path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+    # A credential file is nobody else's to read. Best effort — .env may sit on
+    # a filesystem that ignores modes, and the write already succeeded.
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # app
 # ---------------------------------------------------------------------------
@@ -415,6 +459,41 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
         directory's size on disk against the table's estimate.
         """
         return installer.status()
+
+    @app.post("/api/setup/hf_token")
+    def set_hf_token(body: HfTokenBody) -> dict[str, Any]:
+        """Save the Hugging Face token into the workspace `.env` the in-app
+        version of the one setup step that used to require finding a hidden
+        folder and hand-editing a dotfile. Shape checks only: `hf_` prefix, no
+        whitespace inside the token is *validated* against the hub the first
+        time diarization presents it, and a wrong-but-well-formed token fails
+        there with pyannote's own error. Other `.env` lines survive the write.
+        Returns the re-probed row; the token itself never appears in a
+        response, a log line, or an error message.
+        """
+        token = body.token.strip()
+        if not token:
+            raise invalid("no token: paste the whole hf_… string from "
+                          "https://huggingface.co/settings/tokens")
+        if any(ch.isspace() for ch in token):
+            raise invalid("that token has whitespace inside it — a copy that "
+                          "caught a line break or a trailing word. Copy just "
+                          "the hf_… string, nothing around it.")
+        if not token.startswith("hf_") or len(token) <= len("hf_"):
+            raise invalid("that does not look like a Hugging Face token: they "
+                          "start with hf_. Copy it from "
+                          "https://huggingface.co/settings/tokens")
+        _rewrite_env_token(setup.env_path(), token)
+        return setup.hf_token_check()
+
+    @app.delete("/api/setup/hf_token")
+    def clear_hf_token() -> dict[str, Any]:
+        """Remove the token from `.env` (both spellings), leaving every other
+        line alone. The re-probed row is the honest answer to "is it gone":
+        it stays green if the shell's *environment* still carries HF_TOKEN,
+        which no file edit can undo and the row's `source` says so."""
+        _rewrite_env_token(setup.env_path(), None)
+        return setup.hf_token_check()
 
     # -- projects ----------------------------------------------------------
 

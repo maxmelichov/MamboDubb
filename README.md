@@ -42,15 +42,9 @@ seconds, and watch the source and output waveforms side by side.
 ### Install (macOS, Apple Silicon)
 
 Grab the `.dmg` from the [latest release](https://github.com/maxmelichov/MamboDubb/releases/latest),
-drag MamboDubb to Applications, and launch. The app drives the pipeline in this
-checkout, so you also need the source set up once:
-
-```bash
-git clone https://github.com/maxmelichov/MamboDubb.git
-cd MamboDubb
-uv sync                    # Python 3.12, uv only
-cp .env.example .env       # set HF_TOKEN for speaker diarization (optional)
-```
+drag MamboDubb to Applications, and launch — the app carries the pipeline source and
+sets itself up on first run, no terminal needed. (Release builds are signed and
+notarized; cutting one is [docs/RELEASING.md](docs/RELEASING.md).)
 
 > **The packaged app is Apple Silicon only** its translator runs on MLX, which
 > needs an M-series chip. There is no Intel or iOS build.

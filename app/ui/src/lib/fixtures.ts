@@ -365,6 +365,53 @@ export function setup(): Promise<SetupStatus> {
 /** Which tools this fake machine has had installed during the session. */
 const installed = new Set<string>();
 
+/**
+ * The token row, in whichever state this fake session has it and the fake of
+ * `POST|DELETE /api/setup/hf_token`. The save rejects the same shapes the
+ * server rejects (no `hf_` prefix, whitespace inside), because the field's
+ * inline error path only exists in the mode that is tested. The "token" is
+ * never kept only the fact that one was saved, which is also all the real
+ * server ever sends back.
+ */
+let hfTokenSaved = false;
+
+const FIXTURE_ENV = "/Users/you/DubbingQwen/.env";
+
+function hfTokenRow(): SetupCheck {
+  return {
+    id: "hf_token",
+    label: "Hugging Face token",
+    ok: hfTokenSaved,
+    severity: "degrades",
+    detail: hfTokenSaved
+      ? `set in \`${FIXTURE_ENV}\``
+      : "not set diarization falls back to a single speaker, so every line is attributed " +
+        "to one voice. Accept Pyannote's model terms, then add `HF_TOKEN=hf_…` to " +
+        `\`${FIXTURE_ENV}\``,
+  };
+}
+
+export function saveHfToken(token: string): Promise<SetupCheck> {
+  const t = token.trim();
+  if (/\s/.test(t)) {
+    return Promise.reject(new ApiError("invalid_request",
+      "that token has whitespace inside it a copy that caught a line break. " +
+      "Copy just the hf_… string, nothing around it.", 400));
+  }
+  if (!t.startsWith("hf_") || t.length <= "hf_".length) {
+    return Promise.reject(new ApiError("invalid_request",
+      "that does not look like a Hugging Face token: they start with hf_. " +
+      "Copy it from https://huggingface.co/settings/tokens", 400));
+  }
+  hfTokenSaved = true;
+  return delay(hfTokenRow());
+}
+
+export function clearHfToken(): Promise<SetupCheck> {
+  hfTokenSaved = false;
+  return delay(hfTokenRow());
+}
+
 const TOOL_ROWS: Record<string, { label: string; here: string; missing: string; stage: Stage }> = {
   ffmpeg: {
     label: "ffmpeg",
@@ -462,16 +509,7 @@ function setupChecks(): SetupCheck[] {
   const rows: SetupCheck[] = [
     toolRow("ffmpeg", "fetch"),
     toolRow("sox", "tts"),
-    {
-      id: "hf_token",
-      label: "Hugging Face token",
-      ok: false,
-      severity: "degrades",
-      detail:
-        "not set diarization falls back to a single speaker, so every line is attributed " +
-        "to one voice. Accept Pyannote's model terms, then add `HF_TOKEN=hf_…` to " +
-        "`/Users/you/DubbingQwen/.env`",
-    },
+    hfTokenRow(),
     modelRow("model.translate"),
     modelRow("model.tts.1.7b"),
     {

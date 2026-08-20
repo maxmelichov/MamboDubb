@@ -1,12 +1,16 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { BootPanel } from "./components/BootPanel";
 import { EditorPage } from "./pages/EditorPage";
 import { ImportPage } from "./pages/ImportPage";
 import { SetupPage } from "./pages/SetupPage";
-import { api, USE_FIXTURES } from "./lib/api";
+import { api, initApiBase, USE_FIXTURES } from "./lib/api";
+import { isDesktop } from "./lib/desktop";
 import "./App.css";
 
 export default function App() {
+  const boot = useBoot();
+  if (boot !== "ready") return <BootPanel failed={boot === "failed"} />;
   return (
     <>
       <SetupGate />
@@ -18,6 +22,51 @@ export default function App() {
       </Routes>
     </>
   );
+}
+
+type BootPhase = "starting" | "ready" | "failed";
+
+/**
+ * Resolve the api base before any route exists `mediaUrl` is called during
+ * render and a <video src> cannot await, so the routes must not mount until
+ * `initApiBase` has answered.
+ *
+ * In a browser the answer is "" (same-origin) after one microtask; the gate is
+ * pre-resolved to `ready` and no panel ever flashes. Only in the desktop shell
+ * is there a real wait: `initApiBase` reaches `start_server`, and on a fresh
+ * install that command hides a payload copy plus a multi-minute `uv sync`.
+ * Gating here rather than in main.tsx (which used to await before the first
+ * render) is the whole fix a window now exists during the wait, and
+ * BootPanel fills it with the first-run explanation and the live server log.
+ *
+ * `failed` is an inference, not an error object: the desktop seam maps a
+ * rejected `start_server` to a null base URL, so in the shell an empty base
+ * *is* the failure signal. The reason lives in the server log, which the
+ * runner tops up on rejection and BootPanel shows.
+ */
+function useBoot(): BootPhase {
+  const gated = isDesktop() && !USE_FIXTURES;
+  const [phase, setPhase] = useState<BootPhase>(gated ? "starting" : "ready");
+
+  useEffect(() => {
+    if (!gated) {
+      // Still resolves the base ("" in a browser) so api.ts is initialized on
+      // every path, not just the gated one.
+      void initApiBase();
+      return;
+    }
+    let cancelled = false;
+    void initApiBase().then((base) => {
+      if (!cancelled) setPhase(base ? "ready" : "failed");
+    });
+    return () => {
+      cancelled = true;
+    };
+    // `gated` cannot change within a page load: it is a platform sniff.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return phase;
 }
 
 /** Asked once per app load, not once per mount StrictMode double-mounts. */

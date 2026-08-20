@@ -9,6 +9,17 @@ line the app already knows. Where that line needs a terminal anyway — `sudo
 apt-get`, which asks for a password — there is no button and the detail line
 carries the command; see `dubbing/tools.py`.
 
+One machine gets a different route instead of a refusal: a Mac with no
+Homebrew. "Get it from https://brew.sh" is itself a terminal command plus an
+admin password, which is everything the DMG promised to avoid, so for `ffmpeg`
+(and the `ffprobe` that ships beside it) the button falls back to a pinned
+static build: the `static-ffmpeg` wheel is `uv pip`-installed into this venv,
+its downloader fetches the platform zip it ships a URL for, and the two
+binaries are *copied* — not symlinked — into the workspace's `tools/bin`,
+where `dubbing.tools.resolve_tool` looks before PATH. Copied because the wheel
+is not in the lockfile and the next `uv sync` prunes it; the binaries must
+outlive their installer. Homebrew stays the route whenever it is present.
+
 The models used to be refused here on principle: auto-downloading gigabytes
 behind a spinner is not an install button, and this docstring said so. That
 principle was never about the gigabytes — it was about the *blindness*. What a
@@ -48,9 +59,11 @@ Four rules shape this module, each of them a refusal:
 
 from __future__ import annotations
 
+import importlib
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from collections import deque
@@ -100,6 +113,71 @@ TAIL_LINES = 200
 TIMEOUT = 1800.0
 
 Probe = Callable[[str], dict[str, Any] | None]
+
+# The one wheel the brewless route installs, pinned: its job is to hand over a
+# known ffmpeg build, and "whatever version resolved today" is not a known
+# build. Bump deliberately, with the binaries it fetches re-checked.
+STATIC_FFMPEG_SPEC = "static-ffmpeg==3.0"
+
+
+def static_route(id_: str) -> bool:
+    """True when the button installs `id_` as a static build instead of running
+    the package manager: a Mac, `ffmpeg` (the zip carries ffprobe too), and no
+    Homebrew to prefer. Everything else keeps its recipe — brew when present
+    because it also delivers updates, and sox always, because there is no vetted
+    static source and the pipeline no longer blocks on it (see `setup.TOOLS`)."""
+    return (id_ == "ffmpeg" and tools.platform_key() == "darwin"
+            and shutil.which("brew") is None)
+
+
+def route(id_: str) -> str | None:
+    """One phrase naming how the Install button would install `id_`, or None
+    when it would not (no recipe, or a manager that is not on this machine and
+    no static fallback). The Setup row's detail carries it, so the user knows
+    what pressing the button does *before* pressing it."""
+    argv = INSTALLERS.get(id_)
+    if argv is None:
+        return None
+    if static_route(id_):
+        return "as a static build into the workspace (tools/bin) — no Homebrew needed"
+    manager = argv[0]
+    if shutil.which(manager) is None:
+        return None
+    return f"via {'Homebrew' if manager == 'brew' else manager}"
+
+
+def fetch_static_ffmpeg(log: Callable[[str], None]) -> tuple[str, str]:
+    """Get static ffmpeg + ffprobe paths, installing `static-ffmpeg` first if
+    this venv lacks it. Module-level, like `snapshot_download`, so a test swaps
+    it whole and no wheel or binary ever moves.
+
+    The wheel goes in with `uv pip --python <this interpreter>` — the same uv
+    that built the venv, found the same way (`setup.find_uv`); the import cache
+    is invalidated so the just-installed package is importable without a
+    restart. The download itself is the package's own: a pinned zip URL per
+    platform from its release repo, not an ad-hoc website scrape of ours.
+    """
+    try:
+        from static_ffmpeg import run as static_run
+    except ImportError:
+        from . import setup
+
+        uv = setup.find_uv()
+        if uv is None:
+            raise RuntimeError(
+                "uv was not found, and it is what installs the static-ffmpeg "
+                "wheel into this environment — fix the uv row first")
+        argv = [uv, "pip", "install", "--python", sys.executable, STATIC_FFMPEG_SPEC]
+        log("$ " + " ".join(argv))
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=600)
+        if proc.returncode != 0:
+            raise RuntimeError(f"`{' '.join(argv)}` exited {proc.returncode}: "
+                               f"{(proc.stderr or proc.stdout)[-500:]}")
+        importlib.invalidate_caches()
+        from static_ffmpeg import run as static_run
+
+    log("fetching the pinned ffmpeg/ffprobe build for this platform")
+    return static_run.get_or_fetch_platform_executables_else_raise()
 
 
 def snapshot_download(**kwargs: Any) -> Any:
@@ -184,6 +262,17 @@ class Installer:
             return self._start_download(id_, spec)
         manager = argv[0]
         if shutil.which(manager) is None:
+            # A brewless Mac asking for ffmpeg is the one case where "install
+            # the package manager first" dies at a terminal — take the static
+            # route instead of refusing. Checked here, not at table-build time,
+            # so a brew installed mid-session is picked up on the next press.
+            # `manager == "brew"` keeps this the darwin table's fallback even
+            # when a test hands this Installer another platform's recipes.
+            if manager == "brew" and static_route(id_):
+                return self._begin(
+                    id_, [f"# {manager} is not on this machine — installing a "
+                          f"static ffmpeg/ffprobe build into {tools.tools_bin()}"],
+                    target=self._run_static, args=(id_,))
             template = MANAGERS.get(manager,
                                     "`{manager}` is not on PATH install `{command}` by hand.")
             raise invalid(template.format(tool=id_, command=" ".join(argv), manager=manager))
@@ -325,6 +414,33 @@ class Installer:
             self._line(error)
         self._finish(id_, ok, error)
 
+    def _run_static(self, id_: str) -> None:
+        """The brewless worker: fetch the pinned static build and copy its two
+        binaries into `tools.tools_bin()`, where `resolve_tool` finds them
+        before PATH. Copies, never symlinks — the wheel is not in the lockfile,
+        so the next `uv sync` prunes it, and a symlink into pruned
+        site-packages is a broken ffmpeg one sync later. No timeout, same
+        reasoning as the model downloads: the slow part is a download that
+        resumes nothing but costs one retry, and there is no prompt to hang on.
+        """
+        ok, error = False, None
+        try:
+            ffmpeg, ffprobe = fetch_static_ffmpeg(self._line)
+            bin_dir = tools.tools_bin()
+            bin_dir.mkdir(parents=True, exist_ok=True)
+            for src in (Path(ffmpeg), Path(ffprobe)):
+                dst = bin_dir / src.name
+                if dst.exists() or dst.is_symlink():
+                    dst.unlink()
+                shutil.copy2(src, dst)
+                dst.chmod(dst.stat().st_mode | 0o755)
+                self._line(f"installed {dst}")
+            ok = True
+        except Exception as exc:                       # network, disk, a bad zip
+            error = f"{type(exc).__name__}: {exc}"
+            self._line(error)
+        self._finish(id_, ok, error)
+
     @staticmethod
     def _kill(proc: subprocess.Popen) -> None:
         try:
@@ -362,4 +478,5 @@ class Installer:
             self._finished = time.time()
 
 
-__all__ = ["INSTALLERS", "Installer", "manual_command", "snapshot_download"]
+__all__ = ["INSTALLERS", "Installer", "fetch_static_ffmpeg", "manual_command",
+           "route", "snapshot_download", "static_route"]
