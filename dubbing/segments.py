@@ -830,7 +830,15 @@ def diarize(vocals: Path, *, note: Callable[[str], None] | None = None
             pipeline.to(torch.device("cuda:0"))
         elif torch.backends.mps.is_available():
             pipeline.to(torch.device("mps"))
-        output = pipeline(str(vocals))
+        # Hand pyannote samples, not a path: given a path it decodes via
+        # torchcodec, whose dylib is pinned to an FFmpeg major, so a routine
+        # `brew upgrade ffmpeg` silently kills diarization. The stem is a file
+        # we wrote ourselves and soundfile is already a hard dependency.
+        import soundfile as sf
+
+        samples, sample_rate = sf.read(str(vocals), dtype="float32", always_2d=True)
+        output = pipeline({"waveform": torch.from_numpy(samples.T),
+                           "sample_rate": sample_rate})
         annotation = getattr(output, "speaker_diarization", output)
         return [
             {"speaker": spk, "start": round(float(turn.start), 3), "end": round(float(turn.end), 3)}
