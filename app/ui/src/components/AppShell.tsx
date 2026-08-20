@@ -131,13 +131,17 @@ function ShellNav() {
   const path = useLocation().pathname;
   return (
     <Segmented aria-label="Sections">
-      <Link to="/new" className={segmentedCell(path === "/new")} title="Start a new dub">
+      <Link
+        to="/"
+        className={segmentedCell(path !== "/setup" && path !== "/runs")}
+        title="Start a new dub"
+      >
         <Plus className="h-3.5 w-3.5" aria-hidden />
         New dub
       </Link>
       <Link
-        to="/"
-        className={segmentedCell(path !== "/setup" && path !== "/new")}
+        to="/runs"
+        className={segmentedCell(path === "/runs")}
         title="Every run in the workspace"
       >
         <Clapperboard className="h-3.5 w-3.5" aria-hidden />
@@ -173,7 +177,7 @@ export function AppHeader({
   return (
     <header className="flex h-11 shrink-0 items-center gap-2.5 border-b border-border bg-surface px-3">
       <Link
-        to="/"
+        to="/runs"
         className={cn(
           "inline-flex h-7 shrink-0 items-center gap-1 rounded-md pr-1.5 text-[12.5px] font-semibold",
           "text-secondary transition-colors hover:text-primary",

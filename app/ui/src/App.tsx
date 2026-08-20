@@ -16,11 +16,12 @@ export default function App() {
     <>
       <SetupGate />
       <Routes>
-        {/* Home is the runs list; the import form moved to /new. A workspace
-            with zero runs still lands on "/" — RunsPage's empty state is the
-            invitation to start one, so no route-level redirect is needed. */}
-        <Route path="/" element={<RunsPage />} />
-        <Route path="/new" element={<ImportPage />} />
+        {/* Home is the work itself — the new-dub form. The runs list briefly
+            held "/" and it read as a menu standing between the user and the
+            video; it lives at /runs now, one cell away in the pill, which is
+            where it was asked to be. */}
+        <Route path="/" element={<ImportPage />} />
+        <Route path="/runs" element={<RunsPage />} />
         <Route path="/setup" element={<SetupPage />} />
         <Route path="/editor/:name" element={<EditorPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />

@@ -113,7 +113,7 @@ export function RunsPage() {
               action, and it reads (and tabs) like the other primaries in the
               app. The nav pill carries the same destination for every other
               screen. */}
-          <Button variant="primary" onClick={() => navigate("/new")}>
+          <Button variant="primary" onClick={() => navigate("/")}>
             <Plus className="h-4 w-4" />
             New dub
           </Button>
@@ -153,7 +153,7 @@ export function RunsPage() {
               icon={Clapperboard}
               title="No runs yet"
               action={
-                <Button variant="primary" onClick={() => navigate("/new")}>
+                <Button variant="primary" onClick={() => navigate("/")}>
                   <Plus className="h-4 w-4" />
                   Start your first dub
                 </Button>

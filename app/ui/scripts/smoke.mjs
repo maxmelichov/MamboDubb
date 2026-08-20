@@ -294,12 +294,10 @@ check(
 
 const root = document.getElementById("root");
 /*
- * Home is the RUNS page now, not the import form. The nav pill always said
- * "Runs" about "/", and the screen answered with "start something new" — the
- * observed failure was a user re-running yesterday's dub because the list was
- * a third column they never noticed. The form lives at /new; what "/" owes on
- * first paint is the list itself, full width, plus the one button that leads
- * to the form. The hero stays gone on both pages.
+ * Home is the FORM again. The runs list held "/" for one release and read as
+ * a menu standing between the user and the video; it lives at /runs now, one
+ * pill cell away — visible on top, not the landing. What "/" owes on first
+ * paint is the work itself. The hero stays gone on both pages.
  */
 check(
   "home screen renders without hero copy",
@@ -307,8 +305,19 @@ check(
     !/Entirely on this machine/.test(root.textContent) &&
     !/Point it at a video/.test(root.textContent),
 );
-check("home is the runs list, not the form", root.querySelector('[data-region="runs"]') != null &&
-  root.querySelector('[data-region="new-dub"]') == null);
+check("home is the form, not a menu", root.querySelector('[data-region="new-dub"]') != null &&
+  root.querySelector('[data-region="runs"]') == null);
+// The pill is the door, so the pill is what gets driven — `go` is not even
+// defined yet, which is its own argument for using the real control.
+const runsCell = [...document.querySelectorAll("a")].find(
+  (a) => a.getAttribute("href") === "/runs",
+);
+check("the pill carries a Runs cell", runsCell != null);
+runsCell.dispatchEvent(
+  new dom.window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }),
+);
+await new Promise((resolve) => setTimeout(resolve, 300));
+check("the runs list lives one cell away", root.querySelector('[data-region="runs"]') != null);
 check(
   "…with one card per run in outputs/",
   document.querySelectorAll('[data-region="runs"] li').length === 3,
@@ -394,7 +403,7 @@ const newDubButton = [...document.querySelectorAll("button")].find((b) =>
 check("the runs page offers New dub as its primary action", newDubButton != null);
 newDubButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
 await new Promise((resolve) => setTimeout(resolve, 300));
-check("…and it navigates to the form", dom.window.location.pathname === "/new");
+check("…and it navigates to the form", dom.window.location.pathname === "/");
 
 /*
  * The import screen's composition, pinned structurally.
@@ -766,7 +775,7 @@ check("re-check re-renders the list", document.querySelectorAll("[data-check]").
 
 // The gate must not strand the user here: fixture mode never auto-routes, and
 // the import screen is one link away in the nav pill.
-await go("/new", 200);
+await go("/", 200);
 check("setup does not trap navigation", /Start dubbing/.test(root.textContent));
 
 const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -2967,7 +2976,7 @@ check(
  * mutates the fixture store and occupies the one-job queue for the length of a
  * whole pipeline.
  */
-await go("/new", 300);
+await go("/", 300);
 const SOURCE = "https://example.com/watch?v=three_languages";
 check("the import screen still carries the switch", foreignBox() != null);
 setInput(document.querySelector('[aria-label="Source"]'), SOURCE);
