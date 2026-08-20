@@ -156,6 +156,8 @@ const SHORTCUTS: [string[], string][] = [
   [["s"], "split the selection at the playhead"],
   [["+", "−"], "zoom the timeline"],
   [["⌘", "f"], "search the script"],
+  [["⌘", "z"], "undo the last edit"],
+  [["⌘", "⇧", "z"], "redo the edit you undid"],
 ];
 
 export function EditorPage() {
@@ -510,6 +512,33 @@ export function EditorPage() {
     say(`Timeline zoom ${zoom >= 10 ? Math.round(zoom) : Math.round(zoom * 10) / 10} pixels per second`);
   }, [say, zoom]);
 
+  /**
+   * What the last ⌘Z / ⌘⇧Z did, said out loud.
+   *
+   * Undo has no cursor: the row it changed may be filtered out, scrolled away,
+   * or — when the entry was a barrier or had gone stale (`useHistory.ts`) —
+   * not changed at all, and those three must not feel identical. The sentence
+   * comes from `useProject`, which is the layer that knows what happened; this
+   * is only the strip it appears on. Same shape as the keep toast (transient,
+   * bottom-centre, `role="status"` so it is its own announcement), and a
+   * counter rather than the string alone because pressing ⌘Z twice on an empty
+   * stack must re-arm the timer even though the words did not change.
+   */
+  const [notice, setNotice] = useState<{ text: string; n: number } | null>(null);
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(null), ANNOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+  const nudgeHistory = useCallback(
+    (direction: "undo" | "redo") => {
+      void actions[direction]().then((text) => {
+        setNotice((current) => ({ text, n: (current?.n ?? 0) + 1 }));
+      });
+    },
+    [actions],
+  );
+
   /** The undo behind the one destructive verdict see `setVerdict` below. */
   const [undoKeep, setUndoKeep] = useState<KeptUndo | null>(null);
   useEffect(() => {
@@ -725,6 +754,21 @@ export function EditorPage() {
       ) {
         return;
       }
+      /*
+       * ⌘Z / ⌘⇧Z (and Ctrl+Y, for hands that learned redo there). After the
+       * field guard on purpose, unlike ⌘F: a field has its own undo — the
+       * browser's, over keystrokes — and hijacking it mid-sentence to revert
+       * some other line's PATCH would be two histories fighting over one key.
+       * Outside a field, the editor's history is the only one there is.
+       */
+      if ((event.metaKey || event.ctrlKey) && !event.altKey) {
+        const key = event.key.toLowerCase();
+        if (key === "z" || key === "y") {
+          event.preventDefault();
+          nudgeHistory(key === "y" || event.shiftKey ? "redo" : "undo");
+          return;
+        }
+      }
       if (event.metaKey || event.ctrlKey || event.altKey) return;
 
       switch (event.key) {
@@ -794,6 +838,7 @@ export function EditorPage() {
     return () => window.removeEventListener("keydown", onKey);
   }, [
     actions,
+    nudgeHistory,
     playable,
     selected,
     splitAt,
@@ -1149,6 +1194,25 @@ export function EditorPage() {
           No live segment, no toast. */}
       {undoKept ? (
         <UndoKeepStrip undo={{ ...undoKeep!, id: undoKept.id }} onUndo={undoLastKeep} />
+      ) : null}
+
+      {/* The ⌘Z receipt — same strip grammar as the keep toast, hoisted above
+          it when both are up so neither covers the other. Its own live region:
+          "Nothing to undo" said only by a row that did not change is silence
+          to a screen reader, and to everyone else. */}
+      {notice ? (
+        <div
+          role="status"
+          data-history-notice
+          className={cn(
+            "fixed left-1/2 z-50 -translate-x-1/2",
+            undoKept ? "bottom-[11.25rem]" : "bottom-[8.5rem]",
+            "flex items-center gap-2 rounded-full border border-border bg-raised px-3 py-1.5",
+            "text-[12.5px] text-primary shadow-pop",
+          )}
+        >
+          {notice.text}
+        </div>
       ) : null}
     </div>
   );
