@@ -32,7 +32,12 @@ pub const PAYLOAD_MARKER: &str = ".mambodubb-payload";
 
 /// Workspace entries a refresh must never touch: none of them exist in the payload,
 /// all of them are expensive or private on the user's machine.
-pub const PRESERVED: &[&str] = &[".venv", ".env", "models", "outputs", PAYLOAD_MARKER];
+/// `tools/` is here for the same reason as the rest even though the payload has never
+/// contained it: it is where `dubbing/tools.py` puts binaries the app installed for
+/// this machine (the static ffmpeg a brewless Mac or a winget-less Windows box gets),
+/// and re-downloading those on every app upgrade would be a silent 100 MB tax.
+pub const PRESERVED: &[&str] =
+    &[".venv", ".env", "models", "outputs", "tools", PAYLOAD_MARKER];
 
 /// The workspace the runner should use, provisioning it first if this is a fresh
 /// install. The precedence is deliberate:
@@ -79,8 +84,15 @@ pub fn resolve_workspace(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 /// Where the writable copy lives. Not `app_data_dir` (which is the identifier-named
 /// directory holding the settings store) but a product-named sibling, so the path the
 /// user sees in the setup screen reads as "MamboDubb", not a reverse-DNS string.
+///
+/// `local_data_dir`, not `data_dir`, and the difference only exists on Windows:
+/// `data_dir` is `%APPDATA%` (the *roaming* profile), and on a managed/domain machine
+/// everything under it is copied to the server at logon. This directory grows a ~10 GB
+/// `.venv` and tens of GB of model weights, so roaming it would be a disaster. macOS
+/// (`~/Library/Application Support`) and Linux (`~/.local/share`) resolve both to the
+/// same path, so existing installs there are unaffected.
 fn provisioned_root(app: &tauri::AppHandle) -> Result<PathBuf, tauri::Error> {
-    Ok(app.path().data_dir()?.join("MamboDubb").join("workspace"))
+    Ok(app.path().local_data_dir()?.join("MamboDubb").join("workspace"))
 }
 
 /// The bundled payload, per the `bundle.resources` map in tauri.conf.json.

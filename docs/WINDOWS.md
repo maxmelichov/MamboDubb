@@ -1,8 +1,14 @@
 # Running MamboDubb on Windows
 
 Both halves — the headless pipeline (`python -m dubbing`) and the studio server
-(`mambodubb`) — run on native Windows 10/11 with an NVIDIA GPU. There is no
-desktop `.exe` bundle; you run from source and use the editor in a browser.
+(`mambodubb`) — run on native Windows 10/11 with an NVIDIA GPU.
+
+This page is the **run-from-source** guide. There is also a packaged desktop
+installer (`.exe` / `.msi`) built by CI — see
+[CROSS_PLATFORM.md](CROSS_PLATFORM.md) for how to get it and what about it is
+still unverified. Everything below about CUDA wheels, `ffmpeg`/`sox` and vLLM
+applies to the packaged app too, because it provisions and runs the same source
+tree.
 
 **The short version:** if you have WSL2, use it (see the last section). Native
 Windows works and is supported, but the translator runs on a plain transformers

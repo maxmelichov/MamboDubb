@@ -1,0 +1,142 @@
+# Build the MamboDubb desktop shell for macOS, Windows and Linux.
+#
+# One job per OS, each building natively for its own host — no cross-compilation, so
+# what comes out is what a user on that OS would build. Every job does the same four
+# things: check out the source (submodules included, because the payload's uv.lock
+# pins qwen-tts to third_party/Qwen3-TTS), stage the bundle payload, build the web UI,
+# and run `tauri build`. The artifacts are the installers.
+#
+# Nothing here is signed or notarized; see the TODO blocks below and
+# docs/CROSS_PLATFORM.md. Unsigned means Gatekeeper, SmartScreen and a chmod +x on the
+# AppImage — all documented, none blocking.
+name: build-desktop
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+# One build per ref; a new push to the same tag/branch cancels the old one.
+concurrency:
+  group: build-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      # One platform failing must not hide whether the other two are healthy.
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (Apple Silicon)
+            runner: macos-latest
+            target: aarch64-apple-darwin
+            artifact: mambodubb-macos-aarch64
+          - name: Windows (x64)
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: mambodubb-windows-x86_64
+          - name: Linux (x64)
+            # Deliberately not ubuntu-latest: the glibc a Tauri binary links against is
+            # the runner's, and 22.04 is the oldest still-supported image, so the .deb
+            # and the AppImage run on the widest range of distros.
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            artifact: mambodubb-linux-x86_64
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # third_party/Qwen3-TTS is a real dependency of the staged payload, not an
+          # optional extra: pyproject pins `qwen-tts = { path = ... }`, so a bundle
+          # staged without it ships a workspace that cannot `uv sync`.
+          submodules: recursive
+
+      # Tauri v2's Linux deps, per https://v2.tauri.app/start/prerequisites/.
+      # patchelf and libfuse2 are the AppImage bundler's, not Tauri's own.
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libfuse2
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11
+
+      # uv runs the two build scripts (they are PEP 723 single-file scripts), and its
+      # own binary is what the mac/linux/windows fast path copies as the sidecar.
+      - uses: astral-sh/setup-uv@v10
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/desktop/src-tauri -> target
+          key: ${{ matrix.target }}
+
+      # Explicit rather than relying on app/desktop's `pretauri` hook, so a staging
+      # failure is its own red step instead of noise inside a 20-minute build. Idempotent
+      # if the hook runs it again. --download-uv pins the sidecar to an official,
+      # checksum-verified astral-sh/uv build rather than whatever the runner image has.
+      - name: Stage the bundle payload
+        run: uv run --script scripts/stage_desktop_payload.py --target ${{ matrix.target }} --download-uv
+
+      - name: Build the web UI
+        run: uv run --script scripts/build_desktop.py ui
+
+      # TODO(signing): macOS. Set APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD /
+      # APPLE_SIGNING_IDENTITY / APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID as env on the
+      # step below once a Developer ID cert exists; tauri-action-style notarization then
+      # happens inside `tauri build`. Until then the .dmg is unsigned and Gatekeeper
+      # requires the right-click → Open dance (docs/CROSS_PLATFORM.md).
+      #
+      # TODO(signing): Windows. Set bundle.windows.certificateThumbprint (or signCommand)
+      # in tauri.conf.json and provide the cert to the runner. Until then SmartScreen
+      # shows "Windows protected your PC" on first run of the .exe installer.
+      - name: Install the Tauri CLI
+        working-directory: app/desktop
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the bundles
+        working-directory: app/desktop
+        run: pnpm tauri build
+
+      - name: Collect the installers
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          if-no-files-found: error
+          retention-days: 30
+          # Only the installers, not the unpacked .app/AppDir trees next to them —
+          # those are hundreds of MB of the same bytes.
+          path: |
+            app/desktop/src-tauri/target/release/bundle/dmg/*.dmg
+            app/desktop/src-tauri/target/release/bundle/nsis/*.exe
+            app/desktop/src-tauri/target/release/bundle/msi/*.msi
+            app/desktop/src-tauri/target/release/bundle/deb/*.deb
+            app/desktop/src-tauri/target/release/bundle/appimage/*.AppImage

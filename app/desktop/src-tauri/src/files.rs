@@ -1,5 +1,6 @@
 //! The two filesystem capabilities the webview cannot have on its own: revealing a
-//! path in Finder, and getting a real absolute path out of a native open dialog.
+//! path in the file manager, and getting a real absolute path out of a native open
+//! dialog.
 //!
 //! The browser build can only ever hand the server a `File` blob; the pipeline takes a
 //! path. This is the one thing the studio UI needs from the shell.
@@ -16,14 +17,25 @@ const AUDIO_EXTENSIONS: &[&str] = &["wav", "mp3", "m4a", "aac", "flac", "ogg", "
 // json3. No txt: without timestamps the pipeline has nothing to place.
 const TRANSCRIPT_EXTENSIONS: &[&str] = &["srt", "vtt", "json3"];
 
+/// Reveal a path in the platform's file manager: Finder, Explorer, or whatever
+/// implements the freedesktop `FileManager1` D-Bus interface (Nautilus, Dolphin,
+/// Thunar…). This goes through `tauri-plugin-opener` rather than the `showfile` crate
+/// because the plugin is the one with a Linux story that survives a session without a
+/// running `FileManager1` service: it falls back to opening the containing directory
+/// with `xdg-open`, where `showfile` would leave the button doing nothing at all.
+/// `catch_unwind` stays because these are FFI/D-Bus calls and a panic across the
+/// command boundary would take the webview's promise with it.
 #[tauri::command]
 pub async fn reveal_path(path: PathBuf) -> Result<(), String> {
     if !path.exists() {
         return Err(format!("path does not exist: {}", path.display()));
     }
     tauri::async_runtime::spawn_blocking(move || {
-        panic::catch_unwind(|| showfile::show_path_in_file_manager(path))
-            .map_err(|_| "failed to reveal path in file manager".to_string())
+        match panic::catch_unwind(|| tauri_plugin_opener::reveal_item_in_dir(&path)) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(err)) => Err(format!("failed to reveal path in file manager: {err}")),
+            Err(_) => Err("failed to reveal path in file manager".to_string()),
+        }
     })
     .await
     .map_err(|err| format!("failed to join reveal task: {err}"))?

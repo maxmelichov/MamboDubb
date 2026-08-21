@@ -75,15 +75,15 @@ pub fn venv_python(path: &Path) -> Option<PathBuf> {
     candidates.into_iter().find(|candidate| candidate.is_file())
 }
 
-/// Find `uv`: explicit override, then the bundled sidecar, then Homebrew's usual
-/// spots, then `PATH`.
+/// Find `uv`: explicit override, then the bundled sidecar, then the platform's usual
+/// install spots, then `PATH`, then uv's own per-user install dir.
 ///
-/// The sidecar is the case that matters for a real install: the .dmg bundles `uv` via
-/// Tauri `externalBin`, which lands next to the app binary (`Contents/MacOS/uv`), so a
-/// clean Mac needs no Homebrew at all. The rest of the chain is for dev runs and for
-/// users who prefer their own uv — and a bundled .app inherits almost nothing of the
-/// user's shell `PATH` on macOS, so the literal Homebrew path matters more than it
-/// looks: that is the case that works when a brew-only setup launches from Finder.
+/// The sidecar is the case that matters for a real install: every bundle (.dmg, .msi /
+/// .exe, .deb / .AppImage) ships `uv` via Tauri `externalBin`, which lands next to the
+/// app binary, so a clean machine needs no package manager at all. The rest of the
+/// chain is for dev runs and for users who prefer their own uv — and a GUI process
+/// inherits almost nothing of the user's shell `PATH` (a Finder-launched .app, a
+/// .desktop launcher), so the literal install paths matter more than they look.
 pub fn find_uv() -> Option<PathBuf> {
     if let Some(raw) = env::var_os(UV_PATH_ENV) {
         let path = PathBuf::from(raw);
@@ -100,37 +100,76 @@ pub fn find_uv() -> Option<PathBuf> {
             return Some(path);
         }
     }
-    if let Some(path) = find_in_path("uv") {
+    if let Some(path) = find_in_path(UV_EXE) {
         return Some(path);
     }
+    // uv's own installer (`uv-installer.sh` / `uv-installer.ps1`) puts it here on all
+    // three platforms, and `cargo install uv` in the second.
     home_dir().and_then(|home| {
-        let path = home.join(".local/bin/uv");
-        path.is_file().then_some(path)
+        [
+            home.join(".local").join("bin").join(UV_EXE),
+            home.join(".cargo").join("bin").join(UV_EXE),
+        ]
+        .into_iter()
+        .find(|path| path.is_file())
     })
 }
 
+/// The sidecar/binary file name, which is the only part of the uv lookup that is
+/// spelled differently per platform.
+pub const UV_EXE: &str = if cfg!(target_os = "windows") { "uv.exe" } else { "uv" };
+
+/// Absolute paths worth probing before `PATH`, per platform. Windows has no
+/// equivalent convention — winget and uv's installer both land on `PATH` or in the
+/// per-user `.local\bin` the tail of `find_uv` checks — so the list is empty there.
+#[cfg(target_os = "macos")]
 const UV_FALLBACKS: &[&str] = &["/opt/homebrew/bin/uv", "/usr/local/bin/uv"];
+#[cfg(target_os = "linux")]
+const UV_FALLBACKS: &[&str] = &[
+    "/usr/local/bin/uv",
+    "/usr/bin/uv",
+    "/home/linuxbrew/.linuxbrew/bin/uv",
+];
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+const UV_FALLBACKS: &[&str] = &[];
 
 /// The `uv` Tauri bundles as an `externalBin` sidecar. Sidecars are placed next to the
-/// app executable — `Contents/MacOS/` in the .app, `target/debug/` under `tauri dev` —
-/// so resolving from `current_exe` covers both without needing an app handle (which is
-/// what keeps `find_uv` callable from plain tests).
+/// app executable — `Contents/MacOS/` in the .app, the install dir on Windows, `/usr/
+/// lib/<product>/` for a .deb, `target/debug/` under `tauri dev` — so resolving from
+/// `current_exe` covers all of them without needing an app handle (which is what keeps
+/// `find_uv` callable from plain tests).
 fn sidecar_uv() -> Option<PathBuf> {
     let exe = env::current_exe().ok()?;
-    let name = if cfg!(target_os = "windows") { "uv.exe" } else { "uv" };
-    let candidate = exe.parent()?.join(name);
+    let candidate = exe.parent()?.join(UV_EXE);
     candidate.is_file().then_some(candidate)
 }
 
+/// `which`, near enough. On Windows the name on `PATH` carries an extension, and the
+/// bare name would never match — so try the `.exe` spelling first and the bare one
+/// after (a Git-Bash-style shim without a suffix is still worth finding).
 fn find_in_path(binary_name: &str) -> Option<PathBuf> {
     let path_var = env::var_os("PATH")?;
-    env::split_paths(&path_var)
-        .map(|dir| dir.join(binary_name))
-        .find(|path| path.is_file())
+    let bare = binary_name.trim_end_matches(".exe");
+    for dir in env::split_paths(&path_var) {
+        for name in [binary_name, bare] {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
+/// The user's home directory. `HOME` on macOS and Linux; Windows sets `USERPROFILE`
+/// and only defines `HOME` inside MSYS/Git-Bash shells, which a bundled .exe launched
+/// from the Start menu never inherits — so without the second variable every
+/// home-relative lookup here silently returns `None` on Windows.
 fn home_dir() -> Option<PathBuf> {
-    env::var_os("HOME").map(PathBuf::from)
+    env::var_os("HOME")
+        .or_else(|| env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
 }
 
 /// Where the workspace defaults to before the user has ever chosen one.
@@ -389,6 +428,59 @@ mod tests {
             default_workspace_in(home.path()),
             home.path().join("Documents/MamboDubb")
         );
+    }
+
+    #[test]
+    fn the_sidecar_name_carries_an_extension_only_on_windows() {
+        // Tauri strips the target triple from `uv-<triple>[.exe]` and drops the
+        // result next to the app binary, so this is the name the shell must look
+        // for — and the one stage_desktop_payload.py must produce.
+        assert_eq!(UV_EXE, if cfg!(target_os = "windows") { "uv.exe" } else { "uv" });
+    }
+
+    #[test]
+    fn a_path_lookup_finds_a_binary_in_a_listed_directory() {
+        let dir = TempDir::new("path-lookup");
+        let name = if cfg!(target_os = "windows") { "fakeuv.exe" } else { "fakeuv" };
+        let binary = dir.path().join(name);
+        fs::write(&binary, "").unwrap();
+
+        // SAFETY: single-threaded assertion over process env; restored immediately.
+        let previous = env::var_os("PATH");
+        env::set_var("PATH", dir.path());
+        let found = find_in_path(if cfg!(target_os = "windows") { "fakeuv.exe" } else { "fakeuv" });
+        // The Windows spelling is also reachable from the bare name, which is what
+        // makes `find_uv`'s single `UV_EXE` call correct on all three platforms.
+        let found_bare = find_in_path("fakeuv");
+        match previous {
+            Some(value) => env::set_var("PATH", value),
+            None => env::remove_var("PATH"),
+        }
+        assert_eq!(found.as_deref(), Some(binary.as_path()));
+        assert_eq!(found_bare.as_deref(), Some(binary.as_path()));
+    }
+
+    #[test]
+    fn the_home_lookup_accepts_the_windows_variable() {
+        // A bundled .exe gets USERPROFILE and no HOME; without the fallback every
+        // home-relative path in this module would be silently unreachable there.
+        // SAFETY: single-threaded assertion over process env; restored immediately.
+        let home = env::var_os("HOME");
+        let profile = env::var_os("USERPROFILE");
+        env::remove_var("HOME");
+        env::set_var("USERPROFILE", "/tmp/profile");
+        let resolved = home_dir();
+        env::remove_var("USERPROFILE");
+        let empty_is_not_a_home = home_dir();
+        match home {
+            Some(value) => env::set_var("HOME", value),
+            None => env::remove_var("HOME"),
+        }
+        if let Some(value) = profile {
+            env::set_var("USERPROFILE", value);
+        }
+        assert_eq!(resolved, Some(PathBuf::from("/tmp/profile")));
+        assert_eq!(empty_is_not_a_home, None, "no home variable at all is None");
     }
 
     #[test]

@@ -43,7 +43,14 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": [
+      "app",
+      "dmg",
+      "nsis",
+      "msi",
+      "deb",
+      "appimage"
+    ],
     "resources": {
       "payload/workspace/": "workspace/"
     },
@@ -62,6 +69,22 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0"
+        ]
+      }
+    },
     "macOS": {
       "minimumSystemVersion": "11.0",
       "dmg": {

@@ -4,6 +4,12 @@ A Tauri 2 shell around the studio server. It is the third layer of the stack in
 [docs/APP_ARCHITECTURE.md](../../docs/APP_ARCHITECTURE.md), and it changes nothing about
 the other two: the UI still speaks HTTP to the server, the server still owns the pipeline.
 
+The shell builds for **macOS, Windows and Linux**. This file describes the macOS build,
+which is the one that has been run by hand; the other two are built by
+[`.github/workflows/build-desktop.yml`](../../.github/workflows/build-desktop.yml) and
+everything platform-specific about them — installer formats, where the workspace lands,
+what is still unverified — is in [docs/CROSS_PLATFORM.md](../../docs/CROSS_PLATFORM.md).
+
 ## What is bundled, and what is not
 
 MamboRambo ships its engine as a compiled binary inside the .app. Ours cannot ship

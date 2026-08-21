@@ -1,5 +1,10 @@
 # Releasing the macOS .dmg
 
+> Windows and Linux installers come out of
+> [`.github/workflows/build-desktop.yml`](../.github/workflows/build-desktop.yml)
+> instead — unsigned, and with their own caveats. See
+> [CROSS_PLATFORM.md](CROSS_PLATFORM.md).
+
 The whole point of the desktop app is that a fresh Mac never needs a terminal. An
 unsigned .dmg breaks that promise at step 1: Gatekeeper quarantines every download,
 and an app with no Developer ID signature and no notarization ticket gets the
