@@ -11,7 +11,7 @@
  *   a void under the context field and the Start button below the fold at
  *   1280×800: the screen's one action was the thing you had to scroll for.
  *   Now the grid is `items-start` and the card is exactly as tall as its
- *   content; the pipeline glance under it fills what the card gave back.
+ *   content.
  * - **Options** — the rail beside it. Five labelled groups, hairlined apart:
  *   languages, genre, register, transcript, scope. Nothing here is typed prose;
  *   it is all picking, which is why it is a rail and not a second column of
@@ -21,11 +21,11 @@
  *
  * The runs used to be a third *column* here, competing with the form for the
  * width. They are a page of their own now (RunsPage, at /runs) and this form is
- * home at "/" — but the newest few of them sit *under* the card as a glance
- * (`HomeRuns`, at the foot of this file). Under, not beside: the form keeps the
- * whole top of the screen and Start dubbing stays above the fold, while "is
- * yesterday's dub still here?" is answered by scrolling rather than by finding
- * the nav pill.
+ * home at "/" — but the newest few of them close the page (`HomeRuns`, at the
+ * foot of this file), below the form *and* the rail. Below, not beside — asked
+ * for twice, so it is the layout: the form keeps the whole top of the screen
+ * and Start dubbing stays above the fold, while "is yesterday's dub still
+ * here?" is answered by scrolling rather than by finding the nav pill.
  *
  * The context note is not decoration. Translation quality moves measurably with
  * a sentence about who and what the video is about and how names are spelled —
@@ -45,7 +45,6 @@ import { Link, useNavigate } from "react-router-dom";
 import {
   ArrowRight,
   Captions,
-  ChevronDown,
   Clapperboard,
   Film,
   FileVideo,
@@ -56,7 +55,6 @@ import {
   Mic2,
   PencilLine,
   Timer,
-  Workflow,
 } from "lucide-react";
 import { PageShell } from "../components/AppShell";
 import { RunRow, orderRuns } from "../components/RunRow";
@@ -103,20 +101,6 @@ const SRC_LANGS = [
   ["ja", "Japanese"],
   ["ko", "Korean"],
 ] as const;
-
-// The editor's job bar counts "stage 3 of 9"; this is the same nine, one line
-// each, so a first run is not the first time the user meets their names.
-const PIPELINE_GLANCE: [string, string][] = [
-  ["Fetch", "Downloads the video and pulls its audio."],
-  ["Stems", "Separates the voices from music and effects."],
-  ["Transcript", "Reads the captions, or transcribes locally."],
-  ["Segments", "Cuts the speech into dubbable lines."],
-  ["Translate", "A local model translates every line."],
-  ["Voices", "Clones each speaker saying the translation."],
-  ["Timeline", "Fits every clip into its moment."],
-  ["Mix", "Lays the dub over the original music."],
-  ["Report", "Checks the result and flags what to review."],
-];
 
 const TGT_LANGS = [
   ["en", "English"],
@@ -205,9 +189,6 @@ export function ImportPage() {
           context field and the action band. */}
       <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_24rem]">
         {/* ------------------------------------------------- the left column */}
-        {/* The card and, under it, the glance. They share a column so the
-            glance fills the room the card no longer stretches into on a tall
-            viewport, while staying after the Start band in reading order. */}
         <div className="flex min-w-0 flex-col gap-5">
           <Card
             data-region="new-dub"
@@ -338,50 +319,6 @@ export function ImportPage() {
             </CardSection>
           </Card>
 
-          {/* What is already in the workspace, directly under the form. */}
-          <HomeRuns />
-
-          {/*
-            What that button is about to do, and why it will take a while. This
-            used to fill the primary card's lower half, which made it a wall
-            between the context field and the Start band — reference material
-            gating the screen's one action below the fold. It is an answer to a
-            question, not a step in the form, so it follows the card as a
-            disclosure instead.
-
-            It ships *shut*. It was open for one release, on the argument that
-            the room under the card was otherwise blank plane — and then the
-            runs took that room, which is a better answer to "what goes under
-            the form" than nine paragraphs of reference. The summary line is
-            still one click for anyone meeting the pipeline for the first time.
-          */}
-          <details
-            data-pipeline-glance
-            className="group overflow-hidden rounded-2xl border border-border bg-surface"
-          >
-            <summary className="flex cursor-pointer select-none items-center gap-2 px-5 py-3.5 text-muted transition-colors hover:text-secondary [&::-webkit-details-marker]:hidden">
-              <Workflow className="h-3.5 w-3.5" />
-              <span className="text-[11px] font-bold uppercase tracking-[0.14em]">
-                What a run does — nine stages
-              </span>
-              <ChevronDown className="ml-auto h-4 w-4 transition-transform group-open:rotate-180" />
-            </summary>
-            <ol className="grid gap-x-5 gap-y-3 border-t border-border px-5 pb-5 pt-4 sm:grid-cols-3">
-              {PIPELINE_GLANCE.map(([stage, does], index) => (
-                <li key={stage} className="flex gap-2.5">
-                  <span className="font-mono text-[10px] font-bold tabular-nums leading-[1.8] text-muted">
-                    {String(index + 1).padStart(2, "0")}
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block text-[12px] font-semibold text-secondary">{stage}</span>
-                    <span className="mt-0.5 block text-[11px] leading-relaxed text-muted">
-                      {does}
-                    </span>
-                  </span>
-                </li>
-              ))}
-            </ol>
-          </details>
         </div>
 
         {/* ------------------------------------------------------- the rail */}
@@ -592,6 +529,10 @@ export function ImportPage() {
           </CardSection>
         </Card>
       </div>
+
+      {/* The whole workspace, at the foot of the page — asked to sit below
+          the form and the rail, not beside either. */}
+      <HomeRuns />
 
       {error ? (
         <ErrorBlock title="Could not start" onDismiss={() => setError(null)}>

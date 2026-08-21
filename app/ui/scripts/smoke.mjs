@@ -347,12 +347,21 @@ check(
   "the context field is a small box, not a paragraph",
   Number(document.querySelector('textarea[aria-label="Context"]').getAttribute("rows")) <= 2,
 );
-/* And the nine-stage reference is shut, because the runs are what is under the
-   form now. It is one click for the user who has never met the pipeline. */
+/* The nine-stage reference is gone from home entirely — asked for by name.
+   The runs region closes the page instead, below the form and the rail. */
 check(
-  "the pipeline glance ships closed",
-  document.querySelector("[data-pipeline-glance]") != null &&
-    document.querySelector("[data-pipeline-glance]").open === false,
+  "the pipeline glance is gone",
+  document.querySelector("[data-pipeline-glance]") == null,
+);
+check(
+  "the runs sit at the foot of the page, after the form grid",
+  (() => {
+    const runs = document.querySelector('[data-region="home-runs"]');
+    const grid = document.querySelector('[data-region="new-dub"]')?.closest(".grid");
+    return runs != null && grid != null &&
+      Boolean(grid.compareDocumentPosition(runs) & Node.DOCUMENT_POSITION_FOLLOWING) &&
+      !grid.contains(runs);
+  })(),
 );
 // The pill is the door, so the pill is what gets driven — `go` is not even
 // defined yet, which is its own argument for using the real control.
