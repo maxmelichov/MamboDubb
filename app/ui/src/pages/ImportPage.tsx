@@ -319,6 +319,9 @@ export function ImportPage() {
             </CardSection>
           </Card>
 
+          {/* The runs, in the room under the text box — beside the settings
+              rail, where the column would otherwise sit empty. */}
+          <HomeRuns />
         </div>
 
         {/* ------------------------------------------------------- the rail */}
@@ -529,10 +532,6 @@ export function ImportPage() {
           </CardSection>
         </Card>
       </div>
-
-      {/* The whole workspace, at the foot of the page — asked to sit below
-          the form and the rail, not beside either. */}
-      <HomeRuns />
 
       {error ? (
         <ErrorBlock title="Could not start" onDismiss={() => setError(null)}>

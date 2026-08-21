@@ -354,13 +354,13 @@ check(
   document.querySelector("[data-pipeline-glance]") == null,
 );
 check(
-  "the runs sit at the foot of the page, after the form grid",
+  "the runs fill the room under the form card, inside the left column",
   (() => {
     const runs = document.querySelector('[data-region="home-runs"]');
-    const grid = document.querySelector('[data-region="new-dub"]')?.closest(".grid");
-    return runs != null && grid != null &&
-      Boolean(grid.compareDocumentPosition(runs) & Node.DOCUMENT_POSITION_FOLLOWING) &&
-      !grid.contains(runs);
+    const card = document.querySelector('[data-region="new-dub"]');
+    return runs != null && card != null &&
+      runs.parentElement === card.closest(".grid > div") &&
+      Boolean(card.compareDocumentPosition(runs) & Node.DOCUMENT_POSITION_FOLLOWING);
   })(),
 );
 // The pill is the door, so the pill is what gets driven — `go` is not even
