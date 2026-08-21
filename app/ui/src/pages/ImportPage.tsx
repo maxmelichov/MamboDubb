@@ -19,25 +19,29 @@
  *   final because two of them are, and a screen that does not say so is asking
  *   people to guess whether a run is a commitment.
  *
- * The runs used to be a third column here. That arrangement made this screen
- * do two jobs at once, so the runs are now a page of their own (RunsPage, at
- * /runs), this form is home at "/", and the pill switches between them. What
- * stays here is only what a *new* run needs.
+ * The runs used to be a third *column* here, competing with the form for the
+ * width. They are a page of their own now (RunsPage, at /runs) and this form is
+ * home at "/" — but the newest few of them sit *under* the card as a glance
+ * (`HomeRuns`, at the foot of this file). Under, not beside: the form keeps the
+ * whole top of the screen and Start dubbing stays above the fold, while "is
+ * yesterday's dub still here?" is answered by scrolling rather than by finding
+ * the nav pill.
  *
  * The context note is not decoration. Translation quality moves measurably with
  * a sentence about who and what the video is about and how names are spelled —
  * it is the difference between one consistent spelling of a name and three
- * different manglings. That is why it gets the whole lower half of the primary
- * card rather than a corner of the form.
+ * different manglings. It is *one sentence*, though, which is why the field is
+ * two rows tall and grows: the paragraph-sized box it used to be spent the
+ * card's whole lower half on white space and pushed everything under it down.
  *
  * Genre and register used to be two more dropdowns. They are two-way choices
  * whose options need a clause to be meaningful ("Documentary narrated,
  * factual"), and a clause does not fit in an `<option>`; the genre is rows that
- * invert to ink when picked, the register is a pill.
+ * fill with the accent when picked, the register is a pill.
  */
 
-import { useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import {
   ArrowRight,
   Captions,
@@ -55,6 +59,7 @@ import {
   Workflow,
 } from "lucide-react";
 import { PageShell } from "../components/AppShell";
+import { RunRow, orderRuns } from "../components/RunRow";
 import {
   Button,
   Card,
@@ -75,7 +80,7 @@ import {
 } from "../components/ui";
 import { api } from "../lib/api";
 import { isDesktop, pickVideoFile } from "../lib/desktop";
-import type { CreateProjectRequest } from "../lib/types";
+import type { CreateProjectRequest, ProjectSummary } from "../lib/types";
 
 // What can be HEARD is broader than what can be SPOKEN: the ASR + translator
 // handle these sources, but the synthesizer voices Qwen3-TTS's ten languages
@@ -283,10 +288,16 @@ export function ImportPage() {
                 it is the cheapest thing on the screen.
               */}
               <SectionLabel icon={PencilLine}>Optional Context</SectionLabel>
+              {/* Two rows, not three-and-a-bit. It is one sentence people type,
+                  and the box was sized for the paragraph nobody writes — half
+                  the card's lower half spent on empty field, with the runs
+                  below it pushed that much further down. `autoGrow` means the
+                  rare long note still shows all of itself; the small box is the
+                  resting state, not a cap. */}
               <TextArea
                 autoGrow
-                rows={3}
-                className="mt-2 min-h-20 resize-none rounded-xl text-[13.5px]"
+                rows={2}
+                className="mt-2 min-h-12 resize-none rounded-xl text-[13.5px]"
                 aria-label="Context"
                 value={form.context ?? ""}
                 placeholder="Who and what this is about, and how names are spelled — e.g. a news interview about the housing market; the host is Dana (she), the guest is Prof. Ronen Levi (he)."
@@ -327,19 +338,24 @@ export function ImportPage() {
             </CardSection>
           </Card>
 
+          {/* What is already in the workspace, directly under the form. */}
+          <HomeRuns />
+
           {/*
             What that button is about to do, and why it will take a while. This
             used to fill the primary card's lower half, which made it a wall
             between the context field and the Start band — reference material
             gating the screen's one action below the fold. It is an answer to a
             question, not a step in the form, so it follows the card as a
-            disclosure instead. It ships open: the card above it ends well
-            short of the fold, so the nine stages fill room that was otherwise
-            blank plane, and they still cost nothing to dismiss — the summary
-            line is the collapse control for anyone on their fourth dub.
+            disclosure instead.
+
+            It ships *shut*. It was open for one release, on the argument that
+            the room under the card was otherwise blank plane — and then the
+            runs took that room, which is a better answer to "what goes under
+            the form" than nine paragraphs of reference. The summary line is
+            still one click for anyone meeting the pipeline for the first time.
           */}
           <details
-            open
             data-pipeline-glance
             className="group overflow-hidden rounded-2xl border border-border bg-surface"
           >
@@ -583,5 +599,88 @@ export function ImportPage() {
         </ErrorBlock>
       ) : null}
     </PageShell>
+  );
+}
+
+/** How many rows the glance shows before it defers to the archive. */
+const HOME_RUNS = 4;
+
+/**
+ * The workspace, under the form.
+ *
+ * Home is the new-dub form and stays the new-dub form — but a screen that only
+ * ever offers to start something implies there is nothing already started, and
+ * the run people actually want on a second visit is usually the one still in
+ * flight. So the newest few rows sit under the card, running-first, in the same
+ * rows /runs draws (`components/RunRow`), with "All runs" as the way to the
+ * whole list. Four of them: enough to hold the one that is running and the ones
+ * from this morning, few enough that the form is still what this page is.
+ *
+ * It is quiet about its failures on purpose. A server that did not answer is
+ * worth a sentence here and a red card *there* — this region is a shortcut, and
+ * a shortcut that shouts about a list you did not ask for is a worse home
+ * screen than one that simply has no shortcut in it. Zero runs draws nothing at
+ * all: the empty state for "no runs yet" is the form the user is looking at.
+ */
+function HomeRuns() {
+  const navigate = useNavigate();
+  const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .listProjects()
+      .then((list) => {
+        if (!cancelled) setProjects(list);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (failed || projects == null || projects.length === 0) return null;
+  const ordered = orderRuns(projects);
+  const shown = ordered.slice(0, HOME_RUNS);
+
+  return (
+    <section data-region="home-runs" className="flex flex-col gap-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-1">
+        <div className="flex items-baseline gap-3">
+          <SectionLabel icon={Clapperboard}>Your runs</SectionLabel>
+          <span className="text-[11px] tabular-nums text-muted">
+            {projects.length} {projects.length === 1 ? "run" : "runs"} in outputs/
+          </span>
+        </div>
+        {/* A link, not a button: the page's one *button* is Start dubbing, and
+            a second filled control under it would compete with it. */}
+        <Link
+          to="/runs"
+          data-all-runs
+          className="rounded-md text-[11px] font-bold uppercase tracking-[0.14em] text-muted transition-colors hover:text-primary"
+        >
+          All runs →
+        </Link>
+      </div>
+      {/* A strip of padding, so the hover lift is not shaved off at the edges. */}
+      <ul className="flex flex-col gap-2 p-0.5">
+        {shown.map((project) => (
+          <RunRow
+            key={project.name}
+            project={project}
+            compact
+            onOpen={() => navigate(`/editor/${encodeURIComponent(project.name)}`)}
+          />
+        ))}
+      </ul>
+      {ordered.length > shown.length ? (
+        <p className="px-1 text-[11px] text-muted">
+          {ordered.length - shown.length} more on the runs page.
+        </p>
+      ) : null}
+    </section>
   );
 }
