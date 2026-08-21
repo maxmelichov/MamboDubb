@@ -3,13 +3,15 @@
 /*
  * The design system, lifted from MamboRambo and refitted for this product.
  *
- * **Two themes, both deliberate, chosen by the user and nobody else.** Dark is
- * the default; light is what you get by asking for it. The choice lives in
- * `localStorage` and is expressed as one class, `.theme-dark`, on `<html>` —
- * stamped pre-paint by the boot script in index.html and re-asserted by
- * `lib/theme.ts` on mount. `prefers-color-scheme` appears nowhere in this file
- * or anywhere else in the app: the OS does not get a vote, because a video
- * editor that changes colour at sunset is a bug, not a courtesy.
+ * **Two themes, both deliberate, chosen by the user and nobody else.** Light is
+ * the default the app is a clean, bright tool and that is what a first launch
+ * should look like; dark is what you get by asking for it, and by asking once.
+ * The choice lives in `localStorage` and is expressed as one class,
+ * `.theme-dark`, on `<html>` stamped pre-paint by the boot script in
+ * index.html and re-asserted by `lib/theme.ts` on mount. `prefers-color-scheme`
+ * appears nowhere in this file or anywhere else in the app: the OS does not get
+ * a vote, because a video editor that changes colour at sunset is a bug, not a
+ * courtesy.
  *
  * Dark is not inverted light. The neutrals are re-picked for a near-black
  * plane, elevation swaps from a cast shadow to a hairline top highlight
@@ -22,14 +24,15 @@
  * 1. A tinted neutral ramp never flat grey. Light is *warm*: the plane, the
  *    borders and the ink all sit slightly yellow of neutral, which is what
  *    makes the light cards read as paper instead of as chrome. Dark is *cool*:
- *    the same ramp rotated onto the accent's own hue at C* 4–7, which is below
- *    the threshold at which anyone would call it purple and above the one at
+ *    the same ramp rotated onto the accent's own hue at C* 3–5, which is below
+ *    the threshold at which anyone would call it teal and above the one at
  *    which near-black reads as dead. The ink stays warm in both, so dark is
  *    warm text on a cool ground rather than one temperature everywhere.
  * 2. Colour is *earned*. Every plane, border and label is a neutral; the
  *    saturated moments are the four state hues, which mean something, and one
  *    accent, which marks the thing to press. The accent is `--color-accent`:
- *    ink in light, the brand's violet in dark. See the note on it below.
+ *    the brand's teal, in both themes, at the lightness each ground can hold.
+ *    See the note on it below.
  * 3. Elevation is a big soft shadow at very low alpha, never a hard edge —
  *    except in dark, where the same three tokens resolve to an inset highlight
  *    plus a deeper spread.
@@ -42,51 +45,71 @@
    query Tailwind reaches for by default. */
 @custom-variant dark (&:where(.theme-dark, .theme-dark *));
 @theme {
-  /* Chrome & ink. */
-  --color-plane: #f7f6f2;
+  /*
+   * Chrome & ink.
+   *
+   * The plane is a warm off-white and the cards are paper-white on top of it,
+   * which is the whole of the light theme's structure: a card is white, the
+   * ground under it is one step down, and a hairline plus a very soft shadow
+   * separate the two. The ramp used to sit a good deal yellower (#f7f6f2 plane,
+   * #f4f3ef sunken, #e5e2d8 borders); at that saturation a page of cards read
+   * as cream stationery rather than as a tool, and the borders read as drawn
+   * lines rather than as edges. Same warmth, about a third of the chroma.
+   */
+  --color-plane: #f2f1ec;
   --color-surface: #ffffff;
   --color-raised: #ffffff;
-  --color-sunken: #f4f3ef;
-  --color-primary: #14130f;
-  --color-secondary: #5c584f;
+  --color-sunken: #f1f0eb;
+  --color-primary: #1b1a17;
+  --color-secondary: #55534d;
   /*
-   * The quiet ink, and the one token in the light ramp that did not clear the
-   * text gate. It was #7d7a71: 4.29:1 on the card, 3.97:1 on the plane, 3.86:1
-   * on the sunken tone and it is what every 9–11px label in the app is set in
-   * (the eyebrows, the meta line, the tallies, the hints under a field), which
-   * is precisely the size that cannot afford to be under it. Nine percent
-   * darker, at the same warm hue, clears 4.5:1 on all three grounds it lands on:
+   * The quiet ink, and the token in the light ramp with the least room. It is
+   * what every 9–11px label in the app is set in (the eyebrows, the meta line,
+   * the tallies, the hints under a field), which is precisely the size that
+   * cannot afford to be under 4.5:1. Measured on all three grounds it lands on:
    *
-   *   on surface #ffffff  5.02:1     on plane  #f7f6f2  4.64:1
-   *   on sunken  #f4f3ef  4.52:1
+   *   on surface #ffffff  5.18:1     on plane  #f2f1ec  4.58:1
+   *   on sunken  #f1f0eb  4.54:1
    *
-   * Dark is untouched #98948b already measures 5.70:1 on the dark card.
+   * Dark is untouched #98948b already measures 5.52:1 on the dark card.
    * `--color-unclaimed` keeps the old value on purpose: it is a hatch and a
    * mark edge, never text, and it is measured against the 3:1 non-text gate.
    */
-  --color-muted: #726f67;
-  --color-border: #e5e2d8;
-  --color-grid: #e5e2d8;
-  --color-axis: #c8c4b6;
-  /* What sits *on* an ink-filled surface a primary button's own label. */
-  --color-on-primary: #f7f6f2;
+  --color-muted: #6f6d66;
+  --color-border: #e6e3dd;
+  --color-grid: #e6e3dd;
+  --color-axis: #c9c5bc;
+  /* What sits *on* an ink-filled surface a filled option row's own label. */
+  --color-on-primary: #fbfaf8;
 
   /*
    * The interaction accent the one saturated colour that means "press this"
    * rather than "this line is in this state".
    *
-   * In light it is ink, which is MamboRambo's look and is what shipped: a
-   * near-black Start dubbing, a near-black active nav cell, a near-black
-   * selection ring. Nothing about light changes by naming it.
+   * It is the brand's teal, out of the badge on every page's brand chip
+   * (`assets/mambodubb-badge.svg`), and it is teal in *both* themes at the
+   * lightness each ground can hold. Light used to say ink here a near-black
+   * Start dubbing on a near-white card and the screen it produced was the one
+   * the redesign is an answer to: correct, legible, and with no colour in it
+   * anywhere except the four state hues on a run's stripe.
    *
-   * In dark, ink is a near-white and a near-white button on a near-black
-   * plane beside near-black cards is a screen with no colour in it at all. So
-   * dark restates the accent as the violet out of the logo's magenta→violet
-   * →orange mark (`src-tauri/icons/logo-mark.png`), and that is the whole of
-   * the brand's appearance in the UI: one hue, on a counted list of elements
-   * (see `:root.theme-dark`). Every other surface stays neutral, because the
-   * "alive" comes from a few saturated moments against a calm ground and not
-   * from lifting everything.
+   * Light's value is the teal darkened until white text sits on it at AA:
+   * 5.47:1 for #ffffff on #0f766e, so `Start dubbing` and the filled nav cell
+   * carry a real label rather than a nearly-legible one. (The undarkened brand
+   * teal, #0d9488, is 3.74:1 white-on-fill — a fill, but never a button.)
+   *
+   * Where it appears is a closed list, and keeping it closed is the point:
+   *   · the primary button (Start dubbing, Render preview, Render, Continue…)
+   *   · the active cell of a nav or filter group (Setup, the theme toggle,
+   *     the script's All/Failed/Kept/Edited chips, the genre rows)
+   *   · the selected script row its wash, its inset ring and its rule
+   *   · the selected timeline mark's ring, and a mark's hover ring
+   *   · the focus ring, everywhere, and a focused field's border
+   *   · the brand chip's hairline in dark, at /25
+   * Nothing else. The playhead, the transport's play button and the stage
+   * track stay ink, because the playhead has to be the brightest thing on the
+   * strip and a second saturated teal next to the first is how one accent
+   * becomes a theme.
    *
    * It is deliberately not a state hue and never encodes one which is also
    * why nothing sets it as text. It fills, it rings, it rules.
@@ -95,8 +118,8 @@
    * by nothing, is gone: the brand has a colour of its own now, and a second
    * name for the blue was how a palette grows hues nobody measured.
    */
-  --color-accent: var(--color-primary);
-  --color-on-accent: var(--color-on-primary);
+  --color-accent: #0f766e;
+  --color-on-accent: #ffffff;
 
   /*
    * Segment-state encoding, light. Four hues, and the axis they are picked on
@@ -115,28 +138,32 @@
    * that is usually empty, and the calm case is calm.
    *
    * Measured against the white card (`--color-surface`), WCAG 2.1:
-   *   dubbed   #2a78d6  4.42:1     kept     #306357  6.89:1
+   *   dubbed   #2a78d6  4.42:1     kept     #166534  7.13:1
    *   failed   #d03b3b  4.80:1     pending  #b8770b  3.70:1
    *   unclaimed #7d7a71 4.29:1
    * All four clear the 3:1 non-text gate here, which the old amber (2.17:1)
    * never did. Nothing is coloured text: the state *word* on a row is
    * `--color-secondary`, and these paint icons, 3px stripes and mark edges.
    *
-   * Colour-vision safety is carried by lightness, because hue is exactly what
-   * a dichromat loses. L*: kept 38.3, failed 48.1, dubbed 50.4, pending 55.5 —
-   * so the two pairs that must never merge separate in greyscale alone:
-   *   kept/failed   dL* 9.8   (dE2000 50.6 normal, 26.1 deutan, 9.7 protan)
-   *   kept/dubbed   dL* 12.2  (dE2000 33.1 normal, 28.6 deutan)
-   * The protan figure for kept/failed is the honest weak spot a deep green
-   * and a mid red are nearly the same hue to a protanope and it is why the
-   * relief rule is unconditional: every state also carries a drawn shape and a
-   * word, on every row and in the panel. Never colour alone.
+   * Kept is a *green* now and not the deep blue-green (#306357, Lab h 176) it
+   * was. That hue was picked when the accent was ink and nothing else on the
+   * screen was in that quadrant; with the accent restated as the brand teal
+   * (h 187) the calmest state hue and the one colour meaning "press this" sat
+   * eleven degrees apart, which is not a distinction anyone can hold. Green at
+   * h 149 is thirty-eight degrees off the accent, and it is also the hue that
+   * a checklist of Ready rows is expected to be.
    *
-   * Chroma is the other half of "calm": kept sits at C* 20 against the old
-   * amber's C* 78. It is a hue you can put on two hundred rows.
+   * Colour-vision safety is carried by lightness, because hue is exactly what
+   * a dichromat loses. L*: kept 37.3, failed 48.1, dubbed 50.4, pending 55.5 —
+   * so the two pairs that must never merge separate in greyscale alone:
+   *   kept/failed   dL* 10.8      kept/dubbed   dL* 13.1
+   * A deep green and a mid red are nearly the same hue to a protanope, which is
+   * the honest weak spot and why the relief rule is unconditional: every state
+   * also carries a drawn shape and a word, on every row and in the panel. Never
+   * colour alone.
    */
   --color-dubbed: #2a78d6;
-  --color-kept: #306357;
+  --color-kept: #166534;
   --color-failed: #d03b3b;
   --color-pending: #b8770b;
   --color-unclaimed: #7d7a71;
@@ -175,19 +202,19 @@
  */
 html {
   color-scheme: light;
-  background: #f7f6f2;
+  background: #f2f1ec;
 }
 
 html.theme-dark {
   color-scheme: dark;
-  background: #110e16;
+  background: #0d1413;
 }
 
 :root {
   /* Native controls (checkbox, number spinners, selection) pick the app's own
      accent, not the platform blue, so nothing on the page is coloured by the
-     OS. It is the token, not a literal, so it follows the theme: ink in light,
-     which is what shipped, and the brand violet in dark. */
+     OS. It is the token, not a literal, so it follows the theme: the brand
+     teal, dark on paper and bright on near-black. */
   accent-color: var(--color-accent);
   font-family: var(--font-sans);
   font-synthesis: none;
@@ -195,9 +222,13 @@ html.theme-dark {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 
-  --elevation-card: 0 1px 2px rgb(20 19 15 / 0.04), 0 8px 30px rgb(20 19 15 / 0.045);
-  --elevation-lift: 0 1px 2px rgb(20 19 15 / 0.04), 0 18px 50px rgb(28 28 23 / 0.07);
-  --elevation-pop: 0 8px 24px rgb(20 19 15 / 0.12), 0 2px 6px rgb(20 19 15 / 0.08);
+  /* Light elevation is a hairline's worth of contact shadow plus a wide, very
+     low-alpha spread never a hard edge. A touch stronger than it was: on the
+     quieter plane the old 4% shadow under a white card was invisible, so a card
+     was a border and nothing else. */
+  --elevation-card: 0 1px 2px rgb(27 26 23 / 0.05), 0 8px 24px rgb(27 26 23 / 0.05);
+  --elevation-lift: 0 1px 2px rgb(27 26 23 / 0.05), 0 18px 44px rgb(27 26 23 / 0.08);
+  --elevation-pop: 0 8px 24px rgb(27 26 23 / 0.13), 0 2px 6px rgb(27 26 23 / 0.09);
 
   /*
    * How much of its hue a timeline mark's fill actually gets. The hue lives on
@@ -227,9 +258,9 @@ html.theme-dark {
   --state-rule: 60%;
 
   /* How much accent a search hit's wash gets. Same shape as `--mark-wash`, and
-     the same reason: on white a fifth of the ink already reads as a highlight;
-     on near-black a violet has to be nearer half strength before the marked
-     word separates from the sentence around it. */
+     the same reason: on white a fifth of a dark teal already reads as a
+     highlight; on near-black the bright one has to be nearer half strength
+     before the marked word separates from the sentence around it. */
   --search-hit: 20%;
 }
 
@@ -240,14 +271,14 @@ html.theme-dark {
  * light one, and the specificity (0,1,1 against `@theme`'s 0,0,1 on `:root`)
  * is what lets these win without `!important`.
  *
- * Contrast against the dark card `#1c1a21`, measured, WCAG 2.1:
- *   ink       #f5f4f0  15.65:1    secondary #b5b1a6   8.04:1
- *   muted     #98948b   5.70:1    dubbed    #0d8af4   4.89:1
- *   kept      #6ad4b0   9.56:1    failed    #f46465   5.63:1
- *   pending   #e79c25   7.53:1    unclaimed #98948b   5.70:1
- *   accent    #ce77f2   6.19:1
+ * Contrast against the dark card `#191f1f`, measured, WCAG 2.1:
+ *   ink       #f5f4f0  15.18:1    secondary #b5b1a6   7.80:1
+ *   muted     #98948b   5.52:1    dubbed    #0d8af4   4.74:1
+ *   kept      #5fd98a   9.37:1    failed    #f46465   5.45:1
+ *   pending   #e79c25   7.30:1    unclaimed #98948b   5.52:1
+ *   accent    #2dd4bf   8.97:1
  * The tightest of those is `dubbed` on `raised`, the lightest ground anything
- * is drawn on, at 4.49:1 every hue clears 3:1 everywhere with room to spare.
+ * is drawn on, at 4.28:1 every hue clears 3:1 everywhere with room to spare.
  * Red clears 4.5:1 as well
  * because `text-critical` is the one place a state hue is set as small text —
  * the old dark red (#d03b3b, 3.76:1) did not, so an error message was the
@@ -255,13 +286,12 @@ html.theme-dark {
  *
  * The lightness ordering flips with the ground, which is the point: on paper
  * "resolved" is the darkest hue on the card, on a near-black plane it is the
- * lightest. L*: dubbed 56.9, failed 61.0, pending 70.1, kept 78.0 so the two
+ * lightest. L*: dubbed 56.9, failed 61.0, pending 70.1, kept 78.4 so the two
  * pairs that must never merge stay apart in greyscale here too:
- *   kept/failed   dL* 17.0  (dE2000 63.5 normal, 18.0 deutan, 22.8 protan)
- *   kept/dubbed   dL* 21.2  (dE2000 42.4 normal, 40.0 deutan)
- * The weak pair in dark is failed/pending (dL* 9.1, deutan dE 12.0) red and
- * amber, both of which mean "look at this one", which is the cheapest pair in
- * the set to confuse. The shape and the word tell them apart.
+ *   kept/failed   dL* 17.4      kept/dubbed   dL* 21.5
+ * The weak pair in dark is failed/pending (dL* 9.1) red and amber, both of
+ * which mean "look at this one", which is the cheapest pair in the set to
+ * confuse. The shape and the word tell them apart.
  *
  * ## Why these four are not the old four
  *
@@ -270,15 +300,13 @@ html.theme-dark {
  * entire chromatic budget of the screen at a chroma picked for restraint. The
  * hues here are the same four hues at the same four lightnesses nothing about
  * the encoding, the ordering or the greyscale separation moves with the
- * chroma taken up to somewhere near what the ground can actually hold:
+ * chroma taken up to somewhere near what the ground can actually hold
+ * (kept C* 21.8 → 59.1, dubbed 55.1 → 62.0, failed 54.8 → 62.1, pending
+ * 65.5 → 70.0).
  *
- *   kept      C* 21.8 → 40.1   a mint, not a grey; still the calmest of the four
- *   dubbed    C* 55.1 → 62.0   blue can afford it: it is the commonest mark
- *   failed    C* 54.8 → 62.1   lifted with the rest so red stays the loud one
- *   pending   C* 65.5 → 70.0   glows a little; it is the state that is waiting
- *
- * kept stays lowest on purpose it is the hue that lands on two hundred rows
- * of an already-English run, and the reason amber was taken off that job.
+ * Kept moved *hue* as well as chroma, for the reason light's did: it was a mint
+ * at h 168 and the accent is a teal at h 182, so the calmest state hue and the
+ * thing-to-press were fourteen degrees apart. It is a green now, h 151.
  *
  * The shape drawn *inside* a timeline mark is the state's own hue, not an ink
  * chosen against the fill: the fill is a wash of that same hue, so the shape
@@ -286,26 +314,26 @@ html.theme-dark {
  */
 :root.theme-dark {
   /*
-   * The ramp, rotated onto the accent's hue (Lab h≈303) at C* 4.4–6.6 and
-   * lifted about two L* steps off the pure-neutral one it replaces:
+   * The ramp, rotated onto the accent's hue (Lab h≈186) at C* 2.8–5.1:
    *
-   *   plane    L*  3.9 → 4.4     surface  L*  7.3 →  9.8
-   *   sunken   L*  5.5 → 6.3     raised   L* 10.8 → 13.4
-   *   border   L* 17.1 → 21.4    axis     L* 24.0 → 28.1
+   *   plane    L*  5.7     surface  L* 11.2
+   *   sunken   L*  7.1     raised   L* 15.3
+   *   border   L* 23.0     axis     L* 30.0
    *
    * Both halves of that matter. The tint is what stops a near-black plane
-   * reading as switched off at C* 5 nobody would call it purple, and it is
+   * reading as switched off at C* 3 nobody would call it teal, and it is
    * the accent's own hue, so the ground is the quietest note of the same
-   * chord. The lift is what lets a card sit *on* the plane (1.11:1, from
-   * 1.07:1) and a field sit on the card (1.09:1) instead of all three merging
-   * in a dim room. It is still a near-black ramp: the plane is L* 4.4.
+   * chord. (It was the *violet's* quietest note until the accent moved; a
+   * violet-black under teal buttons is two chords at once.) The steps are what
+   * let a card sit *on* the plane (1.12:1) and a field sit on the card (1.11:1)
+   * instead of all three merging in a dim room.
    */
-  --color-plane: #110e16;
-  --color-surface: #1c1a21;
-  --color-raised: #24212a;
-  --color-sunken: #151319;
+  --color-plane: #0d1413;
+  --color-surface: #191f1f;
+  --color-raised: #1f2827;
+  --color-sunken: #101716;
   /* The ink stays warm and stays exactly where it was: it is the one thing on
-     the screen nobody complained about, it measures 15.65:1 on the new card,
+     the screen nobody complained about, it measures 15.18:1 on the new card,
      and warm text on a cool ground is the pairing that reads as lit. */
   --color-primary: #f5f4f0;
   --color-secondary: #b5b1a6;
@@ -315,48 +343,34 @@ html.theme-dark {
      which is the whole difference between an intentional dark UI and a
      photo-negative of a light one. A little stronger than they were, because
      the separating work in dark is done by the edge and not by a shadow. */
-  --color-border: #35323b;
-  --color-grid: #35323b;
-  --color-axis: #44414a;
-  --color-on-primary: #110e16;
+  --color-border: #2e3938;
+  --color-grid: #2e3938;
+  --color-axis: #3d4948;
+  --color-on-primary: #0d1413;
 
   /*
-   * The accent: the logo's violet, at L* 63.9 / C* 72.3 / h 318.
+   * The accent: the brand teal, lifted for a near-black ground —
+   * L* 76.9 / C* 45.5 / h 182, the same hue as light's #0f766e and forty
+   * lightness steps up from it.
    *
    * It is filled, ringed and ruled never set as text so the gate is 3:1
-   * and it clears 6.87:1 on the plane and 6.19:1 on the card. Its label is the
-   * plane colour rather than a white, at 6.87:1, which is the same shape as the
-   * near-white/near-black primary button it replaces: a bright fill with dark
-   * ink on it. Only the hue changed.
+   * and it clears 10.01:1 on the plane and 8.97:1 on the card. Its label is the
+   * plane colour rather than a white, at 10.01:1: a bright fill with dark ink on
+   * it, which is the shape light's button has with the two swapped.
    *
-   * It sits dL* 7.1 off `dubbed` and 2.9 off `failed` and is a near-neighbour
-   * of the blue for a protanope (dE 0.7) which is allowed, and only allowed,
-   * because the accent never encodes anything. It marks affordances; the four
-   * hues that carry meaning also carry a shape and a word.
-   *
-   * Where it appears is a closed list, and keeping it closed is the point:
-   *   · the primary button (Start dubbing, Render preview, Render, Continue…)
-   *   · the active cell of a nav or filter group (Setup, the theme toggle,
-   *     the script's All/Failed/Kept/Edited chips)
-   *   · the selected script row its wash, its inset ring and its rule
-   *   · the selected timeline mark's ring, and a mark's hover ring
-   *   · the focus ring, everywhere, and a focused field's border
-   *   · the brand chip in the page header its mark, and a /25 wash of the
-   *     accent on its hairline
-   * Nothing else. The playhead, the transport's play button and the stage
-   * track stay ink, because the playhead has to be the brightest thing on the
-   * strip and a second bright violet next to the first is how one accent
-   * becomes a theme.
+   * See `@theme` above for the closed list of places it appears; dark adds one,
+   * the /25 wash of it on the brand chip's hairline. A saturated 1px outline
+   * would read as a focus ring, and focus rings are this same teal.
    */
-  --color-accent: #ce77f2;
-  --color-on-accent: #110e16;
+  --color-accent: #2dd4bf;
+  --color-on-accent: #0d1413;
 
   /* Segment-state encoding, dark re-picked for a near-black plane, not the
      light four dimmed. See the chroma table above for what moved and why.
      The three aliases below follow from these, so `good`/`warning`/`critical`
      need no dark values of their own. */
   --color-dubbed: #0d8af4;
-  --color-kept: #6ad4b0;
+  --color-kept: #5fd98a;
   --color-failed: #f46465;
   --color-pending: #e79c25;
   --color-unclaimed: #98948b;

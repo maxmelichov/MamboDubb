@@ -17,35 +17,35 @@
       import. If you change one, change the other.
 
       `theme-color` is what the desktop shell's title bar and the browser's own
-      chrome sample. It carries the dark plane as its static value because dark
+      chrome sample. It carries the light plane as its static value because light
       is the default; the script and `applyTheme` move it when the user picks
-      light. There is deliberately no media-query variant of it the OS does
+      dark. There is deliberately no media-query variant of it the OS does
       not get a vote here either.
     -->
-    <meta name="theme-color" content="#110e16" />
+    <meta name="theme-color" content="#f2f1ec" />
     <style>
       html {
-        background: #f7f6f2;
+        background: #f2f1ec;
         color-scheme: light;
       }
       html.theme-dark {
-        background: #110e16;
+        background: #0d1413;
         color-scheme: dark;
       }
     </style>
     <script>
       (function () {
-        // Dark unless the user has explicitly stored "light". The OS
+        // Light unless the user has explicitly stored "dark". The OS
         // preference is never consulted see lib/theme.ts for why.
-        var dark = true;
+        var dark = false;
         try {
-          dark = localStorage.getItem("dubbing-studio.theme") !== "light";
+          dark = localStorage.getItem("dubbing-studio.theme") === "dark";
         } catch (err) {
           // Storage can throw outright in a locked-down profile; default wins.
         }
         document.documentElement.classList.toggle("theme-dark", dark);
         var meta = document.querySelector('meta[name="theme-color"]');
-        if (meta) meta.setAttribute("content", dark ? "#110e16" : "#f7f6f2");
+        if (meta) meta.setAttribute("content", dark ? "#0d1413" : "#f2f1ec");
       })();
     </script>
   </head>

@@ -6,8 +6,9 @@
  * video editor whose surfaces change colour when the OS crosses sunset is
  * changing the ground the user is judging a picture against.
  *
- * **Dark is the default.** Only an explicit stored `"light"` makes it light, so
- * a first-ever launch, a cleared profile and a private window all open dark.
+ * **Light is the default.** Only an explicit stored `"dark"` makes it dark, so
+ * a first-ever launch, a cleared profile and a private window all open light —
+ * the clean, bright tool is the product, and dark is the room you switch into.
  *
  * Three things apply the theme, and they must agree:
  *   1. the inline boot script in `index.html`, which runs before first paint;
@@ -26,8 +27,8 @@ export const DARK_CLASS = "theme-dark";
 
 /** The plane colour of each theme, for the pre-paint canvas and `theme-color`. */
 export const THEME_PLANE: Record<Theme, string> = {
-  light: "#f7f6f2",
-  dark: "#110e16",
+  light: "#f2f1ec",
+  dark: "#0d1413",
 };
 
 /** What the user last chose, or `null` if they never have. */
@@ -41,9 +42,9 @@ export function storedTheme(): Theme | null {
   }
 }
 
-/** The theme to render: the stored choice, else dark. */
+/** The theme to render: the stored choice, else light. */
 export function currentTheme(): Theme {
-  return storedTheme() ?? "dark";
+  return storedTheme() ?? "light";
 }
 
 /**

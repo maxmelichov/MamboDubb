@@ -19,7 +19,7 @@ pnpm check            # both
 ```
 
 `pnpm smoke` is the test the type checker cannot be: it boots the real bundle in jsdom
-against the fixture, then asserts every screen renders, the theme toggle defaults to dark and
+against the fixture, then asserts every screen renders, the theme toggle defaults to light and
 persists a choice, the timeline draws its marks, the inspector's shelves start shut and
 remember being opened, a keep toggle applies with no job, and a re-translate queues, reports
 progress and writes its result back through the event stream.
@@ -85,15 +85,22 @@ the toolbar is a census of *this run*, which does.
 
 `/setup` renders `GET /api/setup` the server's fast filesystem checks (ffmpeg, sox, the
 HF token, each model directory with its size, free disk). Every row states its verdict as a
-glyph, the word *Ready* or *Missing*, and a hue, in that order: the screen reads the same in
-monochrome. The detail sentence is the server's, and it is the point of the row it says
-what to install, not merely that something is absent.
+glyph, a word (*Ready*, *Missing*, *Not installed*), and a hue, in that order: the screen
+reads the same in monochrome. The detail sentence is the server's, and it is the point of the
+row it says what to install, not merely that something is absent.
+
+A provisioned machine reads **all green**, and nothing on the list is amber by design. The
+one grade that survives being absent with nothing to do about it is `optional` sox, whose
+only caller is a tokenizer this pipeline never loads and it is drawn as a grey dash and the
+words *Not installed*: no wash, no red, not counted in the "N of M need attention" headline,
+and unable to hold `ok` back (the server conjoins the required rows only).
 
 On boot the app asks once. It routes to `/setup` **only** when the server answers `ok:
 false`; an error, a missing endpoint or a server still starting says nothing, and nothing is
 not a reason to interrupt. Otherwise the screen is a small link in the header. Fixture mode
-never auto-routes, because its checklist deliberately fails two checks so the screen is
-demoable.
+never auto-routes, because its checklist deliberately fails several checks so the screen is
+demoable and `/setup?ready=1` serves the opposite board, every row green, for the demo
+that wants to show a machine that is set up (see `fixtures.setup`).
 
 ## Desktop shell
 
@@ -118,11 +125,13 @@ uppercase widely-tracked "eyebrow" labels doing all the section titling.
 
 Two rules are worth knowing before you touch it.
 
-**Ink is the accent, not colour.** Primary buttons, the active nav pill, the selected table
-row and the focus ring are all `primary` near-black on light, near-white on dark. That is
-the house style, and here it also buys correctness: it leaves the blue free to mean exactly
-one thing, "dubbed". Anything painted `--color-brand` or `--color-dubbed` is data, never
-chrome.
+**One accent, and it is teal.** Primary buttons, the active nav cell, the selected script row
+and the focus ring are all `--color-accent`, the brand badge's teal: `#0f766e` on light,
+`#2dd4bf` on dark. It is a fill, a ring and a rule, never text, and it is spent on a closed
+list App.css keeps beside the token. It was ink in light for a while; a near-black button on
+a near-white card is correct and colourless, and colourless is what the redesign answered.
+Everything else stays neutral, which is what leaves the blue free to mean exactly one thing,
+"dubbed": anything painted `--color-dubbed` is data, never chrome.
 
 **Everything is a primitive.** `components/ui.tsx` holds Button, Card/CardSection, Panel,
 Field, TextInput/TextArea/NumberInput/Select, Badge, StatePill, Progress, Kbd, Empty,
@@ -136,7 +145,7 @@ declared once in `@theme` and restated for dark under `:root.theme-dark`. Elemen
 inside `@layer base`; an unlayered `button { color: inherit }` beats every Tailwind `text-*`
 utility no matter the specificity, which is a bug that has already been written here once.
 
-**Two themes, and the OS does not get a vote.** Dark is the default; light is what you get by
+**Two themes, and the OS does not get a vote.** Light is the default; dark is what you get by
 asking. The choice is one class, `.theme-dark`, on `<html>`, backed by `localStorage` under
 `dubbing-studio.theme` and `prefers-color-scheme` appears nowhere in the app, which the
 smoke test asserts against the *built* bundle. Three places apply it and must agree: the
@@ -144,13 +153,13 @@ inline boot script in `index.html` (pre-paint, so there is no flash), `applyThem
 `lib/theme.ts` called from `main.tsx` (the belt to that braces), and the header toggle. Dark
 is not inverted light: the neutrals are re-picked for a near-black plane, elevation swaps
 from a cast shadow to an inset top highlight, and the state hues are a separately validated
-triple. The desktop shell's window `backgroundColor` has to match the dark plane, `#110e16`,
-and the smoke test reads `tauri.conf.json` to check that it does.
+triple. The desktop shell's window `backgroundColor` has to match the *default* theme's plane,
+`#f2f1ec`, and the smoke test reads `tauri.conf.json` to check that it does.
 
-**One accent, and it is the brand's.** `--color-accent` is ink in light which is exactly
-what light always was, so naming it changed nothing there and the logo's violet `#ce77f2`
-in dark, where a near-white primary button on a near-black plane was a screen with no colour
-in it. It is spent on a closed list: the primary button, the active cell of a nav or filter
+**One accent, and it is the brand's.** `--color-accent` is the badge's teal in both themes,
+at the lightness each ground can hold: `#0f766e` on paper (5.47:1 under white text, so the
+primary button's label is a real label) and `#2dd4bf` on near-black. It is spent on a closed
+list: the primary button, the active cell of a nav or filter
 group, the selected script row and timeline mark, the focus ring, and the brand chip. The
 playhead, the transport and the stage track stay ink on purpose. App.css lists the whole set
 next to the token.

@@ -267,7 +267,9 @@ export function segmentedCell(active: boolean, className?: string): string {
   return cn(
     "inline-flex h-9 items-center gap-1.5 rounded-full px-3.5 transition-colors",
     "text-[11px] font-bold uppercase tracking-[0.14em]",
-    active ? "bg-primary text-on-primary" : "text-muted hover:text-primary",
+    // The filled cell is the accent, not ink: "which section am I in" is an
+    // active state, and active states are the accent's job in both themes.
+    active ? "bg-accent text-on-accent" : "text-muted hover:text-primary",
     className,
   );
 }
@@ -278,8 +280,8 @@ export function segmentedCell(active: boolean, className?: string): string {
  * Worth the vertical space exactly when the option has a *second line* a
  * sentence saying what picking it does. "Documentary / narrated, factual" is a
  * decision; "Documentary" in a dropdown is a word you have to already know.
- * Selection inverts the row to ink, which is the strongest available "this one
- * is on" that costs no hue.
+ * Selection fills the row with the accent, which is the same "this one is on"
+ * the nav pill's filled cell uses one answer to that question, everywhere.
  */
 export function OptionList({
   label,
@@ -313,7 +315,7 @@ export function OptionRow({
         "flex w-full items-center gap-2.5 rounded-xl border px-3 py-2 text-left transition-all",
         "active:scale-[0.99]",
         selected
-          ? "border-transparent bg-primary text-on-primary shadow-card"
+          ? "border-transparent bg-accent text-on-accent shadow-card"
           : "border-border bg-raised text-primary hover:border-axis",
         className,
       )}
@@ -857,7 +859,7 @@ const badgeTone: Record<BadgeTone, string> = {
   good: "border-good/35 bg-good/10 text-primary",
   warn: "border-warning/45 bg-warning/12 text-primary",
   bad: "border-critical/35 bg-critical/10 text-primary",
-  accent: "border-transparent bg-primary text-on-primary",
+  accent: "border-transparent bg-accent text-on-accent",
 };
 
 /**
