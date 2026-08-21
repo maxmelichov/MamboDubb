@@ -20,6 +20,7 @@
  *                                  (never starts a server; null-ish when none runs)
  *   start_server()              -> ServerInfo idempotent, blocks on the ready line
  *   pick_video_file()           -> string | null   native open dialog
+ *   pick_transcript_file()      -> string | null   the same, filtered to subtitles
  *   reveal_path({ path })       -> void     show the file in Finder
  *   get_workspace()             -> string
  *   set_workspace({ path })     -> void
@@ -181,6 +182,21 @@ export async function workspaceDir(): Promise<string | null> {
 export function pickVideoFile(): Promise<string | null> {
   if (!isDesktop()) return Promise.resolve(null);
   return call<string | null>("pick_video_file", undefined, null);
+}
+
+/**
+ * The same dialog for the *transcript* a user already has, filtered to the three
+ * formats the pipeline can read (.srt, .vtt, .json3) by the shell, which is the
+ * side that owns the dialog.
+ *
+ * Null for all three of "not the desktop", "the user cancelled" and "this shell
+ * predates the command" the module contract (`call`'s fallback) makes the last
+ * one degrade rather than throw, and the caller treats a null the way it treats a
+ * cancel: it changes nothing and leaves the path field for the user to type into.
+ */
+export function pickTranscriptFile(): Promise<string | null> {
+  if (!isDesktop()) return Promise.resolve(null);
+  return call<string | null>("pick_transcript_file", undefined, null);
 }
 
 /**

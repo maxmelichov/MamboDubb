@@ -556,6 +556,120 @@ def test_words_from_json3_respects_duration_limit(tmp_path):
     assert [w["text"] for w in transcript.words_from_json3(path, limit=6.0)] == ["a", "b"]
 
 
+# ------------------------------------------------- a transcript the user brings
+
+SRT = """1
+00:00:01,000 --> 00:00:03,000
+Hello there
+
+2
+00:00:04,500 --> 00:00:05,500
+[MUSIC] general kenobi
+"""
+
+VTT = """WEBVTT
+
+NOTE this is not a cue
+
+intro
+00:01.000 --> 00:03.000 align:start position:10%
+<v Obi-Wan>Hello <i>there</i>
+
+00:04.500 --> 00:05.500
+general kenobi
+"""
+
+
+def test_words_from_srt_spreads_each_cue_over_its_own_span(tmp_path):
+    path = tmp_path / "e.srt"
+    path.write_text(SRT, encoding="utf-8")
+    words = transcript.words_from_file(path)
+    # Chrome goes the way it goes for captions; two words share the two seconds
+    # the subtitler timed them into, and the second cue starts where it says.
+    assert [w["text"] for w in words] == ["Hello", "there", "general", "kenobi"]
+    assert [w["t"] for w in words] == [1.0, 2.0, 4.5, 5.0]
+    assert words[0]["end"] == 2.0 and words[-1]["end"] == 5.5
+
+
+def test_words_from_vtt_reads_the_same_cues_through_its_own_chrome(tmp_path):
+    """Cue ids, NOTE blocks, positioning settings and `<v …>` tags are not speech,
+    and WebVTT writes its clock with a point and without the hours."""
+    path = tmp_path / "e.vtt"
+    path.write_text(VTT, encoding="utf-8")
+    words = transcript.words_from_file(path)
+    assert [w["text"] for w in words] == ["Hello", "there", "general", "kenobi"]
+    assert [w["t"] for w in words] == [1.0, 2.0, 4.5, 5.0]
+
+
+def test_words_from_subtitles_honours_the_duration_cap(tmp_path):
+    path = tmp_path / "e.srt"
+    path.write_text(SRT, encoding="utf-8")
+    assert [w["text"] for w in transcript.words_from_file(path, limit=4.0)] == ["Hello", "there"]
+
+
+def test_a_transcript_file_that_is_not_one_is_refused_by_name(tmp_path):
+    """Three different wrongs, three different sentences. Every one of them is
+    cheap here and costs a fetch and a stems separation at the transcript stage."""
+    txt = tmp_path / "e.txt"
+    txt.write_text("no timestamps anywhere in this one", encoding="utf-8")
+    with pytest.raises(transcript.TranscriptFileError, match="Plain text"):
+        transcript.check_transcript_file(txt)
+
+    with pytest.raises(transcript.TranscriptFileError, match="not found"):
+        transcript.check_transcript_file(tmp_path / "nope.srt")
+
+    junk = tmp_path / "junk.srt"
+    junk.write_text("this file has no cues in it at all\n", encoding="utf-8")
+    with pytest.raises(transcript.TranscriptFileError, match="no timed words"):
+        transcript.check_transcript_file(junk)
+
+    broken = tmp_path / "broken.json3"
+    broken.write_text("{not json", encoding="utf-8")
+    with pytest.raises(transcript.TranscriptFileError, match="could not be read"):
+        transcript.check_transcript_file(broken)
+
+
+def test_transcript_file_mode_takes_the_words_and_never_asks_the_asr(tmp_path, monkeypatch):
+    """`--transcript file` is the one mode with no fallback in it: the user said
+    these are the words, so an ASR that would have been consulted is not."""
+    caps = tmp_path / "e.srt"
+    caps.write_text(SRT, encoding="utf-8")
+    monkeypatch.setattr(transcript, "load_asr",
+                        lambda *a, **k: pytest.fail("the ASR was loaded anyway"))
+    m = {"files": {"captions_raw": str(caps), "source_wav": "source.wav"},
+         "source": {"duration": 30.0, "captions": str(caps)}}
+    transcript.run(m, tmp_path, src_lang="he", tgt_lang="en", prefer="file")
+    data = json.loads((tmp_path / "words.json").read_text(encoding="utf-8"))
+    assert data["origin"] == "file"
+    assert [w["text"] for w in data["words"]] == ["Hello", "there", "general", "kenobi"]
+    assert m["source"]["transcript_origin"] == "file"
+
+
+def test_transcript_file_mode_fails_rather_than_transcribing_instead(tmp_path):
+    m = {"files": {"source_wav": "source.wav"}, "source": {"duration": 30.0}}
+    with pytest.raises(SystemExit, match="no --captions file"):
+        transcript.run(m, tmp_path, src_lang="he", tgt_lang="en", prefer="file")
+
+
+def test_a_changed_transcript_file_invalidates_the_run_that_cached_it(tmp_path):
+    """The path alone cannot tell one edit of a file from another, and correcting
+    a mangled name in your own .srt is exactly that: same path, new words."""
+    from dubbing import cli
+
+    caps = tmp_path / "e.srt"
+    caps.write_text(SRT, encoding="utf-8")
+    args = cli.parse_args(["clip.mp4", "--captions", str(caps), "--transcript", "file"])
+    cli.resolve_settings(args, None)
+    m = {"source": {}}
+    before = cli.stage_params(args, m)["fetch"]["captions"]
+    caps.write_text(SRT.replace("kenobi", "Kenobi"), encoding="utf-8")
+    assert cli.stage_params(args, m)["fetch"]["captions"] != before
+    # …and a run with no transcript file fingerprints exactly as it always did.
+    bare = cli.parse_args(["clip.mp4"])
+    cli.resolve_settings(bare, None)
+    assert cli.stage_params(bare, m)["fetch"]["captions"] == ""
+
+
 # --------------------------------------------------------------------------- segments
 
 def mkwords(spec, spk="S0"):

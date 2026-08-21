@@ -9,6 +9,7 @@ invalidates automatically through the fingerprint chain.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import sys
 import time
@@ -82,6 +83,25 @@ def check_langs(args: argparse.Namespace) -> None:
                 f"output heads, so it does not fit the {args.tts_model} one.")
 
 
+def check_transcript(args: argparse.Namespace) -> None:
+    """Refuse an unreadable `--transcript file` before the fetch stage runs.
+
+    Same reasoning as `check_langs`: the file is not read until the transcript
+    stage, which is two stages and a Demucs separation later. A typo'd path or a
+    .txt with no timestamps in it costs a sentence here and a quarter of an hour
+    there.
+    """
+    if args.transcript != "file":
+        return
+    if not args.captions:
+        raise SystemExit("--transcript file needs --captions <file.srt|.vtt|.json3>: "
+                         "there is no transcript to read without one.")
+    try:
+        transcript.check_transcript_file(Path(args.captions))
+    except transcript.TranscriptFileError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
 def default_workdir(source: str) -> Path:
     if fetch.is_url(source):
         vid = re.search(r"(?:v=|youtu\.be/|/shorts/|/live/)([A-Za-z0-9_-]{6,})", source)
@@ -95,7 +115,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                                 description="Dub a video into another language, locally.")
     p.add_argument("source", help="YouTube URL or local video file")
     p.add_argument("-o", "--out", type=Path, help="work directory (default: outputs/<slug>)")
-    p.add_argument("--captions", type=Path, help="json3 caption file for a local video")
+    p.add_argument("--captions", type=Path,
+                   help="a transcript you already have (.srt, .vtt or .json3) to read "
+                        "instead of the video's own captions; see --transcript file")
     # None, not the default value — same rule as RECORDED_DEFAULTS below: a
     # bare re-run must keep THIS run's languages and cap, and argparse filling
     # in he/en/full-length is indistinguishable from the user typing them. The
@@ -130,8 +152,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="dub confident third-language passages into the target instead "
                         "of keeping original audio with a subtitle (default: off; "
                         "--no-dub-foreign turns it back off on a run that recorded it)")
-    p.add_argument("--transcript", choices=("auto", "captions", "asr"), default=None,
-                   help="where the transcript comes from (default: captions if present)")
+    p.add_argument("--transcript", choices=("auto", "captions", "asr", "file"), default=None,
+                   help="where the transcript comes from (default: captions if present). "
+                        "'file' reads the --captions file and nothing else, and fails "
+                        "rather than falling back to the ASR")
     p.add_argument("--stages", help=f"comma-separated subset of: {','.join(STAGES)}")
     p.add_argument("--force", help="stage to re-run, or 'all'")
     p.add_argument("--device", help="torch device override for TTS")
@@ -230,6 +254,31 @@ def source_record(args: argparse.Namespace) -> dict[str, Any]:
     return rec
 
 
+def captions_key(path: Path | None) -> str:
+    """A supplied transcript's identity for the fetch fingerprint: path *and* bytes.
+
+    The path alone cannot tell one edit of a file from another, and a user who
+    fixes the mangled spelling of a name in their own .srt and re-runs is doing
+    exactly that: same path, new words. Cached on the path, the run would hand
+    back the transcript built from the old file and every stage after it. So the
+    contents are hashed into the value, and correcting the file invalidates the
+    fetch, the transcript and everything downstream — which is what a changed
+    input is supposed to do.
+
+    An unreadable file degrades to the bare path: the fingerprint stays stable up
+    to the `SystemExit` the fetch stage is about to raise about it anyway. No
+    captions is still the empty string, so a run that never used one fingerprints
+    today exactly as it did before this existed.
+    """
+    if not path:
+        return ""
+    try:
+        digest = hashlib.sha1(Path(path).expanduser().read_bytes()).hexdigest()[:16]
+    except OSError:
+        return str(path)
+    return f"{path}#{digest}"
+
+
 def stage_params(args: argparse.Namespace, m: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Everything that, when changed, must invalidate a stage's cached result.
 
@@ -237,7 +286,7 @@ def stage_params(args: argparse.Namespace, m: dict[str, Any]) -> dict[str, dict[
     fingerprint the CLI would compute for it.
     """
     return {
-        "fetch": {"source": args.source, "captions": str(args.captions or ""),
+        "fetch": {"source": args.source, "captions": captions_key(args.captions),
                   "duration": args.duration, "src": args.src},
         "stems": {},
         # `origin` is this stage's own output (ASR, or the captions fallback when
@@ -310,6 +359,7 @@ def main(argv: list[str] | None = None) -> int:
     # argparse's default. `check_langs` reads `--tts-model`, so it waits for this.
     resolve_settings(args, m)
     check_langs(args)
+    check_transcript(args)
 
     m = m or manifest.new(source_record(args))
     m["source"].update(source_record(args))

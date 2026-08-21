@@ -14,6 +14,12 @@ stretch the mix says is audible and the vocals produced no words for, which is
 what stops those passages from disappearing. What it *decodes* there is the
 vocals again, and only where the vocals hold energy: see `recover_gaps`.
 
+None of that is an argument against a transcript the *user* already has, which is
+a different thing from a scraped auto-caption: somebody typed or corrected it, so
+`--transcript file` takes it verbatim (.srt, .vtt or .json3) and neither the
+download nor the ASR gets a vote. Whether it is any good is the user's problem,
+which is exactly the trade they are asking for.
+
 Captions are still used for the one thing they are reliably better at: telling us
 *which script* is being spoken, so passages already in the target language can be
 kept as original audio (see `foreign_spans`). They also supply proper subtitle
@@ -180,6 +186,149 @@ def words_from_json3(path: Path, *, limit: float | None = None) -> list[dict[str
             out.append({"t": round(t, 3), "text": text, "brk": brk or pending_break})
             pending_break = False
     return out
+
+
+class TranscriptFileError(ValueError):
+    """A transcript file the pipeline cannot read, with the reason in the message.
+
+    A plain `ValueError` rather than the `SystemExit` every other refusal in this
+    module raises, because the first thing that reads a user-supplied transcript
+    is the *server*, at create time (`dubbing_app.app.create_project`), and a
+    `SystemExit` there is not a 400 — it is a dead worker. The pipeline turns it
+    back into a `SystemExit` at the one place it catches it.
+    """
+
+
+# One line is all an SRT cue and a WebVTT cue have in common, and it is the one
+# that matters: `hh:mm:ss,mmm --> hh:mm:ss,mmm` (SRT) or `mm:ss.mmm --> …`
+# (WebVTT, where the hours are optional and the decimal separator is a point).
+# Everything else in either format — the SRT index line, a VTT cue identifier,
+# NOTE and STYLE blocks, the `align:start position:10%` settings trailing the
+# timestamps — is chrome around it, so the parser below finds cues by this line
+# and treats every other line as either body text or noise.
+_TS = r"(?:(\d+):)?(\d{1,2}):(\d{2})[.,](\d{1,3})"
+_CUE = re.compile(rf"^{_TS}\s*-->\s*{_TS}")
+# WebVTT markup: `<v Speaker>`, `<i>`, the per-word `<00:00:01.000>` timings, and
+# the `{\an8}` positioning some SRT writers borrow from SSA. None of it is speech.
+_SUB_TAGS = re.compile(r"<[^>]{0,120}>|\{[^}]{0,60}\}")
+
+SUBTITLE_SUFFIXES = (".srt", ".vtt")
+# What `--captions` accepts. Timestamps are the whole contract: this pipeline
+# places words in time and has no forced aligner, so a transcript with no clock
+# on it (.txt, a pasted paragraph) cannot be turned into one that does.
+TRANSCRIPT_SUFFIXES = SUBTITLE_SUFFIXES + (".json3",)
+
+
+def _cue_seconds(m: re.Match[str], base: int) -> float:
+    hours, minutes, seconds, frac = m.group(base + 1, base + 2, base + 3, base + 4)
+    return (float(hours or 0) * 3600.0 + float(minutes) * 60.0 + float(seconds)
+            + float(frac) / (10.0 ** len(frac)))
+
+
+def cues_from_subtitles(text: str) -> list[tuple[float, float, str]]:
+    """(start, end, text) for every cue in an SRT or WebVTT file.
+
+    Both formats in one reader on purpose: they differ in the decimal separator,
+    in whether the hours are written, and in what sits *around* a cue — never in
+    what a cue is. A cue body runs from the timestamp line to the next blank line
+    (or the next timestamp), which is exactly what both specs say.
+    """
+    cues: list[tuple[float, float, str]] = []
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    i = 0
+    while i < len(lines):
+        m = _CUE.match(lines[i].strip())
+        if not m:
+            i += 1
+            continue
+        start, end = _cue_seconds(m, 0), _cue_seconds(m, 4)
+        body: list[str] = []
+        i += 1
+        while i < len(lines) and lines[i].strip() and not _CUE.match(lines[i].strip()):
+            body.append(lines[i])
+            i += 1
+        joined = re.sub(r"\s+", " ", _SUB_TAGS.sub(" ", " ".join(body))).strip()
+        if joined and end > start:
+            cues.append((start, end, joined))
+    return cues
+
+
+def words_from_subtitles(path: Path, *, limit: float | None = None
+                         ) -> list[dict[str, Any]]:
+    """A subtitle file's cues as the flat word stream every later stage reads.
+
+    A cue is a *line*, not a word, so the words inside it are spread evenly over
+    its span. That is a guess, but a bounded one: no word can land outside the
+    cue the subtitler timed it into, which is a tighter placement than the fixed
+    `segments.WORD_MAX` guess caption words get today, and the segmenter clamps
+    every end to the next word's onset anyway.
+
+    Splitting is `script.split_words`, so a Chinese or Japanese cue becomes one
+    unit per character rather than one unit per cue with no spaces in it there
+    are no word boundaries to split on, and a whole cue at one timestamp would
+    place the entire line at its first instant.
+    """
+    raw = Path(path).read_text(encoding="utf-8-sig", errors="replace")
+    out: list[dict[str, Any]] = []
+    for start, end, cue in cues_from_subtitles(raw):
+        text, brk = clean_token(cue)
+        if not text:
+            continue
+        tokens = script.split_words(text)
+        if not tokens:
+            continue
+        step = max(end - start, 0.05) / len(tokens)
+        for k, token in enumerate(tokens):
+            t = start + k * step
+            if limit is not None and t >= limit:
+                return out
+            if out and t < out[-1]["t"]:
+                t = out[-1]["t"]   # overlapping cues; the stream stays monotonic
+            out.append({"t": round(t, 3), "end": round(max(t + 0.02, t + step), 3),
+                        "text": token, "brk": brk and k == 0})
+    return out
+
+
+def words_from_file(path: Path, *, limit: float | None = None) -> list[dict[str, Any]]:
+    """Read whichever caption/transcript file the run was handed.
+
+    The one door for "words the user (or the fetch) supplied", so the three
+    formats are decided in a single place instead of at each caller. Raises
+    `TranscriptFileError` for anything it cannot read the caller decides
+    whether that is a 400 or a dead run.
+    """
+    p = Path(path)
+    suffix = p.suffix.lower()
+    if suffix not in TRANSCRIPT_SUFFIXES:
+        raise TranscriptFileError(
+            f"{p.name}: a transcript has to be {', '.join(TRANSCRIPT_SUFFIXES)}. "
+            "Plain text has no timestamps, and nothing here can align it to the audio.")
+    if not p.is_file():
+        raise TranscriptFileError(f"transcript file not found: {p}")
+    try:
+        if suffix == ".json3":
+            return words_from_json3(p, limit=limit)
+        return words_from_subtitles(p, limit=limit)
+    except TranscriptFileError:
+        raise
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise TranscriptFileError(f"{p.name} could not be read as {suffix}: {exc}") from exc
+
+
+def check_transcript_file(path: Path) -> int:
+    """Parse a supplied transcript and return its word count, or refuse it.
+
+    The check the *server* runs before a project exists. Everything it can say —
+    wrong extension, missing file, unparseable, parses but says nothing costs a
+    sentence here and costs a fetch, a stems run and a confusing job failure if
+    it is left to the transcript stage instead.
+    """
+    words = words_from_file(Path(path))
+    if not words:
+        raise TranscriptFileError(
+            f"{Path(path).name} parsed, but there are no timed words in it. "
+            "An empty subtitle file, or one whose cues carry no text.")
+    return len(words)
 
 
 def _cuda_usable() -> bool:
@@ -1303,12 +1452,30 @@ def run(m: dict[str, Any], workdir: Path, *, src_lang: str, tgt_lang: str = "en"
     recovered: list[dict[str, Any]] = []
     en_spans: list[dict[str, Any]] = []
     lang_runs: list[dict[str, Any]] = []
-    caption_words = words_from_json3(Path(raw), limit=limit) if has_captions else []
+    supplied = bool((m["source"] or {}).get("captions"))
+    try:
+        caption_words = words_from_file(Path(raw), limit=limit) if has_captions else []
+    except TranscriptFileError as exc:
+        # A file the user handed us is fatal; auto-captions the fetch downloaded
+        # are optional, and a broken one falls back to the ASR like an absent one.
+        if prefer == "file" or supplied:
+            raise SystemExit(str(exc)) from exc
+        print(f"  transcript: ignoring the downloaded captions ({exc})", file=sys.stderr)
+        caption_words = []
 
+    if prefer == "file" and not has_captions:
+        raise SystemExit("--transcript file was requested but no --captions file was given")
+    if prefer == "file" and not caption_words:
+        raise SystemExit(f"--transcript file was requested but {raw} holds no timed words")
     if prefer == "captions" and not caption_words:
         raise SystemExit("--transcript captions was requested but no caption file is available")
-    if prefer == "captions":
-        words, origin = caption_words, "captions"
+    if prefer in ("captions", "file"):
+        # The user's own transcript and the video's own captions are read the
+        # same way the only difference is which one is on record, and whether
+        # its absence is an error. `origin` keeps them apart so the report, the
+        # studio and `is_fallback` can all tell "we were given this" from "we
+        # scraped this".
+        words, origin = caption_words, ("file" if prefer == "file" else "captions")
     else:
         try:
             source_wav = workdir / m["files"]["source_wav"]
@@ -1356,8 +1523,8 @@ def run(m: dict[str, Any], workdir: Path, *, src_lang: str, tgt_lang: str = "en"
 
     if not words:
         raise SystemExit(
-            "No transcript words were produced. For a local file pass --captions <file.json3>, "
-            "or check that the ASR model is present under models/."
+            "No transcript words were produced. For a local file pass --captions "
+            "<file.srt|.vtt|.json3>, or check that the ASR model is present under models/."
         )
 
     # VAD+LID English spans are authoritative their boundaries are precise, so a
@@ -1383,7 +1550,7 @@ def run(m: dict[str, Any], workdir: Path, *, src_lang: str, tgt_lang: str = "en"
 
 
 def origin(m: dict[str, Any]) -> str | None:
-    """Where the transcript on record came from: "asr", "captions", or nothing yet."""
+    """Where the transcript came from: "asr", "captions", "file", or nothing yet."""
     return (m.get("source") or {}).get("transcript_origin")
 
 

@@ -339,11 +339,22 @@ export type CreateProjectRequest = {
    * force one. It was accepted by the server and unreachable from the screen,
    * so a user who knew the auto-captions were garbage had no way to say so.
    *
-   * The server also accepts `captions` a path to a caption file to use instead
-   * of the fetched one which stays CLI-only: it is a local path the browser
-   * cannot produce and the desktop file picker does not offer.
+   * `file` is the fourth answer, for the user who already has a transcript: the
+   * words come from `captions` below and nowhere else, and a file that will not
+   * parse is a refusal rather than a silent fall back to the ASR.
    */
-  transcript?: "auto" | "captions" | "asr" | null;
+  transcript?: "auto" | "captions" | "asr" | "file" | null;
+  /**
+   * An absolute path to a transcript the user already has .srt, .vtt or .json3,
+   * the three formats that carry timestamps. There is no forced aligner in the
+   * pipeline, so plain text cannot be placed in time and is refused.
+   *
+   * A path, not an upload: the desktop shell's picker returns real paths and the
+   * server reads the file itself, exactly as it does for `source`. A browser tab
+   * can only report a file's *name*, which is why the screen tells the user to
+   * paste the full path there.
+   */
+  captions?: string | null;
   /**
    * Translate and voice speech that is in neither the source nor the target
    * language. Off by default, which is the pipeline's own default: a third

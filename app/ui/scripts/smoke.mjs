@@ -528,22 +528,27 @@ check(
  * and reachable only from the CLI, so a user who could hear that the
  * auto-captions were mangled the case AGENTS.md's invariant 4 exists for had
  * no way to say so from the screen that starts the run. `auto` is the pipeline's
- * own answer and stays the default; the point is that the other two exist.
+ * own answer and stays the default; the point is that the other three exist.
  *
- * `captions` (a *path* to a caption file) stays server-side: it is a local path
- * a browser cannot produce, and offering a text box for it would be a control
- * that only works in the desktop shell.
+ * The fourth answer is `file`: the user who already HAS a transcript. Its path
+ * box is revealed by the choice and is checked further down, where this file's
+ * interaction helpers are defined it is the row that must not stand open
+ * doing nothing under a dropdown set to "Automatic".
  */
 const transcript = selectFor("Transcript source");
 check("the transcript source is pickable at last", transcript != null);
 check(
-  "…offering exactly the CLI's three answers",
-  optionsOf(transcript).join() === "auto,captions,asr",
+  "…offering exactly the CLI's four answers",
+  optionsOf(transcript).join() === "auto,captions,asr,file",
 );
 check("…defaulting to the pipeline's own", transcript.value === "auto");
 check(
   "…with the one sentence that says when to override it",
   /auto-generated and mangled/i.test(root.textContent),
+);
+check(
+  "the transcript-file row is not standing open before it is asked for",
+  document.querySelector("[data-transcript-file]") == null,
 );
 
 /*
@@ -3223,6 +3228,63 @@ check(
 check(
   "…and the transcript source, which was the other one",
   created.transcript === "asr",
+);
+
+/*
+ * "TRANSCRIPT make it possible to add it someone have file for it."
+ *
+ * A user who already has the words does not need a better machine to guess at
+ * them, and until now the only way to hand a transcript over was `--captions` on
+ * the CLI. The path box appears with the choice and goes with it a control
+ * that does nothing under "Automatic" is the same lie as a disabled one with no
+ * reason on it and the run is refused, in words, before it is sent if the
+ * choice is made and the box is empty.
+ */
+await go("/", 300);
+const TRANSCRIPT_PATH = "/Users/you/episode.srt";
+const transcriptSelect = () => document.querySelector('select[aria-label="Transcript source"]');
+const transcriptRow = () => document.querySelector("[data-transcript-file]");
+setInput(document.querySelector('[aria-label="Source"]'), SOURCE);
+await settle(80);
+check("home opens with no transcript-file row", transcriptRow() == null);
+setSelect(transcriptSelect(), "file");
+await settle(120);
+check("choosing 'A transcript I have' reveals somewhere to put it", transcriptRow() != null);
+check(
+  "…which is a path box and a picker, not an upload",
+  transcriptRow().querySelector('[aria-label="Transcript file"]') != null &&
+    [...transcriptRow().querySelectorAll("button")].some((b) =>
+      b.textContent.includes("Choose file"),
+    ),
+);
+check(
+  "…saying which formats, and why plain text is not one of them",
+  /\.srt, \.vtt or \.json3/.test(root.textContent) &&
+    /plain text cannot be lined up with the audio/.test(root.textContent),
+);
+
+const refusedBefore = calls().created.length;
+[...document.querySelectorAll("button")]
+  .find((b) => b.textContent.includes("Start dubbing"))
+  .dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+await settle(200);
+check(
+  "starting without the file it just asked for is refused, in words",
+  /Give it the transcript/.test(root.textContent),
+);
+check("…and nothing was sent", calls().created.length === refusedBefore);
+
+setInput(transcriptRow().querySelector('[aria-label="Transcript file"]'), TRANSCRIPT_PATH);
+await settle(120);
+[...document.querySelectorAll("button")]
+  .find((b) => b.textContent.includes("Start dubbing"))
+  .dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+await settle(400);
+check("with the path filled in the run starts", calls().created.length === refusedBefore + 1);
+const withFile = calls().created.at(-1);
+check(
+  "…carrying the transcript mode and the file it is to read",
+  withFile.transcript === "file" && withFile.captions === TRANSCRIPT_PATH,
 );
 
 check(

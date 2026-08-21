@@ -42,7 +42,7 @@ from .runner import SubprocessRunner
 # dies on an argparse usage dump and can never be re-run.
 Genre = Literal["documentary", "movie"]
 Register = Literal["narration", "dialogue"]
-Transcript = Literal["auto", "captions", "asr"]
+Transcript = Literal["auto", "captions", "asr", "file"]
 TtsModel = Literal["1.7b"]  # 0.6b is retired for new runs; old manifests that recorded it still re-run
 # `cli.SRC_CHOICES` / `cli.TGT_CHOICES`, sorted, legacy aliases included. An
 # unrecognised code is worse here than an unrecognised genre: `script.script_for`
@@ -75,6 +75,10 @@ class CreateProject(Strict):
     transcript: Transcript | None = None
     tts_model: TtsModel | None = None
     dub_foreign: bool = False
+    # A transcript the user already has: an absolute path to a .srt, .vtt or
+    # .json3, same trust model as `source` (the desktop picker hands over a real
+    # path; a browser cannot, and the import screen says so). It is read at the
+    # door, not at the transcript stage see `create_project`.
     captions: str | None = None
 
 
@@ -527,6 +531,28 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
                               "access in System Settings → Privacy & Security → "
                               "Files and Folders, or move the file somewhere the "
                               "app can read.")
+        # A transcript the user brought. Parsed here rather than at the transcript
+        # stage for the same reason the source is opened here: a path with a typo
+        # in it, or the wrong file entirely, is a sentence at this door and a job
+        # that dies after a download and a stems separation at the other one.
+        # `dubbing.transcript` is safe to import in the server process its heavy
+        # imports (faster-whisper, torch, silero) are all function-local.
+        from dubbing import transcript as transcript_mod
+
+        captions = (body.captions or "").strip() or None
+        if body.transcript == "file" and not captions:
+            raise invalid("pick the transcript file: 'A transcript I have' has "
+                          "nothing to read without one.")
+        if captions:
+            try:
+                transcript_mod.check_transcript_file(Path(captions).expanduser())
+            except transcript_mod.TranscriptFileError as exc:
+                raise invalid(str(exc)) from exc
+            except OSError:
+                raise invalid(f"macOS is not letting this app read {captions}. Grant "
+                              "access in System Settings → Privacy & Security → "
+                              "Files and Folders, or move the file somewhere the "
+                              "app can read.")
         # Hebrew needs two local models the other targets do not (the Qwen3-TTS
         # Hebrew LoRA and its G2P). Said here, not at the tts stage: a run that
         # found out there would already have paid for stems, ASR and diarization.
@@ -552,7 +578,7 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
                          "transcript": body.transcript or "auto",
                          "tts_model": body.tts_model or "1.7b",
                          "dub_foreign": bool(body.dub_foreign),
-                         "captions": body.captions},
+                         "captions": captions},
         }
         m = manifest.new(record)
         manifest.save(workdir, m)

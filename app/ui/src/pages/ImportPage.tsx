@@ -77,7 +77,7 @@ import {
   TextInput,
 } from "../components/ui";
 import { api } from "../lib/api";
-import { isDesktop, pickVideoFile } from "../lib/desktop";
+import { isDesktop, pickTranscriptFile, pickVideoFile } from "../lib/desktop";
 import type { CreateProjectRequest, ProjectSummary } from "../lib/types";
 
 // What can be HEARD is broader than what can be SPOKEN: the ASR + translator
@@ -119,6 +119,7 @@ const TGT_LANGS = [
 export function ImportPage() {
   const navigate = useNavigate();
   const fileRef = useRef<HTMLInputElement>(null);
+  const transcriptRef = useRef<HTMLInputElement>(null);
   // Computed once: the platform does not change while the page is open, and a
   // button must not swap its behaviour a tick after the user reads it.
   const desktop = isDesktop();
@@ -137,6 +138,10 @@ export function ImportPage() {
     // this screen until now, so a user who knew the auto-captions were garbage
     // had no way to say so.
     transcript: "auto",
+    // The transcript the user brought, if they brought one. Only read when
+    // `transcript` is "file"; kept across a change of mind so switching away
+    // and back does not make them find the file again.
+    captions: null,
     // Off, because off is what the pipeline does when nobody says otherwise.
     dub_foreign: false,
   });
@@ -160,15 +165,39 @@ export function ImportPage() {
     if (path) update({ source: path });
   };
 
+  /** The same seam for the transcript file, with the same browser caveat. */
+  const chooseTranscript = async () => {
+    if (!desktop) {
+      transcriptRef.current?.click();
+      return;
+    }
+    const path = await pickTranscriptFile();
+    if (path) update({ captions: path });
+  };
+
   const start = async () => {
     if (!form.source.trim()) {
       setError("Give it a video: a URL, or the full path to a local file.");
       return;
     }
+    // The second field that can be mandatory, and only ever conditionally: the
+    // server refuses this combination too, but a round trip to be told what the
+    // screen already knows is a worse way to learn it.
+    if (form.transcript === "file" && !form.captions?.trim()) {
+      setError("Give it the transcript: the full path to an .srt, .vtt or .json3 file.");
+      return;
+    }
     setStarting(true);
     setError(null);
     try {
-      const created = await api.createProject({ ...form, context: form.context?.trim() || null });
+      const created = await api.createProject({
+        ...form,
+        context: form.context?.trim() || null,
+        // Only sent when it is the answer. A path left over from a change of
+        // mind would otherwise become the run's captions on an "Automatic" run,
+        // which is a setting the user backed out of.
+        captions: form.transcript === "file" ? form.captions?.trim() || null : null,
+      });
       navigate(`/editor/${encodeURIComponent(created.name)}`);
     } catch (err) {
       setError(String(err instanceof Error ? err.message : err));
@@ -451,11 +480,14 @@ export function ImportPage() {
 
           {/*
             Where the words come from.
-            The pipeline takes `--transcript auto|captions|asr` and this screen
-            had no way to say it, so a run whose auto-captions were mangled — the
-            case invariant 4 in AGENTS.md exists for — could only be fixed from
-            the CLI. `auto` is the pipeline's own answer and stays the default;
-            the other two are for the user who has already heard the result.
+            The pipeline takes `--transcript auto|captions|asr|file` and this
+            screen had no way to say it, so a run whose auto-captions were
+            mangled — the case invariant 4 in AGENTS.md exists for — could only be
+            fixed from the CLI. `auto` is the pipeline's own answer and stays the
+            default; the other three are for the user who has already heard the
+            result. The fourth is the strongest of them: somebody who *has* the
+            transcript does not need a better machine to guess at it, and until
+            now the only way to hand one over was `--captions` on the CLI.
           */}
           <CardSection className="px-5 sm:px-5">
             <SectionLabel icon={Captions}>Transcript</SectionLabel>
@@ -473,11 +505,65 @@ export function ImportPage() {
                 <option value="auto">Automatic</option>
                 <option value="captions">The video's captions</option>
                 <option value="asr">Transcribe it here</option>
+                <option value="file">A transcript I have</option>
               </Select>
             </Field>
+            {/*
+              The file row exists only for the answer that needs it. A path box
+              standing open under a dropdown set to "Automatic" is a control that
+              does nothing, which is the same lie as a disabled one with no
+              reason on it — so it appears with the choice and goes with it.
+
+              Stacked, not the Source row's field-then-button: the rail is 24rem
+              and a path is long, so side by side leaves the box too narrow to
+              read what is in it.
+            */}
+            {form.transcript === "file" ? (
+              <div data-transcript-file className="mt-3 flex flex-col items-start gap-2">
+                <TextInput
+                  className="w-full min-w-0"
+                  value={form.captions ?? ""}
+                  aria-label="Transcript file"
+                  placeholder="/Users/you/episode.srt"
+                  onChange={(event) => update({ captions: event.currentTarget.value })}
+                />
+                <Button onClick={() => void chooseTranscript()}>
+                  <FolderOpen className="h-4 w-4" />
+                  Choose file
+                </Button>
+                <input
+                  ref={transcriptRef}
+                  type="file"
+                  accept=".srt,.vtt,.json3"
+                  className="hidden"
+                  onChange={(event) => {
+                    const file = event.currentTarget.files?.[0];
+                    if (file) update({ captions: file.name });
+                  }}
+                />
+              </div>
+            ) : null}
             <p className="mt-2 text-[12px] leading-relaxed text-muted">
-              Automatic uses the downloaded captions when there are any and transcribes locally
-              otherwise. Force transcription when the captions are auto-generated and mangled.
+              {form.transcript === "file" ? (
+                <>
+                  An .srt, .vtt or .json3 — the words are taken from it as they are, and
+                  nothing is transcribed. It has to carry timestamps: they are what places
+                  each line, and plain text cannot be lined up with the audio.
+                  {desktop ? null : (
+                    <>
+                      {" "}
+                      The browser cannot read a file's real path, so <em>Choose file</em> only
+                      fills in the name — paste the full path, or use the desktop app.
+                    </>
+                  )}
+                </>
+              ) : (
+                <>
+                  Automatic uses the downloaded captions when there are any and transcribes
+                  locally otherwise. Force transcription when the captions are auto-generated
+                  and mangled.
+                </>
+              )}
             </p>
           </CardSection>
 

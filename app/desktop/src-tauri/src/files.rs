@@ -12,6 +12,9 @@ const VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "mov", "mkv", "webm", "m4v", "avi", "mpg", "mpeg", "ts", "wmv", "flv",
 ];
 const AUDIO_EXTENSIONS: &[&str] = &["wav", "mp3", "m4a", "aac", "flac", "ogg", "opus"];
+// What dubbing/transcript.py can actually parse — srt, vtt, and YouTube's
+// json3. No txt: without timestamps the pipeline has nothing to place.
+const TRANSCRIPT_EXTENSIONS: &[&str] = &["srt", "vtt", "json3"];
 
 #[tauri::command]
 pub async fn reveal_path(path: PathBuf) -> Result<(), String> {
@@ -32,6 +35,13 @@ pub async fn pick_video_file(app: tauri::AppHandle) -> Result<Option<String>, St
     pick(app, "Video", VIDEO_EXTENSIONS, AUDIO_EXTENSIONS, false).await
 }
 
+/// Native open dialog for a transcript the user already has (import screen's
+/// "A transcript I have"). `Ok(None)` is a cancel, not an error.
+#[tauri::command]
+pub async fn pick_transcript_file(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    pick(app, "Transcript", TRANSCRIPT_EXTENSIONS, &[], false).await
+}
+
 /// Native open dialog for the DubbingQwen checkout, for the setup screen.
 #[tauri::command]
 pub async fn pick_workspace_dir(app: tauri::AppHandle) -> Result<Option<String>, String> {
@@ -50,11 +60,13 @@ async fn pick(
         let picked = if directory {
             dialog.file().blocking_pick_folder()
         } else {
-            dialog
-                .file()
-                .add_filter(label, extensions)
-                .add_filter("Audio", also)
-                .blocking_pick_file()
+            let mut file = dialog.file().add_filter(label, extensions);
+            // A second filter only when there is a second family; an empty
+            // "Audio" entry in the dropdown would filter to nothing.
+            if !also.is_empty() {
+                file = file.add_filter("Audio", also);
+            }
+            file.blocking_pick_file()
         };
         // A file dialog only ever yields an on-disk path on desktop; a URI would mean
         // a mobile content provider, which the pipeline could not open anyway.

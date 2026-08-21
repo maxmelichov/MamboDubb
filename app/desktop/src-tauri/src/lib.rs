@@ -21,6 +21,7 @@ pub fn run() {
             runner::get_server_log,
             files::reveal_path,
             files::pick_video_file,
+            files::pick_transcript_file,
             files::pick_workspace_dir,
         ])
         .build(tauri::generate_context!())

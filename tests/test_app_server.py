@@ -151,10 +151,16 @@ def test_create_project_reaches_the_cli_with_every_option(client, outputs, fake)
     the user picked in the UI and silently did not get."""
     from dubbing import cli
 
+    # A real caption file: the server opens what it is handed (see
+    # `test_create_project_refuses_a_transcript_file_it_cannot_read`), so a
+    # made-up path here would be testing the refusal instead of the plumbing.
+    caps = outputs / "caps.json3"
+    caps.write_text('{"events": [{"tStartMs": 0, "segs": [{"utf8": "hi"}]}]}',
+                    encoding="utf-8")
     body = {"source": "https://youtu.be/abc", "tgt_lang": "ru", "duration": 60,
             "name": "movieproj", "context": "a note", "genre": "movie",
             "register": "dialogue", "transcript": "asr", "tts_model": "1.7b",
-            "dub_foreign": True, "captions": "caps.json3"}
+            "dub_foreign": True, "captions": str(caps)}
     r = client.post("/api/projects", json=body)
     assert r.status_code == 201 and r.json()["project"]["name"] == "movieproj"
     assert wait_until(lambda: fake.calls, 5.0)
@@ -165,10 +171,62 @@ def test_create_project_reaches_the_cli_with_every_option(client, outputs, fake)
     assert (args.source, args.tgt, args.duration) == ("https://youtu.be/abc", "ru", 60)
     assert (args.genre, args.register, args.transcript) == ("movie", "dialogue", "asr")
     assert args.tts_model == "1.7b" and args.dub_foreign is True
-    assert args.context == "a note" and str(args.captions) == "caps.json3"
+    assert args.context == "a note" and str(args.captions) == str(caps)
     # …and the options are on the manifest too, for every later edit job.
     stored = manifest.load(outputs / "movieproj")["source"]["app_opts"]
     assert stored["genre"] == "movie" and stored["tts_model"] == "1.7b"
+
+
+SRT_BODY = "1\n00:00:01,000 --> 00:00:03,000\nHello there\n"
+
+
+def test_create_project_takes_a_transcript_the_user_already_has(client, outputs, fake):
+    """The whole point of the feature, end to end on the wire: a .srt path in the
+    body becomes `--transcript file --captions <path>` in the argv the CLI parses,
+    and the run reads those words instead of downloading or transcribing any."""
+    from dubbing import cli
+
+    caps = outputs / "mine.srt"
+    caps.write_text(SRT_BODY, encoding="utf-8")
+    r = client.post("/api/projects", json={"source": "https://youtu.be/abc",
+                                           "name": "hastranscript",
+                                           "transcript": "file", "captions": str(caps)})
+    assert r.status_code == 201
+    assert wait_until(lambda: fake.calls, 5.0)
+    args = cli.parse_args(ops.full_run_argv(Path(fake.calls[0][2]["workdir"]),
+                                            fake.calls[0][2]["source"]))
+    assert args.transcript == "file" and str(args.captions) == str(caps)
+    stored = manifest.load(outputs / "hastranscript")["source"]["app_opts"]
+    assert stored["captions"] == str(caps) and stored["transcript"] == "file"
+
+
+@pytest.mark.parametrize("name,body,message", [
+    ("missing.srt", SRT_BODY, "not found"),          # …written to a different name
+    ("notes.txt", "no timestamps here", "Plain text"),
+    ("empty.srt", "nothing that is a cue\n", "no timed words"),
+])
+def test_create_project_refuses_a_transcript_file_it_cannot_read(client, outputs,
+                                                                 name, body, message):
+    """Read at the door, not at the transcript stage. A typo'd path or the wrong
+    file is a sentence here; there it is a job that dies after a download and a
+    Demucs separation, with an error about a file nobody remembers naming."""
+    path = outputs / name
+    if name != "missing.srt":
+        path.write_text(body, encoding="utf-8")
+    r = client.post("/api/projects", json={"source": "https://youtu.be/abc",
+                                           "name": "badtranscript",
+                                           "transcript": "file", "captions": str(path)})
+    assert r.status_code == 400
+    env = envelope_of(r)
+    assert env["code"] == "invalid_request" and message in env["message"]
+    assert not (outputs / "badtranscript").exists()
+
+
+def test_create_project_refuses_the_file_mode_with_no_file(client, outputs):
+    r = client.post("/api/projects", json={"source": "https://youtu.be/abc",
+                                           "name": "nofile", "transcript": "file"})
+    assert r.status_code == 400 and "nothing to read" in envelope_of(r)["message"]
+    assert not (outputs / "nofile").exists()
 
 
 def test_create_project_refuses_an_option_the_cli_cannot_take(client, outputs):

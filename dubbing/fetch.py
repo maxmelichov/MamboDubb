@@ -166,14 +166,17 @@ def run(
             raise SystemExit(f"input not found: {video}")
         video = localize(video, workdir)
         caps = None
-        if captions_file:
-            caps = Path(captions_file).expanduser().resolve()
-            if not caps.is_file():
-                raise SystemExit(f"captions file not found: {caps}")
         m["source"].setdefault("title", video.stem)
 
-    if captions_file and is_url(source):
+    # A transcript the user handed us outranks anything the download found it is
+    # the whole point of supplying one and on a local video it is the only one
+    # there is. Checked here for both kinds of source: the URL branch used to take
+    # the path on trust, so a typo in it produced a run that quietly transcribed
+    # itself instead of reading the file it was given.
+    if captions_file:
         caps = Path(captions_file).expanduser().resolve()
+        if not caps.is_file():
+            raise SystemExit(f"captions file not found: {caps}")
 
     source_wav = workdir / "source.wav"
     cmd = ["ffmpeg", "-y", "-v", "error", "-i", str(video)]
