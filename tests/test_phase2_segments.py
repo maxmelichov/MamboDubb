@@ -649,3 +649,91 @@ def test_a_wordy_or_long_or_distant_opener_stands_alone():
     far = _orphan_pair()
     far[1]["start"] = 16.5                            # past ORPHAN_GAP_MAX
     assert len(segments.merge_stranded_fragments(far)) == 2
+
+
+# ---------------------------------------------------------------------------
+# where the diarization pipeline comes from
+#
+# One gated repo was the only reason this app asked anyone for a Hugging Face
+# account, and a tokenless machine paid for it by dubbing every character in one
+# voice. The weights are CC-BY-4.0, so the pipeline reads an ungated mirror of
+# them instead. These are the assertions that keep that true: no source on the
+# default path needs a credential, the override is an override and not a hint,
+# and the gated original stays reachable for anyone who has a token.
+# ---------------------------------------------------------------------------
+
+def _no_token(monkeypatch):
+    for var in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", segments.DIARIZATION_HUB_ENV):
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_a_tokenless_machine_has_a_diarization_source_and_it_is_not_the_gated_one(monkeypatch):
+    _no_token(monkeypatch)
+    sources = segments.diarization_sources()
+    assert sources, "a machine with no token must still have somewhere to load from"
+    assert not any(needs for _, _, needs in sources)
+    assert segments.DIARIZATION_MODEL not in [c for c, _, _ in sources]
+    assert segments.DIARIZATION_MIRROR in [c for c, _, _ in sources]
+    assert segments.hf_token() is None
+
+
+def test_an_installed_copy_is_preferred_over_the_network(monkeypatch, tmp_path):
+    """`models/` first, so a provisioned machine diarizes with no hub at all."""
+    _no_token(monkeypatch)
+    local = tmp_path / "speaker-diarization-community-1"
+    local.mkdir()
+    (local / "config.yaml").write_text("pipeline: {}\n", encoding="utf-8")
+    monkeypatch.setattr(segments, "DIARIZATION_DIR", local)
+    assert segments.diarization_sources()[0][0] == str(local)
+    # An empty directory is not an install — a half-deleted models/ dir must not
+    # shadow the mirror with a folder holding nothing.
+    for f in local.iterdir():
+        f.unlink()
+    assert segments.diarization_sources()[0][0] == segments.DIARIZATION_MIRROR
+
+
+def test_a_token_puts_the_gated_original_back_within_reach(monkeypatch):
+    _no_token(monkeypatch)
+    monkeypatch.setenv("HF_TOKEN", "hf_pretend")
+    sources = segments.diarization_sources()
+    assert sources[-1][0] == segments.DIARIZATION_MODEL and sources[-1][2] is True
+    # Last, not first: identical weights, and the ungated path is the one that
+    # works on every machine, so a token buys a fallback and not a detour.
+    assert sources[0][0] != segments.DIARIZATION_MODEL
+
+
+def test_the_override_replaces_the_list_rather_than_joining_it(monkeypatch, tmp_path):
+    """An override that silently fell back to something else is not an override,
+    and "why did it not use my repo?" is the question a fallback chain makes
+    unanswerable."""
+    _no_token(monkeypatch)
+    monkeypatch.setenv(segments.DIARIZATION_HUB_ENV, "someone/their-diarizer")
+    assert segments.diarization_sources() == [
+        ("someone/their-diarizer",
+         f"{segments.DIARIZATION_HUB_ENV}=someone/their-diarizer", True)]
+    # A local path is an override too, and needs no token.
+    monkeypatch.setenv(segments.DIARIZATION_HUB_ENV, str(tmp_path))
+    assert segments.diarization_sources()[0][2] is False
+
+
+def test_every_source_failing_is_one_error_naming_all_of_them(monkeypatch):
+    """A run that ends up single-speaker has to say why *each* candidate failed:
+    "the gated repo refused the token" alone would send a user to fix the thing
+    that was never going to be used."""
+    _no_token(monkeypatch)
+    monkeypatch.setenv("HF_TOKEN", "hf_pretend")
+
+    class _Pipeline:
+        @staticmethod
+        def from_pretrained(checkpoint, **kw):
+            raise RuntimeError(f"nope: {checkpoint}")
+
+    import sys
+    import types
+    fake = types.ModuleType("pyannote.audio")
+    fake.Pipeline = _Pipeline
+    monkeypatch.setitem(sys.modules, "pyannote.audio", fake)
+    with pytest.raises(RuntimeError) as exc:
+        segments._load_diarization_pipeline()
+    assert segments.DIARIZATION_MIRROR in str(exc.value)
+    assert segments.DIARIZATION_MODEL in str(exc.value)

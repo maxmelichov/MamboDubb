@@ -638,13 +638,14 @@ const go = async (path, ms) => {
 await go("/setup", 300);
 const setup = root.textContent;
 check("setup screen renders", /Readiness/.test(setup));
-check("setup lists every check", document.querySelectorAll("[data-check]").length === 8);
+check("setup lists every check", document.querySelectorAll("[data-check]").length === 10);
 check("passing checks say Ready", /Ready/.test(setup));
 check("failing checks say Missing", /Missing/.test(setup));
 check("state is never colour alone", [...document.querySelectorAll("[data-check]")].every((row) =>
   /Ready|Missing|Not installed/.test(row.textContent),
 ));
-check("failing checks explain themselves", /HF_TOKEN/.test(setup) && /htdemucs|Demucs/.test(setup));
+check("failing checks explain themselves",
+  /foreign-speech detection is skipped/.test(setup) && /htdemucs|Demucs/.test(setup));
 // The detail lines mark the parts meant to be typed with backticks; rendering
 // them literally puts punctuation in the middle of a command to be copied.
 check("commands render as code, not backticks", !setup.includes("`"));
@@ -655,12 +656,12 @@ check("model sizes are shown", /GB/.test(setup));
  * itself — and a headline that counted them was the reason a machine with
  * nothing wrong with it still met a number at the top of this screen.
  */
-check("a mixed result is counted", /5 of 8 need attention/.test(setup));
+check("a mixed result is counted", /5 of 10 need attention/.test(setup));
 check(
-  "…and the two optional rows that are not here are not part of that count",
+  "…and the optional rows that are not here are not part of that count",
   [...document.querySelectorAll('[data-check][data-severity="optional"]')].filter((row) =>
     /Not installed/.test(row.textContent),
-  ).length === 2,
+  ).length === 4,
 );
 check("no continue while something is missing", ![...document.querySelectorAll("button")].some((b) =>
   b.textContent.includes("Continue to projects"),
@@ -692,13 +693,13 @@ check(
 check(
   "the three grades are three different situations",
   severityOf("ffmpeg") === "blocking" &&
-    severityOf("hf_token") === "degrades" &&
+    severityOf("model.lid") === "degrades" &&
     severityOf("model.demucs") === "optional",
 );
 check(
   "…and each says its grade as a word, never as a hue alone",
   /Required/.test(document.querySelector('[data-check="ffmpeg"]').textContent) &&
-    /Degrades/.test(document.querySelector('[data-check="hf_token"]').textContent) &&
+    /Degrades/.test(document.querySelector('[data-check="model.lid"]').textContent) &&
     /Optional/.test(document.querySelector('[data-check="model.demucs"]').textContent),
 );
 /*
@@ -798,7 +799,7 @@ check(
 );
 check(
   "…and says how many things that is, required first",
-  /3 things, one at a time, required first/.test(
+  /4 things, one at a time, required first/.test(
     document.querySelector("[data-install-all-note]").textContent,
   ),
 );
@@ -845,7 +846,7 @@ check("…and a click on it starts nothing", fixtureCalls.install === before + 1
 await new Promise((resolve) => setTimeout(resolve, 1400));
 check("the installed row turns Ready", /Ready/.test(rowOf("ffmpeg").textContent));
 check("…and drops its Install button", !installButton("ffmpeg"));
-check("…and the count comes down", /3 of 8 need attention/.test(root.textContent));
+check("…and the count comes down", /3 of 10 need attention/.test(root.textContent));
 check("the other row can be installed again", installButton("sox").disabled === false);
 
 /*
@@ -867,7 +868,7 @@ await new Promise((resolve) => setTimeout(resolve, 250));
 check("the one button queues exactly one queue", fixtureCalls.installAll === beforeAll + 1);
 check(
   "…and says which item of how many is in flight",
-  /Installing 1 of 2/.test(document.querySelector("[data-queue-position]").textContent),
+  /Installing 1 of 3/.test(document.querySelector("[data-queue-position]").textContent),
 );
 check(
   "…and names it",
@@ -903,7 +904,9 @@ check("…and the queue panel is gone", installQueuePanel() == null);
 check(
   "…leaving the button offering exactly what is left",
   installAllButton() != null &&
-    /The one thing missing/.test(document.querySelector("[data-install-all-note]").textContent),
+    /2 things, one at a time, required first/.test(
+      document.querySelector("[data-install-all-note]").textContent,
+    ),
 );
 
 /*
@@ -933,12 +936,39 @@ check(
   "with both tools in, the machine is ready and does not claim all checks pass",
   document.querySelector("[data-readiness]").textContent === "Ready to run",
 );
-check("…with the two that are still red still counted", /6\/8/.test(root.textContent));
+check("…with the rows that are still red still counted", /6\/10/.test(root.textContent));
+/*
+ * The footer's middle sentence, with a real `degrades` row under it.
+ *
+ * Language ID is what carries that grade now: the run works and is worse — a
+ * third language nobody notices is kept as recorded. It used to be the HF token
+ * standing here, which was true while diarization was gated and is not any
+ * more, and a footer that said "will still run just worse" over a credential
+ * nothing needs would be the wall this release removed, redrawn in prose.
+ */
+check(
+  "…and the footer says the run works and is worse, not that something is missing",
+  /Everything required is ready\. 1 thing above will still run just worse\./.test(
+    document.querySelector("[data-footer]").textContent,
+  ),
+);
+check(
+  "…while the offer that remains is exactly that one row",
+  installAllButton() != null &&
+    /The one thing missing/.test(document.querySelector("[data-install-all-note]").textContent) &&
+    rowSeverity("model.lid") === "degrades",
+);
+downloadButton("model.lid").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+for (let waited = 0; waited < 10000; waited += 250) {
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  if (/Ready/.test(rowOf("model.lid").textContent)) break;
+}
+check("the last thing the app can fetch lands too", /Ready/.test(rowOf("model.lid").textContent));
 /*
  * Nothing left that the app can install, so the one button is not there. The
- * two rows still red are a token nobody can install for you and a cache that
- * fetches itself — offering to "install everything" over those two would be a
- * button that installs nothing.
+ * rows still red are a token nobody needs, and two caches that fetch
+ * themselves — offering to "install everything" over those would be a button
+ * that installs nothing.
  */
 check("…and the one-button offer is gone when nothing is left to install",
   installAllButton() == null && installQueuePanel() == null);
@@ -948,15 +978,24 @@ check(
     b.textContent.includes("Continue to projects"),
   ),
 );
+/*
+ * And the sentence a shipped app should end on. Every red row left is
+ * `optional` — the HF token among them, because diarization reads an ungated
+ * mirror and no account is involved in telling speakers apart. This branch of
+ * the footer was unreachable while the token row was graded `degrades`.
+ */
 check(
-  "…and the footer stops calling a gated token an optional item for wider language pairs",
-  /Everything required is ready\..*will still run just worse\./.test(
+  "…and the footer says nothing needs what is left",
+  /Everything required is ready; 3 optional items are not installed, and nothing needs them\./.test(
     document.querySelector("[data-footer]").textContent,
   ),
 );
 check(
-  "…while the two rows that are still red keep their own grades",
-  rowSeverity("hf_token") === "degrades" && rowSeverity("model.demucs") === "optional",
+  "…because every row still red is optional, the token row included",
+  [...document.querySelectorAll("[data-check]")]
+    .filter((row) => /Missing|Not installed/.test(row.textContent))
+    .every((row) => row.getAttribute("data-severity") === "optional") &&
+    rowSeverity("hf_token") === "optional",
 );
 
 const recheck = [...document.querySelectorAll("button")].find((b) =>
@@ -965,7 +1004,7 @@ const recheck = [...document.querySelectorAll("button")].find((b) =>
 if (!recheck) throw new Error("smoke: no Re-check button");
 recheck.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
 await new Promise((resolve) => setTimeout(resolve, 300));
-check("re-check re-renders the list", document.querySelectorAll("[data-check]").length === 8);
+check("re-check re-renders the list", document.querySelectorAll("[data-check]").length === 10);
 
 // The gate must not strand the user here: fixture mode never auto-routes, and
 // the import screen is one link away in the nav pill.
@@ -985,7 +1024,7 @@ check("setup does not trap navigation", /Start dubbing/.test(root.textContent));
  */
 await go("/setup?ready=1", 400);
 const readyRows = [...document.querySelectorAll("[data-check]")];
-check("the ready fixture serves the whole checklist", readyRows.length === 8);
+check("the ready fixture serves the whole checklist", readyRows.length === 10);
 check(
   "…with every row green",
   readyRows.every((row) => /Ready/.test(row.textContent)) &&
@@ -1002,10 +1041,17 @@ check(
     b.textContent.includes("Continue to projects"),
   ),
 );
-// And the flag is opt-in: the same route without it is the broken board again.
+// And the flag is opt-in: the same route without it is this session's board
+// again, which by now has had everything installable installed — so what
+// separates the two is the rows nothing can install, still sitting there
+// un-downloaded, and a headline that refuses to say all checks pass.
 await go("/", 150);
 await go("/setup", 400);
-check("…while the default board is still the broken one", /Missing/.test(root.textContent));
+check(
+  "…while the default board is still this session's, not the demo's",
+  /Not installed/.test(root.textContent) &&
+    document.querySelector("[data-readiness]").textContent !== "All checks pass",
+);
 await go("/", 200);
 
 const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

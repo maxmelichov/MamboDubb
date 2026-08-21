@@ -124,7 +124,38 @@ ISLAND_GAP_MAX = 0.60
 # is the better estimate of when the voice actually began.
 HANDOFF_SNAP = 0.30
 
+# Who speaks when. Three names for one set of weights, because the upstream repo
+# is *gated*: the pipeline is free and CC-BY-4.0 ("released under the CC-BY-4.0
+# license and will always remain freely accessible"), but Hugging Face puts an
+# accept-the-terms click and a read token in front of the files. That token was
+# the single thing standing between a fresh machine and a working install every
+# other model this app opens is a public snapshot and this one asked for an
+# account, so the app shipped with per-speaker voices switched off by default for
+# anyone who did not want one.
+#
+# CC-BY-4.0 permits redistribution with attribution, so the fix is a mirror of the
+# identical files under our own (ungated) repo see scripts/upload_diarization_mirror.py,
+# which is what publishes it and what carries the credit. Nothing here is a fork:
+# same revision, same bytes, byte-identical LFS hashes.
+#
+# * `DIARIZATION_DIR`    the mirror snapshotted into `models/`, like every other
+#                        model the Setup screen downloads. Tried first: an
+#                        installed machine then diarizes with no network at all.
+# * `DIARIZATION_MIRROR` the ungated hub repo. Tried next it needs no token, so
+#                        this is the path a fresh machine takes on first run.
+# * `DIARIZATION_MODEL`  the gated original. Last, and only when a token exists;
+#                        it is also what `DUB_DIARIZATION_HUB` selects for anyone
+#                        who would rather fetch from upstream (or before the
+#                        mirror is published, where it is the working fallback).
 DIARIZATION_MODEL = "pyannote/speaker-diarization-community-1"
+DIARIZATION_MIRROR = "notmax123/speaker-diarization-community-1"
+DIARIZATION_DIR = Path(__file__).resolve().parents[1] / "models" / "speaker-diarization-community-1"
+# The revision the mirror copies, recorded so a claim of "the same weights" can be
+# checked against the hub rather than believed.
+DIARIZATION_REVISION = "3533c8cf8e369892e6b79ff1bf80f7b0286a54ee"
+# Override: a hub id *or* a local directory. Read at call time, never at import,
+# so a server started before the variable was set still sees it.
+DIARIZATION_HUB_ENV = "DUB_DIARIZATION_HUB"
 
 # What this stage records in `m["health"]` when it has to run degraded, and
 # therefore what a successful run of it clears (see `run`). Read by `report.run`.
@@ -876,28 +907,89 @@ def unsegmented_words(words: list[dict[str, Any]], segs: list[dict[str, Any]],
     return lost
 
 
+def hf_token() -> str | None:
+    """The Hugging Face token, if this machine has one. Optional everywhere.
+
+    Nothing in the default path needs it any more (see the DIARIZATION_* block);
+    it only selects the gated upstream repo for someone who asked for it.
+    """
+    return (os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+            or None)
+
+
+def diarization_sources() -> list[tuple[str, str, bool]]:
+    """`(checkpoint, why, needs_token)` for each place the pipeline may come from,
+    best first. Pure: constants, `os.environ` and one `is_dir()`, no network.
+
+    `DUB_DIARIZATION_HUB` is not one more candidate but the whole list when it is
+    set an override that silently fell back to something else would be no
+    override at all, and "why did it not use my repo?" is exactly the question a
+    fallback chain makes unanswerable.
+
+    The last entry is the gated original, and it is present only when a token
+    exists so the failure a tokenless machine sees is the *mirror's* failure
+    (typically "that repo does not exist yet"), not a stale complaint about
+    model terms it was never asked to accept.
+    """
+    override = (os.environ.get(DIARIZATION_HUB_ENV) or "").strip()
+    if override:
+        return [(override, f"{DIARIZATION_HUB_ENV}={override}", not Path(override).is_dir())]
+    out: list[tuple[str, str, bool]] = []
+    if DIARIZATION_DIR.is_dir() and any(DIARIZATION_DIR.iterdir()):
+        out.append((str(DIARIZATION_DIR), f"installed at {DIARIZATION_DIR}", False))
+    out.append((DIARIZATION_MIRROR, f"ungated mirror {DIARIZATION_MIRROR}", False))
+    if hf_token():
+        out.append((DIARIZATION_MODEL, f"gated {DIARIZATION_MODEL} (with token)", True))
+    return out
+
+
+def _load_diarization_pipeline() -> tuple[Any, str]:
+    """The first source that loads, and the sentence naming it. Raises if none do.
+
+    Every candidate's failure is carried into the final error rather than
+    replaced by the last one's: on a machine where the mirror 404s and the token
+    is wrong, "gated repo refused the token" alone would send the user to fix the
+    thing that was never going to be used.
+    """
+    from pyannote.audio import Pipeline
+
+    token = hf_token()
+    reasons: list[str] = []
+    for checkpoint, why, needs_token in diarization_sources():
+        use = token if needs_token else None
+        try:
+            try:
+                pipeline = Pipeline.from_pretrained(checkpoint, token=use)
+            except TypeError:
+                pipeline = Pipeline.from_pretrained(checkpoint, use_auth_token=use)
+        except Exception as exc:            # unreachable repo, bad revision, ...
+            reasons.append(f"{why}: {exc}")
+            continue
+        if pipeline is None:                # pyannote's own "could not fetch it"
+            reasons.append(f"{why}: not available")
+            continue
+        return pipeline, why
+    raise RuntimeError("; ".join(reasons) or "no diarization source configured")
+
+
 def diarize(vocals: Path, *, note: Callable[[str], None] | None = None
             ) -> list[dict[str, Any]]:
     """Pyannote turns; returns [] (single-speaker fallback) if unavailable.
 
     The fallback is a real verdict about the run every speaker becomes one
-    voice, so every line is cloned from one reference and the commonest cause
-    (no `HF_TOKEN`, or the model's terms not accepted) is a five-second fix the
-    user never hears about if this only prints. `note` records the reason where
-    `report.run` can repeat it; without one, behaviour is exactly as before.
+    voice, so every line is cloned from one reference and the reason is recorded
+    rather than only printed. `note` puts it where `report.run` can repeat it;
+    without one, behaviour is exactly as before.
+
+    No token is involved on the default path: `diarization_sources` prefers the
+    installed copy and then the ungated mirror, so a machine that has never
+    signed in to Hugging Face gets per-speaker voices like any other.
     """
     try:
         os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
         import torch
-        from pyannote.audio import Pipeline
 
-        token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
-        try:
-            pipeline = Pipeline.from_pretrained(DIARIZATION_MODEL, token=token)
-        except TypeError:
-            pipeline = Pipeline.from_pretrained(DIARIZATION_MODEL, use_auth_token=token)
-        if pipeline is None:
-            raise RuntimeError("pyannote returned no pipeline (HF_TOKEN / model terms?)")
+        pipeline, _why = _load_diarization_pipeline()
         if torch.cuda.is_available():
             pipeline.to(torch.device("cuda:0"))
         elif torch.backends.mps.is_available():

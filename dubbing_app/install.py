@@ -43,8 +43,9 @@ Four rules shape this module, each of them a refusal:
   and that field is looked up in `INSTALLERS` (tools → argv) or in
   `setup.model_downloads()` (models → hub repo + local dir). An id in neither
   table is a 400 that says how to install it by hand — which still covers the
-  models no snapshot can satisfy: pyannote (gated), Demucs and the Hebrew G2P
-  (they fetch their own caches on first use).
+  models no snapshot can satisfy: Demucs and the Hebrew G2P (they fetch their
+  own caches on first use). Diarization was on that list while it was gated; it
+  is a plain public snapshot now (`setup.model_downloads`).
 * **At most one install at a time, process-wide.** Not for memory (a `brew` runs
   nothing of ours) but because two package managers writing the same prefix is a
   broken prefix, and because the screen can only honestly show one spinner.

@@ -14,8 +14,8 @@ clicks alone; "GAP" means the path dead-ends outside the app.
 | 2 | First launch | The shell copies the bundled payload to `~/Library/Application Support/MamboDubb/workspace`, forces owner-write, stamps `.mambodubb-payload`, stores the path (`provision.rs::resolve_workspace`). Silent and correct; upgrades refresh source dirs wholesale and never touch `.venv`/`.env`/`models`/`outputs`. | WORKS IN-APP |
 | 3 | First `uv sync` | The runner spawns `uv run --project <workspace> python -m dubbing_app.server …` with the **sidecar** uv (`Contents/MacOS/uv`, `workspace.rs::find_uv` no Homebrew needed) and blocks on the ready line. `uv run` builds the ~1.7 GB `.venv`, fetching a managed CPython first. Minutes long — and `main.tsx` renders **nothing at all** until it finishes: `initApiBase()` awaits `start_server` *before the first `root.render`*, so the window is a bare `#110e16` rectangle the whole time. The stderr ring (`get_server_log`) holds the sync's progress, but **no UI code calls it** the sign of life exists and is never shown. | **GAP dead screen** |
 | 4 | Setup screen: tools | `SetupGate` routes to `/setup`; `ffmpeg` and `sox` are red BLOCKING rows with Install buttons. The button runs `brew install …` (`dubbing/tools.py::RECIPES`) and a fresh Mac **has no brew**: `install.py::MANAGERS["brew"]` answers "Get it from https://brew.sh" whose own install line is a terminal command. The unattended path exists only on machines that already broke the zero-terminal rule once. | **GAP dead end without Homebrew** |
-| 5 | Setup screen: models | Every red model row has a Download button with its price on it; `POST /api/setup/install` maps the id through `setup.model_downloads()` to a `snapshot_download` that resumes if torn off, with byte progress on a 2 s poll. All nine hub ids verified live, public, ungated (table below). ~18 GB for the blocking set. | WORKS IN-APP |
-| 6 | HF token | `hf_token_check` reads `HF_TOKEN` from the environment or the workspace `.env` and tells the user to add `HF_TOKEN=hf_…` to `~/Library/Application Support/MamboDubb/workspace/.env` a hidden folder, edited by hand, after accepting Pyannote's terms on the HF website. There is **no in-app way to write it**: no endpoint touches `.env`, no field on the Setup screen. DEGRADES not blocking (single-speaker fallback), so a user can dub without it and get every line in one voice. | **GAP hand-edit only** |
+| 5 | Setup screen: models | Every red model row has a Download button with its price on it; `POST /api/setup/install` maps the id through `setup.model_downloads()` to a `snapshot_download` that resumes if torn off, with byte progress on a 2 s poll. All ten hub ids public and ungated the tenth is the diarization mirror, added when the one gated model in the tree stopped being one. ~18 GB for the blocking set. | WORKS IN-APP |
+| 6 | HF token | Nothing needs one. Diarization was the only gated model in the tree, and its weights are CC-BY-4.0, so the pipeline reads an ungated mirror of the identical files (`segments.diarization_sources`, published by `scripts/upload_diarization_mirror.py`) 32 MB, no account, and every speaker keeps their own voice. The row is OPTIONAL and informational; `POST /api/setup/hf_token` still writes the workspace `.env` for anyone who wants `DUB_DIARIZATION_HUB` pointed at the gated upstream repo instead. | WORKS IN-APP no credential |
 | 7 | First dub | With 1–6 survived: pick a video (native dialog, absolute path), the job runs, Demucs and the Hebrew G2P fetch their own caches mid-run (network again, progress in the job log). Renders, previews, reveals in Finder. | WORKS IN-APP |
 
 ## Hub repos, verified
@@ -50,10 +50,10 @@ No wrong ids, nothing gated, nothing needing the token step 6 asks for.
    only zero-terminal on machines that already have brew. Bundling static builds (or
    downloading them the way models are downloaded) is the shape of the fix; the
    `MANAGERS` message is honest but honesty is not a dub.
-4. **The HF token is a hand-edit in a hidden folder.** One POST that appends
-   `HF_TOKEN=…` to the workspace `.env` (plus a field on the Setup row) closes it;
-   `env_path()` already knows the one true file. Degrades-only, so it gates quality,
-   not the first dub.
+4. ~~**The HF token is a hand-edit in a hidden folder.**~~ Closed twice over: the POST
+   that writes the workspace `.env` exists (with a field on the Setup row), and then the
+   reason to want one went away — diarization reads an ungated mirror of the same
+   CC-BY-4.0 weights, so a fresh machine needs no Hugging Face account at all.
 5. **A failed server start has no surface.** If `start_server` errors (sync failed,
    offline first launch), `desktop.ts` swallows it into a `null` base URL and the
    import screen reports a generic fetch failure; the stderr tail that names the real

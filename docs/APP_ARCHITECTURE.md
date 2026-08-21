@@ -534,7 +534,7 @@ dies halfway and an absent model directory silently becomes a multi-gigabyte dow
 
 * Ids: `ffmpeg`, `sox`, `uv`, `hf_token`, `model.translate`, `model.tts.<key>` (one per
   `tts.TTS_MODELS`), `model.asr.he`, `model.asr.src`, `model.asr.en`, `model.asr.tgt`,
-  `model.lid`, `model.demucs`, `model.tts.he`, `model.g2p.he`, `disk`. `label` and `detail`
+  `model.lid`, `model.diarization`, `model.demucs`, `model.tts.he`, `model.g2p.he`, `disk`. `label` and `detail`
   are for display; `id` is stable.
 * **`severity` is the grade, and `required` is derived from it.** A boolean has two values
   and the question has three, so everything that was not required was reported as one
@@ -548,16 +548,22 @@ dies halfway and an absent model directory silently becomes a multi-gigabyte dow
     client must handle that: `uv` blocks (nothing here is installed or updated without it)
     but a running server spawns its job child with `sys.executable` and never shells out to
     it, so naming a stage for it would be a guess dressed as a fact.
-  * `degrades` the run **works and is worse**: `hf_token` (diarization falls back to one
-    speaker), `model.lid` (foreign speech is never detected). Neither stops anything and
-    neither is nothing.
+  * `degrades` the run **works and is worse**: `model.lid` (foreign speech is never
+    detected). It stops nothing and it is not nothing.
   * `optional` irrelevant until asked for: the per-language-pair models, the
-    self-downloading caches (Demucs), free disk.
+    self-downloading caches (Demucs, `model.diarization`), free disk and `hf_token`.
+    The token row was `degrades` for as long as diarization loaded the gated
+    `pyannote/speaker-diarization-community-1`; the pipeline reads an ungated mirror of
+    the same CC-BY-4.0 weights now (`segments.diarization_sources`), so a machine with no
+    Hugging Face account tells speakers apart like any other and **readiness may never
+    again depend on a credential**.
 * **`ok` is the conjunction of the `required` checks only** unchanged, and now equal to
   "no blocking check fails". A client must not compute readiness as "every row passes":
   that is stricter than the server and makes the "ready, with things missing" state
   unreachable.
-* **The token is reported as present or absent, never echoed.** Env first
+* **The token is reported as present or absent, never echoed.** It is optional, and the
+  only thing it still buys is `DUB_DIARIZATION_HUB` pointed at the gated upstream repo.
+  Env first
   (`HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN`), then a `HF_TOKEN=` line in `.env` whose
   **absolute** path the failing row names, backticked, because "put it in `.env`" is a
   scavenger hunt on a machine with three checkouts and only the server knows which one it

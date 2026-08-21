@@ -7,22 +7,25 @@
 - [ffmpeg](https://ffmpeg.org/) (`brew install ffmpeg`)
 - [SoX](http://sox.sourceforge.net/) (`brew install sox`) Qwen3-TTS text normalization
 - [Node](https://nodejs.org/) + [pnpm](https://pnpm.io/) (`brew install node pnpm`) to build the editor UI
-- Hugging Face account + token (for the gated **Pyannote** diarization models)
 
 ## Install
 
 ```bash
 cd MamboDubb
 uv sync
-cp .env.example .env      # then set HF_TOKEN=hf_...
 ```
 
-Accept the Pyannote model terms once per account:
+**No Hugging Face account is needed.** Every model this pipeline opens is a public
+repo. Diarization used to be the exception the upstream
+[`pyannote/speaker-diarization-community-1`](https://huggingface.co/pyannote/speaker-diarization-community-1)
+is gated so an install without a token dubbed every character in one voice. The
+weights are CC-BY-4.0, so the app reads an ungated mirror of the identical files
+(`dubbing/segments.py DIARIZATION_MIRROR`, published by
+`scripts/upload_diarization_mirror.py`).
 
-- https://huggingface.co/pyannote/speaker-diarization-community-1
-
-Without a token the pipeline still runs diarization falls back to a single speaker
-and the report says so.
+A token is still *usable*, and only for one thing: set `DUB_DIARIZATION_HUB` to the
+gated repo id to fetch from upstream instead of the mirror, with `HF_TOKEN=hf_...` in
+`.env` (or the field on the Setup screen, which writes it for you).
 
 ## Models
 

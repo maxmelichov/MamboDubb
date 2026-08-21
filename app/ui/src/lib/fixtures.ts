@@ -404,6 +404,11 @@ const installed = new Set<string>();
  * inline error path only exists in the mode that is tested. The "token" is
  * never kept only the fact that one was saved, which is also all the real
  * server ever sends back.
+ *
+ * `optional`, and the demo has to say so. This row was `degrades` while
+ * diarization loaded a gated repo; it is not any more (the pipeline reads an
+ * ungated mirror), and a fixture still painting an attention row for a
+ * credential nothing needs would be demoing a wall the app removed.
  */
 let hfTokenSaved = false;
 
@@ -415,12 +420,12 @@ function hfTokenRow(ready = false): SetupCheck {
     id: "hf_token",
     label: "Hugging Face token",
     ok: saved,
-    severity: "degrades",
+    severity: "optional",
     detail: saved
       ? `set in \`${FIXTURE_ENV}\``
-      : "not set diarization falls back to a single speaker, so every line is attributed " +
-        "to one voice. Accept Pyannote's model terms, then add `HF_TOKEN=hf_…` to " +
-        `\`${FIXTURE_ENV}\``,
+      : "not set nothing needs one. Diarization reads an ungated mirror, so speakers are " +
+        "told apart without an account. Only for fetching the gated upstream models " +
+        `instead; it would go in \`${FIXTURE_ENV}\``,
   };
 }
 
@@ -501,10 +506,26 @@ function toolRow(id: string, ready = false): SetupCheck {
  * a hub repo, a directory and an approximate size, and `installable: true` is
  * what puts the Download button on the row. Two of them, in the two states the
  * button has: idle with its price tag, and mid-download (see `seedDownload`).
+ *
+ * `severity` defaults to blocking, and two rows are here precisely because they
+ * are not. The screen has three grades and the fixture used to reach the middle
+ * one only through the HF-token row; that row is `optional` now (diarization no
+ * longer needs a credential), so language ID carries `degrades` here as it does
+ * on the server. Diarization itself is the `optional` downloadable row — 32 MB
+ * from an ungated mirror, the whole reason the token stopped mattering.
  */
 const MODEL_ROWS: Record<
   string,
-  { label: string; stage: Stage; hub: string; dir: string; bytes: number; here: string }
+  {
+    label: string;
+    stage?: Stage;
+    hub: string;
+    dir: string;
+    bytes: number;
+    here: string;
+    severity?: SetupSeverity;
+    missing?: string;
+  }
 > = {
   "model.translate": {
     label: "Translation model (Gemma 3 12B)",
@@ -535,6 +556,24 @@ const MODEL_ROWS: Record<
     bytes: 150_000_000,
     here: "145 MB in models/faster-whisper-base.en",
   },
+  "model.lid": {
+    label: "Language ID (VoxLingua107)",
+    severity: "degrades",
+    hub: "speechbrain/lang-id-voxlingua107-ecapa",
+    dir: "lang-id-voxlingua107-ecapa",
+    bytes: 100_000_000,
+    here: "95 MB in models/lang-id-voxlingua107-ecapa",
+    missing: "without it foreign-speech detection is skipped",
+  },
+  "model.diarization": {
+    label: "Speaker diarization (pyannote community-1)",
+    severity: "optional",
+    hub: "notmax123/speaker-diarization-community-1",
+    dir: "speaker-diarization-community-1",
+    bytes: 32_000_000,
+    here: "31 MB in models/speaker-diarization-community-1",
+    missing: "downloads from notmax123/speaker-diarization-community-1 on first use, no token",
+  },
 };
 
 /** One downloadable model row, in whichever state this fake session has it. */
@@ -542,19 +581,21 @@ function modelRow(id: string, ready = false): SetupCheck {
   const row = MODEL_ROWS[id];
   const ok = ready || installed.has(id);
   const approx = fixtureBytes(row.bytes);
+  const severity = row.severity ?? "blocking";
   return {
     id,
     label: row.label,
     ok,
     installable: true,
-    severity: "blocking",
-    required: true,
-    stage: row.stage,
+    severity,
+    required: severity === "blocking",
+    // Only ever on a blocking row, exactly as the server attaches it.
+    ...(severity === "blocking" && row.stage ? { stage: row.stage } : {}),
     hub: row.hub,
     download_bytes: row.bytes,
     detail: ok
       ? row.here
-      : `missing: models/${row.dir} downloads from ${row.hub} on first use. ` +
+      : `missing: models/${row.dir} ${row.missing ?? `downloads from ${row.hub} on first use`}. ` +
         `Fetch it (~${approx}): \`uv run hf download ${row.hub} --local-dir models/${row.dir}\``,
   };
 }
@@ -576,6 +617,8 @@ function setupChecks(ready = false): SetupCheck[] {
     modelRow("model.translate", ready),
     modelRow("model.tts.1.7b", ready),
     modelRow("model.asr.en", ready),
+    modelRow("model.lid", ready),
+    modelRow("model.diarization", ready),
     {
       id: "model.demucs",
       label: "Stem separation Demucs htdemucs",

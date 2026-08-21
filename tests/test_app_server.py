@@ -2179,7 +2179,8 @@ def test_setup_report_shape(client):
     assert isinstance(body["ok"], bool)
     by_id = {c["id"]: c for c in body["checks"]}
     for wanted in ("ffmpeg", "sox", "hf_token", "model.translate", "model.tts.1.7b",
-                   "model.asr.en", "model.lid", "model.demucs", "disk"):
+                   "model.asr.en", "model.lid", "model.diarization", "model.demucs",
+                   "disk"):
         assert wanted in by_id, wanted
     for c in body["checks"]:
         assert {"id", "label", "ok", "detail", "required"} <= set(c)
@@ -2210,13 +2211,18 @@ def test_setup_grades_every_check_and_required_is_derived_from_it(client):
     assert by_id["ffmpeg"] == by_id["uv"] == "blocking"
     assert by_id["model.translate"] == by_id["model.asr.en"] == "blocking"
     assert by_id[f"model.tts.{tts.DEFAULT_TTS_MODEL}"] == "blocking"
-    # The run works and is worse: one voice for everybody, no third language found.
-    assert by_id["hf_token"] == by_id["model.lid"] == "degrades"
+    # The run works and is worse: a third language nobody noticed.
+    assert by_id["model.lid"] == "degrades"
     # Irrelevant until asked for, or self-downloading. sox is here on evidence:
     # the only sox caller in the tree is qwen_tts's 25Hz tokenizer, and the
     # pipeline loads only 12Hz checkpoints — a brewless Mac dubs without it.
-    for optional in ("sox", "model.asr.he", "model.asr.tgt", "model.tts.he",
-                     "model.g2p.he", "model.demucs", "disk"):
+    # `hf_token` is here for a bigger reason: it used to be `degrades` because
+    # diarization loaded a gated repo, which made "you need a Hugging Face
+    # account" part of a fresh install. It does not any more, so the credential
+    # may never again be why a machine is not green.
+    for optional in ("sox", "hf_token", "model.diarization", "model.asr.he",
+                     "model.asr.tgt", "model.tts.he", "model.g2p.he", "model.demucs",
+                     "disk"):
         assert by_id[optional] == "optional", optional
 
 
@@ -2276,9 +2282,39 @@ def test_setup_token_row_names_the_env_file_by_absolute_path(monkeypatch, tmp_pa
     monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
     env = tmp_path / ".env"
     row = setup_mod.hf_token_check(env)
-    assert row["ok"] is False and row["severity"] == "degrades"
+    assert row["ok"] is False and row["severity"] == "optional"
     assert f"`{env}`" in row["detail"]          # backticked, so the UI can copy it
     assert Path(row["path"]).is_absolute()
+
+
+def test_setup_token_row_no_longer_asks_for_an_account_to_tell_speakers_apart(monkeypatch,
+                                                                              tmp_path):
+    """The row that made this app unshippable.
+
+    Diarization used to load a gated repo, so a machine with no Hugging Face
+    account dubbed every character in the video in one voice — and the setup
+    screen said so, in the middle grade, next to a paste field. The weights are
+    CC-BY-4.0 and the pipeline now reads an ungated mirror of them
+    (`segments.diarization_sources`), so the row states a fact instead of asking
+    for a credential: `optional`, and its sentence promises nothing it cannot
+    keep.
+    """
+    from dubbing import segments
+    from dubbing_app import setup as setup_mod
+
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+    monkeypatch.delenv(segments.DIARIZATION_HUB_ENV, raising=False)
+    row = setup_mod.hf_token_check(tmp_path / ".env")
+    assert row["severity"] == "optional"
+    # No claim that skipping it costs anything, because it does not.
+    assert "single speaker" not in row["detail"]
+    assert "one voice" not in row["detail"]
+    # And the pipeline agrees: with no token at all there is still a source, and
+    # not one of the sources it would try needs one.
+    sources = segments.diarization_sources()
+    assert sources and not any(needs_token for _, _, needs_token in sources)
+    assert segments.DIARIZATION_MODEL not in [c for c, _, _ in sources]
 
 
 def test_setup_model_paths_come_from_the_pipeline(client):
@@ -3153,10 +3189,10 @@ def test_install_plan_orders_required_first_and_keeps_the_screens_order():
 
 
 def test_install_plan_never_queues_anything_that_needs_a_credential(client):
-    """The one check that wants a token installs nothing, and the one gated model
-    is deliberately absent from the download table — so the queue can never stop
-    half way to ask the user for something. Asserted against the real report,
-    because this is a claim about the actual tables, not a synthetic one."""
+    """The one check that wants a token installs nothing, and no gated repo is in
+    the download table — so the queue can never stop half way to ask the user for
+    something. Asserted against the real report, because this is a claim about
+    the actual tables, not a synthetic one."""
     from dubbing import segments
 
     plan = setup_mod.install_plan(client.get("/api/setup").json())
@@ -3166,6 +3202,9 @@ def test_install_plan_never_queues_anything_that_needs_a_credential(client):
     assert ids <= set(install_mod.INSTALLERS) | set(downloads)
     gated = segments.DIARIZATION_MODEL
     assert not any(spec["hub"] == gated for spec in downloads.values())
+    # Diarization is downloadable now, and from the mirror — the whole point.
+    assert downloads["model.diarization"]["hub"] == segments.DIARIZATION_MIRROR
+    assert downloads["model.diarization"]["path"] == segments.DIARIZATION_DIR
 
 
 @pytest.fixture()

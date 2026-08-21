@@ -511,12 +511,16 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
 
     @app.post("/api/setup/hf_token")
     def set_hf_token(body: HfTokenBody) -> dict[str, Any]:
-        """Save the Hugging Face token into the workspace `.env` the in-app
-        version of the one setup step that used to require finding a hidden
-        folder and hand-editing a dotfile. Shape checks only: `hf_` prefix, no
-        whitespace inside the token is *validated* against the hub the first
-        time diarization presents it, and a wrong-but-well-formed token fails
-        there with pyannote's own error. Other `.env` lines survive the write.
+        """Save the Hugging Face token into the workspace `.env`.
+
+        Nothing needs one any more diarization reads an ungated mirror, and the
+        setup row is `optional` but the endpoint stays, because a token is still
+        how someone points `DUB_DIARIZATION_HUB` at the gated upstream repo, and
+        because the alternative is telling them to find a hidden folder and
+        hand-edit a dotfile. Shape checks only: `hf_` prefix, no whitespace
+        inside the token is *validated* against the hub the first time it is
+        presented, and a wrong-but-well-formed token fails there with the hub's
+        own error. Other `.env` lines survive the write.
         Returns the re-probed row; the token itself never appears in a
         response, a log line, or an error message.
         """

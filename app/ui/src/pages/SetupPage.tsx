@@ -38,8 +38,8 @@
  *   path. The button carries the price ("Download · ~9.7 GB"), the poll draws
  *   a real bar (bytes on disk against the estimate), and a torn-off attempt
  *   resumes the server keeps the partial files, and the Retry says so.
- *   Where no snapshot can help gated pyannote, self-fetching caches the
- *   detail line stays the whole answer.
+ *   Where no snapshot can help the self-fetching caches, Demucs and the Hebrew
+ *   G2P the detail line stays the whole answer.
  * - **Do not nag.** The gate in App.tsx routes here only when the server says
  *   `ok: false`. Otherwise this screen exists but is never in the way.
  *
@@ -840,28 +840,31 @@ function CheckRow({
 }
 
 /**
- * The gated pipeline: `dubbing/segments.py DIARIZATION_MODEL`, said here so the
- * "accept the terms" link points at the exact page whose Accept button matters.
- * A different repo would mean pyannote moved, and this link is the one thing on
- * this screen that would silently rot so it is named once, next to its source.
+ * The gated upstream pipeline: `dubbing/segments.py DIARIZATION_MODEL`. Named
+ * here only so the sentence that explains what a token is *for* can point at the
+ * thing it is for. It is no longer what the app fetches the pipeline reads an
+ * ungated mirror of the same CC-BY-4.0 weights and needs no account at all.
  */
 const PYANNOTE_REPO = "pyannote/speaker-diarization-community-1";
 
 /**
  * The token, pasted instead of hand-edited.
  *
- * Until now this row's fix was the detail sentence: find a hidden folder, open
- * a dotfile, add a line — the only step of setup that still assumed a terminal.
- * The field replaces the instruction: paste, Save, and the *server* writes the
- * `.env` it will actually read. Three honesty rules:
+ * This field used to be the fix for a real problem: diarization loaded a gated
+ * repo, and without a token every character in the video was dubbed in one
+ * voice. It is not that any more the pipeline reads an ungated mirror of the
+ * same weights, the row is `optional`, and nothing on a fresh machine is waiting
+ * on it. So the copy no longer sells anything. It says what a token is still
+ * for (fetching the gated upstream models instead of the mirror), and gets out
+ * of the way; a field that talks a user into an account they do not need is the
+ * same wall as before wearing a friendlier sentence.
  *
- * - **Say what it buys, and what skipping costs.** Per-speaker voices, and
- *   "runs still work, everyone shares one voice". A field that reads as
- *   required would block users who do not care yet.
+ * Two rules survive unchanged, because they are about credentials, not copy:
+ *
  * - **Masked, and never echoed.** `type=password`, and the server's answer is
  *   the re-probed row a saved token cannot be read back out of this app.
- * - **The row is the receipt.** On save the whole checklist re-probes; the
- *   badge flipping to Ready is the server saying it found the token where the
+ * - **The row is the receipt.** On save the whole checklist re-probes; the row
+ *   flipping to "set" is the server saying it found the token where the
  *   pipeline will look, which no local success state can claim.
  */
 function HfTokenField({ ok, onChanged }: { ok: boolean; onChanged: () => void }) {
@@ -919,29 +922,29 @@ function HfTokenField({ ok, onChanged }: { ok: boolean; onChanged: () => void })
   return (
     <div className="mt-2 max-w-2xl" data-token-field>
       <p className="text-[12px] leading-relaxed text-secondary">
-        With a token, speaker separation can tell voices apart and each speaker keeps their own
-        voice in the dub. Without one, runs still work everyone just speaks in a single voice.
-        Two steps, both free:{" "}
+        Not needed. Speakers are told apart without one the dub gives each person their own
+        voice on a machine that has never signed in to Hugging Face. A token only matters if you
+        would rather fetch the gated{" "}
         <a
           href={`https://huggingface.co/${PYANNOTE_REPO}`}
           target="_blank"
           rel="noreferrer"
           className="inline-flex items-baseline gap-0.5 font-semibold text-primary underline underline-offset-4 hover:opacity-80"
         >
-          accept the {PYANNOTE_REPO} terms
+          {PYANNOTE_REPO}
           <ExternalLink aria-hidden className="h-3 w-3 self-center" />
         </a>{" "}
-        , then{" "}
+        upstream instead of the mirror. If you have{" "}
         <a
           href="https://huggingface.co/settings/tokens"
           target="_blank"
           rel="noreferrer"
           className="inline-flex items-baseline gap-0.5 font-semibold text-primary underline underline-offset-4 hover:opacity-80"
         >
-          create a read token
+          one
           <ExternalLink aria-hidden className="h-3 w-3 self-center" />
-        </a>{" "}
-        and paste it here. The app writes it to the right file itself.
+        </a>
+        , paste it here and the app writes it to the right file itself.
       </p>
       <form
         className="mt-2 flex items-center gap-2"
