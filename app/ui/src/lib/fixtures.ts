@@ -13,6 +13,10 @@
 
 import data from "./fixture-data.json";
 import { ApiError } from "./apiError";
+// Type-only, so the cycle (`api` imports this module) is erased at build: the
+// install slot's response shape grew a queue block, and it is declared where
+// the endpoint that sends it is.
+import type { SetupInstallState } from "./api";
 import { applyPatch } from "./patch";
 import { placedSpan } from "./segments";
 import { isPending } from "./types";
@@ -200,6 +204,9 @@ export const calls = {
   // while an install runs must produce no second install, and a disabled button
   // that still fires would look identical from the DOM.
   install: 0,
+  // Same argument for the one-button queue: "pressing it again while it runs
+  // starts nothing new" is a claim about requests, and the DOM cannot see it.
+  installAll: 0,
   log: [] as string[],
   /**
    * Every body the import screen has sent, kept whole.
@@ -515,6 +522,19 @@ const MODEL_ROWS: Record<
     bytes: 4_500_000_000,
     here: "4.2 GB in models/qwen3-tts-1.7b",
   },
+  // The third blocking download the server offers (`setup.model_checks`), and
+  // the smallest — which is exactly why it is here: a queue of one item cannot
+  // show "2 of 3", and a board where every download costs gigabytes cannot show
+  // that the one-button install works through them in order and at different
+  // speeds. Without it verification silently stops happening.
+  "model.asr.en": {
+    label: "Target ASR English (clip verification)",
+    stage: "tts",
+    hub: "Systran/faster-whisper-base.en",
+    dir: "faster-whisper-base.en",
+    bytes: 150_000_000,
+    here: "145 MB in models/faster-whisper-base.en",
+  },
 };
 
 /** One downloadable model row, in whichever state this fake session has it. */
@@ -555,14 +575,7 @@ function setupChecks(ready = false): SetupCheck[] {
     hfTokenRow(ready),
     modelRow("model.translate", ready),
     modelRow("model.tts.1.7b", ready),
-    {
-      id: "model.asr.en",
-      label: "Target ASR English (clip verification)",
-      ok: true,
-      severity: "blocking",
-      stage: "tts",
-      detail: "145 MB in models/faster-whisper-base.en",
-    },
+    modelRow("model.asr.en", ready),
     {
       id: "model.demucs",
       label: "Stem separation Demucs htdemucs",
@@ -616,17 +629,20 @@ let installState: SetupInstall = {
   check: null,
 };
 
-export function startInstall(id: string): Promise<SetupInstall> {
+export function startInstall(id: string): Promise<SetupInstallState> {
   calls.install += 1;
   calls.log.push(`install:${id}`);
+  // A row's own button ends the last queue's story, exactly as the server's
+  // `POST /api/setup/install` does before it claims the slot.
+  if (!queueState?.running) queueState = null;
   if (installState.running) {
     return Promise.reject(
       new ApiError("busy", `an install is already running (${installState.id}); one at a time`, 409),
     );
   }
   if (id in MODEL_ROWS) {
-    startDownload(id);
-    return delay(structuredClone(installState));
+    void startDownload(id);
+    return delay(installBody());
   }
   if (!(id in TOOL_ROWS)) {
     return Promise.reject(
@@ -640,24 +656,116 @@ export function startInstall(id: string): Promise<SetupInstall> {
       ),
     );
   }
-  installState = {
-    running: true,
-    id,
-    ok: null,
-    error: null,
-    tail: [`$ brew install ${id}`],
-    check: null,
-  };
-  void runInstall(id);
-  return delay(structuredClone(installState));
+  void startTool(id);
+  return delay(installBody());
 }
 
-export function installStatus(): Promise<SetupInstall> {
+export function installStatus(): Promise<SetupInstallState> {
   // Not in the provisioned-machine demo: the seeded mid-flight download is the
   // one thing that would still be moving on a screen whose whole claim is that
   // there is nothing left to do.
   if (!readyDemo()) seedDownload();
-  return delay(structuredClone(installState));
+  return delay(installBody());
+}
+
+/**
+ * `POST|DELETE /api/setup/install_all` — the one button, faked end to end.
+ *
+ * The server computes the list from a fresh report (`setup.install_plan`) and
+ * runs it through the single slot; this does the same over the fixture board,
+ * so the queue the smoke test drives advances deterministically: the same
+ * ordering rule (blocking before degrades, nothing optional), the same one
+ * install in flight at a time, the same cancel boundary — the item running
+ * finishes, nothing after it starts.
+ */
+type FixtureQueue = {
+  items: { id: string; label: string; bytes: number }[];
+  pos: number;
+  running: boolean;
+  cancelled: boolean;
+  failed: string[];
+  started: number;
+  finished: number | null;
+};
+
+let queueState: FixtureQueue | null = null;
+
+/** The fixture's `setup.install_plan`: what is missing, that the app can fix. */
+function installPlan(): FixtureQueue["items"] {
+  const rank: Partial<Record<SetupSeverity, number>> = { blocking: 0, degrades: 1 };
+  return setupChecks()
+    .filter((row) => !row.ok && row.installable && rank[row.severity ?? "blocking"] != null)
+    .sort((a, b) => rank[a.severity ?? "blocking"]! - rank[b.severity ?? "blocking"]!)
+    .map((row) => ({ id: row.id, label: row.label, bytes: row.download_bytes ?? 0 }));
+}
+
+export function startInstallAll(): Promise<SetupInstallState> {
+  calls.installAll += 1;
+  calls.log.push("install_all");
+  // Idempotent, like the server: pressing it again while it runs answers the
+  // running queue. A 409 here would teach the user that the button they just
+  // pressed did something wrong.
+  if (queueState?.running) return delay(installBody());
+  if (installState.running) {
+    return Promise.reject(
+      new ApiError("busy", "an install is already running; wait for it to finish, " +
+        "then install the rest in one go", 409),
+    );
+  }
+  const items = installPlan();
+  queueState = {
+    items,
+    pos: 0,
+    running: items.length > 0,
+    cancelled: false,
+    failed: [],
+    started: Date.now() / 1000,
+    finished: items.length ? null : Date.now() / 1000,
+  };
+  if (queueState.running) void runQueue();
+  return delay(installBody());
+}
+
+export function cancelInstallAll(): Promise<SetupInstallState> {
+  if (queueState?.running) queueState = { ...queueState, cancelled: true };
+  return delay(installBody());
+}
+
+async function runQueue(): Promise<void> {
+  for (;;) {
+    const queue = queueState;
+    if (!queue || queue.cancelled || queue.pos >= queue.items.length) break;
+    const { id } = queue.items[queue.pos];
+    await (id in MODEL_ROWS ? startDownload(id) : startTool(id));
+    if (queueState === null) return;                 // a row's button took over
+    queueState = {
+      ...queueState,
+      pos: queueState.pos + 1,
+      failed: installState.ok ? queueState.failed : [...queueState.failed, id],
+    };
+  }
+  if (queueState) queueState = { ...queueState, running: false, finished: Date.now() / 1000 };
+}
+
+/** The slot's status with the queue block beside it — one body, as the server
+    sends it, so the header and the row read the same poll. */
+function installBody(): SetupInstallState {
+  const body: SetupInstallState = structuredClone(installState);
+  if (!queueState) return body;
+  const done = queueState.running ? (installState.bytes_done ?? 0) : 0;
+  const left = queueState.items.slice(queueState.pos).reduce((sum, item) => sum + item.bytes, 0);
+  body.queue = {
+    running: queueState.running,
+    cancelled: queueState.cancelled,
+    items: structuredClone(queueState.items),
+    pos: queueState.pos,
+    total: queueState.items.length,
+    failed: [...queueState.failed],
+    remaining_bytes: Math.max(0, left - done),
+    started: queueState.started,
+    finished: queueState.finished,
+  };
+  return body;
 }
 
 /**
@@ -669,7 +777,7 @@ export function installStatus(): Promise<SetupInstall> {
  * row. Compressed to a few seconds so the smoke test and the demo can watch
  * the bar actually move and then the row turn Ready.
  */
-function startDownload(id: string, from = 0): void {
+function startDownload(id: string, from = 0): Promise<void> {
   const row = MODEL_ROWS[id];
   installState = {
     running: true,
@@ -685,7 +793,23 @@ function startDownload(id: string, from = 0): void {
     bytes_done: from,
     bytes_total: row.bytes,
   };
-  void runDownload(id);
+  // Returned rather than fired and forgotten, so the queue can wait for one
+  // item before claiming the slot for the next — the server's one-at-a-time
+  // rule, which the queue is the only caller that has to honour by hand.
+  return runDownload(id);
+}
+
+/** The tool half of the same thing: claim the slot, hand back the promise. */
+function startTool(id: string): Promise<void> {
+  installState = {
+    running: true,
+    id,
+    ok: null,
+    error: null,
+    tail: [`$ brew install ${id}`],
+    check: null,
+  };
+  return runInstall(id);
 }
 
 async function runDownload(id: string): Promise<void> {
@@ -725,7 +849,7 @@ function seedDownload(): void {
   if (downloadSeeded || installState.running) return;
   downloadSeeded = true;
   const id = "model.tts.1.7b";
-  startDownload(id, Math.round(MODEL_ROWS[id].bytes * 0.4));
+  void startDownload(id, Math.round(MODEL_ROWS[id].bytes * 0.4));
 }
 
 async function runInstall(id: string): Promise<void> {

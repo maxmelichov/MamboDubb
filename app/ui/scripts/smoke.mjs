@@ -650,12 +650,12 @@ check("failing checks explain themselves", /HF_TOKEN/.test(setup) && /htdemucs|D
 check("commands render as code, not backticks", !setup.includes("`"));
 check("model sizes are shown", /GB/.test(setup));
 /*
- * Six rows are failing and four of them are things to do. The other two are
+ * Seven rows are failing and five of them are things to do. The other two are
  * optional — a tool the shipped pipeline never calls and a cache that fetches
  * itself — and a headline that counted them was the reason a machine with
  * nothing wrong with it still met a number at the top of this screen.
  */
-check("a mixed result is counted", /4 of 8 need attention/.test(setup));
+check("a mixed result is counted", /5 of 8 need attention/.test(setup));
 check(
   "…and the two optional rows that are not here are not part of that count",
   [...document.querySelectorAll('[data-check][data-severity="optional"]')].filter((row) =>
@@ -779,6 +779,36 @@ for (let waited = 0; waited < 8000; waited += 200) {
 }
 check("…and the seeded download lands as Ready", /Ready/.test(rowOf("model.tts.1.7b").textContent));
 
+/*
+ * One button for the whole board.
+ *
+ * A fresh machine is a screen of red rows, each with its own button, and doing
+ * them one at a time means coming back to this screen after every one. The
+ * header grows a single primary action instead and the two things it must say
+ * before it is pressed are how much it will cost and how many things that is
+ * — a "do everything" button that says neither is the blind spinner the model
+ * downloads were refused over in the first place.
+ */
+const installAllButton = () => document.querySelector("[data-install-all]");
+const installQueuePanel = () => document.querySelector("[data-install-all-panel]");
+check("a board with red rows offers one button for all of it", installAllButton() != null);
+check(
+  "…and the button carries the price of the whole lot",
+  /Install everything · ~\d+(\.\d+)? GB/.test(installAllButton().textContent),
+);
+check(
+  "…and says how many things that is, required first",
+  /3 things, one at a time, required first/.test(
+    document.querySelector("[data-install-all-note]").textContent,
+  ),
+);
+check(
+  "…and does not quietly include the optional row nothing needs",
+  /Nothing optional is included/.test(
+    document.querySelector("[data-install-all-note]").textContent,
+  ),
+);
+
 check("a missing installable row offers to install itself",
   Boolean(installButton("ffmpeg")) && Boolean(installButton("sox")));
 check("a row nothing can install offers no button",
@@ -815,8 +845,66 @@ check("…and a click on it starts nothing", fixtureCalls.install === before + 1
 await new Promise((resolve) => setTimeout(resolve, 1400));
 check("the installed row turns Ready", /Ready/.test(rowOf("ffmpeg").textContent));
 check("…and drops its Install button", !installButton("ffmpeg"));
-check("…and the count comes down", /2 of 8 need attention/.test(root.textContent));
+check("…and the count comes down", /3 of 8 need attention/.test(root.textContent));
 check("the other row can be installed again", installButton("sox").disabled === false);
+
+/*
+ * The queue, driven from the header.
+ *
+ * Two models are still missing and the button now offers both of them in one
+ * press. What has to be true while it runs: it says which item of how many is
+ * in flight, it names it, it draws the *same* progress the row draws (there is
+ * one install running, and two differently-drawn bars for it would be two
+ * claims about the same bytes), and every row's own button greys out because
+ * the slot is taken.
+ *
+ * Then Cancel, whose whole subtlety is that it is not a kill: the download in
+ * flight finishes, and only the ones after it are dropped.
+ */
+const beforeAll = fixtureCalls.installAll;
+installAllButton().dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+await new Promise((resolve) => setTimeout(resolve, 250));
+check("the one button queues exactly one queue", fixtureCalls.installAll === beforeAll + 1);
+check(
+  "…and says which item of how many is in flight",
+  /Installing 1 of 2/.test(document.querySelector("[data-queue-position]").textContent),
+);
+check(
+  "…and names it",
+  /Translation model/.test(document.querySelector("[data-queue-position]").textContent),
+);
+check(
+  "…and draws the row's own progress, not a second kind",
+  installQueuePanel().querySelector("[data-download-progress]") != null,
+);
+check(
+  "…and says what is still to fetch after this one",
+  /still to fetch/.test(document.querySelector("[data-queue-remaining]").textContent),
+);
+check(
+  "…while every row's own button greys out behind it",
+  downloadButton("model.asr.en").disabled === true,
+);
+document
+  .querySelector("[data-install-all-cancel]")
+  .dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+await new Promise((resolve) => setTimeout(resolve, 200));
+check(
+  "cancel stops the queue and says it is not killing the download",
+  /Stopping after this one/.test(document.querySelector("[data-queue-remaining]").textContent),
+);
+for (let waited = 0; waited < 12000; waited += 250) {
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  if (/Ready/.test(rowOf("model.translate").textContent)) break;
+}
+check("…the item in flight still lands", /Ready/.test(rowOf("model.translate").textContent));
+check("…and the one behind it was never started", /Missing/.test(rowOf("model.asr.en").textContent));
+check("…and the queue panel is gone", installQueuePanel() == null);
+check(
+  "…leaving the button offering exactly what is left",
+  installAllButton() != null &&
+    /The one thing missing/.test(document.querySelector("[data-install-all-note]").textContent),
+);
 
 /*
  * The state the footer's kind branch was written for, reachable at last.
@@ -828,15 +916,17 @@ check("the other row can be installed again", installButton("sox").disabled === 
  * installed the machine IS ready, with a token still missing and a Demucs cache
  * still un-downloaded, and the screen has to say both halves of that.
  */
-downloadButton("model.translate").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+// The row's own button still works, and is the way to fetch one thing without
+// fetching everything — the queue is the shortcut, not the replacement.
+downloadButton("model.asr.en").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
 await new Promise((resolve) => setTimeout(resolve, 300));
 check("a clicked download shows a live byte count, not a spinner",
-  /%|GB/.test(rowOf("model.translate").textContent));
+  /%|MB|GB/.test(rowOf("model.asr.en").textContent));
 for (let waited = 0; waited < 10000; waited += 250) {
   await new Promise((resolve) => setTimeout(resolve, 250));
-  if (/Ready/.test(rowOf("model.translate").textContent)) break;
+  if (/Ready/.test(rowOf("model.asr.en").textContent)) break;
 }
-check("…and lands as Ready", /Ready/.test(rowOf("model.translate").textContent));
+check("…and lands as Ready", /Ready/.test(rowOf("model.asr.en").textContent));
 installButton("sox").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
 await new Promise((resolve) => setTimeout(resolve, 1400));
 check(
@@ -844,6 +934,14 @@ check(
   document.querySelector("[data-readiness]").textContent === "Ready to run",
 );
 check("…with the two that are still red still counted", /6\/8/.test(root.textContent));
+/*
+ * Nothing left that the app can install, so the one button is not there. The
+ * two rows still red are a token nobody can install for you and a cache that
+ * fetches itself — offering to "install everything" over those two would be a
+ * button that installs nothing.
+ */
+check("…and the one-button offer is gone when nothing is left to install",
+  installAllButton() == null && installQueuePanel() == null);
 check(
   "…so the way forward appears",
   [...document.querySelectorAll("button")].some((b) =>

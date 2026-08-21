@@ -2442,8 +2442,12 @@ def test_setup_marks_the_rows_the_app_can_install(client):
 
     checks = client.get("/api/setup").json()["checks"]
     installable = {c["id"] for c in checks if c["installable"]}
-    assert installable == set(install_mod.INSTALLERS) | set(setup_mod.model_downloads())
-    assert installable & set(tools.recipes()) == set(tools.auto_installers())
+    # Plus ffmpeg wherever the static build is the route: a machine with no
+    # package manager this app may drive still has a button, and this set is
+    # what the UI reads to draw it.
+    static = {"ffmpeg"} if install_mod.static_route("ffmpeg") else set()
+    assert installable == set(install_mod.INSTALLERS) | set(setup_mod.model_downloads()) | static
+    assert installable & set(tools.recipes()) == set(tools.auto_installers()) | static
     # And never the rows no table covers: gated pipelines and self-fetching caches.
     assert {"model.demucs", "model.g2p.he", "hf_token", "disk"}.isdisjoint(installable)
     assert all(isinstance(c["installable"], bool) for c in checks)
@@ -2527,6 +2531,63 @@ def test_brewless_mac_installs_a_static_ffmpeg_into_the_workspace(monkeypatch, t
     # The re-probed row is fresh evidence: resolve_tool finds tools/bin first.
     assert status["check"]["ok"] is True
     assert status["check"]["path"] == str(bin_dir / "ffmpeg")
+    assert any("static" in line for line in status["tail"])
+
+
+def test_ffmpeg_has_an_install_route_on_every_platform(monkeypatch):
+    """The one tool every stage shells out to must be installable from the app
+    on all three platforms — not only on the Mac the feature was written on.
+
+    Linux is the case that was missing: its recipe is `sudo apt-get`, which
+    wants a password on a terminal the app does not have, so it is deliberately
+    not an unattended installer and the row had *no button at all*. The static
+    wheel ships a Linux and a Windows build too, and one button that installs
+    everything must not quietly skip ffmpeg on two thirds of the platforms.
+    """
+    from dubbing import tools
+
+    monkeypatch.setattr(install_mod.shutil, "which", lambda exe, *a, **k: None)
+    for platform in ("darwin", "linux", "win32"):
+        monkeypatch.setattr(tools, "platform_key", lambda *a, p=platform: p)
+        assert install_mod.static_route("ffmpeg") is True, platform
+        # The row's detail says what the button will do before it is pressed…
+        assert "static build" in (install_mod.route("ffmpeg") or ""), platform
+        # …and the flag that draws the button agrees with the code behind it.
+        assert install_mod.installable("ffmpeg") is True, platform
+        assert setup_mod.probe("ffmpeg")["installable"] is True, platform
+        # sox gets no such fallback anywhere: no vetted static source, and
+        # nothing the shipped pipeline runs needs it.
+        assert install_mod.static_route("sox") is False, platform
+
+
+def test_a_machine_with_no_unattended_manager_still_installs_ffmpeg(monkeypatch, tmp_path):
+    """Linux, end to end through the slot: no recipe in the table at all, and
+    the install still runs and lands both binaries in the workspace."""
+    from dubbing import tools
+
+    monkeypatch.setattr(install_mod.shutil, "which", lambda exe, *a, **k: None)
+    monkeypatch.setattr(tools, "platform_key", lambda *a: "linux")
+    bin_dir = tmp_path / "tools" / "bin"
+    monkeypatch.setenv(tools.TOOLS_DIR_ENV, str(bin_dir))
+
+    def fake_fetch(log):
+        log("fetching (stub)")
+        paths = []
+        for name in ("ffmpeg", "ffprobe"):
+            p = tmp_path / name
+            p.write_text("#!/bin/sh\nexit 0\n")
+            paths.append(str(p))
+        return tuple(paths)
+
+    monkeypatch.setattr(install_mod, "fetch_static_ffmpeg", fake_fetch)
+    # The empty table is the point: `tools.auto_installers()` contributes no
+    # rows on Linux, so this is what the real Installer holds there.
+    inst = install_mod.Installer(setup_mod.probe, recipes={})
+    inst.start("ffmpeg")
+    assert inst.wait(10.0)
+    status = inst.status()
+    assert status["ok"] is True and status["error"] is None
+    assert (bin_dir / "ffmpeg").is_file() and (bin_dir / "ffprobe").is_file()
     assert any("static" in line for line in status["tail"])
 
 
@@ -3046,6 +3107,210 @@ def test_download_that_completes_but_fails_its_probe_is_not_success(monkeypatch,
     assert inst.wait(10.0)
     status = inst.status()
     assert status["ok"] is False and "still fails" in status["error"]
+
+
+# ---------------------------------------------------------------------------
+# install everything: POST|DELETE /api/setup/install_all
+# ---------------------------------------------------------------------------
+# One button for a screen full of red rows. Nothing here installs anything
+# either: the plan is a pure function of a report, and the queue is driven over
+# an `Installer` whose recipes are shell stubs, so what is asserted is the
+# order, the one-slot rule, the cancel boundary and the wire shape.
+
+
+def a_report(*rows):
+    """A `setup.report`-shaped body from (id, ok, severity, installable) tuples."""
+    checks = []
+    for id_, ok, sev, inst, *rest in rows:
+        checks.append({"id": id_, "label": id_.upper(), "ok": ok, "severity": sev,
+                       "required": sev == "blocking", "installable": inst,
+                       "detail": "", **(rest[0] if rest else {})})
+    return {"ok": all(c["ok"] for c in checks if c["required"]), "checks": checks}
+
+
+def test_install_plan_queues_only_the_missing_rows_the_app_can_fix():
+    plan = setup_mod.install_plan(a_report(
+        ("ffmpeg", False, "blocking", True),
+        ("uv", True, "blocking", True),               # already there — not re-run
+        ("hf_token", False, "degrades", False),       # nothing to install
+        ("model.demucs", False, "optional", False),   # fetches its own cache
+        ("model.tts.ko", False, "optional", True),    # a language nobody asked for
+        ("model.lid", False, "degrades", True, {"download_bytes": 100}),
+    ))
+    assert [item["id"] for item in plan] == ["ffmpeg", "model.lid"]
+    # Blocking before degrades: the run has to work before it has to be good.
+    assert plan[0]["bytes"] == 0 and plan[1]["bytes"] == 100
+    assert plan[1]["label"] == "MODEL.LID"
+
+
+def test_install_plan_orders_required_first_and_keeps_the_screens_order():
+    plan = setup_mod.install_plan(a_report(
+        ("model.lid", False, "degrades", True),
+        ("model.translate", False, "blocking", True),
+        ("ffmpeg", False, "blocking", True),
+    ))
+    assert [item["id"] for item in plan] == ["model.translate", "ffmpeg", "model.lid"]
+
+
+def test_install_plan_never_queues_anything_that_needs_a_credential(client):
+    """The one check that wants a token installs nothing, and the one gated model
+    is deliberately absent from the download table — so the queue can never stop
+    half way to ask the user for something. Asserted against the real report,
+    because this is a claim about the actual tables, not a synthetic one."""
+    from dubbing import segments
+
+    plan = setup_mod.install_plan(client.get("/api/setup").json())
+    ids = {item["id"] for item in plan}
+    assert "hf_token" not in ids
+    downloads = setup_mod.model_downloads()
+    assert ids <= set(install_mod.INSTALLERS) | set(downloads)
+    gated = segments.DIARIZATION_MODEL
+    assert not any(spec["hub"] == gated for spec in downloads.values())
+
+
+@pytest.fixture()
+def stub_plan(monkeypatch):
+    """Point `POST /api/setup/install_all` at a plan of shell stubs.
+
+    The ids are not real checks, which is the point: `setup.probe` answers None
+    for them, so the queue's verdict is the stub's exit code and nothing about
+    the developer's own machine can decide whether a test passes.
+    """
+    def use(*specs):
+        recipes = {id_: tuple(argv) for id_, argv in specs}
+        monkeypatch.setattr(install_mod, "INSTALLERS", recipes)
+        plan = [{"id": id_, "label": id_, "bytes": 1000} for id_, _ in specs]
+        monkeypatch.setattr(setup_mod, "install_plan", lambda report_: list(plan))
+        return plan
+    return use
+
+
+def test_install_all_runs_the_whole_plan_through_the_one_slot(client, stub_plan, tmp_path):
+    stub_plan(("tool.a", ("/bin/sh", "-c", f"echo a >> {tmp_path / 'order'}")),
+              ("tool.b", ("/bin/sh", "-c", f"echo b >> {tmp_path / 'order'}")))
+    r = client.post("/api/setup/install_all")
+    assert r.status_code == 202
+    queue = r.json()["queue"]
+    assert queue["running"] is True and queue["total"] == 2
+    assert [item["id"] for item in queue["items"]] == ["tool.a", "tool.b"]
+
+    assert client.app.state.install_queue.wait(30.0)
+    body = client.get("/api/setup/install").json()
+    assert body["queue"]["running"] is False and body["queue"]["failed"] == []
+    assert body["queue"]["pos"] == 2 and body["queue"]["remaining_bytes"] == 0
+    # One at a time, in the order the plan named — the whole reason this is a
+    # queue and not two POSTs the client fires off together.
+    assert (tmp_path / "order").read_text().split() == ["a", "b"]
+
+
+def test_install_all_is_a_no_op_answer_when_nothing_is_missing(client, monkeypatch):
+    monkeypatch.setattr(setup_mod, "install_plan", lambda report_: [])
+    r = client.post("/api/setup/install_all")
+    assert r.status_code == 202
+    # Not a 400 and not an error: "install everything" on a machine with nothing
+    # missing is a queue that ran nothing, and the screen has no button anyway.
+    assert r.json().get("queue") is None
+    assert r.json()["running"] is False
+
+
+def test_a_second_install_all_answers_the_running_queue(client, stub_plan):
+    stub_plan(("tool.a", ("/bin/sh", "-c", "sleep 1")),
+              ("tool.b", ("/bin/sh", "-c", "true")))
+    first = client.post("/api/setup/install_all")
+    second = client.post("/api/setup/install_all")
+    # Idempotent: one gesture repeated is not an error, and a 409 here would
+    # teach the user that the button they just pressed did something wrong.
+    assert second.status_code == 202
+    assert second.json()["queue"]["running"] is True
+    assert second.json()["queue"]["total"] == first.json()["queue"]["total"]
+    assert second.json()["queue"]["started"] == first.json()["queue"]["started"]
+    assert client.app.state.install_queue.wait(30.0)
+
+
+def test_install_all_waits_for_an_install_started_from_a_row(client, stub_plan):
+    """The one refusal. Half a queue that dies on its first item is worse than
+    being told to wait for the install already running."""
+    stub_plan(("tool.a", ("/bin/sh", "-c", "sleep 1")))
+    assert client.post("/api/setup/install", json={"id": "tool.a"}).status_code == 202
+    r = client.post("/api/setup/install_all")
+    assert r.status_code == 409 and envelope_of(r)["code"] == "busy"
+    assert client.app.state.installer.wait(30.0)
+
+
+def test_cancel_stops_after_the_current_item(client, stub_plan, tmp_path):
+    started, never = tmp_path / "started", tmp_path / "never"
+    stub_plan(("tool.a", ("/bin/sh", "-c", f"touch {started}; sleep 1")),
+              ("tool.b", ("/bin/sh", "-c", f"touch {never}")))
+    client.post("/api/setup/install_all")
+    for _ in range(100):                      # the first item is in flight
+        if started.exists():
+            break
+        time.sleep(0.05)
+    r = client.delete("/api/setup/install_all")
+    assert r.status_code == 200 and r.json()["queue"]["cancelled"] is True
+    # Still running: cancelling does not kill the item in flight, because a
+    # half-killed package manager is a broken prefix.
+    assert r.json()["queue"]["running"] is True
+    assert client.app.state.install_queue.wait(30.0)
+    queue = client.get("/api/setup/install").json()["queue"]
+    assert queue["running"] is False and queue["cancelled"] is True
+    assert queue["pos"] == 1 and queue["total"] == 2
+    # The second item was never begun, and the bytes it would have cost are
+    # still counted as remaining — the header says what is left to do.
+    assert not never.exists()
+    assert queue["remaining_bytes"] == 1000
+    # …and the first one did finish. That is what "after the current item" means.
+    assert started.exists() and queue["failed"] == []
+
+
+def test_cancelling_nothing_is_not_an_error(client):
+    r = client.delete("/api/setup/install_all")
+    assert r.status_code == 200
+
+
+def test_a_failed_item_does_not_end_the_queue(client, stub_plan, tmp_path):
+    """Nine downloads and one dead mirror should leave eight models on disk. The
+    failure is named so the header can say so; the row itself says why."""
+    stub_plan(("tool.a", ("/bin/sh", "-c", "echo mirror is down; exit 1")),
+              ("tool.b", ("/bin/sh", "-c", f"touch {tmp_path / 'b'}")))
+    client.post("/api/setup/install_all")
+    assert client.app.state.install_queue.wait(30.0)
+    queue = client.get("/api/setup/install").json()["queue"]
+    assert queue["failed"] == ["tool.a"] and queue["pos"] == 2
+    assert (tmp_path / "b").exists()
+
+
+def test_the_queue_block_tracks_the_item_in_flight(client, monkeypatch, hub_stub):
+    """The progress the header draws is the slot's own — one poll carries both
+    which item (`queue.pos`) and how far into it (`bytes_done`)."""
+    monkeypatch.setattr(setup_mod, "install_plan",
+                        lambda report_: [{"id": "model.translate", "label": "Translation",
+                                          "bytes": 1000},
+                                         {"id": "model.other", "label": "Other",
+                                          "bytes": 5000}])
+    client.post("/api/setup/install_all")
+    assert hub_stub["step"].wait(10.0)
+    body = client.get("/api/setup/install").json()
+    assert body["id"] == "model.translate" and body["bytes_done"] == 400
+    assert body["queue"]["pos"] == 0
+    # 1000 + 5000 queued, 400 of the first already on disk.
+    assert body["queue"]["remaining_bytes"] == 5600
+    hub_stub["gate"].set()
+    client.delete("/api/setup/install_all")
+    assert client.app.state.install_queue.wait(30.0)
+
+
+def test_a_row_button_clears_the_finished_queue(client, stub_plan):
+    """The header line describes the last queue; a hand-started install is the
+    end of that story, and leaving it up would report a failure the user is in
+    the middle of fixing by hand."""
+    stub_plan(("tool.a", ("/bin/sh", "-c", "exit 1")))
+    client.post("/api/setup/install_all")
+    assert client.app.state.install_queue.wait(30.0)
+    assert client.get("/api/setup/install").json()["queue"]["failed"] == ["tool.a"]
+    r = client.post("/api/setup/install", json={"id": "tool.a"})
+    assert r.status_code == 202 and r.json().get("queue") is None
+    assert client.app.state.installer.wait(30.0)
 
 
 # ---------------------------------------------------------------------------

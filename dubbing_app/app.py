@@ -343,6 +343,11 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
     # it wait behind a render would mean waiting an hour to fix the thing that
     # is blocking the render. Its own one-at-a-time slot, in this process.
     installer = install.Installer(setup.probe)
+    # The same slot, pressed for you. `POST /api/setup/install_all` computes the
+    # missing set from a fresh report and runs it through `installer` one at a
+    # time — nine red rows on a fresh machine is nine buttons and forty minutes
+    # of coming back to check, and the honest fix is one button, not nine.
+    install_all = install.InstallQueue(installer)
     # One writer at a time per project: two PATCHes arriving together would
     # otherwise both load, both edit and the second would drop the first's change.
     locks: dict[str, threading.Lock] = {}
@@ -362,6 +367,7 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
     app.state.bus = bus
     app.state.jobs = queue
     app.state.installer = installer
+    app.state.install_queue = install_all
     app.state.version = version
     errors.install(app)
     # The gate goes on first so the CORS layer added after it wraps OUTSIDE it
@@ -453,7 +459,41 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
         key into a server-side table (argv for the tools, hub repo + local dir
         for the models) — nothing from the body is ever executed. 400 for
         anything in neither table, 409 while another install is running."""
-        return installer.start(body.id)
+        # A row's own button ends the last queue's story: the header line
+        # reports what that queue did, and leaving it up beside a hand-started
+        # install would report a failure the user is in the middle of fixing.
+        install_all.clear()
+        installer.start(body.id)
+        return install_all.status()
+
+    @app.post("/api/setup/install_all", status_code=202)
+    def start_install_all() -> dict[str, Any]:
+        """Install everything missing, in one gesture.
+
+        No body: the list is computed here from a fresh `report()` the missing
+        rows the app can actually fix, blocking first (`setup.install_plan`) —
+        and run through the same one-at-a-time slot as the row buttons. Nothing
+        the client sends chooses what installs, because nothing is sent.
+
+        Answers the same shape as `GET /api/setup/install`, with the `queue`
+        block that says which item is in flight and what is left. Pressing it
+        again while it runs is that same answer, not a 409: one gesture repeated
+        is not an error. A machine with nothing missing gets a queue that ran
+        nothing. A *single* install already holding the slot is the one refusal
+        half a queue that dies on its first item is worse than being told to wait.
+        """
+        return install_all.start(setup.install_plan(setup.report(projects.root)))
+
+    @app.delete("/api/setup/install_all")
+    def cancel_install_all() -> dict[str, Any]:
+        """Stop the queue after the item in flight.
+
+        Not during it: a half-killed package manager is a broken prefix, and the
+        download that would be safe to kill is also the one that resumes for
+        free. What Cancel means here is "queue no more of them", and the machine
+        is left in a state both sides of the button can describe.
+        """
+        return install_all.cancel()
 
     @app.get("/api/setup/install")
     def install_status() -> dict[str, Any]:
@@ -463,9 +503,11 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
         stream, and an install measured in minutes is served fine by a 2 s poll.
         Carries a freshly probed check row once the worker has exited; while a
         model download runs it also carries `bytes_done`/`bytes_total`, the
-        directory's size on disk against the table's estimate.
+        directory's size on disk against the table's estimate. While an
+        "install everything" queue exists it also carries a `queue` block: the
+        list, which item of it is in flight, what failed, and the bytes left.
         """
-        return installer.status()
+        return install_all.status()
 
     @app.post("/api/setup/hf_token")
     def set_hf_token(body: HfTokenBody) -> dict[str, Any]:

@@ -168,6 +168,41 @@ function adopt(seg: Segment): Segment {
 
 const adoptAll = (segs: Segment[]): Segment[] => segs.map(adopt);
 
+// --- installing everything --------------------------------------------------
+
+/**
+ * The `queue` block `GET /api/setup/install` carries while an "install
+ * everything" run exists (`install.InstallQueue`).
+ *
+ * It rides on the *same* poll as the single slot rather than getting an
+ * endpoint of its own, because the two are two halves of one sentence: the slot
+ * says what is installing and how far in, this says which item of the list that
+ * is and what is left. One request, and the header and the row can never
+ * disagree about the same install.
+ *
+ * Declared here rather than in `types.ts` for the same reason the endpoint is a
+ * block and not a resource it only exists as part of this response.
+ */
+export type SetupQueue = {
+  running: boolean;
+  /** Cancel was pressed. The item in flight still finishes; nothing after it starts. */
+  cancelled: boolean;
+  /** What the server decided to install, in the order it will (`setup.install_plan`). */
+  items: { id: string; label: string; bytes: number }[];
+  /** Index of the item in flight, or `total` once the queue has stopped. */
+  pos: number;
+  total: number;
+  /** Ids whose install did not end green. The queue steps over them and says so. */
+  failed: string[];
+  /** Bytes still to fetch: the unfinished items, less what is already on disk. */
+  remaining_bytes: number;
+  started?: number | null;
+  finished?: number | null;
+};
+
+/** The install slot's status, plus the queue block when one exists. */
+export type SetupInstallState = SetupInstall & { queue?: SetupQueue | null };
+
 // --- the surface ----------------------------------------------------------
 
 export const api = {
@@ -192,15 +227,38 @@ export const api = {
    * (`setup.model_downloads()`) and 400s anything else, so the worst a bad
    * call can do is fail.
    */
-  startInstall(id: string): Promise<SetupInstall> {
+  startInstall(id: string): Promise<SetupInstallState> {
     if (USE_FIXTURES) return fixtures.startInstall(id);
-    return request<SetupInstall>("/api/setup/install", json({ id }));
+    return request<SetupInstallState>("/api/setup/install", json({ id }));
   },
 
-  /** Where that install got to. Polled; see `SetupInstall`. */
-  installStatus(): Promise<SetupInstall> {
+  /**
+   * Install everything that is missing, in one gesture.
+   *
+   * No arguments, deliberately: the list is the *server's* — a fresh report,
+   * filtered to the missing rows it can actually fix, blocking first
+   * (`setup.install_plan`) — and running it through the same one-at-a-time slot
+   * as the row buttons. A UI that sent its own list would be a second copy of
+   * that decision, drifting from the first the day a row changes grade.
+   *
+   * Pressing it again while it runs answers the running queue rather than
+   * refusing: one gesture repeated is not an error.
+   */
+  startInstallAll(): Promise<SetupInstallState> {
+    if (USE_FIXTURES) return fixtures.startInstallAll();
+    return request<SetupInstallState>("/api/setup/install_all", { method: "POST" });
+  },
+
+  /** Stop the queue after the item in flight — never during it. */
+  cancelInstallAll(): Promise<SetupInstallState> {
+    if (USE_FIXTURES) return fixtures.cancelInstallAll();
+    return request<SetupInstallState>("/api/setup/install_all", { method: "DELETE" });
+  },
+
+  /** Where that install got to. Polled; see `SetupInstall` and `SetupQueue`. */
+  installStatus(): Promise<SetupInstallState> {
     if (USE_FIXTURES) return fixtures.installStatus();
-    return request<SetupInstall>("/api/setup/install");
+    return request<SetupInstallState>("/api/setup/install");
   },
 
   /**

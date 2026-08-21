@@ -9,16 +9,20 @@ line the app already knows. Where that line needs a terminal anyway — `sudo
 apt-get`, which asks for a password — there is no button and the detail line
 carries the command; see `dubbing/tools.py`.
 
-One machine gets a different route instead of a refusal: a Mac with no
-Homebrew. "Get it from https://brew.sh" is itself a terminal command plus an
-admin password, which is everything the DMG promised to avoid, so for `ffmpeg`
-(and the `ffprobe` that ships beside it) the button falls back to a pinned
-static build: the `static-ffmpeg` wheel is `uv pip`-installed into this venv,
-its downloader fetches the platform zip it ships a URL for, and the two
-binaries are *copied* — not symlinked — into the workspace's `tools/bin`,
-where `dubbing.tools.resolve_tool` looks before PATH. Copied because the wheel
-is not in the lockfile and the next `uv sync` prunes it; the binaries must
-outlive their installer. Homebrew stays the route whenever it is present.
+A machine with no package manager to drive gets a different route instead of a
+refusal — a Mac with no Homebrew, a Windows with no winget, and *every* Linux
+(its recipe is `sudo apt-get`, which wants a password on a terminal the app does
+not have, so it is deliberately not an unattended one). "Get it from
+https://brew.sh" is itself a terminal command plus an admin password, which is
+everything the DMG promised to avoid, so for `ffmpeg` (and the `ffprobe` that
+ships beside it) the button falls back to a pinned static build: the
+`static-ffmpeg` wheel is `uv pip`-installed into this venv, its downloader
+fetches the platform zip it ships a URL for — one wheel, a build for all three
+platforms — and the two binaries are *copied*, not symlinked, into the
+workspace's `tools/bin`, where `dubbing.tools.resolve_tool` looks before PATH.
+Copied because the wheel is not in the lockfile and the next `uv sync` prunes
+it; the binaries must outlive their installer. A real package manager stays the
+route wherever there is one to drive.
 
 The models used to be refused here on principle: auto-downloading gigabytes
 behind a spinner is not an install button, and this docstring said so. That
@@ -122,12 +126,46 @@ STATIC_FFMPEG_SPEC = "static-ffmpeg==3.0"
 
 def static_route(id_: str) -> bool:
     """True when the button installs `id_` as a static build instead of running
-    the package manager: a Mac, `ffmpeg` (the zip carries ffprobe too), and no
-    Homebrew to prefer. Everything else keeps its recipe — brew when present
-    because it also delivers updates, and sox always, because there is no vetted
-    static source and the pipeline no longer blocks on it (see `setup.TOOLS`)."""
-    return (id_ == "ffmpeg" and tools.platform_key() == "darwin"
-            and shutil.which("brew") is None)
+    a package manager: `ffmpeg` (the zip carries ffprobe too), on a machine with
+    no unattended manager to prefer.
+
+    One question — "is there a package manager here this app is allowed to
+    drive?" — with a different answer on each platform:
+
+    * **macOS**: Homebrew when it is present, because it also delivers updates;
+      the static build only on the factory-state Mac that has none, where "get
+      it from brew.sh" is a terminal plus an admin password, which is the whole
+      journey the DMG exists to avoid.
+    * **Windows**: the same shape with winget.
+    * **Linux**: always. The recipe there is `sudo apt-get`, which asks for a
+      password on a terminal the app does not have, so it is deliberately absent
+      from `tools.auto_installers()` — which used to mean a Linux user got no
+      ffmpeg button at all, and (once one button installs everything) an
+      "install everything" that quietly skipped the one tool every stage shells
+      out to.
+
+    The same wheel covers all three: `static-ffmpeg` ships a build per platform,
+    so this is one route, not three. `sox` is not offered on any of them —
+    no vetted static source, and the pipeline no longer blocks on it
+    (see `setup.TOOLS`).
+    """
+    if id_ != "ffmpeg":
+        return False
+    platform = tools.platform_key()
+    if platform == "darwin":
+        return shutil.which("brew") is None
+    if platform == "win32":
+        return shutil.which("winget") is None
+    return True
+
+
+def installable(id_: str) -> bool:
+    """Can the app install `id_` by itself? The tools it has an argv for, plus
+    the ones it can fetch a static build of. Read by `setup.report` and
+    `setup.probe` so the flag that puts a button on a row and the code behind
+    the button are the same answer — a row whose POST is a 400 is worse than no
+    button, and so is a missing button for an install that would have worked."""
+    return id_ in INSTALLERS or static_route(id_)
 
 
 def route(id_: str) -> str | None:
@@ -135,11 +173,11 @@ def route(id_: str) -> str | None:
     when it would not (no recipe, or a manager that is not on this machine and
     no static fallback). The Setup row's detail carries it, so the user knows
     what pressing the button does *before* pressing it."""
+    if static_route(id_):
+        return "as a static build into the workspace (tools/bin) — no package manager needed"
     argv = INSTALLERS.get(id_)
     if argv is None:
         return None
-    if static_route(id_):
-        return "as a static build into the workspace (tools/bin) — no Homebrew needed"
     manager = argv[0]
     if shutil.which(manager) is None:
         return None
@@ -256,19 +294,30 @@ class Installer:
         """Begin installing `id_`. Raises the 400/409 the UI renders."""
         argv = self.recipes.get(id_)
         if argv is None:
+            # A platform whose package manager cannot run unattended contributes
+            # no recipes at all (Linux: `sudo apt-get` wants a password), so
+            # ffmpeg arrives here with no argv — and still has a route. The
+            # static build is the only button that can exist there, and without
+            # it "install everything" would silently skip the one tool every
+            # stage shells out to.
+            if static_route(id_):
+                return self._begin(
+                    id_, [f"# no package manager here can install {id_} unattended "
+                          f"— installing a static ffmpeg/ffprobe build into "
+                          f"{tools.tools_bin()}"],
+                    target=self._run_static, args=(id_,))
             spec = self.downloads.get(id_)
             if spec is None:
                 raise invalid(self._refusal(id_))
             return self._start_download(id_, spec)
         manager = argv[0]
         if shutil.which(manager) is None:
-            # A brewless Mac asking for ffmpeg is the one case where "install
-            # the package manager first" dies at a terminal — take the static
-            # route instead of refusing. Checked here, not at table-build time,
-            # so a brew installed mid-session is picked up on the next press.
-            # `manager == "brew"` keeps this the darwin table's fallback even
-            # when a test hands this Installer another platform's recipes.
-            if manager == "brew" and static_route(id_):
+            # The recipe is here but the manager is not: a brewless Mac, a
+            # Windows with no winget. "Install the package manager first" dies
+            # at a terminal, so take the static route instead of refusing.
+            # Checked here, not at table-build time, so a brew installed
+            # mid-session is picked up on the next press.
+            if static_route(id_):
                 return self._begin(
                     id_, [f"# {manager} is not on this machine — installing a "
                           f"static ffmpeg/ffprobe build into {tools.tools_bin()}"],
@@ -478,5 +527,177 @@ class Installer:
             self._finished = time.time()
 
 
-__all__ = ["INSTALLERS", "Installer", "fetch_static_ffmpeg", "manual_command",
-           "route", "snapshot_download", "static_route"]
+class InstallQueue:
+    """Everything that is missing, from one gesture — through the same one slot.
+
+    The Setup screen gives every red row its own button, which is correct and,
+    on a fresh machine, is nine buttons and forty minutes of coming back to
+    check. This is the thing that presses them in order so the user does not
+    have to. It installs nothing itself: it holds a list of ids and calls
+    `Installer.start` for one of them at a time, which means the one-at-a-time
+    rule, the re-probe, the resume and every refusal are still exactly the
+    Installer's — there is no second install path to keep honest.
+
+    Four decisions, all of them consequences of that:
+
+    * **The list is computed on the server, from the report.** `setup.install_plan`
+      reads a fresh `report()` and returns the missing rows the app can actually
+      fix, blocking first. Nothing in the request chooses what runs; the button
+      sends no body at all.
+    * **The progress shape is the one that already exists.** A poll of
+      `GET /api/setup/install` still answers the single slot's status — the id in
+      flight, its tail, its bytes — with one extra `queue` block saying which
+      item that is (`pos` of `items`), what is left, and what failed. The UI
+      reuses its progress bar rather than growing a second one.
+    * **Cancel stops after the current item, never during it.** A half-killed
+      `brew` is a broken prefix, and a killed download would throw away nothing
+      only because it resumes — but the user pressing Cancel means "stop
+      queueing more", and stopping at the boundary is the one reading that
+      leaves the machine in a state either side of the button can describe.
+    * **A failure does not end the queue.** Nine downloads and one dead mirror
+      should leave eight models on disk. The failed ids are named in the queue
+      block; each one's own row is red again after the re-probe and says why.
+    """
+
+    def __init__(self, installer: Installer):
+        self._installer = installer
+        self._lock = threading.Lock()
+        self._items: list[dict[str, Any]] = []
+        self._pos = 0
+        self._running = False
+        self._cancelled = False
+        self._failed: list[str] = []
+        self._thread: threading.Thread | None = None
+        self._started: float | None = None
+        self._finished: float | None = None
+
+    # -- api ---------------------------------------------------------------
+
+    def start(self, items: list[dict[str, Any]]) -> dict[str, Any]:
+        """Queue `items` (`setup.install_plan`'s rows) and begin.
+
+        Idempotent by design: pressing it twice is one gesture repeated, not an
+        error, so a call while the queue runs answers the running queue. Only a
+        *single* install started from a row holds the slot against it — that is
+        the Installer's 409, raised here before anything is queued, because
+        half a queue that dies on its first item is worse than a refusal.
+        """
+        with self._lock:
+            # Our own item holding the slot is not a conflict — it is this
+            # queue, and the answer to pressing the button again is the queue.
+            # Anything else in it is a row's own install, and starting a plan
+            # behind it would mean a first item that 409s on itself.
+            if not self._running and self._installer.status()["running"]:
+                raise busy("an install is already running; wait for it to finish, "
+                           "then install the rest in one go")
+            if not self._running:
+                self._items = [dict(item) for item in items]
+                self._pos = 0
+                self._cancelled = False
+                self._failed = []
+                self._started = time.time()
+                # An empty plan is the honest answer to "install everything" on
+                # a machine with nothing missing: a queue that ran nothing, not
+                # a 400 — and `finished` says so without a thread ever starting.
+                self._running = bool(self._items)
+                self._finished = None if self._running else self._started
+                if self._running:
+                    self._thread = threading.Thread(target=self._run,
+                                                    name="install-all", daemon=True)
+                    self._thread.start()
+        return self.status()
+
+    def cancel(self) -> dict[str, Any]:
+        """Stop after the item in flight. A no-op answer when nothing is queued —
+        the button the user pressed is gone by the time a second press could
+        land, and answering 409 to "stop" would be absurd."""
+        with self._lock:
+            if self._running:
+                self._cancelled = True
+        return self.status()
+
+    def clear(self) -> None:
+        """Forget a finished queue. Called when a row's own button starts an
+        install: the header line describes the last queue, and a manual install
+        is the end of that story — leaving it up would report a failure the user
+        is in the middle of fixing by hand."""
+        with self._lock:
+            if not self._running:
+                self._items = []
+                self._failed = []
+                self._pos = 0
+
+    def status(self) -> dict[str, Any]:
+        """The single slot's status, plus a `queue` block while one exists.
+
+        One body, because the screen polls one endpoint and the two facts are
+        two halves of the same sentence: *what* is installing (the slot) and
+        *where in the list* it is (here). `remaining_bytes` counts the items not
+        yet finished and subtracts what the current download already has on
+        disk, so the header's "~14 GB to go" falls as the bar fills.
+        """
+        body = self._installer.status()
+        with self._lock:
+            if not self._items:
+                return body
+            items = [dict(item) for item in self._items]
+            pos, running, cancelled = self._pos, self._running, self._cancelled
+            failed, started, finished = list(self._failed), self._started, self._finished
+        done = int(body.get("bytes_done") or 0) if running else 0
+        remaining = max(0, sum(int(i.get("bytes") or 0) for i in items[pos:]) - done)
+        body["queue"] = {"running": running, "cancelled": cancelled, "items": items,
+                         "pos": pos, "total": len(items), "failed": failed,
+                         "remaining_bytes": remaining, "started": started,
+                         "finished": finished}
+        return body
+
+    def wait(self, timeout: float = 30.0) -> bool:
+        """Join the queue thread. For tests and shutdown, never for a request."""
+        thread = self._thread
+        if thread is None:
+            return True
+        thread.join(timeout)
+        return not thread.is_alive()
+
+    # -- the worker --------------------------------------------------------
+
+    def _run(self) -> None:
+        while True:
+            with self._lock:
+                if self._cancelled or self._pos >= len(self._items):
+                    break
+                id_ = str(self._items[self._pos]["id"])
+            self._one(id_)
+            with self._lock:
+                self._pos += 1
+        with self._lock:
+            self._running = False
+            self._finished = time.time()
+
+    def _one(self, id_: str) -> None:
+        """One item, start to exit. Every failure mode is recorded and stepped
+        over — a refusal (an id the tables no longer carry), a worker that threw,
+        or a worker that exited with `ok: False`. The reason is already in the
+        slot's own `error` and in that row's re-probe; the queue only has to
+        remember *which* ones so the header can say so at the end."""
+        try:
+            self._installer.start(id_)
+        except Exception:                        # a 400/409 raised as an HTTPException
+            self._fail(id_)
+            return
+        # A join loop rather than one long join: `wait` takes the thread as it
+        # was, and a poll of `status()` must never be the thing that blocks.
+        while not self._installer.wait(1.0):
+            pass
+        if self._installer.status().get("ok") is not True:
+            self._fail(id_)
+
+    def _fail(self, id_: str) -> None:
+        with self._lock:
+            if id_ not in self._failed:
+                self._failed.append(id_)
+
+
+__all__ = ["INSTALLERS", "Installer", "InstallQueue", "fetch_static_ffmpeg",
+           "installable", "manual_command", "route", "snapshot_download",
+           "static_route"]

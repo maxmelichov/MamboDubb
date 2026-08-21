@@ -84,12 +84,20 @@ def test_every_manager_the_table_names_has_a_sentence_for_being_missing():
             assert "{" not in filled
 
 
-def test_the_windows_installer_refuses_when_winget_is_missing(monkeypatch):
+def test_a_windows_without_winget_still_gets_ffmpeg_and_is_told_about_the_rest(monkeypatch):
+    """No winget is not the end of the road for the one tool every stage needs:
+    the same static build a brewless Mac gets. `sox` has no such fallback, so it
+    is still the refusal that names where winget comes from — which is the whole
+    difference between "we cannot help you" and "we cannot help you with this"."""
     monkeypatch.setattr(install_mod.shutil, "which", lambda exe, *a, **k: None)
+    monkeypatch.setattr(tools, "platform_key", lambda *a: WINDOWS)
+    assert install_mod.static_route("ffmpeg") is True
+    assert "static build" in (install_mod.route("ffmpeg") or "")
+
     inst = install_mod.Installer(lambda id_: None,
                                  recipes=tools.auto_installers(WINDOWS))
     with pytest.raises(Exception) as exc:
-        inst.start("ffmpeg")
+        inst.start("sox")
     assert "winget" in exc.value.message and "Microsoft Store" in exc.value.message
 
 

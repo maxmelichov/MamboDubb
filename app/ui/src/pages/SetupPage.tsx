@@ -63,6 +63,7 @@ import {
   TextInput,
 } from "../components/ui";
 import { USE_FIXTURES, api } from "../lib/api";
+import type { SetupInstallState } from "../lib/api";
 import { cn } from "../lib/classNames";
 import { STAGES } from "../lib/types";
 import type { SetupCheck, SetupInstall, SetupSeverity, SetupStatus } from "../lib/types";
@@ -170,7 +171,7 @@ export function SetupPage() {
   const [status, setStatus] = useState<SetupStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [checking, setChecking] = useState(true);
-  const [install, setInstall] = useState<SetupInstall | null>(null);
+  const [install, setInstall] = useState<SetupInstallState | null>(null);
   const [installError, setInstallError] = useState<string | null>(null);
 
   const recheck = useCallback(async () => {
@@ -223,9 +224,21 @@ export function SetupPage() {
    * worse than a screen that takes another 40 ms.
    */
   const running = install?.running === true;
+  const queue = install?.queue ?? null;
+  const queueRunning = queue?.running === true;
+  /*
+   * The queue polls on the same clock, and needs its own reason to keep going:
+   * between two items the slot is briefly idle, and a poll that stopped there
+   * would leave the screen frozen on item two of nine with nothing moving.
+   */
+  const polling = running || queueRunning;
   const rechecking = useRef(false);
+  // Which item the queue was on at the last poll. A queue turns rows green one
+  // at a time, and the checklist has to follow it down the list rather than
+  // waiting for the whole thing to finish.
+  const lastPos = useRef<number | null>(null);
   useEffect(() => {
-    if (!running) return;
+    if (!polling) return;
     let live = true;
     const timer = setInterval(() => {
       void api
@@ -233,7 +246,10 @@ export function SetupPage() {
         .then((next) => {
           if (!live) return;
           setInstall(next);
-          if (!next.running && !rechecking.current) {
+          const advanced = next.queue != null && next.queue.pos !== lastPos.current;
+          lastPos.current = next.queue?.pos ?? null;
+          const settled = !next.running && next.queue?.running !== true;
+          if ((settled || advanced) && !rechecking.current) {
             rechecking.current = true;
             void recheck().finally(() => {
               rechecking.current = false;
@@ -250,12 +266,29 @@ export function SetupPage() {
       live = false;
       clearInterval(timer);
     };
-  }, [running, recheck]);
+  }, [polling, recheck]);
 
   const startInstall = useCallback(async (id: string) => {
     setInstallError(null);
     try {
       setInstall(await api.startInstall(id));
+    } catch (err) {
+      setInstallError(String(err instanceof Error ? err.message : err));
+    }
+  }, []);
+
+  const startEverything = useCallback(async () => {
+    setInstallError(null);
+    try {
+      setInstall(await api.startInstallAll());
+    } catch (err) {
+      setInstallError(String(err instanceof Error ? err.message : err));
+    }
+  }, []);
+
+  const cancelEverything = useCallback(async () => {
+    try {
+      setInstall(await api.cancelInstallAll());
     } catch (err) {
       setInstallError(String(err instanceof Error ? err.message : err));
     }
@@ -295,6 +328,22 @@ export function SetupPage() {
    */
   const toDownload = failing.filter((check) => check.installable && check.hub);
   const downloadTotal = toDownload.reduce((sum, check) => sum + (check.download_bytes ?? 0), 0);
+
+  /*
+   * What one button would install, and what it would cost.
+   *
+   * The same rule the server applies in `setup.install_plan` — missing, fixable
+   * from here, and not graded `optional` — computed again on this side for one
+   * reason only: to *price the button before it is pressed*. The list that
+   * actually runs is the server's, from a fresh report at the moment of the
+   * click, so the two cannot drift into a button that installs something the
+   * screen did not name; the worst a stale count here can do is a label that is
+   * one row out of date, which the first poll corrects.
+   */
+  const plan = failing.filter(
+    (check) => check.installable === true && severityOf(check) !== "optional",
+  );
+  const planBytes = plan.reduce((sum, check) => sum + (check.download_bytes ?? 0), 0);
 
   return (
     // No hero — the nav pill says Setup and the Readiness card leads.
@@ -348,6 +397,15 @@ export function SetupPage() {
             value={checks.length ? passing / checks.length : checking ? null : 0}
             tone={ready ? "var(--color-good)" : undefined}
           />
+          <InstallAll
+            plan={plan}
+            planBytes={planBytes}
+            queue={queue}
+            install={install}
+            busy={running && !queueRunning}
+            onStart={() => void startEverything()}
+            onCancel={() => void cancelEverything()}
+          />
         </CardSection>
 
         {error && !status ? (
@@ -371,7 +429,11 @@ export function SetupPage() {
                 key={check.id}
                 check={check}
                 install={install?.id === check.id ? install : null}
-                busy={running}
+                // Greyed out for the gap between two queued items as well as
+                // for the install itself: the slot is idle for a moment there,
+                // and a click that lands in it is a 409 the user cannot see
+                // coming.
+                busy={running || queueRunning}
                 onInstall={startInstall}
                 onRecheck={recheck}
               />
@@ -445,6 +507,169 @@ export function SetupPage() {
         </ErrorBlock>
       ) : null}
     </PageShell>
+  );
+}
+
+/**
+ * The one button — and, while it runs, the only place that says where the queue
+ * has got to.
+ *
+ * Nine red rows on a fresh machine is nine buttons, nine visits back to this
+ * screen and forty minutes of babysitting a thing the app already knows how to
+ * do in order. This is that order, offered once. Four rules, and each of them
+ * is what stops a "do everything" button from being a blind one:
+ *
+ * - **It says what it costs before it is pressed.** The same total the rows
+ *   already carry (`download_bytes`), added up. A button that said only
+ *   "Install everything" would be the blindness the model downloads were
+ *   refused over in the first place.
+ * - **It never installs what nothing needs.** Blocking and degraded rows only —
+ *   the ones the headline counts. A Korean checkpoint is not part of
+ *   "everything" for a Hebrew→English run, and quietly fetching 40 GB of it
+ *   would make the price tag a lie.
+ * - **In flight it is one item, named, with the row's own progress.** "n of m",
+ *   the label, and the same bar the row draws, because there is exactly one
+ *   install running and two different-looking progress bars for it would be two
+ *   claims to reconcile.
+ * - **Cancel stops the queue, not the download.** The item in flight finishes;
+ *   nothing after it starts. Said in those words while it winds down, so
+ *   "Cancel" is never read as "kill this 9 GB fetch half way".
+ *
+ * The rows keep their own buttons throughout: this is the shortcut, not the
+ * replacement, and a user who wants the translator and nothing else still has
+ * the row that does exactly that.
+ */
+function InstallAll({
+  plan,
+  planBytes,
+  queue,
+  install,
+  busy,
+  onStart,
+  onCancel,
+}: {
+  /** The rows one press would install, in the screen's order. */
+  plan: SetupCheck[];
+  planBytes: number;
+  queue: SetupInstallState["queue"];
+  install: SetupInstall | null;
+  /** A single row's install holds the slot — the server refuses a queue behind it. */
+  busy: boolean;
+  onStart: () => void;
+  onCancel: () => void;
+}) {
+  const running = queue?.running === true;
+  // Nothing missing that this can fix: no button, no line, no leftovers from a
+  // queue that already finished. An all-green screen says nothing about installs.
+  if (!running && plan.length === 0) return null;
+
+  if (running && queue) {
+    const current = queue.items[Math.min(queue.pos, queue.items.length - 1)];
+    return (
+      <div className="mt-4 rounded-lg border border-border bg-sunken px-4 py-3" data-install-all-panel>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <span className="text-[12px] font-semibold text-primary" data-queue-position>
+            Installing {Math.min(queue.pos + 1, queue.total)} of {queue.total}
+            <span className="font-normal text-secondary"> · {current?.label ?? ""}</span>
+          </span>
+          <Button size="sm" onClick={onCancel} disabled={queue.cancelled} data-install-all-cancel>
+            <X className="h-3.5 w-3.5" />
+            {queue.cancelled ? "Cancelling" : "Cancel"}
+          </Button>
+        </div>
+        {install ? <InstallProgress install={install} /> : null}
+        <p className="mt-1.5 text-[11px] leading-relaxed text-muted" data-queue-remaining>
+          {queue.cancelled
+            ? "Stopping after this one — it finishes, nothing after it starts."
+            : queue.remaining_bytes > 0
+              ? `~${humanBytes(queue.remaining_bytes)} still to fetch, one at a time.`
+              : "One at a time, in the order above."}
+          {queue.failed.length > 0
+            ? ` ${queue.failed.length} did not finish — those rows say why.`
+            : ""}
+        </p>
+      </div>
+    );
+  }
+
+  // Idle, with things to install. The count and the price are the whole label.
+  const failed = queue && !queue.running ? queue.failed.length : 0;
+  return (
+    <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2">
+      <Button
+        variant="primary"
+        onClick={onStart}
+        disabled={busy}
+        data-install-all
+        title={busy ? "One install at a time — wait for the running one" : undefined}
+      >
+        <Download className="h-3.5 w-3.5" />
+        Install everything{planBytes > 0 ? ` · ~${humanBytes(planBytes)}` : ""}
+      </Button>
+      <span className="text-[12px] leading-relaxed text-muted" data-install-all-note>
+        {plan.length === 1
+          ? "The one thing missing that the app can fetch itself."
+          : `${plan.length} things, one at a time, required first.`}{" "}
+        {failed > 0
+          ? `${failed} did not finish last time — starting again resumes what is there.`
+          : "Nothing optional is included."}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * How far into the one install the server has got, in the one honest shape for
+ * each kind.
+ *
+ * A *tool* install gets a spinner, the word, and the last line of output — an
+ * install is minutes long and the poll is seconds long, so the last line is the
+ * only progress there is and a bar would have to invent the fraction.
+ *
+ * A *model download* gets a real bar, because here the fraction is not
+ * invented: the server re-walks the target directory each poll (`bytes_done`)
+ * against the table's estimate (`bytes_total`). The estimate can undershoot, so
+ * the fraction is clamped — a bar at 101% reads as a bug in the one minute the
+ * download is finishing.
+ *
+ * Shared by the row and the queue header on purpose: there is exactly one
+ * install running at any moment, and two differently-drawn views of it would be
+ * two claims about the same bytes.
+ */
+function InstallProgress({ install }: { install: SetupInstall }) {
+  if (install.bytes_done != null) {
+    return (
+      <div className="mt-2 max-w-md" data-download-progress>
+        <div className="flex items-baseline justify-between gap-3 text-[12px]">
+          <span className="flex items-center gap-2 font-semibold text-secondary">
+            <Loader2 aria-hidden className="h-3 w-3 shrink-0 animate-spin" />
+            Downloading…
+          </span>
+          <span className="font-mono text-[11.5px] tabular-nums text-muted">
+            {humanBytes(install.bytes_done)}
+            {install.bytes_total
+              ? ` of ~${humanBytes(install.bytes_total)} · ${Math.min(
+                  100,
+                  Math.floor((install.bytes_done / install.bytes_total) * 100),
+                )}%`
+              : ""}
+          </span>
+        </div>
+        <Progress
+          className="mt-1.5"
+          value={install.bytes_total ? Math.min(1, install.bytes_done / install.bytes_total) : null}
+        />
+      </div>
+    );
+  }
+  return (
+    <p className="mt-1.5 flex items-center gap-2 text-[12px]">
+      <Loader2 aria-hidden className="h-3 w-3 shrink-0 animate-spin text-secondary" />
+      <span className="shrink-0 font-semibold text-secondary">Installing…</span>
+      <span className="truncate font-mono text-[11.5px] text-muted">
+        {lastLine(install) ?? "starting"}
+      </span>
+    </p>
   );
 }
 
@@ -550,56 +775,11 @@ function CheckRow({
             the .env, and the detail line above stops being an instruction the
             moment this ships. */}
         {check.id === "hf_token" ? <HfTokenField ok={check.ok} onChanged={onRecheck} /> : null}
-        {/* This row's button, while it runs. Two shapes, because the two
-            installs have different honest progress:
-
-            A *tool* install gets one spinner, the word, and the last line of
-            output an install is minutes long and the poll is seconds long,
-            so the last line is the only progress there is; a bar would have to
-            invent the fraction.
-
-            A *model download* gets a real bar, because here the fraction is
-            not invented: the server re-walks the target directory each poll
-            (`bytes_done`) against the table's estimate (`bytes_total`). The
-            estimate can undershoot, so the fraction is clamped a bar at
-            101% reads as a bug in the one minute the download is finishing. */}
-        {installing ? (
-          install.bytes_done != null ? (
-            <div className="mt-2 max-w-md" data-download-progress>
-              <div className="flex items-baseline justify-between gap-3 text-[12px]">
-                <span className="flex items-center gap-2 font-semibold text-secondary">
-                  <Loader2 aria-hidden className="h-3 w-3 shrink-0 animate-spin" />
-                  Downloading…
-                </span>
-                <span className="font-mono text-[11.5px] tabular-nums text-muted">
-                  {humanBytes(install.bytes_done)}
-                  {install.bytes_total
-                    ? ` of ~${humanBytes(install.bytes_total)} · ${Math.min(
-                        100,
-                        Math.floor((install.bytes_done / install.bytes_total) * 100),
-                      )}%`
-                    : ""}
-                </span>
-              </div>
-              <Progress
-                className="mt-1.5"
-                value={
-                  install.bytes_total
-                    ? Math.min(1, install.bytes_done / install.bytes_total)
-                    : null
-                }
-              />
-            </div>
-          ) : (
-            <p className="mt-1.5 flex items-center gap-2 text-[12px]">
-              <Loader2 aria-hidden className="h-3 w-3 shrink-0 animate-spin text-secondary" />
-              <span className="shrink-0 font-semibold text-secondary">Installing…</span>
-              <span className="truncate font-mono text-[11.5px] text-muted">
-                {lastLine(install) ?? "starting"}
-              </span>
-            </p>
-          )
-        ) : null}
+        {/* This row's install, while it runs — the same two shapes the queue
+            header draws, from the same poll (see `InstallProgress`). The row is
+            where it belongs when a row's own button started it; when the queue
+            did, both are on screen and they are one install, drawn twice. */}
+        {installing ? <InstallProgress install={install} /> : null}
         {/* It failed: the reason is in the output, and it is never the first
             line. The whole tail is here rather than a summary, because the
             sentence that explains it is the package manager's, not ours. */}

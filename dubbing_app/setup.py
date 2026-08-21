@@ -24,8 +24,10 @@ Report shape::
                              "hub"?, "download_bytes"?}, ...]}
 
 `installable` is the server's answer to "can the app fix this for me?" true for
-exactly the ids `dubbing_app.install` has an argv for plus the models in
-`model_downloads()`, the hub snapshots the app can fetch itself. The UI needs it
+exactly the ids `dubbing_app.install` can install (`install.installable`: an argv
+for this platform, or the static ffmpeg build where no unattended package manager
+exists) plus the models in `model_downloads()`, the hub snapshots the app can
+fetch itself. The UI needs it
 as a flag rather than a list of its own, or the two sides drift and a button
 appears on a row whose `POST /api/setup/install` is a 400. A downloadable model
 row also carries `hub` and `download_bytes`, so the button can say what it costs
@@ -245,7 +247,7 @@ def probe(id_: str) -> dict[str, Any] | None:
     `dubbing_app.install` calls this when its worker exits, so the row the UI
     redraws is fresh evidence and not the worker's opinion of itself.
     """
-    from .install import INSTALLERS
+    from .install import installable
 
     spec = TOOLS.get(id_)
     if spec is None:
@@ -260,7 +262,7 @@ def probe(id_: str) -> dict[str, Any] | None:
     # client that drops this straight into its list must not get a shape one key
     # short it would redraw a REQUIRED row as an untagged one.
     row = tool(id_, *spec)
-    return {**row, "installable": id_ in INSTALLERS,
+    return {**row, "installable": installable(id_),
             **({"stage": blocking_stage(id_)} if row["severity"] == BLOCKING else {})}
 
 
@@ -569,7 +571,7 @@ def blocking_stage(id_: str) -> str | None:
 def report(outputs: Path) -> dict[str, Any]:
     # Imported here, not at module scope: `install` imports this module back for
     # its re-probe, and the one-directional import is what keeps that honest.
-    from .install import INSTALLERS
+    from .install import installable
 
     downloads = model_downloads()
     checks: list[dict[str, Any]] = [tool(id_, *spec) for id_, spec in TOOLS.items()]
@@ -578,7 +580,7 @@ def report(outputs: Path) -> dict[str, Any]:
     checks.append(demucs_check())
     checks.append(disk_check(Path(outputs)))
     for c in checks:
-        c["installable"] = c["id"] in INSTALLERS or c["id"] in downloads
+        c["installable"] = installable(c["id"]) or c["id"] in downloads
         # Only on the rows where it means something: a `stage` on an optional
         # row would read as "this is where it will bite you", which is exactly
         # the false urgency `severity` exists to stop.
@@ -588,6 +590,44 @@ def report(outputs: Path) -> dict[str, Any]:
     return {"ok": ok, "checks": checks}
 
 
-__all__ = ["report", "probe", "git_commit", "human_bytes", "dir_size", "env_path",
+def install_plan(report_: dict[str, Any]) -> list[dict[str, Any]]:
+    """What "install everything" actually installs, in the order to install it.
+
+    Read off a report rather than rebuilt from the tables, so the button can
+    never queue a row the screen is not showing red. Three filters, and each one
+    is a refusal:
+
+    * **Only what is missing.** A green row is not re-fetched; a torn-off
+      download is (`snapshot_download` resumes from the partial files, so a row
+      that is half there costs only the half that is not).
+    * **Only what the app can install by itself** — `installable`, the same flag
+      that puts a button on the row. Everything else is out by construction, and
+      that is also where the credentials question answers itself: the one check
+      that needs a token is `hf_token`, which installs nothing, and the one
+      *gated* model (pyannote) is deliberately absent from `model_downloads()`.
+      Every hub id this can queue is a public repo, so the queue never stops
+      half way to ask the user for something.
+    * **Nothing graded `optional`.** A Korean checkpoint has nothing to say
+      about a Hebrew→English run, and a button that says "everything" must not
+      quietly mean "and 40 GB you will never open". Blocking first, then
+      `degrades`: the run has to work before it has to be good, and on a slow
+      connection the order is the difference between a usable machine in twenty
+      minutes and one in two hours.
+
+    Each row carries the label the header says out loud and the download's size
+    (0 for a tool — a `brew` is seconds and has no denominator), which is what
+    lets the button price itself before it is pressed.
+    """
+    rank = {BLOCKING: 0, DEGRADES: 1}
+    rows = [c for c in report_.get("checks", ())
+            if not c.get("ok") and c.get("installable") and c.get("severity") in rank]
+    # Stable, so within a grade the plan keeps the report's order — which is the
+    # order the screen lists them in, and the order the user is reading.
+    rows.sort(key=lambda c: rank[c["severity"]])
+    return [{"id": c["id"], "label": c["label"],
+             "bytes": int(c.get("download_bytes") or 0)} for c in rows]
+
+
+__all__ = ["report", "probe", "install_plan", "git_commit", "human_bytes", "dir_size", "env_path",
            "find_uv", "hf_hub_cache", "model_downloads",
            "blocking_stage", "TOOLS", "BLOCKING", "DEGRADES", "OPTIONAL", "SEVERITIES"]
