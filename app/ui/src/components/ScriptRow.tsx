@@ -187,10 +187,12 @@ function Row({
             // ones that shipped and are untouched.
             "bg-accent/[0.07] ring-1 ring-inset ring-accent/25 dark:bg-accent/10 dark:ring-accent/45"
           : now
-            ? // 4.5% was the number people could not see the one wash on the
-              // screen whose whole job is "you are here". 8% is still under the
-              // selection, and the meta line's playing chip carries the word.
-              "bg-primary/[0.08]"
+            ? // 4.5% was invisible, 8% was still asked about ("make the
+              // highlight more highlighted") — the wash is now a band nobody
+              // has to hunt for, with its own quiet ring. It stays ink, not
+              // accent, so a row that is selected AND playing still shows two
+              // facts in two hues.
+              "bg-primary/[0.14] ring-1 ring-inset ring-primary/20 dark:bg-primary/[0.16] dark:ring-primary/30"
             : "hover:bg-sunken",
         busy && "animate-pulse",
       )}
@@ -202,14 +204,14 @@ function Row({
           : `color-mix(in srgb, ${meta.token} var(--state-rule), transparent)`,
       }}
     >
-      {/* The playhead's tick, painted over the state stripe: shorter than the
-          selection's full-height rule so the two stay two facts, but no longer
-          a sliver it is the same ink and nearly the same weight as the
-          timeline's playhead, because it is the same object seen in the list. */}
+      {/* The playhead's bar, painted over the state stripe: full height now —
+          it and the selection stay two facts by hue (ink vs accent), not by
+          length. Same ink and weight as the timeline's playhead, because it
+          is the same object seen in the list. */}
       {now && !selected ? (
         <span
           aria-hidden
-          className="pointer-events-none absolute top-1/2 h-9 w-[3px] -translate-y-1/2 rounded-e-sm bg-primary"
+          className="pointer-events-none absolute inset-y-0 w-[3px] rounded-e-sm bg-primary"
           style={{ insetInlineStart: -3 }}
         />
       ) : null}
