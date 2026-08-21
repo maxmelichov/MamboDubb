@@ -91,6 +91,7 @@ import {
   pipelineFailed,
   segmentState,
   totalDuration,
+  unclaimedSpans,
   type SegmentState,
   type Span,
 } from "../lib/segments";
@@ -154,6 +155,7 @@ const SHORTCUTS: [string[], string][] = [
   [["b"], "play Dub the dubbed clip for this line"],
   [["k"], "switch between dub and keep"],
   [["s"], "split the selection at the playhead"],
+  [["⌫"], "remove the selected line (⌘Z restores it)"],
   [["+", "−"], "zoom the timeline"],
   [["⌘", "f"], "search the script"],
   [["⌘", "z"], "undo the last edit"],
@@ -427,6 +429,32 @@ export function EditorPage() {
   const [highlightGap, setHighlightGap] = useState<Span | null>(null);
 
   /**
+   * The unclaimed span the reviewer clicked on the strip, waiting to be claimed.
+   *
+   * The rail's gap list is where adding lives, and it is fed by the report —
+   * which is a finding from the last render, so a gap opened *since* (a split,
+   * a retime, a remove) has a hatch on the strip and no row in the list.
+   * Clicking the hatch is the answer: the click clears the selection (the run
+   * summary is the surface that carries the composer), seeks there, and pins
+   * the span at the top of the list so it has an add control whether or not
+   * the report ever heard of it. It clears itself the moment a line is
+   * selected again which includes the line the add itself mints.
+   */
+  const [claimGap, setClaimGap] = useState<Span | null>(null);
+  const claimFromTimeline = useCallback(
+    (span: Span) => {
+      actions.select(null);
+      seek(span.start);
+      setClaimGap(span);
+    },
+    [actions, seek],
+  );
+  useEffect(() => {
+    if (selectedUid) setClaimGap(null);
+  }, [selectedUid]);
+  useEffect(() => setClaimGap(null), [name]);
+
+  /**
    * Make these lines playable: translate the ones with nothing to say, then
    * voice all of them.
    *
@@ -537,6 +565,31 @@ export function EditorPage() {
       });
     },
     [actions],
+  );
+
+  /**
+   * ⌫ on a selected line the keyboard path to the panel's Remove.
+   *
+   * Instant, like `k`, and for the same reason: pruning transcript noise out
+   * of a run is dozens of these, and a confirm on each is a tool nobody uses.
+   * What makes instant honest is the same pair `k` leans on: the removal is on
+   * the undo stack (`useProject.remove` records its own inverse), and the
+   * receipt says so in the strip and out loud. The receipt waits for the
+   * server the one refusal here is a 409 while a job runs, and announcing a
+   * removal beside an error bar denying it would be two answers to one press.
+   */
+  const removeSelected = useCallback(
+    (seg: Segment) => {
+      void actions.remove(seg.uid).then((removed) => {
+        if (!removed) return;
+        say(`Removed #${seg.id}`);
+        setNotice((current) => ({
+          text: `Removed #${seg.id} — ⌘Z restores the line`,
+          n: (current?.n ?? 0) + 1,
+        }));
+      });
+    },
+    [actions, say],
   );
 
   /** The undo behind the one destructive verdict see `setVerdict` below. */
@@ -823,6 +876,13 @@ export function EditorPage() {
             void actions.split(selected.uid, splitAt);
           }
           break;
+        case "Delete":
+        case "Backspace":
+          if (selected) {
+            event.preventDefault();
+            removeSelected(selected);
+          }
+          break;
         case "+":
         case "=":
           event.preventDefault();
@@ -840,6 +900,7 @@ export function EditorPage() {
     actions,
     nudgeHistory,
     playable,
+    removeSelected,
     selected,
     splitAt,
     startEditing,
@@ -1151,6 +1212,8 @@ export function EditorPage() {
                   segments={segments}
                   project={project}
                   counts={counts}
+                  total={total}
+                  claimGap={claimGap}
                   onSeek={transport.seek}
                   onAdd={actions.add}
                   onHighlightGap={setHighlightGap}
@@ -1178,6 +1241,7 @@ export function EditorPage() {
             // The strip's drag is the panel's Move button by another gesture:
             // the same PATCH, optimistic with the same rollback (`useProject`).
             onRetime={(uid, start, end) => void actions.patch(uid, { start, end })}
+            onClaimGap={claimFromTimeline}
             onViewport={onViewport}
             onZoomIn={zoomIn}
             onZoomOut={zoomOut}
@@ -1338,6 +1402,8 @@ function RunSummary({
   segments,
   project,
   counts,
+  total,
+  claimGap,
   onSeek,
   onAdd,
   onHighlightGap,
@@ -1345,6 +1411,10 @@ function RunSummary({
   segments: Segment[];
   project: ProjectDetail | null;
   counts: Record<SegmentState, number>;
+  /** The run's length, so the live coverage below has an end to measure to. */
+  total: number;
+  /** A hatch the reviewer clicked on the strip pinned onto the gap list. */
+  claimGap?: Span | null;
   onSeek: (time: number) => void;
   /**
    * Adding lives here and not in the run menu behind the header.
@@ -1360,8 +1430,28 @@ function RunSummary({
   onAdd?: (segment: NewSegment) => Promise<boolean>;
   onHighlightGap?: (span: Span | null) => void;
 }) {
-  const total = segments.length;
-  const gaps = project?.report?.uncovered_audible ?? [];
+  const count = segments.length;
+
+  /*
+   * The report's gaps, clipped to what is still uncovered *now*.
+   *
+   * `uncovered_audible` is a finding from the last render, and the script has
+   * usually moved since: a span the reviewer just claimed stayed on this list
+   * offering a + whose only possible answer was the server's overlap refusal,
+   * until a render happened to re-run the report. The report still decides
+   * which silences are worth listing it is the only party that has *heard*
+   * them but the live coverage decides how much of each is still open, so a
+   * claimed gap drops off the moment the segment holding it lands.
+   */
+  const gaps = useMemo(() => {
+    const live = unclaimedSpans(segments, total);
+    return (project?.report?.uncovered_audible ?? []).flatMap((gap) =>
+      live
+        .map((span) => ({ start: Math.max(gap.start, span.start), end: Math.min(gap.end, span.end) }))
+        .filter((span) => span.end - span.start > 0.05)
+        .map((span) => ({ ...span, duration: span.end - span.start })),
+    );
+  }, [project, segments, total]);
 
   /*
    * Why the kept lines were kept, most common first.
@@ -1388,17 +1478,17 @@ function RunSummary({
   const passthrough = segments.filter(
     (seg) => seg.keep && keptAsTargetLanguage(seg.keep_reason),
   ).length;
-  const mostlyKept = total > 0 && counts.kept / total >= 0.6;
+  const mostlyKept = count > 0 && counts.kept / count >= 0.6;
 
   const lead =
-    total === 0
+    count === 0
       ? "No lines yet the segments stage is what fills this list."
       : mostlyKept && passthrough >= counts.kept / 2
         ? `This video mostly speaks ${languageName(project?.source.tgt_lang)} already ` +
-          `${counts.kept} of ${total} lines keep their original audio.`
+          `${counts.kept} of ${count} lines keep their original audio.`
         : mostlyKept
-          ? `${counts.kept} of ${total} lines keep their original audio.`
-          : `${counts.dubbed} of ${total} lines are dubbed.`;
+          ? `${counts.kept} of ${count} lines keep their original audio.`
+          : `${counts.dubbed} of ${count} lines are dubbed.`;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto px-3 py-3">
@@ -1425,6 +1515,7 @@ function RunSummary({
 
       <GapList
         gaps={gaps}
+        pinned={claimGap}
         speakers={Object.keys(project?.speakers ?? {})}
         onSeek={onSeek}
         onAdd={onAdd}
@@ -1467,6 +1558,7 @@ function StateTally({ counts }: { counts: Record<SegmentState, number> }) {
  */
 function GapList({
   gaps,
+  pinned = null,
   speakers = [],
   onSeek,
   onAdd,
@@ -1475,6 +1567,16 @@ function GapList({
   className,
 }: {
   gaps: { start: number; end: number; duration: number }[];
+  /**
+   * A span picked on the strip itself, listed whether or not the report knew
+   * it. The hatches are drawn from the live segments, so a gap opened since
+   * the last render exists there and nowhere in `gaps`; clicking one pins it
+   * here, above the list, under its own eyebrow because the list's is a
+   * claim about *audible* speech and the strip only knows about time. When a
+   * listed gap already covers the span, the list row is the control and the
+   * pin stays quiet.
+   */
+  pinned?: Span | null;
   /** The run's voices, so a new line can be attributed to one of them. */
   speakers?: string[];
   onSeek: (time: number) => void;
@@ -1505,48 +1607,103 @@ function GapList({
   stale?: boolean;
   className?: string;
 }) {
-  if (gaps.length === 0) return null;
+  const extra =
+    pinned && !gaps.some((gap) => gap.start < pinned.end && gap.end > pinned.start)
+      ? { start: pinned.start, end: pinned.end, duration: pinned.end - pinned.start }
+      : null;
+  if (gaps.length === 0 && !extra) return null;
   return (
     <div className={className}>
-      {/*
-        A gap list is a finding, and a finding has a date. Splitting a segment
-        closes a gap and re-segmenting opens new ones, and neither shows here
-        until a render re-runs the report so when the report is behind, the
-        eyebrow says which report these are from rather than implying "now".
-      */}
-      <Eyebrow className="mb-1.5">
-        Audible, uncovered {gaps.length}
-        {stale ? " · from the last render" : ""}
-      </Eyebrow>
-      <p className="mb-1.5 text-[11px] leading-relaxed text-muted">
-        Speech here is in the source but no segment claims it, so the dub plays the original.
-        Jump to one and listen{onAdd ? ", and claim it if it should be dubbed" : ""}.
-      </p>
-      <ul className="flex max-h-48 flex-col gap-1 overflow-y-auto">
-        {gaps.map((gap) => (
-          <li
-            key={`${gap.start}-${gap.end}`}
-            className="flex items-stretch gap-1"
-            onMouseEnter={() => onHighlight?.({ start: gap.start, end: gap.end })}
-            onMouseLeave={() => onHighlight?.(null)}
-          >
-            <button
-              type="button"
-              data-gap={gap.start}
-              onClick={() => onSeek(gap.start)}
-              onFocus={() => onHighlight?.({ start: gap.start, end: gap.end })}
-              onBlur={() => onHighlight?.(null)}
-              className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-border bg-raised px-2 py-1 text-left text-[12.5px] transition-colors hover:border-axis hover:bg-sunken"
-            >
-              <TriangleAlert className="h-3 w-3 shrink-0 text-muted" aria-hidden />
-              <span className="font-mono tabular-nums text-primary">{timecode(gap.start)}</span>
-              <span className="ml-auto text-muted">{gap.duration.toFixed(1)}s</span>
-            </button>
-            {onAdd ? <AddSegmentButton gap={gap} speakers={speakers} onAdd={onAdd} /> : null}
-          </li>
-        ))}
-      </ul>
+      {extra ? (
+        <div className="mb-3.5" data-pinned-gap>
+          <Eyebrow className="mb-1.5">From the timeline</Eyebrow>
+          <p className="mb-1.5 text-[11px] leading-relaxed text-muted">
+            The span you picked on the strip. No segment claims it, so the dub plays the
+            original there{onAdd ? " claim it if it should be dubbed" : ""}.
+          </p>
+          {/* Keyed on the span: picking a second hatch has to reseed the
+              composer, not hand it the first hatch's numbers. */}
+          <ul className="flex flex-col gap-1">
+            <GapRow
+              key={`${extra.start}-${extra.end}`}
+              gap={extra}
+              speakers={speakers}
+              onSeek={onSeek}
+              onAdd={onAdd}
+              onHighlight={onHighlight}
+            />
+          </ul>
+        </div>
+      ) : null}
+      {gaps.length > 0 ? (
+        <>
+          {/*
+            A gap list is a finding, and a finding has a date. The rows are
+            clipped live against the segments on screen (see `RunSummary`), so
+            a claimed span leaves at once but a gap the report never *found*
+            still cannot appear until a render re-runs it, which is what the
+            eyebrow admits when the report is behind.
+          */}
+          <Eyebrow className="mb-1.5">
+            Audible, uncovered {gaps.length}
+            {stale ? " · from the last render" : ""}
+          </Eyebrow>
+          <p className="mb-1.5 text-[11px] leading-relaxed text-muted">
+            Speech here is in the source but no segment claims it, so the dub plays the original.
+            Jump to one and listen{onAdd ? ", and claim it if it should be dubbed" : ""}.
+          </p>
+          <ul className="flex max-h-48 flex-col gap-1 overflow-y-auto">
+            {gaps.map((gap) => (
+              <GapRow
+                key={`${gap.start}-${gap.end}`}
+                gap={gap}
+                speakers={speakers}
+                onSeek={onSeek}
+                onAdd={onAdd}
+                onHighlight={onHighlight}
+              />
+            ))}
+          </ul>
+        </>
+      ) : null}
     </div>
+  );
+}
+
+/** One uncovered span: a seek button, and the + composer when adding is wired. */
+function GapRow({
+  gap,
+  speakers,
+  onSeek,
+  onAdd,
+  onHighlight,
+}: {
+  gap: { start: number; end: number; duration: number };
+  speakers: string[];
+  onSeek: (time: number) => void;
+  onAdd?: (segment: NewSegment) => Promise<boolean>;
+  onHighlight?: (span: Span | null) => void;
+}) {
+  return (
+    <li
+      className="flex items-stretch gap-1"
+      onMouseEnter={() => onHighlight?.({ start: gap.start, end: gap.end })}
+      onMouseLeave={() => onHighlight?.(null)}
+    >
+      <button
+        type="button"
+        data-gap={gap.start}
+        onClick={() => onSeek(gap.start)}
+        onFocus={() => onHighlight?.({ start: gap.start, end: gap.end })}
+        onBlur={() => onHighlight?.(null)}
+        className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-border bg-raised px-2 py-1 text-left text-[12.5px] transition-colors hover:border-axis hover:bg-sunken"
+      >
+        <TriangleAlert className="h-3 w-3 shrink-0 text-muted" aria-hidden />
+        <span className="font-mono tabular-nums text-primary">{timecode(gap.start)}</span>
+        <span className="ml-auto text-muted">{gap.duration.toFixed(1)}s</span>
+      </button>
+      {onAdd ? <AddSegmentButton gap={gap} speakers={speakers} onAdd={onAdd} /> : null}
+    </li>
   );
 }
 

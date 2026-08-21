@@ -505,7 +505,7 @@ check(
 );
 check(
   "a third language kept now can still be dubbed line by line later",
-  /individual lines can still be switched to dubbed later, in the editor/.test(root.textContent),
+  /Individual lines can still be switched to dubbed later, in the editor/.test(root.textContent),
 );
 check(
   "the scope placeholders read as examples, not as values already set",
@@ -1078,8 +1078,21 @@ check(
 );
 check(
   "…in a tooltip as well, for the mouse",
-  hatches.every((h) => h.getAttribute("title") === h.getAttribute("aria-label")),
+  hatches.every((h) => (h.getAttribute("title") ?? "").startsWith(h.getAttribute("aria-label"))),
 );
+/*
+ * …and the wide ones are doors. A hatch that can hold a segment (the server's
+ * 0.9s floor) is a button that claims the span; a sliver stays a picture,
+ * because a composer whose Add can never enable is worse than no composer.
+ * The tooltip is the tell, so the two must agree.
+ */
+check(
+  "a hatch wide enough for a segment is a button, a sliver stays a picture",
+  hatches.every(
+    (h) => (h.tagName === "BUTTON") === /click to claim/.test(h.getAttribute("title") ?? ""),
+  ),
+);
+check("the run has at least one claimable hatch", hatches.some((h) => h.tagName === "BUTTON"));
 /*
  * …and the rail's list of them points at the map.
  *
@@ -2744,12 +2757,19 @@ check(
 );
 clickIt(addedRow().querySelector('[aria-label^="Select segment"]'));
 await settle(250);
-const timingShelf = [...document.querySelectorAll("aside details")].find((d) =>
-  d.querySelector("summary").textContent.includes("Timing & languages"),
+/*
+ * Remove sits on the panel's surface now, last, past everything that fixes a
+ * line rather than ends it. It spent a release inside the "Timing & languages"
+ * shelf a label that does not suggest deletion, two levels down from a line
+ * already judged as noise and the only way anyone found it was this test.
+ */
+const removeTrigger = () =>
+  [...document.querySelectorAll("aside button")].find((b) => /Remove segment/.test(b.textContent));
+check(
+  "remove is on the panel surface, not inside a shelf",
+  removeTrigger() != null && removeTrigger().closest("details") == null,
 );
-if (!timingShelf.open) clickIt(timingShelf.querySelector("summary"));
-await settle(150);
-clickIt([...timingShelf.querySelectorAll("button")].find((b) => /Remove segment/.test(b.textContent)));
+clickIt(removeTrigger());
 await settle(150);
 clickIt(dialogButton("Remove"));
 await settle(400);
@@ -2758,6 +2778,78 @@ check("…and the script is the length it was", rows().length === rowsAtStart);
 check(
   "the undo names the line's live id, not the one it had when it was kept",
   new RegExp(`Kept #${lostId - 1}\\b`).test(toast()?.textContent ?? ""),
+);
+
+/*
+ * ⌘Z after a removal is the add composer's own request replayed with the dead
+ * line's values (`useProject.remove` records exactly that shape), so the line
+ * comes back as a line, selected the way any structural edit lands.
+ */
+chord("z");
+await settle(400);
+check("ctrl+z restores the removed line", rows().length === rowsAtStart + 1 && addedRow() != null);
+check(
+  "…and says so",
+  /Restored deleted line/.test(document.querySelector("[data-history-notice]")?.textContent ?? ""),
+);
+check("…selected, like any structural edit's landing", addedRow().getAttribute("aria-selected") === "true");
+
+/*
+ * ⌫ is the keyboard path to the same removal instant like `k`, because
+ * pruning transcript noise is dozens of these, and honest for the same reason:
+ * the receipt names ⌘Z, and the entry is already on the stack.
+ */
+dom.window.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Backspace", bubbles: true }));
+await settle(400);
+check("backspace removes the selected line", rows().length === rowsAtStart && addedRow() == null);
+check(
+  "…leaving a receipt that names the undo",
+  /Removed #\d+/.test(document.querySelector("[data-history-notice]")?.textContent ?? "") &&
+    /restores the line/.test(document.querySelector("[data-history-notice]")?.textContent ?? ""),
+);
+
+/*
+ * Claiming from the strip. The rail's gap list is the report's finding, so a
+ * gap opened *since* the last render a removal, here has no row in it and
+ * no + anywhere, while its hatch is already drawn from the live segments.
+ * Clicking that hatch is the way in: it clears the selection, and pins the
+ * span at the top of the run summary with the composer beside it.
+ */
+const hatchLabels = new Set(
+  [...document.querySelectorAll("button[data-hatch]")].map((h) => h.getAttribute("aria-label")),
+);
+clickIt(rowFor(5).querySelector('[aria-label^="Select segment"]'));
+await settle(250);
+dom.window.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Delete", bubbles: true }));
+await settle(400);
+check("delete removes a line the report never listed as a gap", rows().length === rowsAtStart - 1);
+const freshHatch = [...document.querySelectorAll("button[data-hatch]")].find(
+  (h) => !hatchLabels.has(h.getAttribute("aria-label")),
+);
+check("…and its span becomes a live, claimable hatch", freshHatch != null);
+clickIt(freshHatch);
+await settle(300);
+check(
+  "clicking the hatch returns the rail to the run",
+  /This run/.test(document.querySelector("aside").textContent),
+);
+check(
+  "…with the span pinned, though no report ever found it",
+  document.querySelector("aside [data-pinned-gap]") != null,
+);
+check(
+  "…and a composer of its own beside it",
+  [...document.querySelectorAll("aside [data-pinned-gap] button")].some((b) =>
+    /^Add a segment at /.test(b.getAttribute("aria-label") ?? ""),
+  ),
+);
+// Put the line back, so everything below reads the run it was written against.
+chord("z");
+await settle(400);
+check("ctrl+z puts the deleted line back", rows().length === rowsAtStart);
+check(
+  "…and being a selection again, the pin is gone",
+  document.querySelector("aside [data-pinned-gap]") == null,
 );
 
 /*

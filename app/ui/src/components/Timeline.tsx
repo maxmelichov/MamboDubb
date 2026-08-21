@@ -94,6 +94,12 @@ const MIN_MARK_PX = 3;
 const MIN_SPAN = 0.1;
 /** How far a press travels before it is a drag and no longer a click, in px. */
 const DRAG_SLOP_PX = 3;
+/**
+ * Below this the server refuses a new segment outright (`segments.MIN_SEG_SEC`
+ * the synthesiser reliably fails a shorter line), so a narrower hatch stays a
+ * picture rather than becoming a door to a composer whose Add can never enable.
+ */
+const MIN_CLAIM_SEC = 0.9;
 
 /** Which part of a source mark the pointer grabbed. */
 type DragMode = "move" | "start" | "end";
@@ -147,6 +153,7 @@ export function Timeline({
   onSelect,
   onSeek,
   onRetime,
+  onClaimGap,
   onViewport,
   onZoomIn,
   onZoomOut,
@@ -202,6 +209,17 @@ export function Timeline({
    * because the server refuses an overlap rather than fixing one.
    */
   onRetime: (uid: string, start: number, end: number) => void;
+  /**
+   * A hatch was clicked: the reviewer wants to claim this unclaimed span.
+   *
+   * The hatches are the one gap surface that is *live* they come from the
+   * segments on screen, not from the last report so this is how a gap the
+   * report has never seen (opened by a split, a retime, a remove) gets an add
+   * control at all. The page answers by putting the run summary up with the
+   * span pinned; the composer itself stays there, beside the list it belongs
+   * to, rather than floating over a 128px strip.
+   */
+  onClaimGap?: (span: Span) => void;
   /** How wide the scrolling area is, so the page can work out the fit zoom. */
   onViewport: (width: number) => void;
   onZoomIn: () => void;
@@ -320,11 +338,13 @@ export function Timeline({
    * scrubbing instead of stopping at the edge.
    *
    * A press that starts on a mark is that mark's click: selecting a segment is
-   * the more common gesture and it must not be swallowed by the scrubber.
+   * the more common gesture and it must not be swallowed by the scrubber. A
+   * claimable hatch is a button for the same reason a mark is, so the same
+   * rule covers it the narrow hatches stay part of the scrub surface.
    */
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
-    if ((event.target as HTMLElement).closest("[data-mark]")) return;
+    if ((event.target as HTMLElement).closest("[data-mark], button")) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     seekFromClientX(event.clientX);
   };
@@ -561,28 +581,51 @@ export function Timeline({
                 gap.end,
                 0,
               )}`;
-              return (
+              /*
+               * Wide enough to hold a segment, the hatch is a door as well as a
+               * mark: clicking it hands the span up so the rail can offer the
+               * composer for it. The class list and the style are one object
+               * because the two elements are one drawing a hatch must not
+               * change its face when it gains a click.
+               */
+              const claimable = onClaimGap != null && gap.end - gap.start >= MIN_CLAIM_SEC;
+              const face = {
+                title: claimable ? `${label} click to claim it as a segment` : label,
+                className: cn(
+                  "hatch-unclaimed absolute inset-y-2 rounded-[3px] border border-dashed",
+                  "transition-all",
+                  // Pointing at a gap in the rail's list lights the one it is
+                  // about: the list is timecodes, and a timecode is only an
+                  // answer once you can see where in the run it lands.
+                  lit && "inset-y-1 ring-2 ring-accent",
+                  // Same hover grammar as the marks: the hatches are 135°
+                  // stripes and nothing else says they are pressable.
+                  claimable && "cursor-pointer hover:inset-y-1.5 hover:ring-2 hover:ring-accent/45",
+                ),
+                style: {
+                  left: gap.start * pxPerSecond + 1,
+                  width: Math.max(MIN_MARK_PX, (gap.end - gap.start) * pxPerSecond - 2),
+                  borderColor: `color-mix(in srgb, var(--color-unclaimed) ${
+                    lit ? "100%" : "45%"
+                  }, transparent)`,
+                },
+              };
+              return claimable ? (
+                <button
+                  key={`gap-${gap.start}`}
+                  type="button"
+                  data-hatch={lit ? "lit" : ""}
+                  aria-label={label}
+                  onClick={() => onClaimGap({ start: gap.start, end: gap.end })}
+                  {...face}
+                />
+              ) : (
                 <div
                   key={`gap-${gap.start}`}
                   role="img"
                   data-hatch={lit ? "lit" : ""}
                   aria-label={label}
-                  title={label}
-                  className={cn(
-                    "hatch-unclaimed absolute inset-y-2 rounded-[3px] border border-dashed",
-                    "transition-all",
-                    // Pointing at a gap in the rail's list lights the one it is
-                    // about: the list is timecodes, and a timecode is only an
-                    // answer once you can see where in the run it lands.
-                    lit && "inset-y-1 ring-2 ring-accent",
-                  )}
-                  style={{
-                    left: gap.start * pxPerSecond + 1,
-                    width: Math.max(MIN_MARK_PX, (gap.end - gap.start) * pxPerSecond - 2),
-                    borderColor: `color-mix(in srgb, var(--color-unclaimed) ${
-                      lit ? "100%" : "45%"
-                    }, transparent)`,
-                  }}
+                  {...face}
                 />
               );
             })}

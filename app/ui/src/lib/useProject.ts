@@ -89,8 +89,13 @@ export type ProjectActions = {
    * Take a segment out of the dub. The selection goes with it: a panel pointing
    * at a uid the server has just retired is the same bug `split` avoids by
    * minting new ones.
+   *
+   * Resolves to whether the server let it go, for the same reason `add` does:
+   * ⌫ removes without a confirm and answers with a notice, and a notice about
+   * a removal the server refused (409 while a job runs) would be a lie next to
+   * the error bar telling the truth.
    */
-  remove: (uid: string) => Promise<void>;
+  remove: (uid: string) => Promise<boolean>;
   retranslate: (uids: string[], batch?: string) => Promise<void>;
   resynthesize: (uids: string[], batch?: string) => Promise<void>;
   render: () => Promise<void>;
@@ -471,6 +476,7 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
       // at a uid that no longer names anything. `setSelectedUid` is a no-op when
       // something else was selected.
       setSelectedUid((current) => (current === uid ? null : current));
+      return after != null;
     },
     [name, record, structural],
   );

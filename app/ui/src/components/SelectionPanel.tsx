@@ -114,7 +114,7 @@ export function SelectionPanel({
   onVerdict: (keep: boolean) => void;
   onSplit: (at: number) => void;
   onMerge: (uidB: string) => void;
-  /** Take this segment out of the dub entirely see the shelf for what that means. */
+  /** Take this segment out of the dub entirely see the panel's last section. */
   onRemove: () => void;
   onRetranslate: () => void;
   onResynthesize: () => void;
@@ -414,40 +414,6 @@ export function SelectionPanel({
             </div>
           </div>
 
-          {/*
-            Remove, and it is deliberately not next to "Keep original".
-            They read as the same thing and are not: a keep is a *verdict* about
-            a passage the pipeline found the segment stays, it is placed, and
-            the mix ducks the bed away under its original audio. Removing says
-            there is no segment here at all (transcript noise, a hallucinated
-            line, a fragment belonging to nobody), and the record goes.
-
-            What the viewer hears afterwards is the sentence that matters, and
-            it is not silence: `dubbing/mix.py` adds the original vocals into
-            every span no placement claims, so a removed span sounds exactly
-            like a passage the pipeline never detected. Saying so here is the
-            difference between an informed delete and a surprise.
-          */}
-          <div className="flex flex-col gap-1.5 border-t border-border pt-3">
-            <Eyebrow>Remove from the dub</Eyebrow>
-            <p className="text-[11px] leading-snug text-muted">
-              Deletes this segment. The span is not muted the mix plays the original
-              audio wherever no segment claims it, the same as a passage the pipeline
-              never found. To play the original <em>deliberately</em>, use “Keep original”
-              above, which keeps the line and its subtitle.
-            </p>
-            <ConfirmButton
-              size="sm"
-              align="left"
-              className="self-start"
-              confirmLabel="Remove"
-              message="Remove this segment. Its translation and clip go with it, and the span plays the original audio. Re-running the segments stage would bring it back."
-              onConfirm={onRemove}
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              Remove segment
-            </ConfirmButton>
-          </div>
         </Disclosure>
 
         <Disclosure
@@ -492,6 +458,50 @@ export function SelectionPanel({
             <p className="font-mono text-[11px] text-muted">uid {seg.uid}</p>
           </div>
         </Disclosure>
+
+        {/*
+          Remove, on the surface and last and deliberately not next to
+          "Keep original". They read as the same thing and are not: a keep is a
+          *verdict* about a passage the pipeline found the segment stays, it
+          is placed, and the mix ducks the bed away under its original audio.
+          Removing says there is no segment here at all (transcript noise, a
+          hallucinated line, a fragment belonging to nobody), and the record
+          goes.
+
+          It used to live inside the "Timing & languages" shelf, which is a
+          label that does not suggest deletion two levels down from a line the
+          reviewer has already judged as noise. The bottom of the panel is
+          where a destructive control belongs: visible without opening
+          anything, and past everything that fixes a line rather than ends it.
+          ⌫ is the same action without the confirm, guarded by ⌘Z instead.
+
+          What the viewer hears afterwards is the sentence that matters, and
+          it is not silence: `dubbing/mix.py` adds the original vocals into
+          every span no placement claims, so a removed span sounds exactly
+          like a passage the pipeline never detected. Saying so here is the
+          difference between an informed delete and a surprise.
+        */}
+        <div className="mt-3 flex flex-col gap-1.5" data-remove-section>
+          <Eyebrow>Remove from the dub</Eyebrow>
+          <p className="text-[11px] leading-snug text-muted">
+            Deletes this segment. The span is not muted the mix plays the original
+            audio wherever no segment claims it, the same as a passage the pipeline
+            never found. To play the original <em>deliberately</em>, use “Keep original”
+            above, which keeps the line and its subtitle. ⌫ removes without asking;
+            ⌘Z restores a removed line.
+          </p>
+          <ConfirmButton
+            size="sm"
+            align="left"
+            className="self-start"
+            confirmLabel="Remove"
+            message="Remove this segment. Its translation and clip go with it, and the span plays the original audio. Re-running the segments stage would bring it back."
+            onConfirm={onRemove}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Remove segment
+          </ConfirmButton>
+        </div>
       </div>
     </div>
   );
