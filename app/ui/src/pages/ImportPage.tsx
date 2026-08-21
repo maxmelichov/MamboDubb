@@ -333,7 +333,11 @@ export function ImportPage() {
             page instead — Start stays above the fold in the left column, and
             whatever the rail hangs past it is reachable the way everything on
             a page is, by scrolling the page. */}
-        <Card data-region="options" className="flex flex-col overflow-hidden rounded-3xl p-0">
+        {/* `self-start`: the grid stretches its items so the runs column can
+            fill, but the rail must not come along for the ride — stretched, it
+            parks its slack between Scope and the mt-auto footer note as a void
+            inside the card. Natural height, always. */}
+        <Card data-region="options" className="flex flex-col self-start overflow-hidden rounded-3xl p-0">
           <CardSection className="px-5 pt-6 sm:px-5">
             <SectionLabel icon={Languages}>Languages</SectionLabel>
             <div className="mt-3 grid grid-cols-2 gap-3">
