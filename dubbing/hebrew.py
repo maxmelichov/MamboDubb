@@ -59,7 +59,13 @@ ADAPTER_TAG = "qwentts-he-lora-v1"
 G2P_DIR = REPO_ROOT / "models" / "RenikudPlus"
 G2P_FILE = G2P_DIR / "model.onnx"
 G2P_HUB = "notmax123/RenikudPlus"
-G2P_DOWNLOAD = f"uv run hf download {G2P_HUB} model.onnx --local-dir models/{G2P_DIR.name}"
+# Pinned. The hub repo doubles as the G2P's development home, and the day a new
+# training run landed on main (pat40e, 2026-08-21) every fresh dub started
+# speaking Hebrew with a hard foreign accent — the LoRA was trained against the
+# July revision's IPA and no other. Bump only after a validated →he run.
+G2P_REVISION = "3d4b716a0004c56042032cefb42a806708ed0bcb"
+G2P_DOWNLOAD = (f"uv run hf download {G2P_HUB} model.onnx --revision {G2P_REVISION} "
+                f"--local-dir models/{G2P_DIR.name}")
 G2P_PACKAGE = "renikud-plus"
 
 # The G2P is gender-conditioned: 0 unknown, 1 male, 2 female. The pipeline does not
@@ -130,8 +136,15 @@ def _load_g2p():
         from renikud_onnx import G2P
 
         where = G2P_FILE if G2P_FILE.is_file() else None
-        _G2P = G2P(str(where)) if where else G2P()
-        print(f"  tts: Hebrew G2P ({where or G2P_HUB})", file=sys.stderr)
+        if where is None:
+            # Never let the package fetch "latest" on its own — the pin above
+            # is the whole point. Fetch the pinned file, then load it as local.
+            from huggingface_hub import hf_hub_download
+
+            where = Path(hf_hub_download(G2P_HUB, "model.onnx",
+                                          revision=G2P_REVISION))
+        _G2P = G2P(str(where))
+        print(f"  tts: Hebrew G2P ({where})", file=sys.stderr)
     return _G2P
 
 
