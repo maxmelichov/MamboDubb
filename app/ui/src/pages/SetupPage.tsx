@@ -6,9 +6,17 @@
  * token, each model directory, free disk. This screen is a checklist of them
  * and nothing else. Three rules it follows, all of them the editor's:
  *
- * - **Never colour alone.** Every row carries a glyph, the word "Ready" or
- *   "Missing", and a hue in that order of importance. A monochrome screen
- *   reads exactly the same.
+ * - **Never colour alone.** Every row carries a glyph, a word ("Ready",
+ *   "Missing", "Not installed"), and a hue in that order of importance. A
+ *   monochrome screen reads exactly the same.
+ * - **A provisioned machine is all green, and nothing is amber by design.**
+ *   The only rows that are not green on a machine with everything installed are
+ *   the ones where something genuinely is not there and the only *grade* that
+ *   survives that with nothing to do about it is `optional`, which is drawn as
+ *   a grey dash, the words "Not installed", and no wash. It is not counted in
+ *   the "N of M need attention" headline and it cannot hold `ok` back (the
+ *   server's `report` conjoins the required rows only). SoX is the row this
+ *   exists for: the shipped pipeline never calls it.
  * - **A failure says what it costs.** Every missing row used to be the same red
  *   X, so a gated Hugging Face token (the run works, everyone in the video
  *   becomes one speaker) looked exactly like a missing ffmpeg (nothing runs at
@@ -42,7 +50,7 @@
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowRight, Check, Copy, Download, ExternalLink, Loader2, RefreshCw, X } from "lucide-react";
+import { ArrowRight, Check, Copy, Download, ExternalLink, Loader2, Minus, RefreshCw, X } from "lucide-react";
 import { PageShell } from "../components/AppShell";
 import {
   Badge,
@@ -74,17 +82,50 @@ function severityOf(check: SetupCheck): SetupSeverity {
 
 const SEVERITY_META: Record<
   SetupSeverity,
-  { word: string; token: string; tone: "bad" | "warn" | "neutral"; wash: boolean }
+  {
+    word: string;
+    token: string;
+    tone: "bad" | "warn" | "neutral";
+    wash: boolean;
+    /** What a *failing* row of this grade says where a red one says "Missing". */
+    state: string;
+  }
 > = {
   // Nothing runs. Red, a wash, and the word people already read as "stop".
-  blocking: { word: "Required", token: "var(--color-critical)", tone: "bad", wash: true },
+  blocking: {
+    word: "Required", token: "var(--color-critical)", tone: "bad", wash: true,
+    state: "Missing",
+  },
   // The run works and is worse. Amber: it must not be dismissible at a glance,
   // and it must not read as broken either.
-  degrades: { word: "Degrades", token: "var(--color-warning)", tone: "warn", wash: true },
-  // Irrelevant until you ask for it. No hue and no wash an optional row that
-  // shouted was what taught users to ignore the whole list.
-  optional: { word: "Optional", token: "var(--color-muted)", tone: "neutral", wash: false },
+  degrades: {
+    word: "Degrades", token: "var(--color-warning)", tone: "warn", wash: true,
+    state: "Missing",
+  },
+  /*
+   * Irrelevant until you ask for it. No hue, no wash, and — the part that was
+   * still wrong — no red MISSING badge either.
+   *
+   * SoX is the row this is about. Nothing the shipped pipeline runs touches it
+   * (see `setup.TOOLS`), the server has graded it `optional` for exactly that
+   * reason, and the screen still drew a brewless machine a red X and the word
+   * "Missing" beside a second chip reading "Optional". A checklist that says
+   * MISSING · OPTIONAL in the same breath is asking the reader to work out
+   * which half to believe, and a user reading "the setup is not all green"
+   * off a tool the app will never call is the whole failure. One quiet chip
+   * that says the true thing instead, and the row is not counted as needing
+   * attention anywhere on the screen.
+   */
+  optional: {
+    word: "Optional", token: "var(--color-muted)", tone: "neutral", wash: false,
+    state: "Not installed",
+  },
 };
+
+/** Does this failing row want the user to do something? Optional ones do not. */
+function needsAttention(check: SetupCheck): boolean {
+  return !check.ok && severityOf(check) !== "optional";
+}
 
 /**
  * `9700000000` → `9.7 GB`, the same rounding as the server's `human_bytes`.
@@ -236,6 +277,10 @@ export function SetupPage() {
   const blocking = failing.filter((check) => severityOf(check) === "blocking");
   const degraded = failing.filter((check) => severityOf(check) === "degrades");
   const optional = failing.filter((check) => severityOf(check) === "optional");
+  // What the headline counts. A missing optional tool is not a thing to attend
+  // to — it is a row saying "you did not need this", and counting it was how a
+  // fully provisioned machine still met a number at the top of the screen.
+  const attention = checks.filter(needsAttention);
   const stopsAt = firstBlockingStage(checks);
 
   /*
@@ -273,7 +318,7 @@ export function SetupPage() {
                     )
                   ) : (
                     <>
-                      {failing.length} of {checks.length} need attention
+                      {attention.length} of {checks.length} need attention
                     </>
                   )
                 ) : checking ? (
@@ -384,8 +429,8 @@ export function SetupPage() {
                     `thing${degraded.length === 1 ? "" : "s"} above will still run ` +
                     "just worse."
                   : `Everything required is ready; ${optional.length} optional ` +
-                    `item${optional.length === 1 ? " is" : "s are"} missing for wider ` +
-                    "language pairs."}
+                    `item${optional.length === 1 ? " is" : "s are"} not installed, ` +
+                    "and nothing needs them."}
           </span>
         </CardSection>
       </Card>
@@ -425,15 +470,17 @@ function CheckRow({
   /** Re-run the whole checklist a token save can only turn rows green. */
   onRecheck: () => void;
 }) {
-  const Glyph = check.ok ? Check : X;
+  const severity = severityOf(check);
+  const meta = SEVERITY_META[severity];
+  // A cross is "this is wrong". An optional row that is simply not here is not
+  // wrong, so it gets a dash the glyph a checklist uses for "not applicable".
+  const Glyph = check.ok ? Check : severity === "optional" ? Minus : X;
   const installing = install?.running === true;
   const failed = install !== null && !install.running && install.ok === false;
   // The button is offered for exactly one state: a row the server says it can
   // fix, that is currently broken. A passing row needs nothing and a model row
   // has no argv behind it its detail line is the answer.
   const offerInstall = check.installable === true && !check.ok;
-  const severity = severityOf(check);
-  const meta = SEVERITY_META[severity];
   // A passing row is green whatever it would have cost; a failing one wears the
   // hue of what it costs. `--color-good` is the one case that is not a grade.
   const token = check.ok ? "var(--color-good)" : meta.token;
@@ -472,12 +519,23 @@ function CheckRow({
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
           <span className="text-[13px] font-semibold text-primary">{check.label}</span>
-          <Badge tone={check.ok ? "good" : "bad"}>{check.ok ? "Ready" : "Missing"}</Badge>
+          <Badge tone={check.ok ? "good" : meta.tone}>
+            {check.ok ? "Ready" : meta.state}
+          </Badge>
           {/* The consequence, spelled as a word beside the state. "Missing" is
               what is true; this is what it costs, and the two are different
-              facts a screenshot read at a glance needs both. Only on a
-              failing row: what a passing check *would* have cost is trivia. */}
-          {check.ok ? null : <Badge tone={meta.tone}>{meta.word}</Badge>}
+              facts a screenshot read at a glance needs both. Only where the
+              two are different facts: a passing check's cost is trivia, and an
+              optional row's state chip already reads "Not installed", so a
+              second chip saying "Optional" beside it is the same word twice. */}
+          {check.ok || severity === "optional" ? null : (
+            <Badge tone={meta.tone}>{meta.word}</Badge>
+          )}
+          {/* …which leaves the grade itself to be said in plain words, because
+              a screenshot read at a glance still has to carry it. */}
+          {!check.ok && severity === "optional" ? (
+            <span className="text-[11px] text-muted">Optional nothing here needs it</span>
+          ) : null}
           {!check.ok && severity === "blocking" && check.stage ? (
             <span className="text-[11px] text-muted">stops the run at {check.stage}</span>
           ) : null}

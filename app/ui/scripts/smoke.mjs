@@ -90,7 +90,7 @@ const html = readFileSync(new URL("../dist/index.html", import.meta.url), "utf8"
 check("the OS preference is never consulted", !/prefers-color-scheme/.test(css + html));
 check("both colour-schemes ship", /color-scheme:\s*light/.test(css) && /color-scheme:\s*dark/.test(css));
 check("the dark theme is a class, not a media query", /\.theme-dark/.test(css));
-check("the pre-paint canvas covers both themes", /theme-dark[^}]*#110e16/.test(html) && /#f7f6f2/.test(html));
+check("the pre-paint canvas covers both themes", /theme-dark[^}]*#0d1413/.test(html) && /#f2f1ec/.test(html));
 check("native number spinners are suppressed", /-webkit-inner-spin-button/.test(css));
 
 /*
@@ -228,23 +228,38 @@ check("the mark wash is a theme token, per theme", /--mark-wash:/.test(css) && /
  * 1. It ships in both themes. A `--color-accent` declared only in `@theme`
  *    would make dark's primary button near-white again the moment somebody
  *    edits the light value, silently.
- * 2. In light it *is* ink. That is not a placeholder it is the promise that
- *    naming the accent changed nothing about the theme nobody complained
- *    about and it is why every `bg-accent` below is safe to have replaced a
- *    `bg-primary`.
- * 3. In dark it is not ink. A dark accent that resolves back to the near-white
- *    is the bug this whole pass exists to fix, and it would pass every other
- *    check in this file.
+ * 2. Neither theme's accent is ink. Light's was, for one release: a near-black
+ *    Start dubbing on a near-white card, a screen with no colour in it, and the
+ *    complaint this redesign answers. Both are the brand teal now, at the
+ *    lightness each ground can hold.
+ * 3. Whatever it is, a label is picked to sit on it, per theme and the light
+ *    one has to clear 4.5:1, because that label is text on a fill.
  */
 check("the accent ships in both themes", hue("accent") != null && hue("accent", darkBlock) != null);
-check("light's accent is ink, so light is unchanged", hue("accent") === "var(--color-primary)");
-check("…and its label is ink's label", hue("on-accent") === "var(--color-on-primary)");
 check(
-  "dark picks a colour for the accent rather than inheriting the near-white ink",
-  /^#[0-9a-f]{6}$/i.test(hue("accent", darkBlock) ?? "") &&
-    hue("accent", darkBlock) !== hue("primary", darkBlock),
+  "neither theme's accent is the ink it used to be",
+  [
+    [hue("accent"), hue("primary")],
+    [hue("accent", darkBlock), hue("primary", darkBlock)],
+  ].every(([accent, ink]) => /^#[0-9a-f]{6}$/i.test(accent ?? "") && accent !== ink),
 );
-check("…with a label of its own to sit on it", hue("on-accent", darkBlock) != null);
+check(
+  `the primary button's label clears AA on its own fill (${token("on-accent")} on ${token("accent")})`,
+  contrast(token("on-accent"), token("accent")) >= 4.5,
+);
+check("…and dark picks a label of its own too", hue("on-accent", darkBlock) != null);
+/* One accent, one hue: the two values are the same colour at two lightnesses,
+   not two colours. Checked as "the same channel dominates in both", which is
+   the cheapest honest test — a violet dark accent under a teal light one is
+   exactly the half-migrated state this guards. */
+const dominant = (hex) => {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  return `${g > r},${b > r}`;
+};
+check(
+  "…and they are one hue at two lightnesses, not two colours",
+  dominant(token("accent")) === dominant(token("accent", darkBlock)),
+);
 /* The accent is a fill, a ring and a rule, and it is measured against the 3:1
    non-text gate only. There is no assertion here that it is never set as text,
    because writing one puts the class name in a file Tailwind scans and mints
@@ -252,20 +267,23 @@ check("…with a label of its own to sit on it", hue("on-accent", darkBlock) != 
 
 /*
  * The desktop shell paints its window before the webview exists, so its
- * `backgroundColor` has to be the dark plane exactly any drift is a flash of
- * the wrong near-black on every launch. Three copies of that value ship (the
- * CSS token, the pre-paint canvas in index.html, the Tauri config) and this is
- * the one seam a class cannot cover, so it is checked rather than trusted.
+ * `backgroundColor` has to be the *default* theme's plane exactly any drift
+ * is a flash of the wrong ground on every launch, and the default is light now.
+ * Three copies of that value ship (the CSS token, the pre-paint canvas in
+ * index.html, the Tauri config) and this is the one seam a class cannot cover,
+ * so it is checked rather than trusted.
  */
 const darkPlane = hue("plane", darkBlock);
+const lightPlane = token("plane");
 const tauri = JSON.parse(
   readFileSync(new URL("../../desktop/src-tauri/tauri.conf.json", import.meta.url), "utf8"),
 );
 check(
-  "the shell's window colour is the dark plane",
-  tauri.app.windows[0].backgroundColor.toLowerCase() === darkPlane,
+  "the shell's window colour is the default theme's plane",
+  tauri.app.windows[0].backgroundColor.toLowerCase() === lightPlane,
 );
-check("…and so is the canvas painted before the bundle parses", html.includes(darkPlane));
+check("…and both planes are painted before the bundle parses",
+  html.includes(darkPlane) && html.includes(lightPlane));
 
 /*
  * And the palette stays in one file. A literal `#3b7f5c` in a component is a
@@ -295,9 +313,13 @@ check(
 const root = document.getElementById("root");
 /*
  * Home is the FORM again. The runs list held "/" for one release and read as
- * a menu standing between the user and the video; it lives at /runs now, one
- * pill cell away — visible on top, not the landing. What "/" owes on first
- * paint is the work itself. The hero stays gone on both pages.
+ * a menu standing between the user and the video; the archive lives at /runs
+ * now, one pill cell away — visible on top, not the landing. What "/" owes on
+ * first paint is the work itself. The hero stays gone on both pages.
+ *
+ * What home *does* carry is a glance at the same runs, under the card: capped,
+ * compact, and marked `home-runs` rather than `runs` so the two claims stay
+ * separable — the archive is still one place, and this is a shortcut to it.
  */
 check(
   "home screen renders without hero copy",
@@ -307,6 +329,31 @@ check(
 );
 check("home is the form, not a menu", root.querySelector('[data-region="new-dub"]') != null &&
   root.querySelector('[data-region="runs"]') == null);
+/* The runs under the form. They come from the same list the archive draws, so
+   they arrive a tick after first paint. */
+await new Promise((resolve) => setTimeout(resolve, 200));
+const homeRuns = () => root.querySelector('[data-region="home-runs"]');
+check("the workspace's runs sit under the form", homeRuns() != null);
+check(
+  "…as the same rows the archive draws, capped at a glance",
+  homeRuns().querySelectorAll("li").length === 3 &&
+    homeRuns().querySelectorAll("li").length <= 5 &&
+    /Running translate/.test(homeRuns().textContent),
+);
+check("…with the way to the whole list", homeRuns().querySelector("[data-all-runs]") != null);
+/* The context box is two rows, not a paragraph field. It was the tallest thing
+   on the card and the emptiest, and everything under it paid for that. */
+check(
+  "the context field is a small box, not a paragraph",
+  Number(document.querySelector('textarea[aria-label="Context"]').getAttribute("rows")) <= 2,
+);
+/* And the nine-stage reference is shut, because the runs are what is under the
+   form now. It is one click for the user who has never met the pipeline. */
+check(
+  "the pipeline glance ships closed",
+  document.querySelector("[data-pipeline-glance]") != null &&
+    document.querySelector("[data-pipeline-glance]").open === false,
+);
 // The pill is the door, so the pill is what gets driven — `go` is not even
 // defined yet, which is its own argument for using the real control.
 const runsCell = [...document.querySelectorAll("a")].find(
@@ -327,7 +374,7 @@ check("…and the list is counted in words", /3 runs in outputs\//.test(root.tex
 /*
  * The toggle itself, driven through the DOM. jsdom does not run index.html's
  * inline boot script, so what this proves is the second half of the contract:
- * the bundle applies the stored choice on mount, defaulting to dark.
+ * the bundle applies the stored choice on mount, defaulting to light.
  */
 /*
  * One button, not two. A binary does not need a radio group: the pair meant two
@@ -341,9 +388,9 @@ const themeGoesTo = () =>
   /^Switch to (light|dark) theme$/.exec(themeToggle()?.getAttribute("aria-label") ?? "")?.[1];
 check("the header carries a theme toggle", themeToggle() != null);
 check("…and it is one control, not a pair", document.querySelectorAll("[data-theme-toggle]").length === 1);
-check("dark is the default with nothing stored", document.documentElement.classList.contains("theme-dark"));
-check("the toggle says which theme is on", themeToggle().getAttribute("data-theme-toggle") === "dark");
-check("…and names the one it would switch to", themeGoesTo() === "light");
+check("light is the default with nothing stored", !document.documentElement.classList.contains("theme-dark"));
+check("the toggle says which theme is on", themeToggle().getAttribute("data-theme-toggle") === "light");
+check("…and names the one it would switch to", themeGoesTo() === "dark");
 
 /*
  * "Each theme paints its own ground" is the one claim worth checking against a
@@ -359,27 +406,29 @@ injected.textContent = canvasRules;
 document.head.append(injected);
 
 const canvas = () => dom.window.getComputedStyle(document.documentElement).backgroundColor;
-check("dark paints its own canvas", canvas() === "rgb(17, 14, 22)");
+const rgbOf = (hex) =>
+  `rgb(${[1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(", ")})`;
+check("light paints its own canvas", canvas() === rgbOf(lightPlane));
 
 themeToggle().dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
 await new Promise((resolve) => setTimeout(resolve, 120));
-check("toggling drops the dark class", !document.documentElement.classList.contains("theme-dark"));
-check("the choice is persisted", dom.window.localStorage.getItem("dubbing-studio.theme") === "light");
-check("light paints its own canvas", canvas() === "rgb(247, 246, 242)");
+check("toggling adds the dark class", document.documentElement.classList.contains("theme-dark"));
+check("the choice is persisted", dom.window.localStorage.getItem("dubbing-studio.theme") === "dark");
+check("dark paints its own canvas", canvas() === rgbOf(darkPlane));
 check(
   "the toggle follows the choice",
-  themeToggle().getAttribute("data-theme-toggle") === "light" && themeGoesTo() === "dark",
+  themeToggle().getAttribute("data-theme-toggle") === "dark" && themeGoesTo() === "light",
 );
 check(
   "theme-color follows the theme",
-  document.querySelector('meta[name="theme-color"]').getAttribute("content") === "#f7f6f2",
+  document.querySelector('meta[name="theme-color"]').getAttribute("content") === darkPlane,
 );
 
 themeToggle().dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
 await new Promise((resolve) => setTimeout(resolve, 120));
-check("toggling back restores dark", document.documentElement.classList.contains("theme-dark"));
-check("dark is persisted too", dom.window.localStorage.getItem("dubbing-studio.theme") === "dark");
-check("…and one button did both directions", themeGoesTo() === "light");
+check("toggling back restores light", !document.documentElement.classList.contains("theme-dark"));
+check("light is persisted too", dom.window.localStorage.getItem("dubbing-studio.theme") === "light");
+check("…and one button did both directions", themeGoesTo() === "dark");
 
 // An existing run's row has to answer "where did this get to" without being
 // opened the whole point of listing it.
@@ -422,7 +471,7 @@ check(
     document.querySelector('[data-region="options"]') != null,
 );
 check("…whose action says what it starts", /Start dubbing/.test(root.textContent));
-check("the runs list stays on its own page", document.querySelector('[data-region="runs"]') == null);
+check("the archive stays on its own page", document.querySelector('[data-region="runs"]') == null);
 /* Context is the one optional field sitting under a required one of the same
    size, and it says so in the label rather than three lines below it. */
 check("the context field leads with Optional", /Optional Context/.test(root.textContent));
@@ -575,14 +624,26 @@ check("setup lists every check", document.querySelectorAll("[data-check]").lengt
 check("passing checks say Ready", /Ready/.test(setup));
 check("failing checks say Missing", /Missing/.test(setup));
 check("state is never colour alone", [...document.querySelectorAll("[data-check]")].every((row) =>
-  /Ready|Missing/.test(row.textContent),
+  /Ready|Missing|Not installed/.test(row.textContent),
 ));
 check("failing checks explain themselves", /HF_TOKEN/.test(setup) && /htdemucs|Demucs/.test(setup));
 // The detail lines mark the parts meant to be typed with backticks; rendering
 // them literally puts punctuation in the middle of a command to be copied.
 check("commands render as code, not backticks", !setup.includes("`"));
 check("model sizes are shown", /GB/.test(setup));
-check("a mixed result is counted", /6 of 8 need attention/.test(setup));
+/*
+ * Six rows are failing and four of them are things to do. The other two are
+ * optional — a tool the shipped pipeline never calls and a cache that fetches
+ * itself — and a headline that counted them was the reason a machine with
+ * nothing wrong with it still met a number at the top of this screen.
+ */
+check("a mixed result is counted", /4 of 8 need attention/.test(setup));
+check(
+  "…and the two optional rows that are not here are not part of that count",
+  [...document.querySelectorAll('[data-check][data-severity="optional"]')].filter((row) =>
+    /Not installed/.test(row.textContent),
+  ).length === 2,
+);
 check("no continue while something is missing", ![...document.querySelectorAll("button")].some((b) =>
   b.textContent.includes("Continue to projects"),
 ));
@@ -621,6 +682,23 @@ check(
   /Required/.test(document.querySelector('[data-check="ffmpeg"]').textContent) &&
     /Degrades/.test(document.querySelector('[data-check="hf_token"]').textContent) &&
     /Optional/.test(document.querySelector('[data-check="model.demucs"]').textContent),
+);
+/*
+ * A tool nothing runs is not a red row.
+ *
+ * SoX is graded `optional` by the server (`setup.TOOLS`: the only caller is
+ * qwen_tts's 25Hz tokenizer and this pipeline loads 12Hz checkpoints), and the
+ * fixture used to call it blocking, so the demo of a working machine had a red
+ * REQUIRED row for a binary the app will never invoke. It reads as one quiet
+ * chip now — "Not installed", not "Missing" — and it names no stage, because a
+ * stage is where a failure bites and this one does not.
+ */
+check("an optional tool is graded as one", severityOf("sox") === "optional");
+check(
+  "…and it says it is simply not there, not that something is missing",
+  /Not installed/.test(document.querySelector('[data-check="sox"]').textContent) &&
+    !/Missing/.test(document.querySelector('[data-check="sox"]').textContent) &&
+    !/stops the run/.test(document.querySelector('[data-check="sox"]').textContent),
 );
 check(
   "a blocking row names the stage it stops",
@@ -719,7 +797,7 @@ check("…and a click on it starts nothing", fixtureCalls.install === before + 1
 await new Promise((resolve) => setTimeout(resolve, 1400));
 check("the installed row turns Ready", /Ready/.test(rowOf("ffmpeg").textContent));
 check("…and drops its Install button", !installButton("ffmpeg"));
-check("…and the count comes down", /4 of 8 need attention/.test(root.textContent));
+check("…and the count comes down", /2 of 8 need attention/.test(root.textContent));
 check("the other row can be installed again", installButton("sox").disabled === false);
 
 /*
@@ -777,6 +855,42 @@ check("re-check re-renders the list", document.querySelectorAll("[data-check]").
 // the import screen is one link away in the nav pill.
 await go("/", 200);
 check("setup does not trap navigation", /Start dubbing/.test(root.textContent));
+
+/*
+ * The provisioned machine, on demand.
+ *
+ * Everything above drives the deliberately-broken board, which is the default
+ * and has to stay the default the install buttons, the live download and
+ * every failure sentence are only reachable through it. The screen a finished
+ * product is *shown* with is the other one, and two of these rows have no
+ * button, so no amount of clicking gets there. `?ready=1` serves it instead
+ * (see `fixtures.setup`), and this is the assertion that the flag still does
+ * what the demo needs: every row green, no attention count, no spinner.
+ */
+await go("/setup?ready=1", 400);
+const readyRows = [...document.querySelectorAll("[data-check]")];
+check("the ready fixture serves the whole checklist", readyRows.length === 8);
+check(
+  "…with every row green",
+  readyRows.every((row) => /Ready/.test(row.textContent)) &&
+    !/Missing|Not installed|need attention/.test(root.textContent),
+);
+check(
+  "…and the headline says so without qualification",
+  document.querySelector("[data-readiness]").textContent === "All checks pass",
+);
+check("…with nothing left to install", document.querySelector("[data-download-progress]") == null);
+check(
+  "…and the way on",
+  [...document.querySelectorAll("button")].some((b) =>
+    b.textContent.includes("Continue to projects"),
+  ),
+);
+// And the flag is opt-in: the same route without it is the broken board again.
+await go("/", 150);
+await go("/setup", 400);
+check("…while the default board is still the broken one", /Missing/.test(root.textContent));
+await go("/", 200);
 
 const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 

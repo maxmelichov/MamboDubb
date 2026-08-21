@@ -35,6 +35,7 @@ import type {
   SegmentPatch,
   SetupCheck,
   SetupInstall,
+  SetupSeverity,
   SetupStatus,
   Stage,
   StudioEvent,
@@ -346,8 +347,32 @@ export function health(): Promise<Health> {
  * page picks a running install back up), and one no button can fix (Demucs
  * fetches its own cache; the detail line's command is the whole answer). Plus
  * the token, which no download satisfies at all.
+ *
+ * ## `?ready=1` the provisioned machine
+ *
+ * The mixed board above is the *default* and stays the default: the smoke test
+ * drives the install buttons, the progress bar and every failure sentence
+ * through it, and a fixture where nothing is wrong would test none of that.
+ *
+ * But the other screenshot matters too the machine that is set up, which is
+ * what a demo of the finished product shows and it cannot be reached by
+ * clicking, because two of these rows have no button. So any URL carrying
+ * `?ready=1` (`/setup?ready=1`) serves the all-green board instead: every tool
+ * found, the token set, every model on disk, nothing downloading. It is read
+ * from the live URL on each call rather than captured once, so flipping it on
+ * or off is a navigation and not a reload.
  */
+function readyDemo(): boolean {
+  try {
+    return new URLSearchParams(window.location.search).get("ready") === "1";
+  } catch {
+    // No `window` (a test harness), no query string, no demo mode.
+    return false;
+  }
+}
+
 export function setup(): Promise<SetupStatus> {
+  if (readyDemo()) return delay({ ok: true, checks: readyChecks() });
   seedDownload();
   const checks = setupChecks();
   // `ok` is the conjunction of the BLOCKING checks only, exactly as
@@ -377,13 +402,14 @@ let hfTokenSaved = false;
 
 const FIXTURE_ENV = "/Users/you/DubbingQwen/.env";
 
-function hfTokenRow(): SetupCheck {
+function hfTokenRow(ready = false): SetupCheck {
+  const saved = ready || hfTokenSaved;
   return {
     id: "hf_token",
     label: "Hugging Face token",
-    ok: hfTokenSaved,
+    ok: saved,
     severity: "degrades",
-    detail: hfTokenSaved
+    detail: saved
       ? `set in \`${FIXTURE_ENV}\``
       : "not set diarization falls back to a single speaker, so every line is attributed " +
         "to one voice. Accept Pyannote's model terms, then add `HF_TOKEN=hf_…` to " +
@@ -412,9 +438,23 @@ export function clearHfToken(): Promise<SetupCheck> {
   return delay(hfTokenRow());
 }
 
-const TOOL_ROWS: Record<string, { label: string; here: string; missing: string; stage: Stage }> = {
+/**
+ * The two command-line tools, graded the way `setup.TOOLS` grades them.
+ *
+ * ffmpeg blocks every stage shells out to it. SoX does not, and saying it
+ * did was the fixture's own invention: the only sox caller in the tree is
+ * qwen_tts's 25Hz tokenizer and this pipeline loads 12Hz checkpoints, which is
+ * why the server calls the row `optional` and attaches no stage to it. A demo
+ * that paints a red REQUIRED row for a tool nothing runs is a demo of a machine
+ * that is broken when it is not.
+ */
+const TOOL_ROWS: Record<
+  string,
+  { label: string; here: string; missing: string; severity: SetupSeverity; stage?: Stage }
+> = {
   ffmpeg: {
     label: "ffmpeg",
+    severity: "blocking",
     stage: "fetch",
     here: "7.1.1 /opt/homebrew/bin/ffmpeg",
     missing:
@@ -423,25 +463,28 @@ const TOOL_ROWS: Record<string, { label: string; here: string; missing: string; 
   },
   sox: {
     label: "SoX",
-    stage: "tts",
+    severity: "optional",
     here: "14.4.2 /opt/homebrew/bin/sox",
     missing:
-      "sox not on PATH Qwen3-TTS text normalization needs it. " +
-      "Install it with `brew install sox`.",
+      "sox not on PATH nothing the shipped pipeline runs needs it, only " +
+      "qwen_tts's 25Hz tokenizer would. Install it with `brew install sox`.",
   },
 };
 
-function toolRow(id: string, stage: Stage): SetupCheck {
+/** `ready` is the provisioned-machine demo: every tool found, whatever this
+    session installed. See `setup()` for the flag that turns it on. */
+function toolRow(id: string, ready = false): SetupCheck {
   const row = TOOL_ROWS[id];
-  const ok = installed.has(id);
+  const ok = ready || installed.has(id);
   return {
     id,
     label: row.label,
     ok,
     installable: true,
-    severity: "blocking",
-    required: true,
-    stage,
+    severity: row.severity,
+    required: row.severity === "blocking",
+    // Only ever on a blocking row, exactly as the server attaches it.
+    ...(row.severity === "blocking" && row.stage ? { stage: row.stage } : {}),
     detail: ok ? row.here : row.missing,
   };
 }
@@ -475,9 +518,9 @@ const MODEL_ROWS: Record<
 };
 
 /** One downloadable model row, in whichever state this fake session has it. */
-function modelRow(id: string): SetupCheck {
+function modelRow(id: string, ready = false): SetupCheck {
   const row = MODEL_ROWS[id];
-  const ok = installed.has(id);
+  const ok = ready || installed.has(id);
   const approx = fixtureBytes(row.bytes);
   return {
     id,
@@ -505,13 +548,13 @@ function fixtureBytes(n: number): string {
   return `${n.toFixed(1)} TB`;
 }
 
-function setupChecks(): SetupCheck[] {
+function setupChecks(ready = false): SetupCheck[] {
   const rows: SetupCheck[] = [
-    toolRow("ffmpeg", "fetch"),
-    toolRow("sox", "tts"),
-    hfTokenRow(),
-    modelRow("model.translate"),
-    modelRow("model.tts.1.7b"),
+    toolRow("ffmpeg", ready),
+    toolRow("sox", ready),
+    hfTokenRow(ready),
+    modelRow("model.translate", ready),
+    modelRow("model.tts.1.7b", ready),
     {
       id: "model.asr.en",
       label: "Target ASR English (clip verification)",
@@ -523,11 +566,12 @@ function setupChecks(): SetupCheck[] {
     {
       id: "model.demucs",
       label: "Stem separation Demucs htdemucs",
-      ok: false,
+      ok: ready,
       severity: "optional",
-      detail:
-        "htdemucs_ft not downloaded yet fetched on the first stems run. " +
-        "Run `uv run python -m dubbing.stems --download` to get it now (320 MB).",
+      detail: ready
+        ? "htdemucs_ft cache: 320 MB in ~/.cache/torch/hub"
+        : "htdemucs_ft not downloaded yet fetched on the first stems run. " +
+          "Run `uv run python -m dubbing.stems --download` to get it now (320 MB).",
     },
     {
       id: "disk",
@@ -545,6 +589,11 @@ function setupChecks(): SetupCheck[] {
     ...row,
     required: row.severity === "blocking",
   }));
+}
+
+/** The provisioned machine every row green. See `setup()` for `?ready=1`. */
+function readyChecks(): SetupCheck[] {
+  return setupChecks(true);
 }
 
 /**
@@ -604,7 +653,10 @@ export function startInstall(id: string): Promise<SetupInstall> {
 }
 
 export function installStatus(): Promise<SetupInstall> {
-  seedDownload();
+  // Not in the provisioned-machine demo: the seeded mid-flight download is the
+  // one thing that would still be moving on a screen whose whole claim is that
+  // there is nothing left to do.
+  if (!readyDemo()) seedDownload();
   return delay(structuredClone(installState));
 }
 
@@ -695,7 +747,7 @@ async function runInstall(id: string): Promise<void> {
     running: false,
     ok: true,
     tail: [...installState.tail, `🍺  /opt/homebrew/Cellar/${id}: 1 file`],
-    check: toolRow(id, TOOL_ROWS[id].stage),
+    check: toolRow(id),
   };
 }
 

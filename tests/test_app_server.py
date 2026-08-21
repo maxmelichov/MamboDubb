@@ -2162,6 +2162,37 @@ def test_setup_grades_every_check_and_required_is_derived_from_it(client):
         assert by_id[optional] == "optional", optional
 
 
+def test_setup_absent_optional_tool_changes_nothing_about_readiness(monkeypatch, tmp_path):
+    """A tool the shipped pipeline never calls must not be able to make a
+    provisioned machine read as anything but ready.
+
+    sox is the row: a brewless Mac dubs without it (the only caller is
+    qwen_tts's 25Hz tokenizer and this pipeline loads 12Hz checkpoints), and the
+    Setup screen draws it as a grey "Not installed" that is counted nowhere. The
+    screen can only be that quiet because the server is: the row is `optional`,
+    it carries no `stage`, and `report`'s verdict is the conjunction of the
+    *required* rows, so taking sox away moves nothing.
+    """
+    from dubbing import tools as tool_recipes
+    from dubbing_app import setup as setup_mod
+
+    def failing_required(report):
+        return {c["id"] for c in report["checks"] if c["required"] and not c["ok"]}
+
+    before = setup_mod.report(tmp_path)
+    real = tool_recipes.resolve_tool
+    monkeypatch.setattr(tool_recipes, "resolve_tool",
+                        lambda name: None if name == "sox" else real(name))
+    after = setup_mod.report(tmp_path)
+
+    row = next(c for c in after["checks"] if c["id"] == "sox")
+    assert row["ok"] is False
+    assert row["severity"] == setup_mod.OPTIONAL and row["required"] is False
+    assert "stage" not in row and setup_mod.blocking_stage("sox") is None
+    assert after["ok"] == before["ok"]
+    assert failing_required(after) == failing_required(before)
+
+
 def test_setup_names_the_stage_a_blocking_check_would_kill(client):
     """"Runs will fail" is true and useless. The screen offers "Skip anyway —
     runs will fail at fetch", and only the server knows which stage that is."""
