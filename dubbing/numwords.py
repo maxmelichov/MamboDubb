@@ -47,6 +47,7 @@ def _spaceless(ch: str) -> bool:
 # stripped by tts.prepare_text and the dub silently loses the word.
 _PERCENT = {
     "en": "percent",
+    "he": "אחוז",
     "ru": "процентов",
     "es": "por ciento",
     "fr": "pour cent",

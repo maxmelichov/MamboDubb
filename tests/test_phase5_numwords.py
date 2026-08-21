@@ -66,12 +66,21 @@ def test_unsupported_num2words_language_returns_text_unchanged():
 
 def test_percent_word_exists_for_every_tts_target():
     # tts.prepare_text strips anything outside the target script, so a fallback
-    # English "percent" inside a ja/ko/zh line silently vanishes from the dub.
+    # English "percent" inside a ja/ko/zh or Hebrew line silently vanishes from
+    # the dub. Iterates the real target list, so a new target cannot ship
+    # without its percent word.
+    from dubbing import cli
     from dubbing.tts import prepare_text
-    for lang in ("en", "zh", "de", "it", "pt", "es", "ja", "ko", "fr", "ru"):
+    for lang in cli.TGT_LANGS:
         spoken = prepare_text(spell_numbers("65%", lang), lang)
         assert "65" not in spoken or lang == "zh"   # spelled (zh keeps digits)
         assert "percent" not in spoken or lang == "en"  # no English fallback
+
+
+def test_hebrew_percent_word_survives_the_script_filter():
+    # A Hebrew dub used to say nothing where "65%" stood: the English fallback
+    # "percent" was appended and then stripped as a non-Hebrew word.
+    assert spell_numbers("65%", "he").endswith("אחוז")
 
 
 def test_japanese_percent_spelled_despite_no_spaces():

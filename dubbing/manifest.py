@@ -67,7 +67,9 @@ STAGE_TAGS = {
     # v37: "%" becomes the target's own spoken word for every TTS target (zh as
     # the 百分之 prefix over kept digits; numbers inside spaceless-script prose
     # now spell at all) — merged past a parallel claim on v36.
-    "translate": "translate/v37",
+    # v38: Hebrew joined _PERCENT (אחוז), so "X%" in a Hebrew dub no longer
+    # borrows English "percent" for tts.prepare_text to silently strip.
+    "translate": "translate/v38",
     # Two lines each claimed tts/v15 for different logic (the Hebrew LoRA vs the
     # honest-failure records), so the merged tag moves past both.
     # v16: Hebrew targets synthesize from stressed IPA through the Qwen3-TTS Hebrew

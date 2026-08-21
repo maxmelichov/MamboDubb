@@ -352,13 +352,34 @@ def set_langs(m: dict[str, Any], uid: str, *, src_lang: str | None = None,
     prepared, cached, spoken and verified in that language. It used to be honoured
     by the translator alone, so a French line was voiced and ASR-checked as
     English it failed verification every time and fell back to keep.
+
+    Codes take the same door the run pair does: folded through
+    `cli.normalize_lang` (an "iw" override is stored as "he", so
+    `translate.same_language` still recognises the run's own pair) and refused
+    outside `cli.SRC_LANGS`/`cli.TGT_LANGS` — `script.script_for` answers "latin"
+    for a code it does not know, so a stored "jp" would run to completion with
+    every script-derived verdict quietly wrong. A Hebrew *target* is not gated on
+    the LoRA here the way project creation gates it: a lone Hebrew segment in a
+    non-Hebrew run degrades deliberately (see `tts.hebrew_for`) rather than
+    blocking the edit.
     """
+    from . import cli
+
     seg = _require(m, uid)
-    changed = False
-    for key, value in (("src_lang", src_lang), ("tgt_lang", tgt_lang)):
+    # Normalise and refuse both codes before touching the segment, so a patch
+    # with one good and one bad language changes nothing at all.
+    folded: list[tuple[str, str]] = []
+    for key, value, allowed in (("src_lang", src_lang, cli.SRC_LANGS),
+                                ("tgt_lang", tgt_lang, cli.TGT_LANGS)):
         if value is None:
             continue
-        value = value.strip().lower()
+        value = cli.normalize_lang(value)
+        if value and value not in allowed:
+            raise EditError(f"{key} {value!r} is not a language this pipeline "
+                            f"can dub (choices: {', '.join(allowed)})")
+        folded.append((key, value))
+    changed = False
+    for key, value in folded:
         if not value:
             changed = seg.pop(key, None) is not None or changed
         elif seg.get(key) != value:

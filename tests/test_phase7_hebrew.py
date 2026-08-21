@@ -312,7 +312,7 @@ def test_the_stage_tags_moved():
     assert manifest.STAGE_TAGS["tts"] == "tts/v17"
     # v36: script-derived gloss floors, negations and shorten budgets (CJK/hangul).
     # v37: "%" survives into every TTS target's own vocabulary.
-    assert manifest.STAGE_TAGS["translate"] == "translate/v37"
+    assert manifest.STAGE_TAGS["translate"] == "translate/v38"
 
 
 def test_ipa_is_not_a_manifest_field():

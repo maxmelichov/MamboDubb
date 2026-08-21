@@ -555,6 +555,28 @@ def test_set_langs_overrides_and_clears():
     assert "tgt_lang" not in s
 
 
+def test_set_langs_folds_iw_and_refuses_codes_the_pipeline_cannot_dub():
+    """"iw" must land in the manifest as "he" — stored raw it defeats
+    `translate.same_language` and forces a Hebrew→Hebrew translation — and a code
+    outside the CLI's choices must be refused, not stored: `script.script_for`
+    answers "latin" for anything it does not know, so a stored "jp" would run to
+    completion with every script-derived verdict quietly wrong."""
+    m = two_segs()
+    uid = m["segments"][0]["uid"]
+    edit.set_langs(m, uid, src_lang="iw", tgt_lang="IW")
+    s = m["segments"][0]
+    assert (s["src_lang"], s["tgt_lang"]) == ("he", "he")
+    with pytest.raises(edit.EditError):
+        edit.set_langs(m, uid, src_lang="jp")
+    with pytest.raises(edit.EditError):
+        edit.set_langs(m, uid, tgt_lang="ar")    # readable, but no Qwen3-TTS voice
+    edit.set_langs(m, uid, src_lang="ar")        # ...while Arabic reads fine
+    # A half-bad patch changes nothing — the good half must not slip in first.
+    with pytest.raises(edit.EditError):
+        edit.set_langs(m, uid, src_lang="ru", tgt_lang="xx")
+    assert (s["src_lang"], s["tgt_lang"]) == ("ar", "he")
+
+
 def test_set_langs_overrides_a_locked_line_because_it_is_now_wrong():
     m = two_segs()
     uid = m["segments"][0]["uid"]

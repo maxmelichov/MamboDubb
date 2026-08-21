@@ -103,7 +103,10 @@ class PatchSegment(Strict):
     """Every field is optional; `None` means "not supplied", never "clear".
 
     The one exception is `src_lang`/`tgt_lang`, where the empty string clears the
-    override a language tag has no other way to be removed.
+    override a language tag has no other way to be removed. They are `str` here,
+    not the Literals above, because "" is not a Literal member; the real check is
+    `edit.set_langs`, which folds aliases and refuses anything outside
+    `cli.SRC_LANGS`/`cli.TGT_LANGS` as an `EditError` 400.
     """
 
     text: str | None = None
