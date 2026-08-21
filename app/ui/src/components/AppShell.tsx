@@ -119,12 +119,12 @@ export function PageShell({
  * It was two — Runs and Setup — back when "/" was the import form with the
  * runs squeezed in beside it, so "Runs" was really "the form, plus the list if
  * you looked right". Now that starting a dub and finding an old one are
- * separate pages, each gets a cell: New dub is the doing place, Runs is the
- * home, Setup is the machine's readiness. The editor is still not on it: you
- * get there by opening a run, and a nav cell for "the run you are not in" is a
- * dead control on every screen that shows this bar.
+ * separate pages, each gets a cell: New dub is home at "/", Runs is the
+ * archive at /runs, Setup is the machine's readiness. The editor is still not
+ * on it: you get there by opening a run, and a nav cell for "the run you are
+ * not in" is a dead control on every screen that shows this bar.
  *
- * Runs wears the ink whenever neither of the other two does, so an unknown
+ * New dub wears the ink whenever neither of the other two does, so an unknown
  * path reads as "you are at home" rather than as a pill with no answer.
  */
 function ShellNav() {

@@ -4,27 +4,25 @@
  *
  * The shape is a studio composition, not a form in a column. Two regions:
  *
- * - **New dub** the card. It holds the two things you *type*: the source, and
+ * - **New dub** — the card. It holds the two things you *type*: the source, and
  *   the context note. The single primary action sits in a sunken band directly
  *   under them, bottom-right, so it reads as the card's conclusion — and the
  *   card ends there. It used to stretch to match the rail's height, which put
  *   a void under the context field and the Start button below the fold at
  *   1280×800: the screen's one action was the thing you had to scroll for.
- *   Now the grid is `items-start`, the card is exactly as tall as its content,
- *   and the rail scrolls by itself when it is the taller one.
- * - **Options** the rail beside it. Five labelled groups, hairlined apart:
+ *   Now the grid is `items-start` and the card is exactly as tall as its
+ *   content; the pipeline glance under it fills what the card gave back.
+ * - **Options** — the rail beside it. Five labelled groups, hairlined apart:
  *   languages, genre, register, transcript, scope. Nothing here is typed prose;
  *   it is all picking, which is why it is a rail and not a second column of
  *   paragraphs. It ends with the sentence that says which of these choices are
  *   final because two of them are, and a screen that does not say so is asking
  *   people to guess whether a run is a commitment.
  *
- * The runs used to be a third column here, and this screen used to be "/".
- * That arrangement made the home screen lead with "start something new" while
- * the nav pill over it said Runs — and users came back for yesterday's dub,
- * read the form, and started it again. The runs are now a page of their own
- * (RunsPage, at "/"), this form lives at /new, and the pill switches between
- * them. What stays here is only what a *new* run needs.
+ * The runs used to be a third column here. That arrangement made this screen
+ * do two jobs at once, so the runs are now a page of their own (RunsPage, at
+ * /runs), this form is home at "/", and the pill switches between them. What
+ * stays here is only what a *new* run needs.
  *
  * The context note is not decoration. Translation quality moves measurably with
  * a sentence about who and what the video is about and how names are spelled —
@@ -162,7 +160,7 @@ export function ImportPage() {
   /**
    * In the shell, a native dialog gives back the absolute path the pipeline
    * needs. In a browser the same button opens `<input type=file>`, which can
-   * only ever report a name hence the hint telling the user to paste a path.
+   * only ever report a name — hence the hint telling the user to paste a path.
    */
   const chooseFile = async () => {
     if (!desktop) {
@@ -215,7 +213,7 @@ export function ImportPage() {
                 The only field on this screen that must be filled in, and the only
                 one that said nothing about it. Every other control has a default,
                 so the screen read as "all optional" right up to the moment Start
-                dubbing answered with a refusal a rule learned by breaking it.
+                dubbing answered with a refusal — a rule learned by breaking it.
               */}
               <div className="flex items-baseline gap-2">
                 <SectionLabel icon={FileVideo}>Source</SectionLabel>
@@ -255,14 +253,14 @@ export function ImportPage() {
               <p className="mt-2.5 max-w-2xl text-[12px] leading-relaxed text-muted">
                 {desktop ? (
                   <>
-                    A URL, or a local file <em>Choose file</em> opens a real file dialog and fills
-                    in the full path.
+                    A URL, or a local file — <em>Choose file</em> opens a real file dialog and
+                    fills in the full path.
                   </>
                 ) : (
                   <>
                     A URL, or an absolute path to a local file. The browser cannot read a file's real
-                    path, so <em>Choose file</em> only fills in the name paste the full path, or use
-                    the desktop app.
+                    path, so <em>Choose file</em> only fills in the name — paste the full path, or
+                    use the desktop app.
                   </>
                 )}
               </p>
@@ -272,7 +270,7 @@ export function ImportPage() {
 
             {/* A bordered field like every other input on the page. It was
                 borderless when it filled the whole card, but at three rows an
-                edge is what says "type here" without one it read as a caption
+                edge is what says "type here" — without one it read as a caption
                 under the section label. */}
             <CardSection className="pb-6">
               {/*
@@ -291,7 +289,7 @@ export function ImportPage() {
                 className="mt-2 min-h-20 resize-none rounded-xl text-[13.5px]"
                 aria-label="Context"
                 value={form.context ?? ""}
-                placeholder="Who and what this is about, and how names are spelled. For example: a news interview about the housing market; the host is Dana (she), the guest is Prof. Ronen Levi (he) keep these spellings."
+                placeholder="Who and what this is about, and how names are spelled — e.g. a news interview about the housing market; the host is Dana (she), the guest is Prof. Ronen Levi (he)."
                 onChange={(event) => update({ context: event.currentTarget.value })}
               />
               <p className="mt-3 text-[11.5px] leading-relaxed text-muted">
@@ -334,19 +332,21 @@ export function ImportPage() {
             used to fill the primary card's lower half, which made it a wall
             between the context field and the Start band — reference material
             gating the screen's one action below the fold. It is an answer to a
-            question, not a step in the form, so it now follows the card as a
-            closed disclosure: the summary line is visible for the first-run
-            user who has the question, one click opens the nine lines, and
-            nobody scrolls past them to start their fourth dub.
+            question, not a step in the form, so it follows the card as a
+            disclosure instead. It ships open: the card above it ends well
+            short of the fold, so the nine stages fill room that was otherwise
+            blank plane, and they still cost nothing to dismiss — the summary
+            line is the collapse control for anyone on their fourth dub.
           */}
           <details
+            open
             data-pipeline-glance
             className="group overflow-hidden rounded-2xl border border-border bg-surface"
           >
             <summary className="flex cursor-pointer select-none items-center gap-2 px-5 py-3.5 text-muted transition-colors hover:text-secondary [&::-webkit-details-marker]:hidden">
               <Workflow className="h-3.5 w-3.5" />
               <span className="text-[11px] font-bold uppercase tracking-[0.14em]">
-                What a run does nine stages
+                What a run does — nine stages
               </span>
               <ChevronDown className="ml-auto h-4 w-4 transition-transform group-open:rotate-180" />
             </summary>
@@ -369,13 +369,15 @@ export function ImportPage() {
         </div>
 
         {/* ------------------------------------------------------- the rail */}
-        {/* The rail is the tall region now that the card stopped matching it,
-            so at `lg` it caps itself to the viewport and scrolls its own
-            overflow — the page never has to scroll on the rail's account. */}
-        <Card
-          data-region="options"
-          className="flex flex-col overflow-hidden rounded-3xl p-0 lg:max-h-[calc(100dvh-7.5rem)] lg:overflow-y-auto"
-        >
+        {/* The rail is the tall region now that the card stopped matching it.
+            It used to cap itself to the viewport and scroll its own overflow,
+            which turned the bottom of the card into a guillotine: the
+            Transcript hint sliced mid-line, Scope and the immutability note
+            hidden in a scroll nothing advertised. The rail flows with the
+            page instead — Start stays above the fold in the left column, and
+            whatever the rail hangs past it is reachable the way everything on
+            a page is, by scrolling the page. */}
+        <Card data-region="options" className="flex flex-col overflow-hidden rounded-3xl p-0">
           <CardSection className="px-5 pt-6 sm:px-5">
             <SectionLabel icon={Languages}>Languages</SectionLabel>
             <div className="mt-3 grid grid-cols-2 gap-3">
@@ -416,8 +418,8 @@ export function ImportPage() {
             {/*
               A third language is the case the two selects above cannot express:
               English inside a Hebrew→German run is neither the spoken language
-              nor the dub's. The pipeline keeps such a line by default it plays
-              as recorded, with a subtitle and this is the one place a run can
+              nor the dub's. The pipeline keeps such a line by default — it plays
+              as recorded, with a subtitle — and this is the one place a run can
               say otherwise before it starts. It lives under Languages because it
               is a question about languages, not about scope.
             */}
@@ -430,8 +432,8 @@ export function ImportPage() {
               <span className="min-w-0">
                 <span className="block text-[12.5px] text-secondary">Dub foreign speech</span>
                 <span className="mt-0.5 block text-[12px] leading-relaxed text-muted">
-                  A third language inside the video is translated and voiced too otherwise it
-                  plays as recorded, subtitled individual lines can still be switched to dubbed
+                  A third language inside the video is translated and voiced too — otherwise it
+                  plays as recorded, subtitled. Individual lines can still be switched to dubbed
                   later, in the editor.
                 </span>
               </span>
@@ -490,8 +492,8 @@ export function ImportPage() {
           {/*
             Where the words come from.
             The pipeline takes `--transcript auto|captions|asr` and this screen
-            had no way to say it, so a run whose auto-captions were mangled the
-            case invariant 4 in AGENTS.md exists for could only be fixed from
+            had no way to say it, so a run whose auto-captions were mangled — the
+            case invariant 4 in AGENTS.md exists for — could only be fixed from
             the CLI. `auto` is the pipeline's own answer and stays the default;
             the other two are for the user who has already heard the result.
           */}
