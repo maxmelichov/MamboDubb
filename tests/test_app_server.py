@@ -2233,9 +2233,14 @@ def test_setup_model_paths_come_from_the_pipeline(client):
     assert by_id["model.asr.en"]["path"] == str(transcript.EN_ASR_MODEL)
     assert by_id["model.lid"]["path"] == str(transcript.LID_MODEL)
     assert by_id["model.asr.he"]["path"] == str(transcript.WHISPER_MODEL)
-    for key, spec in tts.TTS_MODELS.items():
-        assert by_id[f"model.tts.{key}"]["path"].endswith(spec["dir"])
+    # Only the default checkpoint gets a row: 0.6b stays in tts.TTS_MODELS for
+    # old-manifest re-runs but is deliberately not offered as a download.
+    default_spec = tts.TTS_MODELS[tts.DEFAULT_TTS_MODEL]
+    assert by_id[f"model.tts.{tts.DEFAULT_TTS_MODEL}"]["path"].endswith(default_spec["dir"])
     assert by_id[f"model.tts.{tts.DEFAULT_TTS_MODEL}"]["required"] is True
+    for key in tts.TTS_MODELS:
+        if key != tts.DEFAULT_TTS_MODEL:
+            assert f"model.tts.{key}" not in by_id
 
 
 def test_setup_reports_token_presence_never_the_value(client, monkeypatch):

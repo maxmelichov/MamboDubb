@@ -508,7 +508,7 @@ const MODEL_ROWS: Record<
     here: "9.0 GB in models/gemma-3-12b-it-qat-4bit",
   },
   "model.tts.1.7b": {
-    label: "TTS checkpoint 1.7b (default)",
+    label: "TTS checkpoint 1.7b",
     stage: "tts",
     hub: "mlx-community/Qwen3-TTS-1.7B-4bit",
     dir: "qwen3-tts-1.7b",

@@ -363,17 +363,21 @@ check(
       Boolean(card.compareDocumentPosition(runs) & Node.DOCUMENT_POSITION_FOLLOWING);
   })(),
 );
-// The pill is the door, so the pill is what gets driven — `go` is not even
-// defined yet, which is its own argument for using the real control.
-const runsCell = [...document.querySelectorAll("a")].find(
-  (a) => a.getAttribute("href") === "/runs",
+// The pill lost its Runs cell on request — the list lives on home now, and
+// "All runs" under it is the archive's one door. So that link is what gets
+// driven, and the pill is checked for what it is: two cells, no Runs.
+check(
+  "the pill carries no Runs cell",
+  [...document.querySelectorAll('nav[aria-label="Sections"] a, [aria-label="Sections"] a')]
+    .every((a) => a.getAttribute("href") !== "/runs"),
 );
-check("the pill carries a Runs cell", runsCell != null);
-runsCell.dispatchEvent(
+const allRuns = document.querySelector("[data-all-runs]");
+check("the home list offers All runs", allRuns != null);
+allRuns.dispatchEvent(
   new dom.window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }),
 );
 await new Promise((resolve) => setTimeout(resolve, 300));
-check("the runs list lives one cell away", root.querySelector('[data-region="runs"]') != null);
+check("the archive opens from it", root.querySelector('[data-region="runs"]') != null);
 check(
   "…with one card per run in outputs/",
   document.querySelectorAll('[data-region="runs"] li').length === 3,

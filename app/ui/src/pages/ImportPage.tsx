@@ -187,7 +187,7 @@ export function ImportPage() {
           button above the fold: without it the grid stretches the short card
           to the tall rail's height, and the slack lands as a void between the
           context field and the action band. */}
-      <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_24rem]">
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_24rem]">
         {/* ------------------------------------------------- the left column */}
         <div className="flex min-w-0 flex-col gap-5">
           <Card
@@ -543,7 +543,7 @@ export function ImportPage() {
 }
 
 /** How many rows the glance shows before it defers to the archive. */
-const HOME_RUNS = 4;
+const HOME_RUNS = 8;
 
 /**
  * The workspace, under the form.
@@ -582,12 +582,30 @@ function HomeRuns() {
     };
   }, []);
 
-  if (failed || projects == null || projects.length === 0) return null;
+  // Vanishing here leaves the column a dead plane under the form — the exact
+  // hole the user pointed at. While loading, on failure, and with zero runs
+  // alike, the region keeps its place with a quiet card instead.
+  if (failed || projects == null || projects.length === 0) {
+    return (
+      <section data-region="home-runs" className="flex min-h-0 flex-1 flex-col gap-2.5">
+        <div className="px-1">
+          <SectionLabel icon={Clapperboard}>Your runs</SectionLabel>
+        </div>
+        <div className="flex min-h-40 flex-1 items-center justify-center rounded-2xl border border-dashed border-border px-6 py-10">
+          <p className="max-w-sm text-center text-[13px] leading-relaxed text-muted">
+            {projects == null && !failed
+              ? "Looking for runs…"
+              : "Nothing here yet — every dub you start lands in this list, live while it runs."}
+          </p>
+        </div>
+      </section>
+    );
+  }
   const ordered = orderRuns(projects);
   const shown = ordered.slice(0, HOME_RUNS);
 
   return (
-    <section data-region="home-runs" className="flex flex-col gap-2.5">
+    <section data-region="home-runs" className="flex min-h-0 flex-1 flex-col gap-2.5">
       <div className="flex flex-wrap items-center justify-between gap-3 px-1">
         <div className="flex items-baseline gap-3">
           <SectionLabel icon={Clapperboard}>Your runs</SectionLabel>
@@ -606,7 +624,7 @@ function HomeRuns() {
         </Link>
       </div>
       {/* A strip of padding, so the hover lift is not shaved off at the edges. */}
-      <ul className="flex flex-col gap-2 p-0.5">
+      <ul className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-0.5">
         {shown.map((project) => (
           <RunRow
             key={project.name}

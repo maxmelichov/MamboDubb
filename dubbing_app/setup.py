@@ -378,11 +378,15 @@ def model_downloads() -> dict[str, dict[str, Any]]:
         "model.translate": {"hub": translate.HUB_ID, "path": translate.MODEL_PATH,
                             "bytes": 9_700_000_000},
     }
-    tts_bytes = {"1.7b": 4_500_000_000, "0.6b": 2_500_000_000}
-    for key, spec in tts.TTS_MODELS.items():
-        out[f"model.tts.{key}"] = {"hub": spec["hub"],
-                                   "path": tts.REPO_ROOT / "models" / spec["dir"],
-                                   "bytes": tts_bytes.get(key, 0)}
+    # Only the default checkpoint is offered. 0.6b exists in tts.TTS_MODELS
+    # solely so old manifests that recorded it can re-run; a download button
+    # for it would be an invitation to a worse voice, and the user said no.
+    tts_default = tts.TTS_MODELS[tts.DEFAULT_TTS_MODEL]
+    out[f"model.tts.{tts.DEFAULT_TTS_MODEL}"] = {
+        "hub": tts_default["hub"],
+        "path": tts.REPO_ROOT / "models" / tts_default["dir"],
+        "bytes": 4_500_000_000,
+    }
     out.update({
         "model.asr.he": {"hub": transcript.WHISPER_HUB, "path": transcript.WHISPER_MODEL,
                          "bytes": 1_600_000_000},
@@ -430,13 +434,14 @@ def model_checks() -> list[dict[str, Any]]:
         m("model.translate", "Translation model (Gemma 4 12B)", translate.MODEL_PATH,
           note=f"downloads from {translate.HUB_ID} on first use"),
     ]
-    for key, spec in tts.TTS_MODELS.items():
-        default = key == tts.DEFAULT_TTS_MODEL
-        out.append(m(f"model.tts.{key}", f"TTS checkpoint {key}"
-                     + (" (default)" if default else ""),
-                     tts.REPO_ROOT / "models" / spec["dir"],
-                     severity=BLOCKING if default else OPTIONAL,
-                     note=f"downloads from {spec['hub']} on first use"))
+    # One row: the default checkpoint. See model_downloads for why 0.6b is
+    # deliberately absent here even though the pipeline can still re-run it.
+    tts_spec = tts.TTS_MODELS[tts.DEFAULT_TTS_MODEL]
+    out.append(m(f"model.tts.{tts.DEFAULT_TTS_MODEL}",
+                 f"TTS checkpoint {tts.DEFAULT_TTS_MODEL}",
+                 tts.REPO_ROOT / "models" / tts_spec["dir"],
+                 severity=BLOCKING,
+                 note=f"downloads from {tts_spec['hub']} on first use"))
     out += [
         m("model.asr.he", "Source ASR Hebrew (ivrit-ai)", transcript.WHISPER_MODEL,
           severity=OPTIONAL, note="only for Hebrew sources without captions"),
