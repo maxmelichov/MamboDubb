@@ -234,6 +234,17 @@ def set_text(m: dict[str, Any], uid: str, *, text: str | None = None,
         if not text_en.strip():
             raise EditError("text_en cannot be empty a dubbed segment must say "
                             "something; use set_keep(keep=True) instead")
+        # Nor may it be punctuation. `tts.prepare_text` keeps only what the target
+        # voice can pronounce and answers "" for a line like "." — `_plan` then
+        # declines it, the segment falls back to its original audio under
+        # `tts_failed`, and the lock this edit stamps puts it out of the
+        # translator's reach as well. A line nothing can ever say is a dead end
+        # the user typed their way into, and the honest place to stop them is here.
+        if not any(ch.isalnum() for ch in text_en):
+            raise EditError(f"{text_en.strip()!r} has nothing a voice can say. A "
+                            "dubbed line needs words; to silence this span, keep "
+                            "the original audio (set_keep(keep=True)) or remove "
+                            "the segment.")
         # The clip provably says the old line, whatever the user approved about it.
         _unlock(seg, "tts")
         # Invalidate before locking, or the write below is the very thing this
@@ -266,8 +277,32 @@ def set_keep(m: dict[str, Any], uid: str, keep: bool,
     a placeholder, since `translate.needs_translation` sees a non-empty `text_en`
     and never refills it. `segments.apply_passthrough` drops it on exactly this
     flip and so does this, minus what the user wrote by hand.
+
+    Un-keeping keeps its line, when the line is a translation rather than a
+    subtitle written for the other path. Discarding it made "Dub it" depend on
+    the translator succeeding a second time see the comment on the flip itself.
     """
+    from . import translate
+
     seg = _require(m, uid)
+    # Un-keeping is the "Dub it" button, and the line this span already carries is
+    # usually the very translation the dub needs the tts stage failed on it, or a
+    # foreign span's subtitle was translated properly. `invalidate` below deletes
+    # `text_en` in BOTH directions (its "a kept span's subtitle survives" clause
+    # reads `keep`, which is set to False two lines up), so pressing Dub it threw
+    # away a good translation and left the line depending on the translator
+    # succeeding a second time. When it did not, `mark_failed` honoured the user's
+    # verdict by writing nothing, `resynthesize` refused to voice a line with
+    # nothing to say, and the segment could never be dubbed again by any button in
+    # the app. The line is kept when it is one: real target-language text that is
+    # not simply a copy of the source (`mt_failed` writes the source text as its
+    # own subtitle, and translate's untranslatable placeholder is "…") — those two
+    # are subtitles for the other path and still go.
+    line = (seg.get("text_en") or "").strip()
+    if keep or line == (seg.get("text") or "").strip() \
+            or not translate.is_target_text(line, _langs(m, seg)[1]):
+        line = ""
+    mid = seg.get("text_mid") if line else None
     seg["keep"] = bool(keep)
     seg["keep_reason"] = reason if keep else None
     # One concept, one key: the user's own verdict is also the pipeline's
@@ -292,6 +327,10 @@ def set_keep(m: dict[str, Any], uid: str, keep: bool,
     if keep and not manifest.is_locked(seg, "text_en"):
         seg.pop("text_en", None)
         seg.pop("text_mid", None)
+    if line:
+        seg["text_en"] = line
+        if mid:
+            seg["text_mid"] = mid
     return seg
 
 
@@ -1042,6 +1081,77 @@ def _replace_timeline(m: dict[str, Any], workdir: Path) -> bool:
     return True
 
 
+def _voice_stragglers(m: dict[str, Any], engine: Any, *,
+                      progress: Progress | None = None) -> None:
+    """Give every segment audio before placement reads it, or name who has none.
+
+    The last thing between an edited run and the timeline. `start_stage` already
+    backs a render up to tts for the lines an edit hollowed out, and that is where
+    the work belongs but a hole can still open after that stage has run, because
+    the app lets the user keep editing while the job works and the job's own save
+    path re-applies those edits onto the manifest it is holding
+    (`dubbing_app.worker.Journal`). Deleting a clip is exactly what an edit does,
+    so the render would reach `timeline.build_items` with a segment it had already
+    voiced and die on an assertion naming a number.
+
+    A handful of lines with the synthesiser already loaded is nothing, so they are
+    simply voiced here, by the same rules the stage uses: a keep is re-sliced from
+    the original, a dub is synthesized, and a dub whose synthesis fails falls back
+    to its original audio under `tts_failed`.
+
+    Two cases are not this function's to paper over, and they are the ones the
+    assertion was written for. A line the user asked to DUB (`keep.user_wants_dub`)
+    must not be handed its original audio back that is the "Dub it did nothing"
+    bug, and the mix would play the source language over it unannounced. So they
+    are named, with what to do about each, and the render fails instead.
+    """
+    from . import keep as keep_mod
+
+    holes = [s for s in m.get("segments") or [] if not (s.get("tts") or {}).get("clip")]
+    if not holes:
+        return
+    _progress(progress, 0.0, f"voicing {len(holes)} line(s) before the render")
+    print(f"  edit: {len(holes)} line(s) still have no audio voicing them before "
+          f"the timeline", file=sys.stderr)
+    engine.build_speaker_refs()
+    no_line: list[dict[str, Any]] = []
+    unusable: list[dict[str, Any]] = []
+    for seg in holes:
+        if seg.get("keep"):
+            seg["tts"] = engine.keep_clip(seg)
+            continue
+        line = (seg.get("text_en") or "").strip()
+        record = engine.clip_for(seg, line) if line else None
+        if record is not None:
+            seg["tts"] = record
+        elif keep_mod.user_wants_dub(seg):
+            (unusable if line else no_line).append(seg)
+        else:
+            seg["keep"] = True
+            seg["keep_reason"] = "tts_failed" if line else "mt_failed"
+            seg["tts"] = engine.keep_clip(seg)
+    if not (no_line or unusable):
+        return
+    trouble = []
+    if no_line:
+        trouble.append(f"{_ids(no_line)} asked to be dubbed and have no translation "
+                       f"re-translate them, or keep the original there")
+    if unusable:
+        trouble.append(f"{_ids(unusable)} could not be voiced re-voice them, or "
+                       f"keep the original there")
+    raise RebuildIncomplete("; ".join(trouble)
+                            + ". Nothing else would play over them but the original "
+                              "language, so the render stops here.")
+
+
+def _ids(segs: Sequence[dict[str, Any]]) -> str:
+    """`segment 5` / `segments 5, 9 and 12`, for a message a user reads."""
+    ids = [str(s.get("id")) for s in segs]
+    head = ", ".join(ids[:-1])
+    return (f"segment {ids[0]}" if len(ids) == 1
+            else f"segments {head} and {ids[-1]}")
+
+
 def start_stage(m: dict[str, Any], from_stage: str) -> tuple[str, str | None]:
     """Where a rebuild from `from_stage` must really start, and why.
 
@@ -1057,6 +1167,9 @@ def start_stage(m: dict[str, Any], from_stage: str) -> tuple[str, str | None]:
     it is what `_replace_timeline` already does per call; refusing would leave the
     user with a button that only works on runs that did not need it. Never the
     other direction a rebuild asked for translate is not quietly narrowed.
+
+    A stage reached this way is *resumed*, never restarted see `rebuild`, which
+    reads the difference off the stage it was asked for.
     """
     idx = STAGES.index(from_stage)
     segs = m.get("segments") or []
@@ -1064,13 +1177,13 @@ def start_stage(m: dict[str, Any], from_stage: str) -> tuple[str, str | None]:
         untranslated = [s for s in segs
                         if not s.get("keep") and not (s.get("text_en") or "").strip()]
         if untranslated:
-            return "translate", (f"{len(untranslated)} segment(s) have no line to "
-                                 f"speak starting from translate")
+            return "translate", (f"translating {len(untranslated)} line(s) that have "
+                                 f"nothing to say, before the render")
     if idx > STAGES.index("tts"):
         unvoiced = [s for s in segs if not (s.get("tts") or {}).get("clip")]
         if unvoiced:
-            return "tts", (f"{len(unvoiced)} segment(s) have no audio starting "
-                           f"from tts")
+            return "tts", (f"voicing {len(unvoiced)} line(s) that have no audio, "
+                           f"before the render")
     return from_stage, None
 
 
@@ -1095,7 +1208,9 @@ def rebuild(m: dict[str, Any], workdir: Path, *, from_stage: str,
 
     Raises `RebuildIncomplete` when the report it ends on finds segments with no
     audio the same verdict `python -m dubbing` exits 1 on, so a render job fails
-    instead of reporting success over a dub with holes in it.
+    instead of reporting success over a dub with holes in it and, before the
+    timeline, when a line that has to be dubbed still cannot be
+    (`_voice_stragglers`, which fills every hole it is allowed to fill first).
     """
     from . import cli, mix, report
     from . import timeline as timeline_mod
@@ -1105,18 +1220,31 @@ def rebuild(m: dict[str, Any], workdir: Path, *, from_stage: str,
     if from_stage not in REBUILDABLE:
         raise EditError(f"cannot rebuild from {from_stage!r}; choose from "
                         f"{', '.join(REBUILDABLE)}")
-    from_stage, why = start_stage(m, from_stage)
+    asked = from_stage
+    from_stage, why = start_stage(m, asked)
     if why:
         print(f"  edit: {why}", file=sys.stderr)
         _progress(progress, 0.0, why)
     args = _args(m, **overrides)
     params = cli.stage_params(args, m)
     todo = [s for s in STAGES[STAGES.index(from_stage):]]
-    for stage in todo:
+    # A stage this render was *asked* for is done over: "rebuild from tts" means
+    # the clips are to be made again, so its per-segment results are cleared and
+    # `reset_stage` is the whole point. A stage it only BACKED UP INTO is the
+    # opposite request it is here to fill the holes that stopped the render, and
+    # `reset_stage` on it deletes every unlocked clip (or every unlocked
+    # translation) in the run. That is how correcting one line and pressing Render
+    # re-synthesized six hundred: "it removed all my renders and started from
+    # zero" was the button doing exactly that. So the backed-up prefix is only
+    # *reopened* (`unmark_stage`, which keeps the per-segment work and the resume
+    # marks), and the stages the user asked for are cleared as before.
+    for stage in STAGES[STAGES.index(from_stage):STAGES.index(asked)]:
+        manifest.unmark_stage(m, stage)
+    for stage in STAGES[STAGES.index(asked):]:
         manifest.clear_stage(m, stage)
-    for stage in todo[1:]:
+    for stage in STAGES[STAGES.index(asked) + 1:]:
         manifest.reset_stage(m, stage)
-    manifest.reset_stage(m, from_stage)
+    manifest.reset_stage(m, asked)
 
     save = save or (lambda: manifest.save(workdir, m))
     engine = None
@@ -1133,6 +1261,7 @@ def rebuild(m: dict[str, Any], workdir: Path, *, from_stage: str,
             elif stage == "timeline":
                 engine = engine or tts_mod.Engine(m, workdir, device=args.device,
                                                   model=args.tts_model)
+                _voice_stragglers(m, engine, progress=progress)
                 shorten_many, resynth_many = cli._retimers(m, workdir, engine, args)
                 timeline_mod.run(m, workdir, shorten_many=shorten_many,
                                  resynth_many=resynth_many, genre=args.genre)

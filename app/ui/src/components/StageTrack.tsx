@@ -26,12 +26,25 @@ export function StageTrack({
   current,
   showLabel = true,
   stale = false,
+  rebuilding = false,
   className,
 }: {
   stages?: Partial<Record<Stage, StageStatus>>;
   /** Overrides the stage derived from `stages` the live one from the stream. */
   current?: Stage | null;
   showLabel?: boolean;
+  /**
+   * The job in flight is rebuilding the end of a run that already got there
+   * a render, a re-voice, a re-translate rather than running it for the first
+   * time. It matters because a rebuild drops the "done" mark of every stage it
+   * is about to redo *before* it redoes them, so five of the nine dots go dark
+   * the moment the job starts. That is the same picture as a run that has never
+   * got past four, and it is how correcting one line and pressing Render read
+   * as "it removed all my renders and started from zero". The stages this job
+   * has still to reach are drawn as rings there is a result behind them,
+   * being replaced instead of as the hollow dots of work never done.
+   */
+  rebuilding?: boolean;
   /**
    * The segments have moved on since the last render, so `timeline`, `mix` and
    * `report` are done *about something else*. They are drawn hollow a ring
@@ -44,6 +57,15 @@ export function StageTrack({
   const summary = summarizeStages(stages);
   const active = current ?? summary.current;
   const activeIndex = active ? STAGES.indexOf(active) : STAGES.length;
+  // The stages this rebuild has yet to reach. Counted here so the sentence and
+  // the dots cannot disagree about how much of the run is being replaced.
+  const waiting =
+    rebuilding && active
+      ? STAGES.filter((stage, i) => i > activeIndex && stages?.[stage] !== "done")
+      : [];
+  const rebuildNote = waiting.length
+    ? ` · rebuilding ${waiting.length + 1} of ${STAGES.length} stages; the rest stand`
+    : "";
 
   return (
     <span
@@ -53,7 +75,8 @@ export function StageTrack({
       )}
       title={
         `${summary.done} of ${summary.total} stages done${active ? ` · at ${active}` : ""}` +
-        (stale ? " · timeline, mix and report are about an older cut" : "")
+        (stale ? " · timeline, mix and report are about an older cut" : "") +
+        rebuildNote
       }
     >
       {STAGES.map((stage, i) => {
@@ -65,11 +88,21 @@ export function StageTrack({
         // stage that never ran, or is running now, has its own mark already.
         const hollow = stale && done && !isActive && !failedHere &&
           RENDER_STAGES.includes(stage);
+        // Waiting its turn in this rebuild, not never run. Same ring as `hollow`
+        // and for the same reason there is a previous result here at a weight
+        // that says the job has not got to it yet.
+        const pending = waiting.includes(stage) && !isActive && !failedHere;
         return (
           <span
             key={stage}
             aria-hidden
-            title={hollow ? `${stage} from the last render` : stage}
+            title={
+              hollow
+                ? `${stage} from the last render`
+                : pending
+                  ? `${stage} waiting its turn in this rebuild`
+                  : stage
+            }
             className={cn(
               "h-1.5 w-1.5 rounded-full transition-colors",
               failedHere
@@ -82,12 +115,14 @@ export function StageTrack({
                     // shade it survives greyscale, and colour-blindness,
                     // which a lighter fill would not.
                     ? "bg-raised ring-[1.5px] ring-primary"
-                    : done
-                      ? "bg-primary"
-                      // `axis`, not `border`: a border-coloured dot is a 1.1:1
-                      // difference from the chip it sits on in light and 1.26:1
-                      // in dark, which is a dot you cannot count.
-                      : "bg-axis",
+                    : pending
+                      ? "bg-raised ring-[1.5px] ring-axis"
+                      : done
+                          ? "bg-primary"
+                        // `axis`, not `border`: a border-coloured dot is a 1.1:1
+                        // difference from the chip it sits on in light and 1.26:1
+                        // in dark, which is a dot you cannot count.
+                        : "bg-axis",
             )}
           />
         );
@@ -101,6 +136,7 @@ export function StageTrack({
         {summary.done} of {summary.total} stages done
         {active ? `, at ${active}` : ""}
         {stale ? ", timeline, mix and report are about an older cut" : ""}
+        {rebuildNote ? `, rebuilding the last ${waiting.length + 1} stages` : ""}
       </span>
     </span>
   );

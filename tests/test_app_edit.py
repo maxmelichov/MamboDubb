@@ -508,6 +508,54 @@ def test_set_keep_drops_the_line_that_was_written_for_the_other_path():
     assert translate.needs_translation(s)          # the real line is asked for again
 
 
+def test_a_line_no_voice_could_say_is_refused_at_the_door():
+    """"." is what a user types to get past a line they cannot fix any other way.
+
+    `tts.prepare_text` keeps only what the target voice can pronounce and answers
+    "" for it, `_plan` declines, the segment falls back to its original audio
+    under `tts_failed` — and the lock this edit stamps puts it beyond the
+    translator too, so nothing in the app can ever move it again.
+    """
+    m = two_segs()
+    uid = m["segments"][0]["uid"]
+    with pytest.raises(edit.EditError, match="nothing a voice can say"):
+        edit.set_text(m, uid, text_en=" . ")
+    assert m["segments"][0]["text_en"] == "one two"     # and nothing was touched
+    edit.set_text(m, uid, text_en="1")                  # a digit is speech
+    assert m["segments"][0]["text_en"] == "1"
+
+
+def test_dub_it_keeps_the_translation_the_line_already_had():
+    """The other direction, and the trap it used to spring.
+
+    A `tts_failed` keep is a line the translator got right and the voice did not,
+    so "Dub it" is a request to try the voice again. `invalidate` deleted the
+    translation anyway (its subtitle clause reads `keep`, already flipped), which
+    made the flip depend on the translator succeeding a second time. When it did
+    not, `mark_failed` honoured the user's verdict by writing nothing at all,
+    `resynthesize` refused to voice a line with nothing to say, and the segment
+    could not be dubbed again by any button in the app.
+    """
+    m = mk(seg(keep=True, keep_reason="tts_failed", text="שלום עולם",
+               text_en="Hello world", text_mid="Hello world",
+               tts={"clip": "clips/k.wav", "dur": 2.0}, place={"start": 0.0}))
+    uid = m["segments"][0]["uid"]
+    edit.set_keep(m, uid, False)
+    s = m["segments"][0]
+    assert s["text_en"] == "Hello world" and s["text_mid"] == "Hello world"
+    assert not translate.needs_translation(s)      # nothing to ask the model for
+    assert "tts" not in s and "place" not in s     # the voice is what gets redone
+
+
+def test_dub_it_still_drops_a_line_that_is_not_a_translation():
+    """`mt_failed` subtitles the span with its own source text; speaking it would
+    put the source language in the dub, which is the thing a dub is not."""
+    m = mk(seg(keep=True, keep_reason="mt_failed", text="שלום עולם",
+               text_en="שלום עולם", tts={"clip": "clips/k.wav", "dur": 2.0}))
+    edit.set_keep(m, m["segments"][0]["uid"], False)
+    assert "text_en" not in m["segments"][0]
+
+
 def test_set_keep_leaves_a_hand_corrected_line_alone():
     # The user's own text outranks the pipeline in both directions: it is what the
     # segment says when it is dubbed and what it reads when it is kept.
@@ -1252,6 +1300,193 @@ def test_start_stage_backs_up_to_translate_for_a_line_that_was_never_made():
     assert edit.start_stage(m, "timeline")[0] == "timeline"
 
 
+class VoicingEngine(StubEngine):
+    """A synthesiser that answers, for the healing pass a rebuild runs.
+
+    `clip_for` refuses an empty line, exactly as the real one does with nothing to
+    speak, so the "asked to be dubbed and has no translation" case is reachable.
+    """
+
+    fails: tuple[int, ...] = ()
+
+    def build_speaker_refs(self):
+        pass
+
+    def clip_for(self, seg, text):
+        if not (text or "").strip() or seg["id"] in self.fails:
+            return None
+        return {"clip": "clips/new.wav", "dur": 1.0, "verify": "ok"}
+
+    def keep_clip(self, seg):
+        return {"clip": f"clips/keep_{seg['id']}.wav", "dur": 1.0, "verify": "keep"}
+
+
+def _fake_tts_run(ran, holes=None):
+    """`tts.run` without a model: it voices whatever has no clip, and says which.
+
+    The real stage's one promise is that every segment leaves it with audio, and a
+    stub that leaves the manifest alone cannot tell a rebuild that resumed the
+    stage from one that restarted it and wiped the run's clips on the way.
+    """
+    def run(mm, wd, **kw):
+        ran.append("tts")
+        missing = [s["id"] for s in mm["segments"] if not (s.get("tts") or {}).get("clip")]
+        if holes is not None:
+            holes.append(missing)
+        for s in mm["segments"]:
+            s.setdefault("tts", {"clip": f"clips/tts_{s['id']}.wav", "dur": 1.0,
+                                 "verify": "ok"})
+        return VoicingEngine()
+
+    return run
+
+
+def test_a_render_that_backs_up_to_tts_resumes_it_rather_than_re_voicing_the_run(
+        monkeypatch):
+    """One corrected line, then Render and the other six hundred clips survive.
+
+    `start_stage` backs the render up to tts, which is right; `rebuild` then called
+    `reset_stage("tts")` on it, which deletes every unlocked clip in the manifest.
+    So the render re-synthesized the whole video, the stage track dropped five of
+    its nine marks at once, and the button the user pressed to hear one fixed line
+    looked exactly like starting over: "it removed all my renders and started to
+    render from zero".
+    """
+    from dubbing import mix as mix_mod
+    from dubbing import report as report_mod
+
+    m = finished(two_segs())
+    edit.set_text(m, m["segments"][1]["uid"], text_en="a better line")
+    ran, holes = [], []
+    monkeypatch.setattr(tts_mod, "run", _fake_tts_run(ran, holes))
+    monkeypatch.setattr(timeline, "run", lambda *a, **k: ran.append("timeline"))
+    monkeypatch.setattr(mix_mod, "run", lambda *a, **k: ran.append("mix"))
+    monkeypatch.setattr(report_mod, "run", lambda *a, **k: ran.append("report") or {})
+    monkeypatch.setattr(cli, "_retimers", lambda *a, **k: (None, None))
+
+    edit.rebuild(m, tmp_workdir(), from_stage="timeline", save=lambda: None)
+    assert holes == [[1]]                               # not [[0, 1]]
+    assert m["segments"][0]["tts"]["clip"] == "clips/a.wav"
+    # A backed-up stage is reopened, not cleared: the resume mark it would restart
+    # from is what `clear_stage` takes and `unmark_stage` leaves.
+    assert m["progress"]["tts"] == "fp-tts"
+    assert m["stages"]["tts"]["fp"] != "fp-tts"         # it did run, and is re-marked
+
+
+def test_a_rebuild_asked_for_a_stage_still_does_that_stage_over(monkeypatch):
+    """The other half of the rule: "re-voice this run" means re-voice this run."""
+    from dubbing import mix as mix_mod
+    from dubbing import report as report_mod
+
+    m = finished(two_segs())
+    ran, holes = [], []
+    monkeypatch.setattr(tts_mod, "run", _fake_tts_run(ran, holes))
+    monkeypatch.setattr(timeline, "run", lambda *a, **k: ran.append("timeline"))
+    monkeypatch.setattr(mix_mod, "run", lambda *a, **k: ran.append("mix"))
+    monkeypatch.setattr(report_mod, "run", lambda *a, **k: ran.append("report") or {})
+    monkeypatch.setattr(cli, "_retimers", lambda *a, **k: (None, None))
+
+    edit.rebuild(m, tmp_workdir(), from_stage="tts", save=lambda: None)
+    assert holes == [[0, 1]] and "tts" not in m["progress"]
+
+
+def test_a_render_voices_a_line_that_lost_its_clip_after_the_tts_stage(monkeypatch):
+    """The hole that opens *behind* the healing: an edit made while the job ran.
+
+    The app never blocks a field edit on a running job, and the job's save path
+    re-applies those edits onto the manifest it is holding
+    (`dubbing_app.worker.Journal`) deleting a clip is exactly what an edit does.
+    The render had already voiced that line, so it walked into
+    `timeline.build_items` and died on an assertion naming a segment id, which is
+    what the user saw as `AssertionError: segments without audio: [5]`.
+    """
+    from dubbing import mix as mix_mod
+    from dubbing import report as report_mod
+
+    m = finished(two_segs())
+    ran = []
+
+    def tts_run(mm, wd, **kw):
+        ran.append("tts")
+        for s in mm["segments"]:
+            s.setdefault("tts", {"clip": "clips/voiced.wav", "dur": 1.0, "verify": "ok"})
+        mm["segments"][1].pop("tts")        # the live edit, re-applied by the journal
+        return VoicingEngine()
+
+    monkeypatch.setattr(tts_mod, "run", tts_run)
+    monkeypatch.setattr(tts_mod, "Engine", VoicingEngine)
+    monkeypatch.setattr(timeline, "run", lambda *a, **k: ran.append("timeline"))
+    monkeypatch.setattr(mix_mod, "run", lambda *a, **k: ran.append("mix"))
+    monkeypatch.setattr(report_mod, "run", lambda *a, **k: ran.append("report") or {})
+    monkeypatch.setattr(cli, "_retimers", lambda *a, **k: (None, None))
+
+    edit.set_text(m, m["segments"][1]["uid"], text_en="a better line")
+    edit.rebuild(m, tmp_workdir(), from_stage="timeline", save=lambda: None)
+    assert ran == ["tts", "timeline", "mix", "report"]
+    assert m["segments"][1]["tts"]["clip"] == "clips/new.wav"
+
+
+@pytest.mark.parametrize("line,expect", [
+    ("", "no translation"),
+    ("a line the voice cannot manage", "could not be voiced"),
+])
+def test_a_render_names_the_dub_it_cannot_deliver_instead_of_asserting(
+        monkeypatch, line, expect):
+    """The failure the assertion was written for, said in words.
+
+    A line the user asked to DUB and that nothing can voice may not be handed its
+    original audio back that is the mix playing the source language over it
+    unannounced, which is the whole reason `build_items` started asserting. What
+    changes is who says it, and how: the segment is named, with what to do.
+    """
+    from dubbing import mix as mix_mod
+    from dubbing import report as report_mod
+
+    m = finished(two_segs())
+    monkeypatch.setattr(translate, "run", lambda *a, **k: None)
+    monkeypatch.setattr(tts_mod, "run", lambda *a, **k: VoicingEngine())
+    monkeypatch.setattr(tts_mod, "Engine", VoicingEngine)
+    monkeypatch.setattr(timeline, "run", lambda *a, **k: pytest.fail("placed a hole"))
+    monkeypatch.setattr(mix_mod, "run", lambda *a, **k: None)
+    monkeypatch.setattr(report_mod, "run", lambda *a, **k: {})
+    monkeypatch.setattr(cli, "_retimers", lambda *a, **k: (None, None))
+    monkeypatch.setattr(VoicingEngine, "fails", (1,))
+
+    uid = m["segments"][1]["uid"]
+    edit.set_keep(m, uid, False)                     # "Dub it": the user's verdict
+    if line:
+        edit.set_text(m, uid, text_en=line)
+    else:
+        m["segments"][1].pop("text_en", None)
+    m["segments"][1].pop("tts", None)
+    with pytest.raises(edit.RebuildIncomplete) as exc:
+        edit.rebuild(m, tmp_workdir(), from_stage="timeline", save=lambda: None)
+    assert "segment 1" in str(exc.value) and expect in str(exc.value)
+    # Never the fallback: a dub-wanted line does not quietly become a keep.
+    assert m["segments"][1]["keep"] is False
+
+
+def test_a_render_falls_back_for_a_line_nobody_asked_to_dub(monkeypatch):
+    """The never-silent floor still holds where the user has not overruled it."""
+    from dubbing import mix as mix_mod
+    from dubbing import report as report_mod
+
+    m = finished(two_segs())
+    monkeypatch.setattr(tts_mod, "run", lambda *a, **k: VoicingEngine())
+    monkeypatch.setattr(tts_mod, "Engine", VoicingEngine)
+    monkeypatch.setattr(timeline, "run", lambda *a, **k: None)
+    monkeypatch.setattr(mix_mod, "run", lambda *a, **k: None)
+    monkeypatch.setattr(report_mod, "run", lambda *a, **k: {})
+    monkeypatch.setattr(cli, "_retimers", lambda *a, **k: (None, None))
+    monkeypatch.setattr(VoicingEngine, "fails", (1,))
+
+    m["segments"][1].pop("tts")
+    edit.rebuild(m, tmp_workdir(), from_stage="timeline", save=lambda: None)
+    s = m["segments"][1]
+    assert s["keep"] and s["keep_reason"] == "tts_failed"
+    assert s["tts"]["clip"] == "clips/keep_1.wav"
+
+
 def test_rebuild_fills_the_hole_instead_of_clearing_and_dying(monkeypatch):
     """The Render button on the state an ordinary text edit leaves behind. It used
     to clear timeline/mix/report first and only then hit `KeyError: 'tts'` inside
@@ -1262,9 +1497,7 @@ def test_rebuild_fills_the_hole_instead_of_clearing_and_dying(monkeypatch):
     m = finished(two_segs())
     edit.set_text(m, m["segments"][1]["uid"], text_en="a better line")
     ran = []
-    monkeypatch.setattr(tts_mod, "run",
-                        lambda *a, **k: ran.append("tts") or type(
-                            "E", (), {"close": lambda self: None})())
+    monkeypatch.setattr(tts_mod, "run", _fake_tts_run(ran))
     monkeypatch.setattr(timeline, "run", lambda *a, **k: ran.append("timeline"))
     monkeypatch.setattr(mix_mod, "run", lambda *a, **k: ran.append("mix"))
     monkeypatch.setattr(report_mod, "run", lambda *a, **k: ran.append("report") or {})

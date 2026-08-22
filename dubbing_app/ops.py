@@ -26,6 +26,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from dubbing import STAGES
 from dubbing import edit as _edit
 from dubbing import manifest
 
@@ -265,8 +266,32 @@ def rebuild(m: dict[str, Any], workdir: Path, *, from_stage: str,
     running, instead of overwriting them (see `dubbing_app.worker`).
     """
     return _edit.rebuild(m, workdir, from_stage=from_stage,
-                         progress=_edit_progress(progress, from_stage), save=save,
+                         progress=_rebuild_progress(progress, from_stage), save=save,
                          **pipeline_overrides(m))
+
+
+def _rebuild_progress(progress: Progress | None, asked: str):
+    """`_edit_progress` for a rebuild, which does not stay in one stage.
+
+    A render is asked for `timeline` and may run tts or translate first
+    (`edit.start_stage`), and reporting the asked-for stage throughout left the UI
+    saying "timeline" through the twenty minutes it spent in the synthesiser —
+    with nothing else moving, which is what a re-render came to look like when it
+    was really only voicing one line. `edit.rebuild` announces each stage by name
+    as it enters it, so that is what the frame carries.
+    """
+    if progress is None:
+        return None
+    current = asked
+
+    def report(fraction: float, message: str) -> None:
+        nonlocal current
+        if message in STAGES:
+            current = message
+        progress({"type": "stage", "stage": current, "status": "running",
+                  "progress": round(float(fraction), 4), "message": message})
+
+    return report
 
 
 def full_run(workdir: Path, source: dict[str, Any], *,

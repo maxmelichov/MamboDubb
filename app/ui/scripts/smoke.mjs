@@ -2769,6 +2769,25 @@ check(
   /Rendering preview/.test(root.textContent),
 );
 /*
+ * …and the track says it is rebuilding, not starting over.
+ *
+ * `edit.rebuild` drops the "done" mark of every stage it is about to redo before
+ * it redoes any of them, so three of the nine dots go dark for the length of the
+ * job. Unqualified that is the picture of a run that never got that far which,
+ * over a render that then spends its time voicing one corrected line, is exactly
+ * what "it removed all my renders and started to render from zero" was
+ * describing. The dots this job has still to reach are drawn as rings (there is
+ * a result behind them, being replaced) and the count is said in words.
+ */
+check(
+  "…and the stage track says the last stages are being rebuilt, not lost",
+  /rebuilding the last \d+ stages/.test(root.textContent),
+);
+check(
+  "…with the waiting stages ringed rather than blank",
+  [...document.querySelectorAll('[title$="waiting its turn in this rebuild"]')].length > 0,
+);
+/*
  * Cancelling is an ending, not a pause.
  *
  * The worker's journal saves whatever the job finished before it stopped, so a

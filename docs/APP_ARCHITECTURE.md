@@ -245,6 +245,17 @@ each stage with the fingerprint `cli.stage_params` would compute, so a later CLI
 the work as done. `enrich` is new: it keeps knowledge of the clip-cache layout inside
 `dubbing/`, where `GET /segments` needs the verification verdict.
 
+A rebuild starts where it *can* run, not where it was asked (`edit.start_stage`): a render
+over an edited-but-not-yet-revoiced line backs up to `tts`, and one over a line with no
+translation backs up to `translate`. The stage it backed up **into** is resumed, never
+restarted — it fills the holes and hands back every other segment's work — while the stage
+it was **asked** for is done over, which is what "rebuild from tts" means. Restarting the
+backed-up stage is what made one corrected line re-voice a whole video. Before placement it
+voices whatever still has no clip (an edit landing mid-job can reopen a hole behind the
+stage that filled it) and fails, naming the segments, for a line the user asked to dub that
+nothing can voice: handing that one its original audio back is the mix speaking the source
+language over a dub, unannounced.
+
 `rebuild` reads the run's settings from `m["source"]` (`src_lang`, `tgt_lang`,
 `duration_limit`, `context`, and optionally `register`, `genre`, `tts_model`, `transcript`,
 `dub_foreign`, `device`), falling back to the CLI defaults. **The server should write

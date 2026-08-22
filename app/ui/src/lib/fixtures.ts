@@ -406,9 +406,9 @@ const installed = new Set<string>();
  * server ever sends back.
  *
  * `optional`, and the demo has to say so. This row was `degrades` while
- * diarization loaded a gated repo; it is not any more (the pipeline reads an
- * ungated mirror), and a fixture still painting an attention row for a
- * credential nothing needs would be demoing a wall the app removed.
+ * diarization loaded a gated repo; it is not any more (the weights ship with
+ * the app), and a fixture still painting an attention row for a credential
+ * nothing needs would be demoing a wall the app removed.
  */
 let hfTokenSaved = false;
 
@@ -423,8 +423,8 @@ function hfTokenRow(ready = false): SetupCheck {
     severity: "optional",
     detail: saved
       ? `set in \`${FIXTURE_ENV}\``
-      : "not set nothing needs one. Diarization reads an ungated mirror, so speakers are " +
-        "told apart without an account. Only for fetching the gated upstream models " +
+      : "not set nothing needs one. The diarization weights ship with the app, so speakers " +
+        "are told apart without an account. Only for fetching gated upstream models " +
         `instead; it would go in \`${FIXTURE_ENV}\``,
   };
 }
@@ -507,12 +507,12 @@ function toolRow(id: string, ready = false): SetupCheck {
  * what puts the Download button on the row. Two of them, in the two states the
  * button has: idle with its price tag, and mid-download (see `seedDownload`).
  *
- * `severity` defaults to blocking, and two rows are here precisely because they
- * are not. The screen has three grades and the fixture used to reach the middle
- * one only through the HF-token row; that row is `optional` now (diarization no
+ * `severity` defaults to blocking, and one row is here precisely because it is
+ * not. The screen has three grades and the fixture used to reach the middle one
+ * only through the HF-token row; that row is `optional` now (diarization no
  * longer needs a credential), so language ID carries `degrades` here as it does
- * on the server. Diarization itself is the `optional` downloadable row — 32 MB
- * from an ungated mirror, the whole reason the token stopped mattering.
+ * on the server. Diarization is not in this table at all: its weights ship with
+ * the app, so it has no hub id, no size and no button — see `setupChecks`.
  */
 const MODEL_ROWS: Record<
   string,
@@ -564,15 +564,6 @@ const MODEL_ROWS: Record<
     bytes: 100_000_000,
     here: "95 MB in models/lang-id-voxlingua107-ecapa",
     missing: "without it foreign-speech detection is skipped",
-  },
-  "model.diarization": {
-    label: "Speaker diarization (pyannote community-1)",
-    severity: "optional",
-    hub: "notmax123/speaker-diarization-community-1",
-    dir: "speaker-diarization-community-1",
-    bytes: 32_000_000,
-    here: "31 MB in models/speaker-diarization-community-1",
-    missing: "downloads from notmax123/speaker-diarization-community-1 on first use, no token",
   },
 };
 
@@ -1564,6 +1555,22 @@ async function runJob(job: Job): Promise<void> {
         : job.kind === "retranslate"
           ? ["translate"]
           : ["tts"];
+
+  /*
+   * A rebuild goes dark before it goes forward.
+   *
+   * `edit.rebuild` drops the "done" mark of every stage it is about to redo
+   * (`manifest.clear_stage`) before it redoes any of them, so a render really
+   * does take five of the nine dots off the track the moment it starts. A
+   * fixture that skipped that never showed the state the UI has to stay honest
+   * about the state a user read as "it removed all my renders".
+   */
+  const owner = OTHER_RUNS.find((run) => run.name === job.project);
+  if (!owner) {
+    for (const stage of stages) {
+      store.project.stages = { ...store.project.stages, [stage]: "pending" };
+    }
+  }
 
   for (const stage of stages) {
     if ((job.status as string) === "cancelled") return;
