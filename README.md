@@ -22,6 +22,39 @@ using zero-shot cloning, and mixes the new speech back over the original music a
 original timing. Nothing is uploaded anywhere: every model ASR, translation,
 voice synthesis, source separation, diarization runs locally.
 
+## What it needs
+
+Everything runs locally, so the hardware is the whole cost. Models load one at a
+time and never sit in memory together, so the peak is whichever model is largest:
+the 12B translator.
+
+| | Minimum | Comfortable |
+|---|---|---|
+| **Apple Silicon** (unified memory) | 16 GB | 24 to 32 GB |
+| **NVIDIA** (VRAM, bfloat16 translator) | 24 GB | 32 GB or more |
+| **Disk** | 25 GB | 40 GB or more |
+
+**On a Mac**, the translator is a 6-bit MLX build and peaks around 10 GB, and a
+whole run sits near 13 GB resident. An M-series chip is required: the app has no
+Intel build.
+
+**On NVIDIA**, the translator runs in `translator/` as bfloat16, which is about
+24 GB of weights before the KV cache. A 24 GB card (3090, 4090) is the floor and
+will be tight; below that the run falls back to CPU and becomes impractically
+slow rather than failing outright. Everything except translation is small: TTS is
+4.2 GB, ASR 1.5 GB, source separation 0.4 GB.
+
+**Disk**: about 16 GB of model weights, downloaded once from inside the app, plus
+roughly 4 GB per 20 minutes of finished video. The setup screen warns below 10 GB
+free.
+
+**CPU only** works and is exercised by the test suite, but a run takes many times
+real time. Treat it as a fallback, not a configuration.
+
+**Speed**, measured on an M-series laptop: a 3 minute clip takes 20 to 40 minutes
+end to end, most of it in translation and voice synthesis. Longer videos scale
+close to linearly. Re-running is incremental, so a fix costs one line, not one run.
+
 ## The app
 
 A desktop editor built around the script, not the timeline: every line shows the
@@ -135,7 +168,7 @@ The desktop app is a thin Tauri shell over a local FastAPI server that calls the
 same pipeline the app is a second front end, never a fork. The models:
 faster-whisper (ASR + verification), Gemma (translation, via MLX), Qwen3-TTS
 (voice cloning), Demucs (music/voice separation), Pyannote (speakers). They load
-sequentially and never co-exist in memory, so 16 to 32 GB of unified memory is enough.
+sequentially and never co-exist in memory (see [What it needs](#what-it-needs)).
 
 Guarantees the pipeline enforces on itself: no second of audible speech is ever
 silently dropped, dubbed lines never overlap, transcription only ever listens to
