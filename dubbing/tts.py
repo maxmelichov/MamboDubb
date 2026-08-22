@@ -18,6 +18,15 @@ The run's language pair is a default, not a rule: a segment carrying its own
 `tgt_lang` (the editor's per-segment override) is prepared, keyed, synthesised
 and verified in *that* language.
 
+**Accepting is not the same as passing.** Verification has two bars: a clip below
+`CLONE_MIN_OVERLAP` is not a dub and the line keeps its original audio, while a
+clip below `CLONE_GOOD_OVERLAP` is used but keeps the retry ladder running and is
+recorded as `verify: "accepted"`, never as "ok". One number doing both jobs is
+why garbled Hebrew takes at 0.44 were stored on the first try and never retried.
+What a retry varies is the *reference* (`Engine.rungs`), because that is the
+ingredient a clone's quality actually turns on the seed is not, and under a
+greedy decode it is inert.
+
 **A check that did not run is a verdict.** With no verification ASR a clip is
 accepted on length alone and recorded as `verify: "unverified"`, never as "ok",
 and everything this stage could not load lands in `m["health"]` for report.json.
@@ -111,9 +120,19 @@ CLONE_MAX_SEC_PER_WORD = 0.95   # slower than this is a stall/drawl
 # CJK/hangul speech runs ~5 characters/s; the word constants assume ~3 words/s.
 CLONE_MIN_SEC_PER_CHAR = 0.08   # faster than this is chipmunk garble
 CLONE_MAX_SEC_PER_CHAR = 0.60   # slower than this is a stall/drawl
-CLONE_MIN_OVERLAP = 0.35        # accept
+# Two bars, not one. `CLONE_MIN_OVERLAP` is the floor: below it a line is not a
+# dub at all and falls back to the original audio. `CLONE_GOOD_OVERLAP` is what
+# stops the retry ladder. They used to be the same number, which is why a garbled
+# Hebrew take at 0.44 was stored as "ok" on the first try and never retried: the
+# accept bar was doing the retry bar's job. Anything between them is accepted
+# only after the ladder has been walked, and is recorded as "accepted", not "ok".
+CLONE_MIN_OVERLAP = 0.35        # accept floor: below this the line keeps its original
+CLONE_GOOD_OVERLAP = 0.85       # good enough to stop retrying
 CLONE_SOFT_OVERLAP = 0.20       # best-effort accept
+# How many *references* one segment is cloned from before the decode is changed:
+# the aligned window plus up to two alternatives (see `Engine._ref_ladder`).
 MAX_TRIES = 3
+REF_ALTS = 3                    # alternative windows kept per speaker for the ladder
 
 _LATIN_RUN = re.compile(r"[A-Za-z0-9][A-Za-z0-9''\-.]*")
 _CHROME = re.compile(r"[\[\(][^\]\)]{0,40}[\]\)]")
@@ -510,6 +529,16 @@ def _verdict(clip: Path, ok: bool, ov: float, heard: str) -> dict[str, Any]:
             "dur": round(audio.duration(clip), 3), "verified": heard != NO_ASR}
 
 
+def clip_is_good(verdict: dict[str, Any]) -> bool:
+    """True when a take is good enough to stop the retry ladder.
+
+    The upper of the two bars (see CLONE_GOOD_OVERLAP). An unverified clip reads
+    as good — there is no ASR to disagree with, so retrying it would only spend
+    GPU time re-rolling a verdict nobody can check.
+    """
+    return bool(verdict.get("ok")) and verdict.get("overlap", 0.0) >= CLONE_GOOD_OVERLAP
+
+
 class Plan(NamedTuple):
     """What one segment's attempts are made from (see `Engine._plan`).
 
@@ -532,6 +561,12 @@ class Plan(NamedTuple):
     # to keep, with no hint that a supported override was the cause.
     tgt: str
     src: str
+    # The decode attempt 0 uses. Usually `opts.greedy`, but a Hebrew target
+    # defaults to the deterministic decode (see `Engine._greedy_for`), and that
+    # default is the plan's, not the segment's: it must not leak into the option
+    # fingerprint stored on the record, or every Hebrew clip would look like its
+    # options had changed under it and be re-synthesized forever.
+    greedy: bool = False
 
 
 def text_sha(text: str) -> str:
@@ -727,10 +762,17 @@ class Engine:
     # Bumped when the canonical-ref recipe changes: reset_stage clears segments'
     # tts records but not m["speakers"], so without this marker a manifest from
     # an older run would keep its old (possibly sub-second) reference forever.
-    REF_BUILD = 2
+    REF_BUILD = 3
 
     def build_speaker_refs(self) -> None:
         """One canonical reference per speaker: their cleanest few seconds.
+
+        Plus `ref_alts`: the runners-up. Clone quality is chaotically sensitive to
+        the reference and no static metric predicts it, so the only thing a retry
+        can usefully change is which audio the voice is cloned from — and the
+        candidate windows measured here are the ready-made supply. They used to be
+        thrown away the moment the canonical reference was written; now the best
+        few survive for `_ref_ladder` to retry from.
 
         A reference shorter than MIN_REF_SEC reliably clones truncated or
         wrong-sounding, so when a speaker's best single window is that short their
@@ -760,6 +802,7 @@ class Engine:
             wav = concat_ref(self.vocals, spans)
             if not len(wav):
                 info["ref"] = None
+                info["ref_alts"] = []
                 info["ref_v"] = self.REF_BUILD
                 print(f"  tts: no clean reference for {spk}", file=sys.stderr)
                 continue
@@ -771,6 +814,13 @@ class Engine:
             info["ref_windows"] = [[round(a, 2), round(b, 2)] for a, b in spans]
             info["ref_sec"] = round(len(wav) / REF_SR, 2)
             info["ref_noise"] = round(min(by_start[s][2] for s in spans), 2)
+            # The retry supply: the cleanest candidate windows that are NOT part
+            # of the canonical reference, so a ladder rung is genuinely different
+            # audio rather than the canonical clip cut a second way.
+            chosen = set(spans)
+            alts = sorted((c for c in cands if (c[0], c[1]) not in chosen),
+                          key=lambda c: c[2])[:REF_ALTS]
+            info["ref_alts"] = [[round(c[0], 2), round(c[1], 2)] for c in alts]
             info["ref_v"] = self.REF_BUILD
             if len(spans) > 1:
                 print(f"  tts: {spk} reference concatenated from {len(spans)} windows "
@@ -846,18 +896,56 @@ class Engine:
                 canon = self._canonical_ref(seg)
                 if canon is not None and self._matches_canonical((start, end), canon[0]):
                     return canon
-            # Name the clip by its audio window, never the segment id: ids shift
-            # between runs as segmentation changes, so an id-named file goes stale
-            # and clones a different moment's voice (the "1:19 voice at 1:33" bug).
-            # A window-named file, and a window-based cache key, cannot.
-            path = self.refs / f"ref_{start:.2f}-{end:.2f}.wav"
-            if not path.is_file():
-                sf.write(str(path), self.vocals[int(start * REF_SR) : int(end * REF_SR)],
-                         REF_SR)
-            return path, f"ref:{start:.2f}-{end:.2f}"
+            return self.window_ref(start, end)
         # Only if the aligned window is too short or essentially silent: the
         # speaker's canonical clip, if one was built, else the synth default voice.
         return self._canonical_ref(seg)
+
+    def window_ref(self, start: float, end: float) -> tuple[Path, str]:
+        """One window of the vocals as a clone reference, cut on demand.
+
+        Named by its audio window, never the segment id: ids shift between runs as
+        segmentation changes, so an id-named file goes stale and clones a different
+        moment's voice (the "1:19 voice at 1:33" bug). A window-named file, and a
+        window-based cache key, cannot.
+        """
+        path = self.refs / f"ref_{start:.2f}-{end:.2f}.wav"
+        if not path.is_file():
+            sf.write(str(path), self.vocals[int(start * REF_SR) : int(end * REF_SR)],
+                     REF_SR)
+        return path, f"ref:{start:.2f}-{end:.2f}"
+
+    def _ref_ladder(self, seg: dict[str, Any], opts: TtsOpts,
+                    first_key: str) -> list[tuple[Path, str]]:
+        """Alternative references for attempts 1+, best first.
+
+        This is what a retry actually varies. Re-rolling the same reference cannot
+        help: under a greedy decode the seed is inert, so every retry is the same
+        audio, and even sampled the reference is what dominates a clone's quality.
+        Nothing static predicts which reference clones well — only the verify ASR
+        knows — so the ladder is "try a different voice sample and ask again".
+
+        The speaker's canonical reference is rung 1 (it is the longest, cleanest,
+        outlier-checked audio this run has of them), then the runners-up
+        `build_speaker_refs` kept. A pinned `tts_opts.ref` has no ladder at all:
+        the user chose that voice, and swapping it out would hand back exactly the
+        one they were overriding.
+        """
+        if opts.ref:
+            return []
+        out: list[tuple[Path, str]] = []
+        seen = {first_key}
+        canon = self._canonical_ref(seg)
+        if canon is not None and canon[1] not in seen:
+            out.append(canon)
+            seen.add(canon[1])
+        info = self.m.get("speakers", {}).get(seg.get("speaker")) or {}
+        for span in info.get("ref_alts") or []:
+            got = self.window_ref(float(span[0]), float(span[1]))
+            if got[1] not in seen:
+                out.append(got)
+                seen.add(got[1])
+        return out[: MAX_TRIES - 1]
 
     def _matches_canonical(self, span: tuple[float, float], canon: Path) -> bool:
         """ECAPA says the aligned window and the canonical ref are the same voice.
@@ -1010,21 +1098,46 @@ class Engine:
             return None
         ref_path, ref_key = ref
         return Plan(speak, synth, ref_path, ref_key, seed_for(seg, speak, opts),
-                    opts, tgt, src)
+                    opts, tgt, src, self._greedy_for(seg, opts, tgt))
+
+    def _greedy_for(self, seg: dict[str, Any], opts: TtsOpts, tgt: str) -> bool:
+        """Whether this segment's first attempt decodes deterministically.
+
+        A Hebrew target defaults to greedy. The LoRA speaks IPA and the sampler is
+        where its wandering and repetition come from; greedy is the steadier read.
+        This is only an honest default because the retry ladder above varies the
+        *reference* — with a seed-varying ladder, forcing greedy meant a segment
+        got one take and no retries at all, which was strictly worse.
+
+        The segment always wins: an explicit `greedy` either way is obeyed, and so
+        is a sampler setting, which `ttsopts.parse` only stores when greedy is off
+        and which would be silently discarded by a forced greedy decode.
+        """
+        if opts.greedy or not self.hebrew_for(tgt):
+            return opts.greedy
+        raw = seg.get("tts_opts")
+        if isinstance(raw, dict) and "greedy" in raw:
+            return False        # the user asked for a sampled decode on this line
+        return not any(getattr(opts, k) is not None for k in ttsopts.SAMPLING_KEYS)
 
     def _attempt(self, seg_id: int, speak: str, ref_path: Path, ref_key: str,
-                 base_seed: int, attempt: int, opts: TtsOpts = ttsopts.DEFAULT,
+                 seed: int, greedy: bool, opts: TtsOpts = ttsopts.DEFAULT,
                  tgt: str | None = None, synth: str | None = None):
-        """Generate (or load-from-cache) one attempt's clip.
+        """Generate (or load-from-cache) one rung's clip.
 
         Returns (clip, meta, verdict). `verdict` is None when the clip was just
         generated and still needs verifying; a dict when it was cached; and
         {"failed": True} when generation raised. Isolating this from verification
         is what lets the pipeline in `run` verify one clip while the GPU makes the
         next the seed/cache scheme is identical to the sequential path.
+
+        The seed is the caller's and does not move between rungs. It used to be
+        `base_seed + 1000 * attempt`, which read like a re-roll and was one only
+        while the decode sampled: under `do_sample=False` the seed does nothing,
+        so a greedy ladder was MAX_TRIES byte-identical takes filed under
+        different cache keys. What varies a rung now is the reference or the
+        decode, both of which are in the key on their own.
         """
-        greedy = opts.greedy or attempt == MAX_TRIES - 1
-        seed = base_seed + 1000 * attempt
         synth = speak if synth is None else synth
         key = self._cache_key(speak, ref_key, seed, greedy, opts, tgt, synth)
         clip = self.clips / f"{key}.wav"
@@ -1069,31 +1182,47 @@ class Engine:
             rec["text_sha"] = text_sha(text)
         return rec
 
+    def rungs(self, seg: dict[str, Any], plan: Plan) -> list[tuple[Path, str, bool]]:
+        """The ladder this segment climbs: (reference, ref key, greedy) per attempt.
+
+        Rung 0 is the segment's own aligned window under the plan's decode. Rungs
+        1+ swap the *reference* — the speaker's canonical clip first, then the
+        runners-up — with the seed and the decode held fixed, because the
+        reference is the one ingredient that reliably changes a clone.
+
+        The last rung changes the decode instead, on the original reference. Under
+        a sampled plan that is the deterministic final take this stage has always
+        ended on. Under a greedy plan it is the one *sampled* take — the seg-27
+        rescue: a greedy ladder cannot re-roll (the seed is inert), so when every
+        reference has been tried and none reached CLONE_GOOD_OVERLAP, letting the
+        decode sample once is the only new take left to make.
+        """
+        out = [(plan.ref_path, plan.ref_key, plan.greedy)]
+        out += [(p, k, plan.greedy) for p, k in
+                self._ref_ladder(seg, plan.opts, plan.ref_key)]
+        out.append((plan.ref_path, plan.ref_key, not plan.greedy))
+        return out
+
     def clip_for(self, seg: dict[str, Any], text_en: str) -> dict[str, Any] | None:
-        """Bounded retry loop. Returns a tts record, or None to fall back to keep."""
+        """Bounded retry ladder. Returns a tts record, or None to fall back to keep.
+
+        Two bars decide when it stops. A take at or above `CLONE_GOOD_OVERLAP` is
+        "ok" and ends the ladder. A take merely above `CLONE_MIN_OVERLAP` is
+        usable but not good: it is remembered and the ladder keeps going, and if
+        nothing better turns up it is returned as "accepted" — a real dub, said
+        out loud in report.json to be a second-class one. Below the floor the best
+        take is soft-accepted, or the segment falls back to its original audio.
+        """
         plan = self._plan(seg, text_en)
         if plan is None:
             return None
-        speak, synth, ref_path, ref_key, base_seed, opts, tgt, src = plan
+        speak, synth, ref_path, ref_key, base_seed, opts, tgt, src, greedy = plan
         slot = float(seg["end"]) - float(seg["start"])
         best: dict[str, Any] | None = None
 
-        # Escalation: the segment's own aligned window can be too short to clone
-        # from (a ~1s reference reliably yields a ~1s truncated clip whatever the
-        # text says). After the bounded tries fail, one extra attempt swaps in the
-        # speaker's canonical reference different audio, different cache key, so
-        # it is a genuinely new synthesis, never a replay of a cached failure.
-        # A pinned `tts_opts.ref` is exempt: the user chose that voice, and
-        # escalating past it to the speaker's canonical reference would hand back
-        # exactly the voice they were overriding.
-        attempts = [(a, ref_path, ref_key) for a in range(MAX_TRIES)]
-        alt = None if opts.ref else self._canonical_ref(seg)
-        if alt is not None and alt[1] != ref_key:
-            attempts.append((MAX_TRIES, alt[0], alt[1]))
-
-        for attempt, a_path, a_key in attempts:
+        for attempt, (a_path, a_key, a_greedy) in enumerate(self.rungs(seg, plan)):
             clip, meta, verdict = self._attempt(seg["id"], speak, a_path, a_key,
-                                                base_seed, attempt, opts, tgt, synth)
+                                                base_seed, a_greedy, opts, tgt, synth)
             if verdict is not None and verdict.get("failed"):
                 continue
             if verdict is None:
@@ -1106,11 +1235,16 @@ class Engine:
                       f"{slot:.1f}s slot rejected", file=sys.stderr)
                 continue
             record = self._record(clip, verdict, attempt, opts, text_en)
-            if verdict["ok"]:
+            if clip_is_good(verdict):
                 return record
             if verdict["overlap"] > (best or {}).get("overlap", -1.0):
-                best = dict(record, verify="soft")
+                best = dict(record, verify="accepted" if verdict["ok"] else "soft")
 
+        if best and best["verify"] == "accepted":
+            print(f"  tts: seg {seg['id']} accepted below {CLONE_GOOD_OVERLAP:.2f} "
+                  f"(overlap {best['overlap']:.2f}) every reference was tried",
+                  file=sys.stderr)
+            return best
         if best and best["overlap"] >= CLONE_SOFT_OVERLAP:
             print(f"  tts: seg {seg['id']} soft-accept (overlap {best['overlap']:.2f})",
                   file=sys.stderr)
@@ -1530,14 +1664,18 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
             if plan is None:
                 retry.append(seg)
                 continue
-            speak, synth, ref_path, ref_key, base_seed, opts, tgt, src = plan
+            speak, synth, ref_path, ref_key, base_seed, opts, tgt, src, greedy = plan
             clip, meta, verdict = engine._attempt(seg["id"], speak, ref_path, ref_key,
-                                                  base_seed, 0, opts, tgt, synth)
+                                                  base_seed, greedy, opts, tgt, synth)
             if verdict is not None and verdict.get("failed"):
                 retry.append(seg)
                 continue
             if verdict is not None:                    # cache hit no verify needed
-                if verdict["ok"]:
+                # `clip_is_good`, not `ok`: a first take that merely clears the
+                # accept floor is exactly the garble this fast path used to store
+                # as "ok" and never look at again. It goes to the ladder, which
+                # will hand this same cached clip back if nothing beats it.
+                if clip_is_good(verdict):
                     seg["tts"] = engine._record(clip, verdict, 0, opts, seg["text_en"])
                 else:
                     retry.append(seg)
@@ -1552,7 +1690,7 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
             fut, clip, meta, speak, opts = item
             verdict = _verdict(clip, *fut.result())
             meta.write_text(json.dumps(verdict, ensure_ascii=False), encoding="utf-8")
-            if verdict["ok"]:
+            if clip_is_good(verdict):
                 seg["tts"] = engine._record(clip, verdict, 0, opts, seg["text_en"])
             else:
                 retry.append(seg)

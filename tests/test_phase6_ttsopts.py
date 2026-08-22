@@ -349,39 +349,60 @@ def _attempt_engine(tmp_path):
     return eng, fake
 
 
-def _attempts(eng, opts, *, tries=tts.MAX_TRIES):
-    ref = eng.workdir / "refs" / "auto.wav"
-    return [eng._attempt(1, "hello.", ref, "ref:1.00-4.00", 100, a, opts)
-            for a in range(tries)]
+def _ladder(eng, seg, opts):
+    """Walk every rung of one segment's ladder, as `clip_for` would."""
+    plan = eng._plan(seg, "hello.")
+    out = []
+    for ref, key, greedy in eng.rungs(seg, plan):
+        out.append(eng._attempt(seg["id"], plan.speak, ref, key, plan.base_seed,
+                                greedy, opts, plan.tgt, plan.synth))
+    return out
+
+
+def _seg(**over):
+    seg = {"id": 1, "uid": "u1", "start": 0.0, "end": 3.0, "speaker": "S1"}
+    seg.update(over)
+    return seg
 
 
 def test_greedy_option_forces_the_deterministic_decode_from_the_first_try(tmp_path):
     eng, fake = _attempt_engine(tmp_path)
-    _attempts(eng, DEFAULT)
-    assert [c["greedy"] for c in fake.calls] == [False, False, True]   # today's ladder
+    eng.ref_for = lambda seg, opts=DEFAULT: (eng.workdir / "refs/auto.wav", "ref:1.00-4.00")
+    _ladder(eng, _seg(), DEFAULT)
+    # Sampled plan: the ladder ends on the deterministic take it always has.
+    assert [c["greedy"] for c in fake.calls] == [False, True]
 
     eng, fake = _attempt_engine(tmp_path)
-    _attempts(eng, ttsopts.parse({"greedy": True}))
-    assert [c["greedy"] for c in fake.calls] == [True, True, True]
+    eng.ref_for = lambda seg, opts=DEFAULT: (eng.workdir / "refs/auto.wav", "ref:1.00-4.00")
+    opts = ttsopts.parse({"greedy": True})
+    _ladder(eng, _seg(tts_opts={"greedy": True}), opts)
+    # Greedy plan: greedy first, and one sampled rescue take at the end rather
+    # than a second identical greedy one.
+    assert [c["greedy"] for c in fake.calls] == [True, False]
 
 
-def test_attempts_still_walk_the_seed_and_land_on_distinct_clips(tmp_path):
+def test_the_seed_never_moves_between_attempts(tmp_path):
+    """It only ever looked like a re-roll; under greedy it was not one at all."""
     eng, fake = _attempt_engine(tmp_path)
-    got = _attempts(eng, ttsopts.parse({"seed": 100, "speed": 1.1}))
-    assert [c["seed"] for c in fake.calls] == [100, 1100, 2100]
-    assert len({clip.name for clip, _meta, _v in got}) == 3
+    eng.ref_for = lambda seg, opts=DEFAULT: (eng.workdir / "refs/auto.wav", "ref:1.00-4.00")
+    opts = ttsopts.parse({"seed": 100, "speed": 1.1})
+    got = _ladder(eng, _seg(tts_opts={"seed": 100, "speed": 1.1}), opts)
+    assert [c["seed"] for c in fake.calls] == [100] * len(fake.calls)
+    # Distinct takes all the same they differ by decode (and, with a speaker
+    # reference bank, by reference), each under its own cache key.
+    assert len({clip.name for clip, _meta, _v in got}) == len(got)
     assert all(c["opts"].speed == 1.1 for c in fake.calls)
 
 
 def test_attempt_replays_the_cache_only_for_the_same_options(tmp_path):
     eng, fake = _attempt_engine(tmp_path)
     ref = tmp_path / "refs" / "auto.wav"
-    clip, meta, _ = eng._attempt(1, "hello.", ref, "r", 100, 0, DEFAULT)
+    clip, meta, _ = eng._attempt(1, "hello.", ref, "r", 100, False, DEFAULT)
     meta.write_text('{"ok": true, "overlap": 1.0, "heard": "hello", "dur": 1.0}')
-    assert eng._attempt(1, "hello.", ref, "r", 100, 0, DEFAULT)[2]["ok"] is True
+    assert eng._attempt(1, "hello.", ref, "r", 100, False, DEFAULT)[2]["ok"] is True
     assert len(fake.calls) == 1                       # second call came from the cache
     # ... but a changed option is a different clip, never a replay of the old one
-    other = eng._attempt(1, "hello.", ref, "r", 100, 0, ttsopts.parse({"speed": 1.1}))
+    other = eng._attempt(1, "hello.", ref, "r", 100, False, ttsopts.parse({"speed": 1.1}))
     assert other[2] is None and other[0] != clip
     assert len(fake.calls) == 2
 
@@ -404,10 +425,11 @@ def test_pinned_reference_is_not_escalated_past(tmp_path, monkeypatch):
     assert eng.clip_for(seg, "hello world") is None            # every attempt failed
     refs = {c["ref"].name for c in fake.calls}
     assert refs == {"pick.wav"}                                # never fell back to S1
-    assert len(fake.calls) == tts.MAX_TRIES                    # and no extra attempt
+    # No reference ladder at all, so only the decode can change: two takes.
+    assert len(fake.calls) == 2
 
 
-def test_unpinned_segment_still_escalates_to_the_canonical_reference(tmp_path, monkeypatch):
+def test_unpinned_segment_escalates_to_the_canonical_reference_first(tmp_path, monkeypatch):
     m = {"source": {"src_lang": "he", "tgt_lang": "en"},
          "speakers": {"S1": {"ref": "refs/S1.wav"}}, "segments": []}
     eng = tts.Engine(m, tmp_path)
@@ -422,8 +444,10 @@ def test_unpinned_segment_still_escalates_to_the_canonical_reference(tmp_path, m
                                                           "heard": "", "dur": 1.0})
     assert eng.clip_for({"id": 1, "start": 0.0, "end": 3.0, "speaker": "S1"},
                         "hello world") is None
-    assert len(fake.calls) == tts.MAX_TRIES + 1
-    assert fake.calls[-1]["ref"].name == "S1.wav"
+    # The canonical swap is attempt 1, not an appendix after three identical
+    # takes of the reference that already failed.
+    assert [c["ref"].name for c in fake.calls] == ["auto.wav", "S1.wav", "auto.wav"]
+    assert [c["greedy"] for c in fake.calls] == [False, False, True]
 
 
 # ------------------------------------------------------------------- manifest

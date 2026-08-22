@@ -329,6 +329,17 @@ def _worst_overrunner(items: list[dict], places: list[dict], idx: int) -> int | 
 
 
 def build_items(m: dict[str, Any]) -> list[dict[str, Any]]:
+    # Placement is all-or-nothing: every segment is laid out in one forward pass,
+    # so one without a clip is not something to skip over. Skipping is exactly
+    # what the old failure did by accident — the bare `seg["tts"]["dur"]` below
+    # raised a KeyError, `edit._replace_timeline` recorded that as a deferred
+    # placement, and `mix.assemble` then filled the segment's whole span with the
+    # original vocals: the line silently played in the source language, and
+    # report.json had nothing to say about it. Name the segments instead.
+    unvoiced = [s["id"] for s in m["segments"] if not (s.get("tts") or {}).get("clip")]
+    assert not unvoiced, (
+        f"segments have no audio to place: {unvoiced} run tts before the timeline"
+    )
     items = []
     for seg in sorted(m["segments"], key=lambda s: s["start"]):
         if seg["keep"]:

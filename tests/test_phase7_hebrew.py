@@ -309,7 +309,9 @@ def test_the_stage_tags_moved():
     # records, so the merged tag moves past both claims rather than picking one.
     # v17: a dub-wanted line with no translation now replaces a stale *synthesis*
     # with its original-audio slice, which changes what this stage produces.
-    assert manifest.STAGE_TAGS["tts"] == "tts/v17"
+    # v18: reference-varying retries, the two-bar accept, and greedy-by-default
+    # for Hebrew every one of which can change the clip a segment ends up with.
+    assert manifest.STAGE_TAGS["tts"] == "tts/v18"
     # v36: script-derived gloss floors, negations and shorten budgets (CJK/hangul).
     # v37: "%" survives into every TTS target's own vocabulary.
     assert manifest.STAGE_TAGS["translate"] == "translate/v38"
@@ -319,3 +321,39 @@ def test_ipa_is_not_a_manifest_field():
     """The IPA is a synthesis input; the record is always the orthography."""
     assert "ipa" not in manifest.SEGMENT_KEYS
     assert "text_ipa" not in manifest.SEGMENT_KEYS
+
+
+# ------------------------------------------------------- the decode Hebrew defaults to
+
+
+def test_a_hebrew_target_decodes_greedily_unless_the_segment_says_otherwise(
+        tmp_path, fake_g2p, monkeypatch):
+    """Only honest because the retry ladder varies the reference, not the seed.
+
+    The sampler is where the LoRA's wandering and repetition come from, so greedy
+    is the steadier read of IPA. It could not be the default while a retry meant
+    "same reference, next seed": under `do_sample=False` the seed does nothing,
+    so greedy-by-default would have bought one take and no retries at all.
+    """
+    eng = _engine(tmp_path)
+    monkeypatch.setattr(eng, "ref_for",
+                        lambda seg, opts=DEFAULT: (tmp_path / "r.wav", "ref:1.00-4.00"))
+    base = {"id": 1, "uid": "u1", "start": 0.0, "end": 2.0, "speaker": "S1"}
+    assert eng._plan(base, "שלום עולם").greedy is True
+    # …and the ladder still ends on a take that is not the first one again: with
+    # no speaker reference bank here, the sampled rescue is the whole ladder.
+    plan = eng._plan(base, "שלום עולם")
+    assert [g for _p, _k, g in eng.rungs(base, plan)] == [True, False]
+
+    # The segment always wins, whether it asks for the sampler or says so outright.
+    sampled = {**base, "tts_opts": {"greedy": False}}
+    assert eng._plan(sampled, "שלום עולם").greedy is False
+    warm = {**base, "tts_opts": {"temperature": 0.8}}
+    assert eng._plan(warm, "שלום עולם").greedy is False
+
+    # Nothing changes for a target the base checkpoint speaks itself.
+    en = tts.Engine({"source": {"src_lang": "he", "tgt_lang": "en"},
+                     "speakers": {}, "segments": []}, tmp_path)
+    monkeypatch.setattr(en, "ref_for",
+                        lambda seg, opts=DEFAULT: (tmp_path / "r.wav", "ref:1.00-4.00"))
+    assert en._plan(base, "hello world").greedy is False

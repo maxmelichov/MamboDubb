@@ -40,12 +40,14 @@ TOKENS_MIN, TOKENS_MAX = 32, 4096      # 4096 codec tokens ≈ 5.5 min at 12.5 H
 class TtsOpts:
     """One segment's synthesis overrides. Every default reproduces today's run.
 
-    * `seed` replaces the text-derived base seed. Retry N still uses
-      `seed + 1000 * N`, so the bounded retries stay distinct takes; attempt 0 is
-      exactly the seed given. Re-rolling a bad take = bump this by one.
-    * `greedy` force the deterministic decode on *every* attempt instead of only
-      on the last of `MAX_TRIES`. Steadier, flatter; the cure for a line that
-      wanders or repeats.
+    * `seed` replaces the text-derived base seed, and every attempt uses exactly
+      it: the retry ladder varies the clone *reference*, not the seed (which does
+      nothing at all under a greedy decode see `tts.Engine.rungs`). Re-rolling a
+      bad sampled take = bump this by one.
+    * `greedy` force the deterministic decode from the first attempt instead of
+      only on the ladder's last rung. Steadier, flatter; the cure for a line that
+      wanders or repeats. The ladder still retries under it, by changing the
+      reference, and ends on one sampled take if nothing verified well enough.
     * `ref` a wav under the run dir to clone from, replacing the window this
       stage would pick itself. This is how a wrong or ugly voice on one line gets
       fixed. A pinned reference also disables the canonical-reference escalation:

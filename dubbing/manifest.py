@@ -81,7 +81,12 @@ STAGE_TAGS = {
     # original-audio slice unless the record already IS one — a stale synthesis
     # of a since-failed translation used to satisfy `keep_needs_slice` and keep
     # speaking the old line.
-    "tts": "tts/v17",
+    # v18: the retry ladder varies the clone reference instead of the seed (which
+    # is inert under a greedy decode), acceptance splits into a floor and a
+    # CLONE_GOOD_OVERLAP retry bar ("accepted" is now its own verdict), and a
+    # Hebrew target decodes greedily by default every clip's decode, reference
+    # and verdict can differ from v17's.
+    "tts": "tts/v18",
     # v14: `place` now carries the overrun it measured and why a shortening was
     # abandoned report.json's drift story reads from these. (v13 was claimed on
     # a branch that never landed under that number.)

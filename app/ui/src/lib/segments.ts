@@ -19,8 +19,10 @@ export type SegmentState =
  * The two things the pipeline calls a failure, and it never calls them that.
  *
  * "failed" used to be `tts.verify === "failed"` a value `dubbing/tts.py` does
- * not write and never has: the record's `verify` is `"ok"`, `"soft"` or
- * `"keep"`, and nothing else is in the corpus of a real run. So the Failed chip
+ * not write and never has: the record's `verify` is `"ok"`, `"accepted"`,
+ * `"soft"` or `"keep"`, and nothing else is in the corpus of a real run
+ * ("accepted" is a dub the retry ladder settled for it is a concern the
+ * overlap already carries, not a failure). So the Failed chip
  * counted zero on a run with real failures in it.
  *
  * What a failure actually looks like is a *keep the pipeline decided against

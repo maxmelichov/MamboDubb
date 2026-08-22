@@ -36,7 +36,12 @@ export type SegmentTts = {
   tries: number;
   /** word overlap between what was asked for and what the ASR heard, 0..1 */
   overlap: number;
-  verify: "ok" | "soft" | "keep" | "failed" | string;
+  /**
+   * "accepted" sits between "ok" and "soft": the clone cleared the accept floor
+   * but never reached `tts.CLONE_GOOD_OVERLAP`, and every clone reference had
+   * already been tried. A real dub, and not a clean one.
+   */
+  verify: "ok" | "accepted" | "soft" | "keep" | "failed" | string;
 };
 
 /** `place` as the manifest stores it (dubbing/timeline.py). */

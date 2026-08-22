@@ -535,3 +535,51 @@ def test_report_names_a_locked_clip_that_speaks_the_old_line(tmp_path, monkeypat
     s["tts"]["text_sha"] = tts_mod.text_sha("something else entirely")
     rep = fake_report_run(m, tmp_path, monkeypatch)
     assert [x["id"] for x in rep["stale_locked_clips"]] == [0]
+
+
+# ------------------------------- the segment with no clip at all (D-5)
+
+def test_the_timeline_names_a_segment_it_has_no_audio_for():
+    """The hole `edit.set_text` opens, and the silence it used to become.
+
+    Dropping a dubbable segment's clip and never refilling it left
+    `build_items` reading `seg["tts"]["dur"]` on a segment that had no `tts`.
+    The KeyError was caught one frame up as "placement deferred", and the mix
+    then filled the whole span with the original vocals: the line played in the
+    source language and nothing anywhere said so.
+    """
+    m = mk(seg(text_en="Hello", tts={"clip": "clips/a.wav", "dur": 1.0, "verify": "ok"}),
+           seg(id=1, start=2.0, end=4.0, text_en="World"))
+    with pytest.raises(AssertionError) as exc:
+        timeline.build_items(m)
+    assert "[1]" in str(exc.value)          # named, not merely counted
+    # …and a kept segment whose slice went missing is the same failure.
+    m["segments"][1]["tts"] = {"clip": "clips/b.wav", "dur": 2.0, "verify": "ok"}
+    assert len(timeline.build_items(m)) == 2
+
+
+def test_report_counts_an_unvoiced_segment_as_unaccounted(tmp_path, monkeypatch):
+    """A stale placement beside a dropped clip is not coverage."""
+    m = report_segments()
+    (tmp_path / "clips").mkdir()
+    for name in ("a.wav", "b.wav"):
+        (tmp_path / "clips" / name).write_bytes(b"clip")
+    assert fake_report_run(m, tmp_path, monkeypatch)["unaccounted"] == []
+
+    m["segments"][0].pop("tts")             # clip invalidated, placement left behind
+    rep = fake_report_run(m, tmp_path, monkeypatch)
+    assert rep["unaccounted"] == [0]
+    # And counting the verdicts does not die on the segment that has none.
+    assert rep["verify"]["keep"] == 1
+
+
+def test_render_fails_loudly_when_a_segment_ends_up_with_no_audio(tmp_path, monkeypatch):
+    """`rebuild` may not report success over a dub with a hole in it."""
+    monkeypatch.setattr(report_mod, "run", lambda *a, **k: {"unaccounted": [1]})
+    m = mk(seg(text_en="Hello",
+               tts={"clip": "clips/a.wav", "dur": 1.0, "verify": "ok"},
+               place={"start": 0.0, "end": 1.0, "clip": "clips/a.wav", "drift": 0.0,
+                      "rate": 1.0}))
+    with pytest.raises(edit.RebuildIncomplete) as exc:
+        edit.rebuild(m, tmp_path, from_stage="report")
+    assert "no audio in the mix" in str(exc.value)

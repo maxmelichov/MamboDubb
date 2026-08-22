@@ -130,8 +130,8 @@ byte for byte.
 
 | key | type | default | effect |
 |---|---|---|---|
-| `seed` | int 0..2³²-1 | derived | replaces the text-derived seed; retry *N* uses `seed + 1000N`. Bump it to re-roll a take. |
-| `greedy` | bool | `false` | deterministic decode on every attempt, not just the last of `MAX_TRIES` |
+| `seed` | int 0..2³²-1 | derived | replaces the text-derived seed, on every attempt: the retry ladder varies the clone reference, not the seed. Bump it to re-roll a sampled take. |
+| `greedy` | bool | `false` | deterministic decode from the first attempt, not just the ladder's last rung (Hebrew targets default to it) |
 | `ref` | str | auto | wav under the run dir to clone from; also disables the canonical-reference escalation |
 | `ref_text` | str | | transcript of `ref`, switching the clone to ICL mode. **Requires `ref`.** |
 | `model` | `"1.7b"`/`"0.6b"` | run's `--tts-model` | checkpoint for this segment (swaps the loaded model one line, not a hundred) |

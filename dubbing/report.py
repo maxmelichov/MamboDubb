@@ -11,6 +11,8 @@ user otherwise. Four fields exist for it:
 
 * `verify.unverified` clips no ASR ever heard (the verifier did not load).
   Never folded into `ok`; the summary says so out loud when nothing was checked.
+  `verify.accepted` is the neighbouring verdict: heard, understood, and only
+  good enough after every clone reference had been tried.
 * `degraded` what a stage could not load and what it fell back to
   (`m["health"]`, written by the stages themselves: diarization, turn
   refinement, the verify ASR, the reference validator).
@@ -109,8 +111,15 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
     segments = m["segments"]
     words = transcript.load_words(workdir, m)
 
-    unaccounted = [s["id"] for s in segments
-                   if not s.get("place") or not (workdir / s["place"]["clip"]).is_file()]
+    # No placement, no clip file behind the placement, or no clip at all. The
+    # third is the one this report used to miss: a segment whose tts record was
+    # invalidated and never refilled has nothing to place, and the timeline that
+    # deferred over it left the mix to fill its span with the original vocals.
+    # It is a hole in the dub whether or not a stale placement survived beside it.
+    unaccounted = sorted({
+        s["id"] for s in segments
+        if not (s.get("tts") or {}).get("clip")
+        or not s.get("place") or not (workdir / s["place"]["clip"]).is_file()})
     dubbed = [s for s in segments if not s["keep"]]
     kept = [s for s in segments if s["keep"]]
     keep_reasons: dict[str, int] = {}
@@ -131,10 +140,17 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
 
     # "unverified" is its own verdict: the clip cleared the length guard and no
     # ASR ever heard it (dubbing/tts.py, NO_ASR). Counting it as "ok" made a run
-    # with no verifier at all look like a run where everything passed.
-    verify = {"ok": 0, "soft": 0, "keep": 0, "unverified": 0}
+    # with no verifier at all look like a run where everything passed. "accepted"
+    # is the same argument one bar down: a clip that cleared the accept floor but
+    # never reached CLONE_GOOD_OVERLAP, after every reference was tried. It is a
+    # real dub and it is not a clean one, and folding it into "ok" is how a run
+    # full of half-garbled lines read as fully verified.
+    verify = {"ok": 0, "accepted": 0, "soft": 0, "keep": 0, "unverified": 0}
     for s in segments:
-        verify[s["tts"]["verify"]] = verify.get(s["tts"]["verify"], 0) + 1
+        got = (s.get("tts") or {}).get("verify")
+        if got is None:
+            continue          # no clip at all it is counted in `unaccounted`
+        verify[got] = verify.get(got, 0) + 1
 
     drifts = [s["place"]["drift"] for s in segments if s.get("place")]
     rates = [s["place"]["rate"] for s in segments if s.get("place")]
@@ -204,7 +220,7 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
           f"({keep_reasons})", file=sys.stderr)
     print(f"  tts verify: {verify}", file=sys.stderr)
     if verify["unverified"]:
-        checked = verify["ok"] + verify["soft"]
+        checked = verify["ok"] + verify["accepted"] + verify["soft"]
         if not checked:
             print(f"  WARNING: NOT ONE clip was verified no verification ASR "
                   f"loaded; {verify['unverified']} dub(s) accepted on length alone",
