@@ -5,11 +5,11 @@
 <h3 align="center">Dub any video into another language entirely on your own machine.</h3>
 
 <p align="center">
-  <a href="https://github.com/maxmelichov/MamboDubb/releases/latest"><b>Download for Mac (Apple Silicon)</b></a>
+  <a href="https://github.com/maxmelichov/MamboDubb/releases/latest"><b>Download</b></a>
+  ·
+  <a href="#install">Mac · Windows · Linux</a>
   ·
   <a href="#quick-start-cli">Run from source</a>
-  ·
-  <a href="docs/WINDOWS.md">Windows</a>
   ·
   <a href="docs/APP_ARCHITECTURE.md">Architecture</a>
 </p>
@@ -39,21 +39,27 @@ seconds, and watch the source and output waveforms side by side.
 - **Compare everything** the Orig/Dub buttons play the original span and the
   dubbed take of any line, back to back.
 
-### Install (macOS, Apple Silicon)
+### Install
 
-Grab the `.dmg` from the [latest release](https://github.com/maxmelichov/MamboDubb/releases/latest),
-drag MamboDubb to Applications, and launch — the app carries the pipeline source and
-sets itself up on first run, no terminal needed. (Release builds are signed and
-notarized; cutting one is [docs/RELEASING.md](docs/RELEASING.md).)
+The app carries the pipeline source and the models it cannot fetch, and sets
+itself up on first run — no terminal, and **no account or API key for anything**
+(the one model behind a sign-up form is CC-BY-4.0 and ships inside the app).
 
-> **The packaged app is Apple Silicon only** its translator runs on MLX, which
-> needs an M-series chip. There is no Intel or iOS build.
+**macOS (Apple Silicon).** Grab the `.dmg` from the
+[latest release](https://github.com/maxmelichov/MamboDubb/releases/latest), drag
+MamboDubb to Applications, launch. Apple Silicon only: the translator runs on MLX,
+which needs an M-series chip. No Intel or iOS build.
 
-### Windows and Linux
+**Windows and Linux.** The desktop shell builds for both —
+`.github/workflows/build-desktop.yml` produces an NSIS installer and an `.msi` for
+Windows and a `.deb` and an `.AppImage` for Linux, alongside the Mac `.dmg`. Status
+is honest in [docs/CROSS_PLATFORM.md](docs/CROSS_PLATFORM.md): the code is
+platform-correct and CI-built, but **no one has yet run those installers on real
+Windows or Linux hardware**, and they are unsigned. On either platform the
+translator moves from MLX to a CUDA worker in `translator/` automatically, so an
+NVIDIA GPU is what you want; everything else is unchanged.
 
-There is no installer for either, but both run the whole thing from source with
-an NVIDIA GPU: translation moves from MLX to a CUDA worker in `translator/`
-automatically, and everything else is unchanged.
+Running from source works everywhere today. On Windows:
 
 ```powershell
 winget install --id astral-sh.uv -e
