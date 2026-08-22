@@ -159,10 +159,10 @@ export function SelectionPanel({
                 the row's badge alone cannot be trusted to say so. */}
             <span>
               {seg.keep_reason === "mt_failed"
-                ? "Translation failed for this line the dub falls back to the original audio. " +
+                ? "Translation failed for this line: the dub falls back to the original audio. " +
                   "Re-translate it, then re-voice it."
                 : state === "failed"
-                  ? "Synthesis failed for this line the dub falls back to the original audio. " +
+                  ? "Synthesis failed for this line: the dub falls back to the original audio. " +
                     "Re-voice it, or keep the original."
                   : `The clone said ${percent(seg.verify?.overlap ?? seg.tts?.overlap)} of it. ` +
                     "Re-voice it, or keep the original."}
@@ -216,7 +216,7 @@ export function SelectionPanel({
               <>
                 The source audio plays untouched. “Dub it”{" "}
                 {(seg.text_en ?? "").trim() && seg.locked?.text_en
-                  ? "queues voice for this line your translation is kept."
+                  ? "queues voice for this line: your translation is kept."
                   : "queues translate + voice for this line."}
               </>
             ) : seg.media?.fallback ? (
@@ -225,7 +225,7 @@ export function SelectionPanel({
               // line is false, and pressing Keep changes nothing audible; say
               // both, and say what Keep *does* do (settle the verdict).
               <>
-                No dub yet the mix plays the original audio here. “Keep original”
+                No dub yet: the mix plays the original audio here. “Keep original”
                 makes that the verdict, so a re-run stops retrying this line; nothing
                 you hear changes.
               </>
@@ -241,7 +241,7 @@ export function SelectionPanel({
             ) : (
               <>
                 The dubbed voice replaces the source audio. Switching to “Keep original”
-                discards this line’s translation a later re-run makes a new one.
+                discards this line’s translation: a later re-run makes a new one.
               </>
             )}
             {/* The reason in words. `keep_reason` is a manifest token and
@@ -434,7 +434,7 @@ export function SelectionPanel({
             {locked.length ? (
               <>
                 <p className="text-[11px] leading-relaxed text-muted">
-                  <code className="font-mono text-secondary">{locked.join(", ")}</code> edited
+                  <code className="font-mono text-secondary">{locked.join(", ")}</code>: edited
                   here, so a re-run of the pipeline will not overwrite them.
                 </p>
                 <ConfirmButton
@@ -484,7 +484,7 @@ export function SelectionPanel({
         <div className="mt-3 flex flex-col gap-1.5" data-remove-section>
           <Eyebrow>Remove from the dub</Eyebrow>
           <p className="text-[11px] leading-snug text-muted">
-            Deletes this segment. The span is not muted the mix plays the original
+            Deletes this segment. The span is not muted: the mix plays the original
             audio wherever no segment claims it, the same as a passage the pipeline
             never found. To play the original <em>deliberately</em>, use “Keep original”
             above, which keeps the line and its subtitle. ⌫ removes without asking;
@@ -615,7 +615,7 @@ function VoiceShelf({
             checked={Boolean(opts?.greedy)}
             onChange={(event) => set({ greedy: event.currentTarget.checked })}
           />
-          Greedy repeatable, flatter
+          Greedy: repeatable, flatter
         </label>
         <Field
           label="Reference clip"
@@ -732,7 +732,7 @@ function VerificationShelf({ seg, concern }: { seg: Segment; concern: "none" | "
           placed {timecode(seg.place.start)} · rate {seg.place.rate.toFixed(3)} · drift{" "}
           {seg.place.drift.toFixed(2)}s
           {placement.length ? (
-            <span className="text-secondary"> {placement.join(", ")}</span>
+            <span className="text-secondary"> · {placement.join(", ")}</span>
           ) : null}
         </p>
       ) : null}

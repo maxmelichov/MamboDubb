@@ -487,7 +487,7 @@ check("…whose action says what it starts", /Start dubbing/.test(root.textConte
 check("the archive stays on its own page", document.querySelector('[data-region="runs"]') == null);
 /* Context is the one optional field sitting under a required one of the same
    size, and it says so in the label rather than three lines below it. */
-check("the context field leads with Optional", /Optional Context/.test(root.textContent));
+check("the context field leads with Optional", /Optional: Context/.test(root.textContent));
 
 /*
  * The two language lists are *different lists*, and that is not a typo to be
@@ -735,13 +735,13 @@ check(
 );
 check(
   "the footer is honest while something required is missing",
-  /A required tool is missing runs will fail\./.test(
+  /A required tool is missing: runs will fail\./.test(
     document.querySelector("[data-footer]").textContent,
   ),
 );
 check(
   "…and skipping says what skipping costs",
-  /Skip anyway runs will fail at fetch/.test(document.querySelector("[data-skip]").textContent),
+  /Skip anyway: runs will fail at fetch/.test(document.querySelector("[data-skip]").textContent),
 );
 
 /*
@@ -958,7 +958,7 @@ check("…with the rows that are still red still counted", /7\/10/.test(root.tex
  */
 check(
   "…and the footer says the run works and is worse, not that something is missing",
-  /Everything required is ready\. 1 thing above will still run just worse\./.test(
+  /Everything required is ready\. 1 thing above will still run, just worse\./.test(
     document.querySelector("[data-footer]").textContent,
   ),
 );
@@ -1919,7 +1919,7 @@ check(
 );
 check(
   "…with the bar itself accounting for the four it will not touch",
-  /29 lines play as recorded, subtitled 4 with no transcript to translate/.test(
+  /29 lines play as recorded, subtitled: 4 with no transcript to translate/.test(
     bulkBar().textContent,
   ),
 );
@@ -1934,7 +1934,7 @@ check(
 );
 check(
   "…and names the four it is leaving out, and why",
-  /\(4 skipped no transcript to translate\)/.test(dubDialog),
+  /\(4 skipped: no transcript to translate\)/.test(dubDialog),
 );
 check(
   "…and still says what the flip does",
@@ -2510,7 +2510,7 @@ check("run health counts the states", /Kept original/.test(root.textContent));
  */
 check(
   "the gap list says which render found them",
-  /Audible, uncovered \d+ · from the last render/.test(root.textContent),
+  /Audible, uncovered: \d+ · from the last render/.test(root.textContent),
 );
 
 /*
@@ -2668,7 +2668,7 @@ check(
 );
 check(
   "the video area says the same thing in words",
-  /Mixed before your last \d+ changes Update the video to hear them/.test(root.textContent),
+  /Mixed before your last \d+ changes\. Update the video to hear them/.test(root.textContent),
 );
 /*
  * The three stages a render re-runs are drawn hollow done, but done about
@@ -3356,7 +3356,7 @@ check(
 await settle(700);
 check(
   "a whole-run job says which stage it is on, and which of nine",
-  /^\w+ stage [1-9] of 9$/.test(
+  /^\w+: stage [1-9] of 9$/.test(
     document.querySelector("[data-job-stage]")?.textContent?.trim() ?? "",
   ),
 );

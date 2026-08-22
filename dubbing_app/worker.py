@@ -98,7 +98,7 @@ class Journal:
                 f"({len(clash)} segment(s): {', '.join(clash[:6])}"
                 f"{'…' if len(clash) > 6 else ''}). This job is working from the "
                 f"list as it was, so that structural edit is not in what it is "
-                f"about to write redo it, or re-run the affected segments.",
+                f"about to write. Redo it, or re-run the affected segments.",
                 "error")
         mine = {seg["uid"]: seg for seg in (self.m.get("segments") or []) if seg.get("uid")}
         touched: list[str] = []

@@ -92,16 +92,16 @@ INSTALLERS: dict[str, tuple[str, ...]] = tools.auto_installers()
 # cannot itself be installed from here; naming the one URL is the whole answer.
 MANAGERS: dict[str, str] = {
     "brew": ("Homebrew is not on this machine, and it is what installs {tool}. "
-             "Get it from https://brew.sh, then re-check or install {tool} by "
+             "Get it from https://brew.sh, then re-check, or install {tool} by "
              "hand with `{command}` once brew is there."),
     "winget": ("The Windows Package Manager (winget) is not on this machine, and "
                "it is what installs {tool}. Get App Installer from the Microsoft "
-               "Store, then re-check or install {tool} by hand with `{command}` "
+               "Store, then re-check, or install {tool} by hand with `{command}` "
                "once winget is there."),
-    "apt-get": ("`apt-get` is not on this machine install {tool} with your "
+    "apt-get": ("`apt-get` is not on this machine: install {tool} with your "
                 "distribution's package manager, or by hand with `{command}`."),
     "sudo": ("This machine installs {tool} with `{command}`, which asks for a "
-             "password on a terminal the app does not have run it in a terminal "
+             "password on a terminal the app does not have. Run it in a terminal "
              "and re-check."),
 }
 
@@ -175,7 +175,7 @@ def route(id_: str) -> str | None:
     no static fallback). The Setup row's detail carries it, so the user knows
     what pressing the button does *before* pressing it."""
     if static_route(id_):
-        return "as a static build into the workspace (tools/bin) — no package manager needed"
+        return "as a static build into the workspace (tools/bin), with no package manager needed"
     argv = INSTALLERS.get(id_)
     if argv is None:
         return None
@@ -205,7 +205,7 @@ def fetch_static_ffmpeg(log: Callable[[str], None]) -> tuple[str, str]:
         if uv is None:
             raise RuntimeError(
                 "uv was not found, and it is what installs the static-ffmpeg "
-                "wheel into this environment — fix the uv row first")
+                "wheel into this environment: fix the uv row first")
         argv = [uv, "pip", "install", "--python", sys.executable, STATIC_FFMPEG_SPEC]
         log("$ " + " ".join(argv))
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=600)
@@ -303,8 +303,8 @@ class Installer:
             # stage shells out to.
             if static_route(id_):
                 return self._begin(
-                    id_, [f"# no package manager here can install {id_} unattended "
-                          f"— installing a static ffmpeg/ffprobe build into "
+                    id_, [f"# no package manager here can install {id_} unattended, "
+                          f"so installing a static ffmpeg/ffprobe build into "
                           f"{tools.tools_bin()}"],
                     target=self._run_static, args=(id_,))
             spec = self.downloads.get(id_)
@@ -320,11 +320,11 @@ class Installer:
             # mid-session is picked up on the next press.
             if static_route(id_):
                 return self._begin(
-                    id_, [f"# {manager} is not on this machine — installing a "
+                    id_, [f"# {manager} is not on this machine, so installing a "
                           f"static ffmpeg/ffprobe build into {tools.tools_bin()}"],
                     target=self._run_static, args=(id_,))
             template = MANAGERS.get(manager,
-                                    "`{manager}` is not on PATH install `{command}` by hand.")
+                                    "`{manager}` is not on PATH: install `{command}` by hand.")
             raise invalid(template.format(tool=id_, command=" ".join(argv), manager=manager))
         return self._begin(id_, ["$ " + " ".join(argv)],
                            target=self._run, args=(id_, tuple(argv)))
@@ -349,7 +349,7 @@ class Installer:
         with self._lock:
             if self._running:
                 raise busy(f"an install is already running ({self._id}); "
-                           "one at a time wait for it to finish")
+                           "one at a time, so wait for it to finish")
             self._running = True
             self._id = id_
             self._ok = None
@@ -406,8 +406,8 @@ class Installer:
                 f"runs are {offered or 'none'} and the hub-snapshot model "
                 "downloads. Everything else is by hand: "
                 + (f"the tools with {byhand}, and " if byhand else "")
-                + "the remaining models download themselves on first use — where "
-                "a command is needed it is in that check's detail line run it "
+                + "the remaining models download themselves on first use. Where "
+                "a command is needed it is in that check's detail line: run it "
                 "in a terminal from the repo.")
 
     def _env(self) -> dict[str, str]:
@@ -514,11 +514,11 @@ class Installer:
             ok = False
             if id_ in self.recipes:
                 error = error or (f"`{' '.join(self.recipes.get(id_, ()))}` succeeded but "
-                                  f"{id_} is still not there restart the app so it picks "
+                                  f"{id_} is still not there. Restart the app so it picks "
                                   "up the new PATH.")
             else:
                 error = error or (f"the download finished but {id_} still fails its "
-                                  "check the files may be incomplete; start the "
+                                  "check: the files may be incomplete; start the "
                                   "install again and it resumes what is missing.")
         with self._lock:
             self._running = False

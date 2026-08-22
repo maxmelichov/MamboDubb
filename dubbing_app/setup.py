@@ -167,7 +167,7 @@ TOOLS: dict[str, tuple[str, ...]] = {
     # touches it. The `sox` *Python* package imports fine with the binary absent
     # (verified: pysox logs a warning and sets NO_SOX), so a brewless Mac dubs
     # without it. The row stays so a future 25Hz experiment finds the button.
-    "sox": ("SoX", "sox", "nothing the shipped pipeline runs needs it — only "
+    "sox": ("SoX", "sox", "nothing the shipped pipeline runs needs it. Only "
             "qwen_tts's 25Hz tokenizer would, and this pipeline loads 12Hz "
             "checkpoints", OPTIONAL),
     # Not installable from here `install.MANAGERS` says the same thing about
@@ -229,7 +229,7 @@ def tool(id_: str, label: str, exe: str, why: str,
     from dubbing import tools as tool_recipes
 
     found = find_uv() if exe == "uv" else tool_recipes.resolve_tool(exe)
-    detail = found or f"{exe} not on PATH {why}"
+    detail = found or f"{exe} not on PATH: {why}"
     if not found:
         command = tool_recipes.command(id_)
         if command:
@@ -287,7 +287,7 @@ def model(id_: str, label: str, path: Path, *, severity: str = BLOCKING,
     if present:
         detail = f"{human_bytes(size)} in {path}"
     else:
-        detail = f"missing: {path}" + (f" {note}" if note else "")
+        detail = f"missing: {path}" + (f" ({note})" if note else "")
         if hub:
             approx = f" (~{human_bytes(hub_bytes)})" if hub_bytes else ""
             detail += f". Fetch it{approx}: `uv run hf download {hub} --local-dir {path}`"
@@ -330,7 +330,7 @@ def hf_token_check(env_file: Path | None = None) -> dict[str, Any]:
         return check("hf_token", "Hugging Face token", True, f"set in `{path}`",
                      severity=OPTIONAL, source="env_file", path=str(path))
     return check("hf_token", "Hugging Face token", False,
-                 "not set nothing needs one. The diarization weights ship with the "
+                 "not set: nothing needs one. The diarization weights ship with the "
                  "app, so speakers are told apart without an account. Only for fetching "
                  f"gated upstream models instead; it would go in `{path}`",
                  severity=OPTIONAL, source=None, path=str(path))
@@ -468,14 +468,14 @@ def model_checks() -> list[dict[str, Any]]:
                  severity=BLOCKING,
                  note=f"downloads from {tts_spec['hub']} on first use"))
     out += [
-        m("model.asr.he", "Source ASR Hebrew (ivrit-ai)", transcript.WHISPER_MODEL,
+        m("model.asr.he", "Source ASR: Hebrew (ivrit-ai)", transcript.WHISPER_MODEL,
           severity=OPTIONAL, note="only for Hebrew sources without captions"),
-        m("model.asr.src", "Source ASR multilingual", transcript.SRC_ASR_MODEL,
+        m("model.asr.src", "Source ASR: multilingual", transcript.SRC_ASR_MODEL,
           severity=OPTIONAL, note="only for non-Hebrew sources without captions"),
-        m("model.asr.en", "Target ASR English (clip verification)",
+        m("model.asr.en", "Target ASR: English (clip verification)",
           transcript.EN_ASR_MODEL,
           note="without it generated clips are never verified"),
-        m("model.asr.tgt", "Target ASR multilingual", transcript.TARGET_ASR_MODEL,
+        m("model.asr.tgt", "Target ASR: multilingual", transcript.TARGET_ASR_MODEL,
           severity=OPTIONAL, note="only for non-English targets"),
         m("model.lid", "Language ID (VoxLingua107)", transcript.LID_MODEL,
           severity=DEGRADES, note="without it foreign-speech detection is skipped"),
@@ -495,7 +495,7 @@ def model_checks() -> list[dict[str, Any]]:
         # either is missing, so the report is where a user finds out first.
         m("model.tts.he", "Hebrew TTS adapter (Qwen3-TTS LoRA)", hebrew.ADAPTER_DIR,
           severity=OPTIONAL,
-          note=f"only for Hebrew targets {hebrew.ADAPTER_DOWNLOAD}"),
+          note=f"only for Hebrew targets: {hebrew.ADAPTER_DOWNLOAD}"),
         g2p_check(),
     ]
     return out
@@ -511,7 +511,7 @@ def g2p_check() -> dict[str, Any]:
     local = hebrew.G2P_FILE.is_file()
     size = dir_size(hebrew.G2P_DIR) if local else 0
     if not hebrew.g2p_ready():
-        detail = (f"{hebrew.G2P_PACKAGE} is not installed run `uv sync`; "
+        detail = (f"{hebrew.G2P_PACKAGE} is not installed: run `uv sync`; "
                   "without it Hebrew is unavailable as a target")
     elif local:
         detail = f"{human_bytes(size)} in {hebrew.G2P_DIR}"
@@ -563,7 +563,7 @@ def demucs_check() -> dict[str, Any]:
     present = found is not None
     size = dir_size(found) if found is not None else 0
     detail = (f"{stems.MODEL} cache: {human_bytes(size)} in {found}" if present
-              else f"{stems.MODEL} not downloaded yet fetched on the first stems run")
+              else f"{stems.MODEL} not downloaded yet: fetched on the first stems run")
     # The missing row points at the HF cache: that is where a 4.x download will
     # actually land, and the torch hub path would send the user somewhere the
     # weights will never appear.

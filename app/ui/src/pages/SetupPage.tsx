@@ -381,7 +381,7 @@ export function SetupPage() {
                   {toDownload.length === 1
                     ? `1 model to download, ~${humanBytes(downloadTotal)}`
                     : `${toDownload.length} models to download, ~${humanBytes(downloadTotal)} total`}{" "}
-                  <span className="text-muted">one time, from inside the app</span>
+                  <span className="text-muted">(one time, from inside the app)</span>
                 </p>
               ) : null}
             </div>
@@ -472,7 +472,7 @@ export function SetupPage() {
               className="rounded-md text-[12px] font-semibold text-secondary underline underline-offset-4 transition-colors hover:text-primary"
             >
               {blocking.length > 0
-                ? `Skip anyway runs will fail${stopsAt ? ` at ${stopsAt}` : ""}`
+                ? `Skip anyway: runs will fail${stopsAt ? ` at ${stopsAt}` : ""}`
                 : "Skip for now"}
             </Link>
           )}
@@ -483,12 +483,12 @@ export function SetupPage() {
                 and so does calling a gated token an "optional item for wider
                 language pairs", which is what this used to do. */}
             {blocking.length > 0
-              ? "A required tool is missing runs will fail."
+              ? "A required tool is missing: runs will fail."
               : failing.length === 0
                 ? "Nothing is missing."
                 : degraded.length > 0
                   ? `Everything required is ready. ${degraded.length} ` +
-                    `thing${degraded.length === 1 ? "" : "s"} above will still run ` +
+                    `thing${degraded.length === 1 ? "" : "s"} above will still run, ` +
                     "just worse."
                   : `Everything required is ready; ${optional.length} optional ` +
                     `item${optional.length === 1 ? " is" : "s are"} not installed, ` +
@@ -759,7 +759,7 @@ function CheckRow({
           {/* …which leaves the grade itself to be said in plain words, because
               a screenshot read at a glance still has to carry it. */}
           {!check.ok && severity === "optional" ? (
-            <span className="text-[11px] text-muted">Optional nothing here needs it</span>
+            <span className="text-[11px] text-muted">Optional: nothing here needs it</span>
           ) : null}
           {!check.ok && severity === "blocking" && check.stage ? (
             <span className="text-[11px] text-muted">stops the run at {check.stage}</span>
@@ -798,7 +798,7 @@ function CheckRow({
                 no such fear, so it gets no such sentence. */}
             {check.hub ? (
               <p className="mt-1 text-[12px] text-muted">
-                Resumes where it left off the bytes already downloaded are kept.
+                Resumes where it left off: the bytes already downloaded are kept.
               </p>
             ) : null}
           </>
@@ -922,7 +922,7 @@ function HfTokenField({ ok, onChanged }: { ok: boolean; onChanged: () => void })
   return (
     <div className="mt-2 max-w-2xl" data-token-field>
       <p className="text-[12px] leading-relaxed text-secondary">
-        Not needed. Speakers are told apart without one the dub gives each person their own
+        Not needed. Speakers are told apart without one: the dub gives each person their own
         voice on a machine that has never signed in to Hugging Face. A token only matters if you
         would rather fetch the gated{" "}
         <a

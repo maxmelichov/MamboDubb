@@ -98,9 +98,9 @@ export function StageTrack({
             aria-hidden
             title={
               hollow
-                ? `${stage} from the last render`
+                ? `${stage}: from the last render`
                 : pending
-                  ? `${stage} waiting its turn in this rebuild`
+                  ? `${stage}: waiting its turn in this rebuild`
                   : stage
             }
             className={cn(

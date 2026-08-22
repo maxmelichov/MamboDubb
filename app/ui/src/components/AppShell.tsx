@@ -55,7 +55,7 @@ export function PageShell({
       >
         <header className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
-            <Link to="/" className="rounded-full" aria-label="MamboDubb projects">
+            <Link to="/" className="rounded-full" aria-label="MamboDubb: projects">
               <BrandChip />
             </Link>
             <ShellNav />
@@ -257,7 +257,7 @@ function HeaderTools({ withSetup = true }: { withSetup?: boolean }) {
   return (
     <div className="flex shrink-0 items-center gap-2">
       {USE_FIXTURES ? (
-        <Badge title="VITE_USE_FIXTURES=1 sample data, no server, no models">fixtures</Badge>
+        <Badge title="VITE_USE_FIXTURES=1: sample data, no server, no models">fixtures</Badge>
       ) : null}
       <ThemeToggle />
       {withSetup ? (

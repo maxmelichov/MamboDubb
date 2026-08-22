@@ -81,7 +81,7 @@ function describeEnd(job: Job): string {
   const verb =
     job.status === "failed" ? "failed" : job.status === "cancelled" ? "cancelled" : "finished";
   return job.uids.length > 0
-    ? `${KIND_LABEL[job.kind]} ${verb} ${lines(job.uids.length)}`
+    ? `${KIND_LABEL[job.kind]} ${verb}: ${lines(job.uids.length)}`
     : `${KIND_LABEL[job.kind]} ${verb}`;
 }
 
@@ -170,7 +170,7 @@ export function JobBar({
   const runStage = job?.kind === "run" ? (stage?.stage ?? null) : null;
   const stageAt = runStage ? STAGES.indexOf(runStage) : -1;
   const stageNote =
-    runStage && stageAt >= 0 ? `${runStage} stage ${stageAt + 1} of ${STAGES.length}` : null;
+    runStage && stageAt >= 0 ? `${runStage}: stage ${stageAt + 1} of ${STAGES.length}` : null;
   /*
    * "4 of 27" is the fraction restated over the work the user asked for. The
    * stage frames report a 0..1 fraction and the job knows how many lines it was
@@ -210,7 +210,7 @@ export function JobBar({
         <span className="flex min-w-0 flex-1 items-center gap-1.5 font-medium text-secondary">
           <WifiOff className="h-3.5 w-3.5 shrink-0" aria-hidden />
           <span className="min-w-0 truncate">
-            Progress stream disconnected retrying. Edits still save; progress will not
+            Progress stream disconnected, retrying. Edits still save; progress will not
             update on its own.
           </span>
         </span>
@@ -447,7 +447,7 @@ function QueuePanel({
       data-queue-panel
       className="absolute left-3 top-full z-50 mt-1 w-[26rem] rounded-xl border border-border bg-raised p-3.5 shadow-pop"
     >
-      <Eyebrow className="mb-2">Queue {pending.length}</Eyebrow>
+      <Eyebrow className="mb-2">Queue: {pending.length}</Eyebrow>
       <ul className="flex flex-col gap-1">
         {pending.map((job) => (
           <li
@@ -476,7 +476,7 @@ function QueuePanel({
             last.status === "failed" ? "text-critical" : "text-muted",
           )}
         >
-          Last: {describeJob(last)} {last.status}
+          Last: {describeJob(last)} ({last.status})
           {last.error ? `. ${last.error}` : ""}
         </p>
       ) : null}
@@ -487,9 +487,9 @@ function QueuePanel({
         not need to be read twice it sits under the queue it is about.
       */}
       <div className="mt-3 border-t border-border pt-2.5 text-[11px] leading-relaxed text-muted">
-        <p>Re-translate about 20 seconds a line.</p>
-        <p>Re-voice about a minute a line, and it re-places the whole timeline.</p>
-        <p>Update the video minutes: it re-encodes the whole file.</p>
+        <p>Re-translate: about 20 seconds a line.</p>
+        <p>Re-voice: about a minute a line, and it re-places the whole timeline.</p>
+        <p>Update the video: minutes, because it re-encodes the whole file.</p>
       </div>
 
       {tail.length > 0 ? (

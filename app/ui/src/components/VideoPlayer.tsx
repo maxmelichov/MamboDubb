@@ -56,7 +56,7 @@ export type TransportMode = "preview" | "source" | "none";
 const ORIGINAL_AUDIO = "Original audio (no preview yet)";
 
 /** Why the play button is dead. Reads as a state of the run, not a failure. */
-const NOTHING_TO_PLAY = "Nothing to play yet the fetch stage hasn't run";
+const NOTHING_TO_PLAY = "Nothing to play yet: the fetch stage hasn't run";
 
 /**
  * Why the play button is dead when the run *says* it has a file.
@@ -66,7 +66,7 @@ const NOTHING_TO_PLAY = "Nothing to play yet the fetch stage hasn't run";
  * deleted out from under a run, a mid-render truncated mp4. "The fetch stage
  * hasn't run" is the wrong sentence for every one of those.
  */
-const NO_MEDIA = "This run's video could not be loaded there is nothing to play";
+const NO_MEDIA = "This run's video could not be loaded: there is nothing to play";
 
 export function VideoPlayer({
   src,
@@ -357,7 +357,7 @@ function MediaError({ label }: { label?: string | null }) {
           {label ?? "The video"} could not be loaded
         </p>
         <p className="mt-1.5 text-[11px] leading-relaxed text-muted">
-          The run names the file but the player could not open it it may have been moved or
+          The run names the file but the player could not open it. It may have been moved or
           deleted, or the render may not have finished writing it. Render the preview again to
           make a new one.
         </p>

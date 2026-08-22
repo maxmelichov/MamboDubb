@@ -234,7 +234,7 @@ function Row({
         <span className="flex items-center gap-1 font-mono text-[11px] tabular-nums text-muted">
           #{seg.id}
           {hasLocks(seg) ? (
-            <Lock className="h-2.5 w-2.5" aria-label="Hand-edited a re-run will not overwrite it" />
+            <Lock className="h-2.5 w-2.5" aria-label="Hand-edited: a re-run will not overwrite it" />
           ) : null}
         </span>
       </button>
@@ -318,6 +318,7 @@ function Row({
                 selected ? "opacity-100" : "opacity-0 group-hover/row:opacity-100",
               )}
             >
+              <span aria-hidden>· </span>
               {hasKeepPhrase(seg.keep_reason)
                 ? keepReason(seg.keep_reason)
                 : "original audio plays here"}
@@ -390,7 +391,7 @@ function Row({
         */}
         {subtitleOnly(seg) ? (
           <p className="px-2 text-[11px] leading-snug text-muted">
-            This line keeps its original audio the edit is a subtitle. Switch to “Dub it” to
+            This line keeps its original audio: the edit is a subtitle. Switch to “Dub it” to
             voice it.
           </p>
         ) : null}
@@ -437,9 +438,9 @@ function Row({
           label="Dub"
           title={
             seg.keep
-              ? "No dub exists this line keeps the original, so A and B would be the same audio"
+              ? "No dub exists: this line keeps the original, so A and B would be the same audio"
               : seg.media?.fallback
-                ? "No dub yet the mix plays the original here until this line is translated and voiced"
+                ? "No dub yet: the mix plays the original here until this line is translated and voiced"
                 : "Play what actually went into the mix, after time-fitting"
           }
           // A kept line's placed clip IS the original slice; letting B play it
@@ -449,9 +450,9 @@ function Row({
           // a fallback is not a dub, it is the absence of one.
           emptyTitle={
             seg.keep
-              ? "No dub exists this line keeps the original, so A and B would be the same audio"
+              ? "No dub exists: this line keeps the original, so A and B would be the same audio"
               : seg.media?.fallback
-                ? "No dub yet the mix plays the original here until this line is translated and voiced"
+                ? "No dub yet: the mix plays the original here until this line is translated and voiced"
                 : undefined
           }
           url={seg.keep || seg.media?.fallback ? null : dubUrl}
@@ -674,7 +675,7 @@ function RowEditor({
       />
       {!draft.trim() ? (
         <span className="px-2 pt-0.5 text-[11px] text-critical">
-          A dubbed line has to say something switch it to Keep original instead.
+          A dubbed line has to say something. Switch it to Keep original instead.
         </span>
       ) : (
         <span className="px-2 pt-0.5 text-[11px] text-muted">⌘↵ or click away to save</span>
@@ -838,7 +839,7 @@ function RowMenu({
               <Eyebrow className="px-2 pb-1 pt-1.5">Transcript</Eyebrow>
               {item(
                 "Correct transcript",
-                "Edit the original line as heard the reference text, not the translation",
+                "Edit the original line as heard: the reference text, not the translation",
                 onCorrect,
               )}
               <Eyebrow className="px-2 pb-1 pt-1.5">Audio for this span</Eyebrow>
@@ -855,12 +856,12 @@ function RowMenu({
               {seg.keep
                 ? item(
                     "Dub this line",
-                    "Replace the original audio with a synthesized voice queues translate + voice",
+                    "Replace the original audio with a synthesized voice: queues translate + voice",
                     onToggleKeep,
                   )
                 : item(
                     "Keep original audio",
-                    "Play this span as recorded, no dub discards this line's translation",
+                    "Play this span as recorded, no dub: discards this line's translation",
                     onToggleKeep,
                   )}
             </div>,

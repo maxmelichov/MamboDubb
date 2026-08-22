@@ -427,7 +427,7 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
         Both are cheap to refuse and expensive to explain afterwards.
         """
         for job in queue.active(name):
-            raise busy(f"job {job.id} ({job.kind}) is {job.status} on {name!r} {because}")
+            raise busy(f"job {job.id} ({job.kind}) is {job.status} on {name!r}: {because}")
 
     def enqueue(kind: str, name: str, payload: dict[str, Any],
                 *, batch: str | None = None) -> dict[str, Any]:
@@ -529,7 +529,7 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
             raise invalid("no token: paste the whole hf_… string from "
                           "https://huggingface.co/settings/tokens")
         if any(ch.isspace() for ch in token):
-            raise invalid("that token has whitespace inside it — a copy that "
+            raise invalid("that token has whitespace inside it: a copy that "
                           "caught a line break or a trailing word. Copy just "
                           "the hf_… string, nothing around it.")
         if not token.startswith("hf_") or len(token) <= len("hf_"):
@@ -608,7 +608,7 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
             gaps = hebrew.missing()
             if gaps:
                 raise invalid("Hebrew is not available as a target yet: "
-                              + "; ".join(g.replace("\n    ", " ") for g in gaps))
+                              + "; ".join(g.replace("\n    ", ". Run: ") for g in gaps))
         from .projects import slugify
 
         name = projects.unique_name(body.name or slugify(source))

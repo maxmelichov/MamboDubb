@@ -329,9 +329,9 @@ export function ScriptPane({
    * so they say it the same way rather than each in its own words.
    */
   const searchNote = (noun: string) =>
-    searching ? ` the ones this search leaves on screen, not every ${noun} line in the run` : "";
+    searching ? ` (the ones this search leaves on screen, not every ${noun} line in the run)` : "";
   /** What a work set left behind, and why. Reads as nothing when it left nothing. */
-  const skipNote = (n: number) => (n > 0 ? ` (${n} skipped no transcript to translate)` : "");
+  const skipNote = (n: number) => (n > 0 ? ` (${n} skipped: no transcript to translate)` : "");
 
   /*
    * The third bulk offer, and the only one that changes a verdict rather than
@@ -417,7 +417,7 @@ export function ScriptPane({
             ) : (
               <>
                 {lines} with nothing to play
-                {needText > 0 ? ` ${needText} of them have no translation yet` : null}
+                {needText > 0 ? `: ${needText} of them have no translation yet` : null}
                 {renderUids.length > 0
                   ? `${bulkUids.length > 0 ? ", and " : ""}${renderUids.length} already voiced and waiting for a render`
                   : null}
@@ -459,7 +459,7 @@ export function ScriptPane({
                   {skipNote(bulkSkipped)} ·{" "}
                   {modelCost({ translate: needText, voice: bulkUids.length })}
                   {searchNote("unfinished")}. Whatever has no line is translated first, then
-                  the lot is voiced two jobs, in that order.
+                  the lot is voiced: two jobs, in that order.
                 </>
               }
               onConfirm={() => onFixMany(bulkUids)}
@@ -528,7 +528,7 @@ export function ScriptPane({
           <span className="min-w-0 flex-1 text-[11px] text-secondary">
             {lineCount(visible.length)} play as recorded
             {searching ? null : ", subtitled"}
-            {keptSkipped > 0 ? ` ${keptSkipped} with no transcript to translate` : null}
+            {keptSkipped > 0 ? `: ${keptSkipped} with no transcript to translate` : null}
             {searchNote("kept")}. One click, at most two jobs.
           </span>
           <ConfirmButton
@@ -576,7 +576,7 @@ export function ScriptPane({
             {segments.length === 0 ? (
               <>
                 Segments appear once the <code className="font-mono">segments</code> stage has
-                run it is what turns the transcript's words into the lines you review here.
+                run. It is what turns the transcript's words into the lines you review here.
               </>
             ) : (
               "No line in this run matches the search and the filter together."

@@ -297,7 +297,7 @@ export function ImportPage() {
                 part that unblocks them; the sentence under the field still says
                 it is the cheapest thing on the screen.
               */}
-              <SectionLabel icon={PencilLine}>Optional Context</SectionLabel>
+              <SectionLabel icon={PencilLine}>Optional: Context</SectionLabel>
               {/* Two rows, not three-and-a-bit. It is one sentence people type,
                   and the box was sized for the paragraph nobody writes — half
                   the card's lower half spent on empty field, with the runs

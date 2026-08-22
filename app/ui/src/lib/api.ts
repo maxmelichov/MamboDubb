@@ -109,8 +109,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (text && body === null) {
     throw new ApiError(
       "internal_error",
-      `the studio server answered ${path} with something that is not JSON ` +
-        "is the port serving the studio server, or something else?",
+      `the studio server answered ${path} with something that is not JSON. ` +
+        "Is the port serving the studio server, or something else?",
       response.status,
     );
   }

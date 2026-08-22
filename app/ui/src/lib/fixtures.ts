@@ -423,7 +423,7 @@ function hfTokenRow(ready = false): SetupCheck {
     severity: "optional",
     detail: saved
       ? `set in \`${FIXTURE_ENV}\``
-      : "not set nothing needs one. The diarization weights ship with the app, so speakers " +
+      : "not set: nothing needs one. The diarization weights ship with the app, so speakers " +
         "are told apart without an account. Only for fetching gated upstream models " +
         `instead; it would go in \`${FIXTURE_ENV}\``,
   };
@@ -433,7 +433,7 @@ export function saveHfToken(token: string): Promise<SetupCheck> {
   const t = token.trim();
   if (/\s/.test(t)) {
     return Promise.reject(new ApiError("invalid_request",
-      "that token has whitespace inside it a copy that caught a line break. " +
+      "that token has whitespace inside it: a copy that caught a line break or a trailing word. " +
       "Copy just the hf_… string, nothing around it.", 400));
   }
   if (!t.startsWith("hf_") || t.length <= "hf_".length) {
@@ -468,18 +468,19 @@ const TOOL_ROWS: Record<
     label: "ffmpeg",
     severity: "blocking",
     stage: "fetch",
-    here: "7.1.1 /opt/homebrew/bin/ffmpeg",
+    here: "7.1.1 at /opt/homebrew/bin/ffmpeg",
     missing:
-      "ffmpeg not on PATH every stage shells out to it for audio and video. " +
+      "ffmpeg not on PATH: every stage shells out to it for audio and video. " +
       "Install it with `brew install ffmpeg`.",
   },
   sox: {
     label: "SoX",
     severity: "optional",
-    here: "14.4.2 /opt/homebrew/bin/sox",
+    here: "14.4.2 at /opt/homebrew/bin/sox",
     missing:
-      "sox not on PATH nothing the shipped pipeline runs needs it, only " +
-      "qwen_tts's 25Hz tokenizer would. Install it with `brew install sox`.",
+      "sox not on PATH: nothing the shipped pipeline runs needs it. Only " +
+      "qwen_tts's 25Hz tokenizer would, and this pipeline loads 12Hz checkpoints. " +
+      "Install it with `brew install sox`.",
   },
 };
 
@@ -549,7 +550,7 @@ const MODEL_ROWS: Record<
   // that the one-button install works through them in order and at different
   // speeds. Without it verification silently stops happening.
   "model.asr.en": {
-    label: "Target ASR English (clip verification)",
+    label: "Target ASR: English (clip verification)",
     stage: "tts",
     hub: "Systran/faster-whisper-base.en",
     dir: "faster-whisper-base.en",
@@ -586,7 +587,7 @@ function modelRow(id: string, ready = false): SetupCheck {
     download_bytes: row.bytes,
     detail: ok
       ? row.here
-      : `missing: models/${row.dir} ${row.missing ?? `downloads from ${row.hub} on first use`}. ` +
+      : `missing: models/${row.dir} (${row.missing ?? `downloads from ${row.hub} on first use`}). ` +
         `Fetch it (~${approx}): \`uv run hf download ${row.hub} --local-dir models/${row.dir}\``,
   };
 }
@@ -619,16 +620,16 @@ function setupChecks(ready = false): SetupCheck[] {
       label: "Speaker diarization (pyannote community-1)",
       ok: true,
       severity: "optional",
-      detail: "31 MB in third_party/pyannote-speaker-diarization-community-1 ships with the app",
+      detail: "31 MB in third_party/pyannote-speaker-diarization-community-1 (ships with the app)",
     },
     {
       id: "model.demucs",
-      label: "Stem separation Demucs htdemucs",
+      label: "Stem separation: Demucs htdemucs",
       ok: ready,
       severity: "optional",
       detail: ready
         ? "htdemucs_ft cache: 320 MB in ~/.cache/torch/hub"
-        : "htdemucs_ft not downloaded yet fetched on the first stems run. " +
+        : "htdemucs_ft not downloaded yet: fetched on the first stems run. " +
           "Run `uv run python -m dubbing.stems --download` to get it now (320 MB).",
     },
     {
@@ -636,7 +637,7 @@ function setupChecks(ready = false): SetupCheck[] {
       label: "Free disk space",
       ok: true,
       severity: "optional",
-      detail: "184 GB free a 20-minute run writes about 4 GB under outputs/",
+      detail: "184 GB free: a 20-minute run writes about 4 GB under outputs/",
     },
   ];
   // `required` is the server's derived view of `severity`, and the fixture has to
@@ -695,7 +696,7 @@ export function startInstall(id: string): Promise<SetupInstallState> {
         "invalid_request",
         `'${id}' cannot be installed from the app. The only installs it runs are ` +
           "`brew install ffmpeg`, `brew install sox` and the hub-snapshot model " +
-          "downloads. Everything else is by hand the command is in that " +
+          "downloads. Everything else is by hand: the command is in that " +
           "check's detail line.",
         400,
       ),
@@ -952,7 +953,7 @@ type OtherRun = Omit<ProjectSummary, "mtime"> & {
 const OTHER_RUNS: OtherRun[] = [
   {
     name: "doha_panel_v2",
-    title: "Doha panel full episode",
+    title: "Doha panel, full episode",
     src_lang: "ar",
     tgt_lang: "en",
     duration: 1840,
@@ -977,7 +978,7 @@ const OTHER_RUNS: OtherRun[] = [
     failure: {
       stage: "fetch",
       error:
-        "RuntimeError: yt-dlp exited 1 ERROR: [youtube] 8pQ2mAy: Video unavailable. " +
+        "RuntimeError: yt-dlp exited 1. ERROR: [youtube] 8pQ2mAy: Video unavailable. " +
         "This video is no longer available.",
     },
     age: 39 * HOUR,
@@ -1138,7 +1139,7 @@ export function updateProject(
     return Promise.reject(
       new ApiError(
         "busy",
-        `a job is running on '${name}' run options are read when a job starts, ` +
+        `a job is running on '${name}': run options are read when a job starts, ` +
           "not while it runs",
         409,
       ),
@@ -1265,7 +1266,7 @@ export function patchSegment(_name: string, uid: string, patch: SegmentPatch): P
     return Promise.reject(
       new ApiError(
         "invalid_request",
-        "text_en cannot be empty a dubbed segment must say something",
+        "text_en cannot be empty: a dubbed segment must say something",
         400,
       ),
     );

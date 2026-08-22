@@ -590,7 +590,7 @@ export function Timeline({
                */
               const claimable = onClaimGap != null && gap.end - gap.start >= MIN_CLAIM_SEC;
               const face = {
-                title: claimable ? `${label} click to claim it as a segment` : label,
+                title: claimable ? `${label}: click to claim it as a segment` : label,
                 className: cn(
                   "hatch-unclaimed absolute inset-y-2 rounded-[3px] border border-dashed",
                   "transition-all",
@@ -682,7 +682,7 @@ export function Timeline({
             style={{ left: currentTime * pxPerSecond }}
           >
             <div
-              title={`Playhead ${timecode(currentTime)} drag to scrub`}
+              title={`Playhead ${timecode(currentTime)}: drag to scrub`}
               className="pointer-events-auto absolute -left-[5px] top-0 h-3.5 w-3 cursor-ew-resize rounded-b-[4px] bg-primary shadow-[0_1px_3px_rgba(0,0,0,0.35)]"
             />
           </div>
@@ -709,7 +709,7 @@ export function Timeline({
             message={
               splitAt == null
                 ? ""
-                : `Split at ${timecode(splitAt)}. Both halves lose their translation and their clip the line was written for the whole span.`
+                : `Split at ${timecode(splitAt)}. Both halves lose their translation and their clip: the line was written for the whole span.`
             }
             onConfirm={() => splitAt != null && onSplit(splitAt)}
           >

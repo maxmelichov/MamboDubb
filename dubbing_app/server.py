@@ -211,7 +211,7 @@ def main(argv: list[str] | None = None) -> int:
     announce(port)
     served = getattr(app.state, "ui_dir", None)
     print(f"mambodubb on http://{args.host}:{port} (outputs {outputs}; "
-          f"ui {served or 'not served API only'})", file=sys.stderr, flush=True)
+          f"ui {served or 'not served, API only'})", file=sys.stderr, flush=True)
     if token:
         # The one line the user needs: opening this URL once sets the cookie.
         print(f"  open http://{args.host}:{port}/?token={token}",

@@ -151,8 +151,8 @@ const SHORTCUTS: [string[], string][] = [
   [["↑", "↓"], "previous / next line"],
   [["↵"], "edit the selected translation"],
   [["esc"], "leave the field without saving"],
-  [["a"], "play Orig the original for this line"],
-  [["b"], "play Dub the dubbed clip for this line"],
+  [["a"], "play Orig: the original for this line"],
+  [["b"], "play Dub: the dubbed clip for this line"],
   [["k"], "switch between dub and keep"],
   [["s"], "split the selection at the playhead"],
   [["⌫"], "remove the selected line (⌘Z restores it)"],
@@ -942,8 +942,8 @@ export function EditorPage() {
     : null;
   const staleBand = staleKnown
     ? changed > 0
-      ? `Mixed before your last ${edits} Update the video to hear them`
-      : "Mixed before your recent edits Update the video to hear them"
+      ? `Mixed before your last ${edits}. Update the video to hear them`
+      : "Mixed before your recent edits. Update the video to hear them"
     : null;
 
   /*
@@ -1026,7 +1026,7 @@ export function EditorPage() {
                     "clip yet, so this render backs up and makes them first: it loads the " +
                     "translator and the voice, which is model time, not the few minutes a " +
                     "re-encode takes."
-                  : "Re-render the preview. This re-runs timeline, mix and report and replaces preview.mp4 a full video re-encode, typically a few minutes."
+                  : "Re-render the preview. This re-runs timeline, mix and report and replaces preview.mp4: a full video re-encode, typically a few minutes."
               }
               onConfirm={() => void actions.render()}
             >
@@ -1366,7 +1366,7 @@ function OpenFileButton(
       // that does not contain the correction they just made.
       title={
         title
-          ? `${desktop ? `Show ${path} in Finder` : `Open ${path} in a new tab`} ${title}`
+          ? `${desktop ? `Show ${path} in Finder` : `Open ${path} in a new tab`} (${title})`
           : desktop
             ? `Show ${path} in Finder`
             : `Open ${path} in a new tab`
@@ -1482,9 +1482,9 @@ function RunSummary({
 
   const lead =
     count === 0
-      ? "No lines yet the segments stage is what fills this list."
+      ? "No lines yet: the segments stage is what fills this list."
       : mostlyKept && passthrough >= counts.kept / 2
-        ? `This video mostly speaks ${languageName(project?.source.tgt_lang)} already ` +
+        ? `This video mostly speaks ${languageName(project?.source.tgt_lang)} already: ` +
           `${counts.kept} of ${count} lines keep their original audio.`
         : mostlyKept
           ? `${counts.kept} of ${count} lines keep their original audio.`
@@ -1524,7 +1524,7 @@ function RunSummary({
       />
 
       <p className="mt-auto pt-2 text-[11px] leading-relaxed text-muted">
-        Pick a line in the script everything that is true about it, and cannot fit on a row,
+        Pick a line in the script: everything that is true about it, and cannot fit on a row,
         is here.
       </p>
     </div>
@@ -1619,7 +1619,7 @@ function GapList({
           <Eyebrow className="mb-1.5">From the timeline</Eyebrow>
           <p className="mb-1.5 text-[11px] leading-relaxed text-muted">
             The span you picked on the strip. No segment claims it, so the dub plays the
-            original there{onAdd ? " claim it if it should be dubbed" : ""}.
+            original there{onAdd ? "; claim it if it should be dubbed" : ""}.
           </p>
           {/* Keyed on the span: picking a second hatch has to reseed the
               composer, not hand it the first hatch's numbers. */}
@@ -1645,7 +1645,7 @@ function GapList({
             eyebrow admits when the report is behind.
           */}
           <Eyebrow className="mb-1.5">
-            Audible, uncovered {gaps.length}
+            Audible, uncovered: {gaps.length}
             {stale ? " · from the last render" : ""}
           </Eyebrow>
           <p className="mb-1.5 text-[11px] leading-relaxed text-muted">
@@ -2078,7 +2078,7 @@ function RunOptions({
           </>
         ) : (
           <p className="mt-0.5 text-[11.5px] leading-relaxed text-secondary">
-            {context || <span className="text-muted">none names and spellings go here</span>}
+            {context || <span className="text-muted">none: names and spellings go here</span>}
           </p>
         )}
       </div>
@@ -2198,7 +2198,7 @@ function ShortcutHelp() {
           style={{ borderColor: "color-mix(in srgb, var(--color-unclaimed) 45%, transparent)" }}
         />
         The hatched blocks on the timeline are <span className="text-secondary">unclaimed
-        time</span> no segment covers them, so the dub plays the original there.
+        time</span>: no segment covers them, so the dub plays the original there.
       </p>
     </Popover>
   );
@@ -2340,7 +2340,7 @@ function PreviewPlaceholder({
             : summary.complete
               ? "Render preview re-runs timeline, mix and report and writes preview.mp4."
               : mode === "source"
-                ? "Press play for the run's original audio, in step with the script " +
+                ? "Press play for the run's original audio, in step with the script. " +
                   "preview.mp4 arrives with the mix stage."
                 : "Nothing to play until fetch writes source.wav; the timeline and the script " +
                   "still work."}
