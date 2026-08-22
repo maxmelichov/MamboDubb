@@ -7,6 +7,12 @@
 //! `~/Library/Application Support/MamboDubb/workspace`, stores that as the workspace,
 //! and the runner proceeds exactly as if the user had cloned it by hand.
 //!
+//! One set of model weights rides in that copy: the 31 MB CC-BY-4.0 diarization
+//! pipeline under `third_party/pyannote-speaker-diarization-community-1`. It is
+//! payload, not user state — which is the right side of the line, because it means a
+//! fresh install can tell two speakers apart before it has touched the network, and a
+//! deleted or half-copied one heals on the next upgrade instead of staying broken.
+//!
 //! The copy is versioned: a `.mambodubb-payload` marker at the workspace root records
 //! the app version that wrote it. On upgrade the source trees are replaced wholesale
 //! (dir-by-dir, so deleted upstream files cannot linger and shadow), while `.venv`,

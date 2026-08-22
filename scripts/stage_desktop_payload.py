@@ -28,6 +28,15 @@ What is deliberately *not* staged: `models/` (~81 GB, downloaded on demand), `.v
 `editor/`, because `[tool.uv] package = true` makes `uv sync` build the project wheel,
 and the pyproject names both (`readme = "README.md"`, hatch `packages = [... "editor"]`).
 
+One model *is* staged, and it is the reason the payload is 31 MB heavier than the
+source it wraps: `third_party/pyannote-speaker-diarization-community-1`, the CC-BY-4.0
+diarization weights (`segments.DIARIZATION_DIR`). Every other model is a download
+because every other model is a public snapshot the app can fetch unattended; this one
+is gated upstream, and shipping the bytes is what lets a fresh install tell two
+speakers apart with no Hugging Face account. It rides along for free here because it
+lives under `third_party/`, which is already staged whole no rule of its own, and no
+way for the payload to be built without it.
+
 Wired as part of app/desktop's `pretauri` hook, so it runs before every
 `pnpm tauri dev` / `pnpm tauri build`. Run it by hand before a bare `cargo check` /
 `cargo test` in src-tauri, because tauri-build resolves `externalBin` at compile time:

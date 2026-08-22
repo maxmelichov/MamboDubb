@@ -19,13 +19,15 @@ uv sync
 repo. Diarization used to be the exception the upstream
 [`pyannote/speaker-diarization-community-1`](https://huggingface.co/pyannote/speaker-diarization-community-1)
 is gated so an install without a token dubbed every character in one voice. The
-weights are CC-BY-4.0, so the app reads an ungated mirror of the identical files
-(`dubbing/segments.py DIARIZATION_MIRROR`, published by
-`scripts/upload_diarization_mirror.py`).
+weights are CC-BY-4.0, so the identical 31 MB is checked into this repository at
+`third_party/pyannote-speaker-diarization-community-1` (`dubbing/segments.py
+DIARIZATION_DIR`) and ships inside the app. Nothing is downloaded and nothing is
+signed in to; the licence text and the credit travel with the files, in that
+directory's `LICENSE` and `NOTICE.md`.
 
 A token is still *usable*, and only for one thing: set `DUB_DIARIZATION_HUB` to the
-gated repo id to fetch from upstream instead of the mirror, with `HF_TOKEN=hf_...` in
-`.env` (or the field on the Setup screen, which writes it for you).
+gated repo id to fetch the canonical repo from upstream instead, with `HF_TOKEN=hf_...`
+in `.env` (or the field on the Setup screen, which writes it for you).
 
 ## Models
 

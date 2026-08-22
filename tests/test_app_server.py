@@ -2294,10 +2294,9 @@ def test_setup_token_row_no_longer_asks_for_an_account_to_tell_speakers_apart(mo
     Diarization used to load a gated repo, so a machine with no Hugging Face
     account dubbed every character in the video in one voice — and the setup
     screen said so, in the middle grade, next to a paste field. The weights are
-    CC-BY-4.0 and the pipeline now reads an ungated mirror of them
-    (`segments.diarization_sources`), so the row states a fact instead of asking
-    for a credential: `optional`, and its sentence promises nothing it cannot
-    keep.
+    CC-BY-4.0 and now ship inside the app (`segments.DIARIZATION_DIR`), so the
+    row states a fact instead of asking for a credential: `optional`, and its
+    sentence promises nothing it cannot keep.
     """
     from dubbing import segments
     from dubbing_app import setup as setup_mod
@@ -3202,9 +3201,13 @@ def test_install_plan_never_queues_anything_that_needs_a_credential(client):
     assert ids <= set(install_mod.INSTALLERS) | set(downloads)
     gated = segments.DIARIZATION_MODEL
     assert not any(spec["hub"] == gated for spec in downloads.values())
-    # Diarization is downloadable now, and from the mirror — the whole point.
-    assert downloads["model.diarization"]["hub"] == segments.DIARIZATION_MIRROR
-    assert downloads["model.diarization"]["path"] == segments.DIARIZATION_DIR
+    # Diarization is not downloadable at all, and that is the whole point: the
+    # weights ship with the app, so the only gated repo in the tree is never
+    # something the queue could reach for.
+    assert "model.diarization" not in downloads
+    # ...and the row says so: no hub, no size, no Download button to press.
+    row = {c["id"]: c for c in client.get("/api/setup").json()["checks"]}["model.diarization"]
+    assert row["installable"] is False and "hub" not in row
 
 
 @pytest.fixture()

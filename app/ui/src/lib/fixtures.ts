@@ -609,7 +609,18 @@ function setupChecks(ready = false): SetupCheck[] {
     modelRow("model.tts.1.7b", ready),
     modelRow("model.asr.en", ready),
     modelRow("model.lid", ready),
-    modelRow("model.diarization", ready),
+    // Green before the user has done anything, and that is the demo. The
+    // CC-BY-4.0 weights ride in the app bundle (`segments.DIARIZATION_DIR`), so
+    // there is no hub id, no size and no Download button on this row — a fresh
+    // machine already tells speakers apart. It stays on the list because a
+    // checklist that silently omits a model reads as an omission, not a fact.
+    {
+      id: "model.diarization",
+      label: "Speaker diarization (pyannote community-1)",
+      ok: true,
+      severity: "optional",
+      detail: "31 MB in third_party/pyannote-speaker-diarization-community-1 ships with the app",
+    },
     {
       id: "model.demucs",
       label: "Stem separation Demucs htdemucs",

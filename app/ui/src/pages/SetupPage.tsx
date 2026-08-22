@@ -842,8 +842,8 @@ function CheckRow({
 /**
  * The gated upstream pipeline: `dubbing/segments.py DIARIZATION_MODEL`. Named
  * here only so the sentence that explains what a token is *for* can point at the
- * thing it is for. It is no longer what the app fetches the pipeline reads an
- * ungated mirror of the same CC-BY-4.0 weights and needs no account at all.
+ * thing it is for. It is no longer what the app fetches the same CC-BY-4.0
+ * weights ship inside the app, and need no account at all.
  */
 const PYANNOTE_REPO = "pyannote/speaker-diarization-community-1";
 
@@ -852,10 +852,10 @@ const PYANNOTE_REPO = "pyannote/speaker-diarization-community-1";
  *
  * This field used to be the fix for a real problem: diarization loaded a gated
  * repo, and without a token every character in the video was dubbed in one
- * voice. It is not that any more the pipeline reads an ungated mirror of the
- * same weights, the row is `optional`, and nothing on a fresh machine is waiting
- * on it. So the copy no longer sells anything. It says what a token is still
- * for (fetching the gated upstream models instead of the mirror), and gets out
+ * voice. It is not that any more the same weights ship inside the app, the row
+ * is `optional`, and nothing on a fresh machine is waiting on it. So the copy no
+ * longer sells anything. It says what a token is still for (fetching the gated
+ * upstream models instead of the bundled copy), and gets out
  * of the way; a field that talks a user into an account they do not need is the
  * same wall as before wearing a friendlier sentence.
  *
@@ -934,7 +934,7 @@ function HfTokenField({ ok, onChanged }: { ok: boolean; onChanged: () => void })
           {PYANNOTE_REPO}
           <ExternalLink aria-hidden className="h-3 w-3 self-center" />
         </a>{" "}
-        upstream instead of the mirror. If you have{" "}
+        upstream instead of the copy that ships with the app. If you have{" "}
         <a
           href="https://huggingface.co/settings/tokens"
           target="_blank"

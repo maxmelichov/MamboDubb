@@ -32,7 +32,8 @@ Owner: maxm. Started 2026-08-07.
 - [x] CUDA hygiene (small, non-blocking): `tts.free()` + `translate.free()` add
       `torch.cuda.empty_cache()`; faster-whisper try CUDA (`float16`) with CPU fallback in
       `transcript.py` and `tts._load_asr`; lift `VERIFY_CPU_THREADS=2` cap off-Mac.
-- [ ] `.env` with `HF_TOKEN` (Pyannote diarization is gated; without it → single-speaker fallback).
+- [x] `.env` with `HF_TOKEN` no longer needed: the CC-BY-4.0 pyannote weights ship in
+      `third_party/pyannote-speaker-diarization-community-1`, so diarization works tokenless.
       **Needs user's token.**
 - [ ] Docs: Linux setup section in `docs/setup.md` (+ fix stale `qat-4bit` → `6bit` quant name),
       device notes in docs/APP_ARCHITECTURE.md.

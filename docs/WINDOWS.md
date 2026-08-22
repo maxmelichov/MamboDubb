@@ -40,7 +40,7 @@ Python comes from `uv` (3.12), so no separate Python install is needed.
 git clone --recurse-submodules https://github.com/maxmelichov/MamboDubb.git
 cd MamboDubb
 uv sync
-copy .env.example .env      # HF_TOKEN for speaker diarization (optional)
+copy .env.example .env      # nothing in it is required; diarization ships with the app
 ```
 
 `third_party/Qwen3-TTS` is a submodule; `uv sync` fails with "does not appear to

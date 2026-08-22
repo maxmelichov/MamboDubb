@@ -651,17 +651,27 @@ check("failing checks explain themselves",
 check("commands render as code, not backticks", !setup.includes("`"));
 check("model sizes are shown", /GB/.test(setup));
 /*
- * Seven rows are failing and five of them are things to do. The other two are
- * optional — a tool the shipped pipeline never calls and a cache that fetches
- * itself — and a headline that counted them was the reason a machine with
- * nothing wrong with it still met a number at the top of this screen.
+ * Eight rows are failing and five of them are things to do. The rest are
+ * optional — a tool the shipped pipeline never calls, a credential nothing
+ * needs and a cache that fetches itself — and a headline that counted them was
+ * the reason a machine with nothing wrong with it still met a number at the top
+ * of this screen.
+ *
+ * Diarization is not among them any more, in either column: its weights ship in
+ * the app bundle, so the row is green before the user has pressed anything.
  */
 check("a mixed result is counted", /5 of 10 need attention/.test(setup));
 check(
   "…and the optional rows that are not here are not part of that count",
   [...document.querySelectorAll('[data-check][data-severity="optional"]')].filter((row) =>
     /Not installed/.test(row.textContent),
-  ).length === 4,
+  ).length === 3,
+);
+const diarizationRow = document.querySelector('[data-check="model.diarization"]');
+check(
+  "…and diarization is ready on a machine that has installed nothing",
+  /Ready/.test(diarizationRow.textContent) &&
+    ![...diarizationRow.querySelectorAll("button")].some((b) => /Download/.test(b.textContent)),
 );
 check("no continue while something is missing", ![...document.querySelectorAll("button")].some((b) =>
   b.textContent.includes("Continue to projects"),
@@ -936,7 +946,7 @@ check(
   "with both tools in, the machine is ready and does not claim all checks pass",
   document.querySelector("[data-readiness]").textContent === "Ready to run",
 );
-check("…with the rows that are still red still counted", /6\/10/.test(root.textContent));
+check("…with the rows that are still red still counted", /7\/10/.test(root.textContent));
 /*
  * The footer's middle sentence, with a real `degrades` row under it.
  *
@@ -980,13 +990,13 @@ check(
 );
 /*
  * And the sentence a shipped app should end on. Every red row left is
- * `optional` — the HF token among them, because diarization reads an ungated
- * mirror and no account is involved in telling speakers apart. This branch of
- * the footer was unreachable while the token row was graded `degrades`.
+ * `optional` — the HF token among them, because the diarization weights ship
+ * with the app and no account is involved in telling speakers apart. This branch
+ * of the footer was unreachable while the token row was graded `degrades`.
  */
 check(
   "…and the footer says nothing needs what is left",
-  /Everything required is ready; 3 optional items are not installed, and nothing needs them\./.test(
+  /Everything required is ready; 2 optional items are not installed, and nothing needs them\./.test(
     document.querySelector("[data-footer]").textContent,
   ),
 );

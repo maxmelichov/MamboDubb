@@ -513,8 +513,8 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
     def set_hf_token(body: HfTokenBody) -> dict[str, Any]:
         """Save the Hugging Face token into the workspace `.env`.
 
-        Nothing needs one any more diarization reads an ungated mirror, and the
-        setup row is `optional` but the endpoint stays, because a token is still
+        Nothing needs one any more the diarization weights ship with the app,
+        and the setup row is `optional` but the endpoint stays, because a token is still
         how someone points `DUB_DIARIZATION_HUB` at the gated upstream repo, and
         because the alternative is telling them to find a hidden folder and
         hand-edit a dotfile. Shape checks only: `hf_` prefix, no whitespace

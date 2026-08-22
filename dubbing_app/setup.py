@@ -51,10 +51,10 @@ the first two mean anything:
 * ``optional`` irrelevant until you ask for it: the per-language-pair models,
   the self-downloading caches, free disk and now the HF token, which used to
   sit in ``degrades`` because diarization was gated behind it. It is not any
-  more (``segments.diarization_sources``: an installed copy, then an ungated
-  mirror of the same CC-BY-4.0 weights), so the row states a fact instead of
-  asking for a credential, and a machine that has never signed in to Hugging
-  Face reads as fully ready.
+  more the CC-BY-4.0 weights ship inside the app
+  (``segments.DIARIZATION_DIR``) so the row states a fact instead of asking
+  for a credential, and a machine that has never signed in to Hugging Face
+  reads as fully ready.
 """
 
 from __future__ import annotations
@@ -310,9 +310,9 @@ def hf_token_check(env_file: Path | None = None) -> dict[str, Any]:
     `degrades`, and truthfully so: diarization loaded a gated repo, no token
     meant every speaker in the video collapsed into one voice, and the only fix
     was a Hugging Face account. A shippable app cannot ask for that, so it does
-    not: the pipeline reads an ungated mirror of the same CC-BY-4.0 weights
-    (`segments.diarization_sources`) and a machine with no token diarizes
-    exactly as well as one with. The row stays because a token is still *usable*
+    not: the CC-BY-4.0 weights ship with the app (`segments.DIARIZATION_DIR`)
+    and a machine with no token diarizes exactly as well as one with. The row
+    stays because a token is still *usable*
     it selects the gated upstream repo via `DUB_DIARIZATION_HUB`, and it is
     what other gated models would need but it may never again be the reason a
     fresh install is not green.
@@ -330,8 +330,8 @@ def hf_token_check(env_file: Path | None = None) -> dict[str, Any]:
         return check("hf_token", "Hugging Face token", True, f"set in `{path}`",
                      severity=OPTIONAL, source="env_file", path=str(path))
     return check("hf_token", "Hugging Face token", False,
-                 "not set nothing needs one. Diarization reads an ungated mirror, so "
-                 "speakers are told apart without an account. Only for fetching the "
+                 "not set nothing needs one. The diarization weights ship with the "
+                 "app, so speakers are told apart without an account. Only for fetching "
                  f"gated upstream models instead; it would go in `{path}`",
                  severity=OPTIONAL, source=None, path=str(path))
 
@@ -381,14 +381,13 @@ def model_downloads() -> dict[str, dict[str, Any]]:
     fetch their own caches on first use) those stay 400 at
     `POST /api/setup/install`.
 
-    Diarization is here now and was not before. The pipeline used to be the one
-    *gated* model in the tree, deliberately absent from this table because a
-    download button that stops to ask for a Hugging Face account is worse than
-    no button. `segments.DIARIZATION_MIRROR` is an ungated mirror of the same
-    CC-BY-4.0 weights, and it is a single self-contained repo (`config.yaml`
-    plus `segmentation/`, `embedding/`, `plda/`, resolved through pyannote's
-    `$model/...` indirection), so it snapshots into one directory like anything
-    else here.
+    Diarization is deliberately **not** here, and for the opposite of the old
+    reason. It used to be the one *gated* model in the tree, kept out because a
+    download button that stops to ask for a Hugging Face account is worse than no
+    button. Now its CC-BY-4.0 weights are checked into `third_party/` and ship
+    inside the app (`segments.DIARIZATION_DIR`), so there is nothing to download:
+    a row with a Download button would be offering the user something they
+    already have.
 
     The hub ids are the pipeline's own where the pipeline has one
     (`translate.HUB_ID`, `tts.TTS_MODELS[...]["hub"]`, `transcript.*_HUB`,
@@ -398,14 +397,11 @@ def model_downloads() -> dict[str, dict[str, Any]]:
     installs approximate on purpose, good enough for a button label and a
     progress denominator, never for accounting.
     """
-    from dubbing import hebrew, segments, transcript, translate, tts
+    from dubbing import hebrew, transcript, translate, tts
 
     out: dict[str, dict[str, Any]] = {
         "model.translate": {"hub": translate.HUB_ID, "path": translate.MODEL_PATH,
                             "bytes": 9_700_000_000},
-        "model.diarization": {"hub": segments.DIARIZATION_MIRROR,
-                              "path": segments.DIARIZATION_DIR,
-                              "bytes": 32_000_000},
     }
     # Only the default checkpoint is offered. 0.6b exists in tts.TTS_MODELS
     # solely so old manifests that recorded it can re-run; a download button
@@ -483,13 +479,17 @@ def model_checks() -> list[dict[str, Any]]:
           severity=OPTIONAL, note="only for non-English targets"),
         m("model.lid", "Language ID (VoxLingua107)", transcript.LID_MODEL,
           severity=DEGRADES, note="without it foreign-speech detection is skipped"),
-        # Optional, not `degrades`: absent from `models/` it is fetched from the
-        # ungated mirror on first use — 32 MB, no account, seconds — exactly the
-        # Demucs shape. The button is here for a machine being provisioned
-        # offline, not because a fresh install is missing anything.
+        # Green on every install, because the weights are in the payload: 31 MB
+        # of CC-BY-4.0 pyannote checked into `third_party/` and copied into the
+        # workspace on first launch. The row is here to *say* so — a screen that
+        # lists nine models and silently omits the tenth reads as an omission —
+        # and it has no Download button because there is nothing to download.
+        # Missing means someone deleted it from the workspace; the note says how
+        # to get it back, and the run still works (one voice for everyone).
         m("model.diarization", "Speaker diarization (pyannote community-1)",
           segments.DIARIZATION_DIR, severity=OPTIONAL,
-          note=f"downloads from {segments.DIARIZATION_MIRROR} on first use, no token"),
+          note="ships with the app; restore it from the repo, or set "
+               f"DUB_DIARIZATION_HUB={segments.DIARIZATION_MODEL} with a token"),
         # Hebrew is a dub TARGET only with both of these. Optional every other
         # target runs without them but a Hebrew run is refused up front when
         # either is missing, so the report is where a user finds out first.
@@ -638,8 +638,9 @@ def install_plan(report_: dict[str, Any]) -> list[dict[str, Any]]:
       that puts a button on the row. Everything else is out by construction, and
       that is also where the credentials question answers itself: the one check
       that mentions a token is `hf_token`, which installs nothing, and no hub id
-      in `model_downloads()` is gated diarization is the mirror, not
-      `segments.DIARIZATION_MODEL`. Every repo this can queue is public, so the
+      in `model_downloads()` is gated the one gated repo in the tree,
+      `segments.DIARIZATION_MODEL`, is not in that table at all because its
+      weights ship with the app. Every repo this can queue is public, so the
       queue never stops half way to ask the user for something.
     * **Nothing graded `optional`.** A Korean checkpoint has nothing to say
       about a Hebrew→English run, and a button that says "everything" must not

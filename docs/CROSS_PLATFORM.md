@@ -152,4 +152,6 @@ The provisioned workspace lives in `~/.local/share/MamboDubb/workspace`.
 5. **`translator/` is a separate venv** with its own CUDA story on Linux/Windows; the
    desktop shell does not provision or manage it.
 6. **Bundle size.** The uv sidecar is 35–59 MB depending on target, and the payload adds
-   ~11 MB. Nothing is stripped.
+   ~44 MB — ~11 MB of source and 31 MB of bundled diarization weights (`third_party/
+   pyannote-speaker-diarization-community-1`, CC-BY-4.0, shipped so a fresh install
+   tells speakers apart with no Hugging Face account). Nothing is stripped.

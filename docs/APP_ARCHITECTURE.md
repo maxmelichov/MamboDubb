@@ -562,12 +562,15 @@ dies halfway and an absent model directory silently becomes a multi-gigabyte dow
   * `degrades` the run **works and is worse**: `model.lid` (foreign speech is never
     detected). It stops nothing and it is not nothing.
   * `optional` irrelevant until asked for: the per-language-pair models, the
-    self-downloading caches (Demucs, `model.diarization`), free disk and `hf_token`.
+    self-downloading Demucs cache, free disk, `hf_token` and `model.diarization`
+    (green on every install it is the one model that ships in the payload rather
+    than downloading, so its row has no hub id and no Download button).
     The token row was `degrades` for as long as diarization loaded the gated
-    `pyannote/speaker-diarization-community-1`; the pipeline reads an ungated mirror of
-    the same CC-BY-4.0 weights now (`segments.diarization_sources`), so a machine with no
-    Hugging Face account tells speakers apart like any other and **readiness may never
-    again depend on a credential**.
+    `pyannote/speaker-diarization-community-1`; the same CC-BY-4.0 weights are now
+    checked into `third_party/` and copied into the workspace on first launch
+    (`segments.DIARIZATION_DIR`), so a machine with no Hugging Face account tells
+    speakers apart like any other and **readiness may never again depend on a
+    credential**.
 * **`ok` is the conjunction of the `required` checks only** unchanged, and now equal to
   "no blocking check fails". A client must not compute readiness as "every row passes":
   that is stricter than the server and makes the "ready, with things missing" state
