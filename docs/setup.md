@@ -108,7 +108,7 @@ uv sync --project translator --extra vllm
 `translate.load()` then picks `translator/worker_vllm.py` automatically on Linux
 with a CUDA device present; it speaks the same JSON-lines protocol, uses the same
 prompts and the same post-processing, and greedy-decodes exactly as before.
-Without the extra — and always on Windows, where vLLM publishes no wheels —
+Without the extra (and always on Windows, where vLLM publishes no wheels)
 `translator/worker.py` remains the backend, unchanged. Two knobs, both env vars
 read by the worker: `TRANSLATOR_VLLM_GPU_UTIL` (default `0.90`) and
 `TRANSLATOR_VLLM_MAX_LEN` (default `8192`).

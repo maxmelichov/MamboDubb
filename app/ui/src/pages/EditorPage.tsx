@@ -584,7 +584,7 @@ export function EditorPage() {
         if (!removed) return;
         say(`Removed #${seg.id}`);
         setNotice((current) => ({
-          text: `Removed #${seg.id} — ⌘Z restores the line`,
+          text: `Removed #${seg.id}. ⌘Z restores the line`,
           n: (current?.n ?? 0) + 1,
         }));
       });
@@ -1317,7 +1317,7 @@ function UndoKeepStrip({ undo, onUndo }: { undo: KeptUndo; onUndo: () => void })
       <StateIcon state="kept" className="h-2.5 w-2.5" />
       <span className="font-mono tabular-nums">Kept #{undo.id}</span>
       <span aria-hidden className="text-muted">
-        —
+        ·
       </span>
       <Button size="xs" variant="ghost" data-undo-keep onClick={onUndo}>
         Undo

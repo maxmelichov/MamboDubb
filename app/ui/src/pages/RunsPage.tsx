@@ -151,7 +151,7 @@ export function RunsPage() {
                 </Button>
               }
             >
-              Every dub you start lands here, resumable — point the studio at a video and it
+              Every dub you start lands here, resumable. Point the studio at a video and it
               takes it from there.
             </Empty>
           </Card>

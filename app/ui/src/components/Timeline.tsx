@@ -577,7 +577,7 @@ export function Timeline({
                 highlightGap != null &&
                 gap.start < highlightGap.end &&
                 gap.end > highlightGap.start;
-              const label = `Unclaimed no segment covers ${timecode(gap.start, 0)}–${timecode(
+              const label = `Unclaimed: no segment covers ${timecode(gap.start, 0)} to ${timecode(
                 gap.end,
                 0,
               )}`;
@@ -756,7 +756,7 @@ export function Timeline({
               size="xs"
               onClick={onZoomIn}
               disabled={pxPerSecond >= 256 - 1e-6}
-              title="Zoom in — or pinch / ⌘-scroll the strip for any scale"
+              title="Zoom in, or pinch / ⌘-scroll the strip for any scale"
               aria-label="Zoom in"
             >
               <Plus className="h-3 w-3" />

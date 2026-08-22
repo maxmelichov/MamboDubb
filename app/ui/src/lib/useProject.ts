@@ -526,7 +526,7 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
       if (!entry) return `Nothing to ${direction}`;
       if (entry.kind === "barrier") {
         const what = entry.op === "edit" ? "that edit" : `the ${entry.op}`;
-        return `Can't ${direction} past ${what} — that step isn't reversible`;
+        return `Can't ${direction} past ${what}: that step isn't reversible`;
       }
       from.pop();
       applying.current = true;
@@ -535,12 +535,12 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
           case "patch": {
             const seg = segmentsRef.current.find((s) => s.uid === entry.uid);
             if (!seg || !matches(seg, entry.expect)) {
-              return `The line changed since that edit — ${direction} skipped it`;
+              return `The line changed since that edit, so ${direction} skipped it`;
             }
             const saved = await patch(entry.uid, entry.body);
             if (!saved) {
               from.push(entry);
-              return `${direction === "undo" ? "Undo" : "Redo"} failed — see the error bar`;
+              return `${direction === "undo" ? "Undo" : "Redo"} failed: see the error bar`;
             }
             to.push(capture(seg, saved, entry.body) ?? { kind: "barrier", op: "edit" });
             setSelectedUid(entry.uid);
@@ -551,7 +551,7 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
             const after = await structural(() => api.addSegment(name, entry.segment), landed);
             if (!after) {
               from.push(entry);
-              return "Couldn't restore the line — see the error bar";
+              return "Couldn't restore the line: see the error bar";
             }
             const minted = landed(before, after);
             if (minted) to.push({ kind: "delete", uid: minted });
@@ -560,7 +560,7 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
           }
           case "delete": {
             const seg = segmentsRef.current.find((s) => s.uid === entry.uid);
-            if (!seg) return `That line is already gone — ${direction} skipped it`;
+            if (!seg) return `That line is already gone, so ${direction} skipped it`;
             const payload: NewSegment = {
               start: seg.start,
               end: seg.end,
@@ -570,7 +570,7 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
             const after = await structural(() => api.removeSegment(name, entry.uid));
             if (!after) {
               from.push(entry);
-              return "Couldn't remove the line — see the error bar";
+              return "Couldn't remove the line: see the error bar";
             }
             to.push({ kind: "create", segment: payload });
             setSelectedUid((current) => (current === entry.uid ? null : current));

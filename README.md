@@ -42,7 +42,7 @@ seconds, and watch the source and output waveforms side by side.
 ### Install
 
 The app carries the pipeline source and the models it cannot fetch, and sets
-itself up on first run — no terminal, and **no account or API key for anything**
+itself up on first run: no terminal, and **no account or API key for anything**
 (the one model behind a sign-up form is CC-BY-4.0 and ships inside the app).
 
 **macOS (Apple Silicon).** Grab the `.dmg` from the
@@ -50,7 +50,7 @@ itself up on first run — no terminal, and **no account or API key for anything
 MamboDubb to Applications, launch. Apple Silicon only: the translator runs on MLX,
 which needs an M-series chip. No Intel or iOS build.
 
-**Windows and Linux.** The desktop shell builds for both —
+**Windows and Linux.** The desktop shell builds for both:
 `.github/workflows/build-desktop.yml` produces an NSIS installer and an `.msi` for
 Windows and a `.deb` and an `.AppImage` for Linux, alongside the Mac `.dmg`. Status
 is honest in [docs/CROSS_PLATFORM.md](docs/CROSS_PLATFORM.md): the code is
@@ -69,7 +69,7 @@ git clone --recurse-submodules https://github.com/maxmelichov/MamboDubb.git
 cd MamboDubb; uv sync
 ```
 
-Windows needs one extra step — PyPI's default `torch` wheel is CPU-only there —
+Windows needs one extra step (PyPI's default `torch` wheel is CPU-only there)
 and has a few platform notes worth reading first: **[docs/WINDOWS.md](docs/WINDOWS.md)**.
 WSL2 is the easier road if you have it, and the faster one.
 
@@ -88,7 +88,7 @@ cached and only what changed is redone.
 
 ## Run as a server (no desktop app)
 
-The desktop app is a thin shell over a local Python server — you can run the
+The desktop app is a thin shell over a local Python server, so you can run the
 server directly and use the full editor in any browser:
 
 ```bash
@@ -102,7 +102,7 @@ uv run mambodubb --port 4400                          # → http://127.0.0.1:440
 On the default loopback bind no login is needed; requests with a non-local
 `Host` header are refused (DNS-rebinding guard). Binding any other address
 (`--host 0.0.0.0` for LAN use) **requires a token**: pass `--token`, or let the
-server generate one — it prints a one-click `?token=…` link that sets a cookie
+server generate one. It prints a one-click `?token=…` link that sets a cookie
 for the rest of the session. The traffic is plain HTTP; treat the LAN mode as
 "trusted home network", not "the internet".
 
@@ -114,11 +114,11 @@ for the rest of the session. The traffic is plain HTTP; treat the LAN mode as
 | **Dub into (target)** | English, Russian, French, Spanish, German, Italian, Portuguese, Chinese, Japanese, Korean, **Hebrew** |
 
 Targets are bounded by what Qwen3-TTS can speak. Hebrew is not one of its ten
-languages; it is added by a LoRA over the same checkpoint (one extra download —
+languages; it is added by a LoRA over the same checkpoint (one extra download,
 see [docs/setup.md](docs/setup.md)), which is switched off again for the other
 ten, so there is no second synthesiser and nothing about them changes. Every
 target can also be a source; Arabic is the one language that goes the other way
-only — it can be heard and translated, never spoken, so it is still source-only.
+only: it can be heard and translated, never spoken, so it is still source-only.
 
 Source and target may be the same language (`--src he --tgt he`). That is a dub,
 not a no-op: every line is re-voiced in the speaker's cloned voice, with no
@@ -135,7 +135,7 @@ The desktop app is a thin Tauri shell over a local FastAPI server that calls the
 same pipeline the app is a second front end, never a fork. The models:
 faster-whisper (ASR + verification), Gemma (translation, via MLX), Qwen3-TTS
 (voice cloning), Demucs (music/voice separation), Pyannote (speakers). They load
-sequentially and never co-exist in memory, so 16–32 GB of unified memory is enough.
+sequentially and never co-exist in memory, so 16 to 32 GB of unified memory is enough.
 
 Guarantees the pipeline enforces on itself: no second of audible speech is ever
 silently dropped, dubbed lines never overlap, transcription only ever listens to
@@ -159,7 +159,7 @@ of the teams that built and released these models openly. Full credit to them:
 | [faster-whisper-large-v3-turbo-ct2](https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2) | OpenAI Whisper, CT2 conversion by deepdml | Transcription for the other source languages |
 | [faster-whisper base / base.en / tiny.en](https://huggingface.co/Systran) | OpenAI Whisper, converted by SYSTRAN | Verifying every synthesized take by ear |
 | [Demucs (htdemucs_ft)](https://github.com/adefossez/demucs) | Alexandre Défossez et al., Meta AI | Separating voices from music and effects |
-| [speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1) | pyannote.audio, Hervé Bredin | Who speaks when (CC-BY-4.0, redistributed unmodified in `third_party/pyannote-speaker-diarization-community-1` — see its `NOTICE.md` — so no HF account is needed) |
+| [speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1) | pyannote.audio, Hervé Bredin | Who speaks when. CC-BY-4.0, redistributed unmodified in `third_party/pyannote-speaker-diarization-community-1` (see its `NOTICE.md`), so no HF account is needed |
 | [spkrec-ecapa-voxceleb](https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb) | SpeechBrain | Speaker embeddings for voice-consistent cloning |
 | [lang-id-voxlingua107-ecapa](https://huggingface.co/speechbrain/lang-id-voxlingua107-ecapa) | SpeechBrain | Spoken-language identification |
 | [Silero VAD](https://github.com/snakers4/silero-vad) | Silero Team | Voice activity detection |

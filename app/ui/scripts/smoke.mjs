@@ -1360,7 +1360,7 @@ const hatches = [...document.querySelectorAll("[data-hatch]")];
 check("the timeline draws unclaimed time", hatches.length > 0);
 check(
   "…and every hatch says what it is and which seconds it covers",
-  hatches.every((h) => /^Unclaimed no segment covers \d+:\d\d–\d+:\d\d$/.test(h.getAttribute("aria-label") ?? "")),
+  hatches.every((h) => /^Unclaimed: no segment covers \d+:\d\d to \d+:\d\d$/.test(h.getAttribute("aria-label") ?? "")),
 );
 check(
   "…in a tooltip as well, for the mouse",
@@ -1398,7 +1398,7 @@ check("…and focusing one lights the hatch it is inside", litHatch() != null);
 check(
   "…the one that actually covers it",
   Number(gapRow.getAttribute("data-gap")) >= 0 &&
-    /Unclaimed no segment covers/.test(litHatch().getAttribute("aria-label")),
+    /Unclaimed: no segment covers/.test(litHatch().getAttribute("aria-label")),
 );
 gapRow.blur();
 await new Promise((resolve) => setTimeout(resolve, 120));

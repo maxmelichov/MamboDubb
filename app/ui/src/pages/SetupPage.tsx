@@ -580,12 +580,12 @@ function InstallAll({
         {install ? <InstallProgress install={install} /> : null}
         <p className="mt-1.5 text-[11px] leading-relaxed text-muted" data-queue-remaining>
           {queue.cancelled
-            ? "Stopping after this one — it finishes, nothing after it starts."
+            ? "Stopping after this one. It finishes, nothing after it starts."
             : queue.remaining_bytes > 0
               ? `~${humanBytes(queue.remaining_bytes)} still to fetch, one at a time.`
               : "One at a time, in the order above."}
           {queue.failed.length > 0
-            ? ` ${queue.failed.length} did not finish — those rows say why.`
+            ? ` ${queue.failed.length} did not finish. Those rows say why.`
             : ""}
         </p>
       </div>
@@ -601,7 +601,7 @@ function InstallAll({
         onClick={onStart}
         disabled={busy}
         data-install-all
-        title={busy ? "One install at a time — wait for the running one" : undefined}
+        title={busy ? "One install at a time: wait for the running one" : undefined}
       >
         <Download className="h-3.5 w-3.5" />
         Install everything{planBytes > 0 ? ` · ~${humanBytes(planBytes)}` : ""}
@@ -611,7 +611,7 @@ function InstallAll({
           ? "The one thing missing that the app can fetch itself."
           : `${plan.length} things, one at a time, required first.`}{" "}
         {failed > 0
-          ? `${failed} did not finish last time — starting again resumes what is there.`
+          ? `${failed} did not finish last time. Starting again resumes what is there.`
           : "Nothing optional is included."}
       </span>
     </div>

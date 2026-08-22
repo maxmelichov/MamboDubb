@@ -2,14 +2,14 @@
 
 > Windows and Linux installers come out of
 > [`.github/workflows/build-desktop.yml`](../.github/workflows/build-desktop.yml)
-> instead — unsigned, and with their own caveats. See
+> instead, unsigned and with their own caveats. See
 > [CROSS_PLATFORM.md](CROSS_PLATFORM.md).
 
 The whole point of the desktop app is that a fresh Mac never needs a terminal. An
 unsigned .dmg breaks that promise at step 1: Gatekeeper quarantines every download,
 and an app with no Developer ID signature and no notarization ticket gets the
 **"MamboDubb is damaged and can't be opened"** dialog on any Mac but the one that
-built it. The only workaround is `xattr -dc` — in Terminal. So a release is signed
+built it. The only workaround is `xattr -dc`, in Terminal. So a release is signed
 and notarized, or it is not a release.
 
 The one command:
@@ -27,7 +27,7 @@ container itself, verifies everything Gatekeeper will check (`codesign --verify`
 
 ## Prerequisites (one-time)
 
-### 1. A Developer ID Application certificate — the one human-only step
+### 1. A Developer ID Application certificate, the one human-only step
 
 Nothing in this repo can conjure this; it takes a paid Apple Developer Program
 enrollment ($99/year) and **only the Account Holder** can create Developer ID
@@ -43,7 +43,7 @@ certificates.
    [Apple's certificate authority page](https://www.apple.com/certificateauthority/):
    **Developer ID - G2** and, if missing, **Apple Root CA - G2**. macOS does not
    always ship these, and without them the next step reports
-   `1 matching identity, 0 valid identities` — it looks like a permissions problem
+   `1 matching identity, 0 valid identities`. It looks like a permissions problem
    but is a broken trust chain.
 4. Verify:
 
@@ -72,7 +72,7 @@ Tauri reads all four itself during `tauri build`; the script only checks they ex
 and warns loudly when they do not. With none set it builds **unsigned** and prints
 the tester workaround (`xattr -dc /Applications/MamboDubb.app`); with only the
 identity set it warns that signed-but-unnotarized is still blocked by current macOS
-("Apple could not verify…" instead of "damaged" — politer, equally dead).
+("Apple could not verify…" instead of "damaged": politer, equally dead).
 
 ## The release
 
@@ -90,7 +90,7 @@ uv run --script scripts/release_dmg.py
 
 Notarization is a round-trip to Apple's servers. Usually minutes; the **first**
 notarization for a new app or certificate can take hours, which is normal. If the
-wait was interrupted, the submission keeps processing on Apple's side — check with:
+wait was interrupted, the submission keeps processing on Apple's side. Check with:
 
 ```bash
 xcrun notarytool history --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID"
@@ -101,7 +101,7 @@ xcrun notarytool log <submission-id> --apple-id "$APPLE_ID" --password "$APPLE_P
 then staple by hand: `xcrun stapler staple <the .dmg>` and the .app inside the
 bundle dir if its own stapling was the interrupted step.
 
-## Afterwards — before uploading anywhere
+## Afterwards, before uploading anywhere
 
 The script already ran these; anything re-signed or re-stapled by hand should pass
 them again:
@@ -117,7 +117,7 @@ xcrun stapler validate <the .dmg>
 The end-to-end check that actually settles it: copy the .dmg to **another Mac** (or
 re-quarantine locally with `xattr -w com.apple.quarantine "0083;;;" <dmg>`), mount,
 drag to Applications, launch from Finder. It must open with no dialog beyond the
-standard first-run confirmation — never "damaged", never "could not verify".
+standard first-run confirmation: never "damaged", never "could not verify".
 
 Then attach the .dmg to the GitHub release; the README's install link points at
 `releases/latest`.

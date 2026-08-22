@@ -130,7 +130,7 @@ export function SelectionPanel({
       <header className="sticky top-0 z-10 flex items-center gap-2 border-b border-border bg-sunken px-3 py-1.5">
         <span className="font-mono text-[14px] font-bold tabular-nums text-primary">#{seg.id}</span>
         <span className="font-mono text-[11px] tabular-nums text-secondary">
-          {timecode(seg.start)}–{timecode(seg.end)}
+          {timecode(seg.start)}-{timecode(seg.end)}
         </span>
         <span className="ml-auto font-mono text-[11px] tabular-nums text-muted">
           {fmtDuration(seg.end - seg.start)}
@@ -356,7 +356,7 @@ export function SelectionPanel({
           <div className="flex flex-col gap-1.5 border-t border-border pt-3">
             <Eyebrow>Change the span</Eyebrow>
             <p className="text-[11px] leading-snug text-muted">
-              Both of these discard the translation and the clip for every segment they touch —
+              Both of these discard the translation and the clip for every segment they touch:
               the line was written for the old span.
             </p>
             <div className="flex flex-wrap gap-2">

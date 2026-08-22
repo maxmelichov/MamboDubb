@@ -268,13 +268,13 @@ export function ImportPage() {
               <p className="mt-2.5 max-w-2xl text-[12px] leading-relaxed text-muted">
                 {desktop ? (
                   <>
-                    A URL, or a local file — <em>Choose file</em> opens a real file dialog and
+                    A URL, or a local file. <em>Choose file</em> opens a real file dialog and
                     fills in the full path.
                   </>
                 ) : (
                   <>
                     A URL, or an absolute path to a local file. The browser cannot read a file's real
-                    path, so <em>Choose file</em> only fills in the name — paste the full path, or
+                    path, so <em>Choose file</em> only fills in the name. Paste the full path, or
                     use the desktop app.
                   </>
                 )}
@@ -310,7 +310,7 @@ export function ImportPage() {
                 className="mt-2 min-h-12 resize-none rounded-xl text-[13.5px]"
                 aria-label="Context"
                 value={form.context ?? ""}
-                placeholder="Who and what this is about, and how names are spelled — e.g. a news interview about the housing market; the host is Dana (she), the guest is Prof. Ronen Levi (he)."
+                placeholder="Who and what this is about, and how names are spelled. For example: a news interview about the housing market; the host is Dana (she), the guest is Prof. Ronen Levi (he)."
                 onChange={(event) => update({ context: event.currentTarget.value })}
               />
               <p className="mt-3 text-[11.5px] leading-relaxed text-muted">
@@ -399,7 +399,7 @@ export function ImportPage() {
             </div>
             {form.src_lang === form.tgt_lang ? (
               <p className="mt-2 text-[12px] leading-relaxed text-muted" data-same-lang-note>
-                Same language: every line is re-voiced in the speaker's cloned voice —
+                Same language: every line is re-voiced in the speaker's cloned voice, and
                 no translation happens.
               </p>
             ) : null}
@@ -421,7 +421,7 @@ export function ImportPage() {
               <span className="min-w-0">
                 <span className="block text-[12.5px] text-secondary">Dub foreign speech</span>
                 <span className="mt-0.5 block text-[12px] leading-relaxed text-muted">
-                  A third language inside the video is translated and voiced too — otherwise it
+                  A third language inside the video is translated and voiced too. Otherwise it
                   plays as recorded, subtitled. Individual lines can still be switched to dubbed
                   later, in the editor.
                 </span>
@@ -546,14 +546,14 @@ export function ImportPage() {
             <p className="mt-2 text-[12px] leading-relaxed text-muted">
               {form.transcript === "file" ? (
                 <>
-                  An .srt, .vtt or .json3 — the words are taken from it as they are, and
+                  An .srt, .vtt or .json3. The words are taken from it as they are, and
                   nothing is transcribed. It has to carry timestamps: they are what places
                   each line, and plain text cannot be lined up with the audio.
                   {desktop ? null : (
                     <>
                       {" "}
                       The browser cannot read a file's real path, so <em>Choose file</em> only
-                      fills in the name — paste the full path, or use the desktop app.
+                      fills in the name. Paste the full path, or use the desktop app.
                     </>
                   )}
                 </>
@@ -685,7 +685,7 @@ function HomeRuns() {
           <p className="max-w-sm text-center text-[13px] leading-relaxed text-muted">
             {projects == null && !failed
               ? "Looking for runs…"
-              : "Nothing here yet — every dub you start lands in this list, live while it runs."}
+              : "Nothing here yet. Every dub you start lands in this list, live while it runs."}
           </p>
         </div>
       </section>

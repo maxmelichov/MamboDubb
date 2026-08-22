@@ -1,10 +1,10 @@
 # Running MamboDubb on Windows
 
-Both halves — the headless pipeline (`python -m dubbing`) and the studio server
-(`mambodubb`) — run on native Windows 10/11 with an NVIDIA GPU.
+Both halves, the headless pipeline (`python -m dubbing`) and the studio server
+(`mambodubb`), run on native Windows 10/11 with an NVIDIA GPU.
 
 This page is the **run-from-source** guide. There is also a packaged desktop
-installer (`.exe` / `.msi`) built by CI — see
+installer (`.exe` / `.msi`) built by CI. See
 [CROSS_PLATFORM.md](CROSS_PLATFORM.md) for how to get it and what about it is
 still unverified. Everything below about CUDA wheels, `ffmpeg`/`sox` and vLLM
 applies to the packaged app too, because it provisions and runs the same source
@@ -26,7 +26,7 @@ winget install --id ChrisBagwell.SoX -e --accept-source-agreements --accept-pack
 ```
 
 Open a **new** terminal afterwards: winget puts these on PATH for processes
-started after it, and the Setup screen in the app re-probes `PATH` at startup —
+started after it, and the Setup screen in the app re-probes `PATH` at startup, so
 a server launched before the install still cannot see `ffmpeg.exe`.
 
 The Setup screen offers an **Install** button for `ffmpeg` and `sox` on Windows;
@@ -73,7 +73,7 @@ uv run python -m dubbing "https://www.youtube.com/watch?v=VIDEO_ID"
 uv run python -m dubbing input.mp4 --duration 300
 ```
 
-The studio server, with the UI built once (Node 20+ and pnpm — `winget install
+The studio server, with the UI built once (Node 20+ and pnpm, via `winget install
 --id OpenJS.NodeJS.LTS -e`, then `npm i -g pnpm`):
 
 ```powershell
@@ -90,11 +90,10 @@ uv run mambodubb --port 4400        # → http://127.0.0.1:4400
 | **Cancelling a job** | The job child gets its own process group; cancel sends Ctrl-Break and then `taskkill /F /T`, so the ffmpeg and yt-dlp it spawned die with it. |
 | **Server lifetime** | Windows does not reparent orphans, so the ppid watchdog is disabled there. A launcher that wants the server to die with it should hold the server's stdin and pass `--exit-on-stdin-close`. |
 | **Console encoding** | The CLI, the server and both workers force UTF-8 on stdio; a `chcp 1252` console cannot otherwise print a Hebrew line. |
-| **Tool lookup** | `ffmpeg`/`ffprobe`/`sox` are resolved with `shutil.which`, which honours `PATHEXT` — the `.exe` suffix is never assumed or spelled out. |
+| **Tool lookup** | `ffmpeg`/`ffprobe`/`sox` are resolved with `shutil.which`, which honours `PATHEXT`, so the `.exe` suffix is never assumed or spelled out. |
 
-Everything else — the manifest, the caching, every pipeline invariant
-(see [APP_ARCHITECTURE.md](APP_ARCHITECTURE.md), Non-negotiables) — is
-identical. Run directories are portable between
+Everything else is identical: the manifest, the caching, every pipeline
+invariant (see [APP_ARCHITECTURE.md](APP_ARCHITECTURE.md), Non-negotiables). Run directories are portable between
 platforms except for absolute paths recorded in `m["files"]["video"]` for runs
 whose input lived outside the run directory.
 
@@ -107,10 +106,10 @@ whose input lived outside the run directory.
 - **Antivirus.** Real-time scanning of `outputs/` slows the mix stage noticeably;
   excluding the run directory is worth it.
 - **`sox` on PATH.** Qwen3-TTS shells out to it during text normalization; a
-  missing `sox.exe` fails inside the tts stage, not at startup — the Setup screen
+  missing `sox.exe` fails inside the tts stage, not at startup. The Setup screen
   says so before you start.
 
-## 6. WSL2 — the recommended path
+## 6. WSL2, the recommended path
 
 WSL2 with an NVIDIA driver gives you the Linux setup exactly: vLLM is available
 (much faster translation), the cuDNN handling in `dubbing/nvlibs.py` applies, and
@@ -121,7 +120,7 @@ wsl --install -d Ubuntu
 ```
 
 Then inside Ubuntu: install `uv`, `ffmpeg`, `sox`, clone the repo **into the
-Linux filesystem** (`~/MamboDubb`, not `/mnt/c/...` — the 9p mount makes every
+Linux filesystem** (`~/MamboDubb`, not `/mnt/c/...`, because the 9p mount makes every
 stage several times slower), and follow the Linux instructions. The server binds
 inside WSL; open `http://127.0.0.1:4400` from Windows as usual (WSL2 forwards
 loopback).

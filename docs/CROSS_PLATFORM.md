@@ -33,10 +33,10 @@ universal) row is a matrix entry away when someone has a machine to test it on.
 
 ## Getting the installers
 
-They are not attached to a release yet — they are workflow artifacts.
+They are not attached to a release yet. They are workflow artifacts.
 
 1. Push a `v*` tag, or open **Actions → build-desktop → Run workflow** on any branch.
-2. Wait for the three jobs (~20–40 min each; the Rust cache makes reruns much faster).
+2. Wait for the three jobs (~20 to 40 min each; the Rust cache makes reruns much faster).
 3. Open the run and download the artifact for your OS from the **Artifacts** section
    at the bottom:
    - `mambodubb-macos-aarch64` → `MamboDubb_<version>_aarch64.dmg`
@@ -52,7 +52,7 @@ days.
 ### macOS
 
 Unsigned builds from CI are quarantined by Gatekeeper and show **"MamboDubb is damaged
-and can't be opened"**. That is not a corrupt download — it is the missing Developer ID
+and can't be opened"**. That is not a corrupt download. It is the missing Developer ID
 signature. A real release goes through `scripts/release_dmg.py`, which signs and
 notarizes; see [RELEASING.md](RELEASING.md). To open a CI build anyway:
 `xattr -dc /Applications/MamboDubb.app`.
@@ -66,7 +66,7 @@ and there is no workaround short of code signing (open item below).
 
 WebView2 is present on every Windows 10 1803+ and Windows 11 machine. The installer is
 configured with `downloadBootstrapper`, so on the rare machine without it, it is fetched
-during install — which means the install needs a network connection.
+during install, which means the install needs a network connection.
 
 The provisioned workspace lives in `%LOCALAPPDATA%\MamboDubb\workspace`, deliberately
 **not** `%APPDATA%`: that directory grows a ~10 GB `.venv` plus model weights, and
@@ -101,27 +101,27 @@ The provisioned workspace lives in `~/.local/share/MamboDubb/workspace`.
 
 ## What is per-platform in the code
 
-- **`workspace.rs`** — `uv` is found via `DUBSTUDIO_UV_PATH`, then the bundled sidecar
+- **`workspace.rs`**: `uv` is found via `DUBSTUDIO_UV_PATH`, then the bundled sidecar
   (`uv` / `uv.exe` next to the app binary), then platform install paths (Homebrew on
   macOS, `/usr/{local/,}bin` and linuxbrew on Linux, nothing on Windows), then `PATH`
   (`.exe` first there), then `~/.local/bin` and `~/.cargo/bin`. The home directory is
   `HOME` **or `USERPROFILE`**, because a Windows GUI process only ever gets the latter.
-- **`provision.rs`** — the writable workspace copy goes under the platform's *local*
+- **`provision.rs`**: the writable workspace copy goes under the platform's *local*
   data dir (see the Windows note above). Copies force owner-write on every file,
   because the source sits inside a read-only bundle.
-- **`runner/process.rs`** — spawns `uv run --project <workspace> …` with
+- **`runner/process.rs`**: spawns `uv run --project <workspace> …` with
   `CREATE_NO_WINDOW` on Windows so no console flashes up, and holds the child's stdin
   open as the liveness channel (`--exit-on-stdin-close`) on all three.
-- **`files.rs`** — reveal/open dialogs go through `tauri-plugin-opener` and
+- **`files.rs`**: reveal/open dialogs go through `tauri-plugin-opener` and
   `tauri-plugin-dialog`, both of which have all three backends.
-- **`scripts/stage_desktop_payload.py --target <triple>`** — copies a locally installed
+- **`scripts/stage_desktop_payload.py --target <triple>`**: copies a locally installed
   `uv` when the target is this machine (the fast path for local rebuilds), and otherwise
   downloads the official `astral-sh/uv` build for that triple and verifies its published
   SHA-256 before writing `binaries/uv-<triple>[.exe]`.
-- **`tauri.conf.json`** — `bundle.targets` lists all six formats; Tauri intersects that
+- **`tauri.conf.json`**: `bundle.targets` lists all six formats; Tauri intersects that
   list with what the host can build, so each runner produces only its own. `rpm` is
   deliberately absent: nobody has tested it.
-- **The Python pipeline** — already portable. `dubbing/tools.py` names the right install
+- **The Python pipeline**: already portable. `dubbing/tools.py` names the right install
   command per OS (`brew` / `winget` / `apt-get`), resolves tools with a `.exe` suffix on
   Windows, and forces UTF-8 stdio there. `pyproject.toml` markers keep `mlx-lm` on macOS
   only. Device selection is `cuda` → `mps` → `cpu` everywhere it appears
@@ -130,12 +130,12 @@ The provisioned workspace lives in `~/.local/share/MamboDubb/workspace`.
 ## Open items
 
 1. **No code signing anywhere.** macOS has a documented signing path
-   ([RELEASING.md](RELEASING.md)) that CI does not run — the workflow has a loud
+   ([RELEASING.md](RELEASING.md)) that CI does not run. The workflow has a loud
    `TODO(signing)` where the env vars go. Windows has no certificate at all, so
    SmartScreen will warn on every build until someone buys an OV/EV cert. Linux
    packages are conventionally unsigned; the `.deb`/`.AppImage` are fine as-is.
 2. **Inference speed off a GPU.** The pipeline picks CUDA if it is there, then MPS, then
-   CPU. A Windows or Linux box with an NVIDIA card is the good case — but PyPI's default
+   CPU. A Windows or Linux box with an NVIDIA card is the good case, but PyPI's default
    `torch` wheel is **CPU-only on Windows**, so a Windows user must install the CUDA
    build explicitly ([WINDOWS.md](WINDOWS.md#cuda-wheels)) or every model runs on the CPU
    and a five-minute video takes hours. On a CPU-only machine of any OS the app *works*
@@ -147,11 +147,11 @@ The provisioned workspace lives in `~/.local/share/MamboDubb/workspace`.
    the local data dir; `uv sync` completes there (~10 GB, and the Qwen3-TTS editable
    install is the fragile part); `ffmpeg`/`sox` detection and the Setup screen's install
    button; the file dialogs and "reveal in file manager".
-4. **The AppImage bundles no `libwebkit2gtk`.** It is an AppImage in name — it still
+4. **The AppImage bundles no `libwebkit2gtk`.** It is an AppImage in name only, and still
    depends on the host's WebKitGTK.
 5. **`translator/` is a separate venv** with its own CUDA story on Linux/Windows; the
    desktop shell does not provision or manage it.
-6. **Bundle size.** The uv sidecar is 35–59 MB depending on target, and the payload adds
-   ~44 MB — ~11 MB of source and 31 MB of bundled diarization weights (`third_party/
+6. **Bundle size.** The uv sidecar is 35 to 59 MB depending on target, and the payload adds
+   ~44 MB: ~11 MB of source and 31 MB of bundled diarization weights (`third_party/
    pyannote-speaker-diarization-community-1`, CC-BY-4.0, shipped so a fresh install
    tells speakers apart with no Hugging Face account). Nothing is stripped.
