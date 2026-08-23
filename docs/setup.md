@@ -117,6 +117,46 @@ Set `DUBBING_TRANSLATOR_BACKEND` to `vllm`, `transformers` or `mlx` to force one
 (default `auto`); a forced backend that cannot start fails loudly rather than
 falling back, which is the point of forcing it.
 
+### Low-VRAM mode
+
+The bf16 weights above are about 24 GB, which is more than a 24 GB card can hold
+once the KV cache is counted. Low-VRAM mode loads the same checkpoint as 4-bit
+NF4 through bitsandbytes (bfloat16 compute), roughly 7 GB of weights, so a 12 GB
+card runs and a 16 GB one is comfortable. On Apple Silicon the same switch loads
+the mxfp4 MLX build (6.4 GB) instead of the 6-bit one (9.7 GB).
+
+```bash
+uv run python -m dubbing input.mp4 --low-vram      # or --no-low-vram
+DUBBING_LOW_VRAM=1 uv run python -m dubbing input.mp4
+```
+
+The desktop app has the same switch on its Setup screen, which writes
+`DUBBING_LOW_VRAM` to the workspace `.env`. Nothing has to be set at all: the
+mode turns itself on under 28 GiB of VRAM or under 20 GiB of unified memory and
+says so in the log. An explicit choice always wins over that detection, in both
+directions.
+
+It costs translation quality. Measured on Apple Silicon, thirty-one real Hebrew
+lines: mxfp4 differed from the 6-bit output on 24 of them, six of those being
+real losses (an idiom read literally, a name hallucinated out of the run's
+context, a name spelled two ways in one run) against one improvement, at 1.6x
+the speed. The CUDA 4-bit path has not been run on real hardware, so its ~7 GB
+and its quality are calculated rather than measured.
+
+bitsandbytes is an optional extra of the translator venv. The first low-VRAM
+launch adds it (`uv run --extra lowvram`) on a machine with a CUDA device; to do
+it by hand:
+
+```bash
+uv sync --project translator --extra lowvram
+```
+
+Where it cannot be installed, or where there is no CUDA device to quantise onto,
+the worker says so on stderr and loads bfloat16, which is what that machine did
+before the mode existed. It is never recorded in a run: which weights fit is a
+property of the machine, and a project copied to a bigger card must not still be
+asking for the small ones.
+
 ## Verify
 
 ```bash

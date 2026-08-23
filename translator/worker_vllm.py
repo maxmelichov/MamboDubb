@@ -80,13 +80,38 @@ def emit(obj: dict) -> None:
     print(json.dumps(obj, ensure_ascii=False), file=_PROTOCOL or sys.stdout, flush=True)
 
 
+def want_4bit() -> bool:
+    """True when the parent asked for low-VRAM mode (`dubbing.translate.low_vram`)."""
+    return os.environ.get("TRANSLATOR_LOAD_4BIT", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 def load(path: str):
     from vllm import LLM
 
+    kwargs = dict(model=path, dtype="bfloat16", gpu_memory_utilization=GPU_UTIL,
+                  max_model_len=MAX_MODEL_LEN, trust_remote_code=True)
+    if want_4bit():
+        # vLLM quantises the checkpoint itself through bitsandbytes, in-flight,
+        # so this is the same NF4 trade the transformers worker makes and the
+        # same 24 GB checkpoint on disk. Which vLLM releases support it for
+        # which architectures moves; a build that cannot do it must not take the
+        # run down with it, so the failure retries in bfloat16 with the reason
+        # said out loud. Retrying costs a second engine construction, and only
+        # on the path that was about to fail anyway.
+        log("low-VRAM mode: loading through bitsandbytes 4-bit")
+        try:
+            llm = LLM(quantization="bitsandbytes", **kwargs)
+            log("model loaded")
+            return llm, llm.get_tokenizer()
+        except Exception as exc:
+            log(f"vLLM could not load this model 4-bit ({type(exc).__name__}: {exc}). "
+                "Falling back to bfloat16, which needs about 24 GB of VRAM; "
+                "DUBBING_TRANSLATOR_BACKEND=transformers uses the bitsandbytes "
+                "path instead.")
     log(f"loading {path} on vLLM (bfloat16, gpu_util={GPU_UTIL}, "
         f"max_model_len={MAX_MODEL_LEN})")
-    llm = LLM(model=path, dtype="bfloat16", gpu_memory_utilization=GPU_UTIL,
-              max_model_len=MAX_MODEL_LEN, trust_remote_code=True)
+    llm = LLM(**kwargs)
     tokenizer = llm.get_tokenizer()
     log("model loaded")
     return llm, tokenizer

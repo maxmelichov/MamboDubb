@@ -28,7 +28,20 @@ of the Qatar piece against nine things the Hebrew must survive "הגז הקטא�
 
 For reference the Gemma 3 12B 4-bit it replaces scored 7/9. Below 6 bits this model
 does not hold Hebrew, so trading precision for memory is a real quality decision, not
-a free one but if 9.7 GB is too much, MODEL_PATH is the only line to change.
+a free one but if 9.7 GB is too much, low-VRAM mode makes that trade deliberately
+(see `low_vram`): mxfp4 here, 4-bit NF4 on CUDA. The scores above are why mxfp4 and
+not the plain 4-bit build, and why the mode is a switch rather than the default.
+
+Measured again on a different harness, the 31 dubbed lines of a Hebrew wildlife
+documentary (outputs/demo_he_en), 6-bit against mxfp4: 24 of the 31 came back
+different, most of it rewording that changes nothing. Six were real losses "במצב
+לא משהו" ("in no great shape") read literally as "in a condition that is not
+something"; "פצעים" (wounds) becoming quills; "חד-פעמית" (single-use) becoming
+"plain"; a hedgehog's name lifted out of the run's `context` onto two lines that
+never named one and the same disease spelled two ways within one run, which is
+exactly what `update_established_names` exists to prevent. One line went the other
+way: "אצלם" came back as "For them" where the 6-bit build said "For me". mxfp4 was
+1.6x faster (75 s against 124 s for the 31 lines).
 
 Those scores are for a segment translated alone. Showing the model the previous line
 (see `_PRECEDING`) trades one of them "שתי ההפיכות" comes back as "two reversals"
@@ -64,6 +77,28 @@ HUB_ID = "mlx-community/gemma-4-12B-it-6bit"
 # (throughput; Linux only) and plain transformers (the fallback, and the only CUDA
 # option on Windows). See `select_backend`.
 CUDA_MODEL_PATH = REPO_ROOT / "models" / "gemma-4-12b-it-cuda"
+# Low-VRAM mode: the same 12B, quantised harder, so an ordinary card or a 16 GB
+# Mac can run the translator at all. Same model, same prompts, same
+# post-processing only the weights are smaller. See `low_vram`.
+#
+# On MLX the choice is mxfp4 rather than the plain 4-bit build, and that is a
+# measured preference, not a guess: on the nine-thing Qatar harness in this
+# module's docstring, 4bit scores 5/9 and mxfp4 6/9 at the same 6.3 GB, and
+# mxfp4 is about 3x faster. Both are a real step down from the 6-bit default's
+# 9/9 which is why this is a mode a user turns on, not the default.
+#
+# The other way to fit a small card is a smaller *model*, and it was measured
+# against this one before it was rejected. Gemma 4's smaller members are not
+# small in memory: E4B is 16 GB of bf16 weights (it is 8B raw parameters with 4B
+# active) and E2B is 10.25 GB. Neither fits a 12 GB card at full precision, so
+# the "smaller model at higher precision" trade does not exist here it would
+# be a smaller model *also* quantised, giving up the 12B's world knowledge (the
+# entire reason this pipeline uses a general instruction model rather than a
+# dedicated MT one; see the module docstring) and buying nothing on the axis it
+# was supposed to buy. Quantising the 12B keeps the model that understands
+# "האחים המוסלמים" is an organisation.
+LOW_VRAM_MODEL_PATH = REPO_ROOT / "models" / "gemma-4-12B-it-mxfp4"
+LOW_VRAM_HUB_ID = "mlx-community/gemma-4-12B-it-mxfp4"
 
 # Words whose loss flips a sentence's meaning, per target language. `shorten`
 # refuses any rewrite that drops one. Small on purpose: high-precision markers,
@@ -1047,25 +1082,36 @@ def _mlx_available() -> bool:
 _VLLM_INSTALLED: bool | None = None
 
 
+def translator_venv_has(package: str) -> bool:
+    """True when the translator venv carries `package` at its top level.
+
+    Deliberately a filesystem look, not an import: the packages this asks about
+    (vllm, bitsandbytes) must never be imported into the main venv they pin
+    their own torch, which is exactly why the worker lives in another venv and
+    spawning `uv run … -c "import vllm"` to ask would cost a venv resolution on
+    a question asked before every load.
+
+    Both venv layouts are checked (`lib/python*/site-packages` on POSIX,
+    `Lib/site-packages` on Windows) so the probe is the same code everywhere.
+
+    `next(…, None)` and not `any(glob)`: `Path.glob` returns a *generator*, and
+    a generator is truthy whether or not it will yield anything, so the obvious
+    spelling answers True on a machine with no translator venv at all.
+    """
+    return any(next((REPO_ROOT / "translator" / ".venv").glob(pattern), None) is not None
+               for pattern in (f"lib/python*/site-packages/{package}/__init__.py",
+                               f"Lib/site-packages/{package}/__init__.py"))
+
+
 def _vllm_installed() -> bool:
     """True when the translator venv carries vLLM (the `vllm` extra was synced).
 
-    Deliberately a filesystem look, not an import: vllm must never be imported
-    into the main venv (it pins its own torch, which is exactly why the worker
-    lives in another venv), and spawning `uv run … -c "import vllm"` to ask would
-    cost a venv resolution on a question asked before every load. The answer is
-    cached for the process a sync mid-run is not a case worth serving.
-
-    Both venv layouts are checked (`lib/python*/site-packages` on POSIX,
-    `Lib/site-packages` on Windows) so the probe is the same code everywhere,
-    even though the answer on Windows is always False for want of wheels.
+    The answer is cached for the process a sync mid-run is not a case worth
+    serving. On Windows it is always False for want of wheels.
     """
     global _VLLM_INSTALLED
     if _VLLM_INSTALLED is None:
-        venv = REPO_ROOT / "translator" / ".venv"
-        _VLLM_INSTALLED = any(venv.glob(pattern) for pattern in
-                              ("lib/python*/site-packages/vllm/__init__.py",
-                               "Lib/site-packages/vllm/__init__.py"))
+        _VLLM_INSTALLED = translator_venv_has("vllm")
     return _VLLM_INSTALLED
 
 
@@ -1127,17 +1173,180 @@ def _backend() -> str:
                           _vllm_available())
 
 
-def _worker_cmd(backend: str = "transformers") -> list[str]:
+# --------------------------------------------------------------------------
+# low-VRAM mode
+# --------------------------------------------------------------------------
+
+LOW_VRAM_ENV = "DUBBING_LOW_VRAM"
+LOW_VRAM_WORKER_ENV = "TRANSLATOR_LOAD_4BIT"
+
+# Below this much VRAM, a CUDA box gets low-VRAM mode without being asked. The
+# bf16 weights are ~24 GB and the KV cache and activations want a couple more,
+# so anything under about 28 GiB cannot hold the default translator at all: the
+# choice on such a card is not "quantised or not", it is "quantised or OOM".
+# That makes a 24 GB card (3090, 4090) a low-VRAM card by this rule, which is
+# the honest reading of what 24 GB of weights on a 24 GB card means.
+AUTO_LOW_VRAM_CUDA_BYTES = 28 * 1024**3
+# And on Apple Silicon, where "VRAM" is the whole machine's memory. The 6-bit
+# MLX build is 9.7 GB on disk, peaks near 10 GB resident and a whole run sits
+# near 13 GB, so a 16 GB Mac is running the translator against its own OS. 24 GB
+# machines are left alone; the threshold sits between the two sizes rather than
+# on either, so neither is decided by a rounding of `hw.memsize`.
+AUTO_LOW_VRAM_UNIFIED_BYTES = 20 * 1024**3
+
+_LOW_VRAM_FORCED: bool | None = None    # the CLI flag, when one was typed
+_LOW_VRAM_STATE: bool | None = None     # resolved once per process
+
+
+def parse_low_vram(value: str | None) -> bool | None:
+    """A `DUBBING_LOW_VRAM` value as a yes/no/no-opinion. Pure.
+
+    Empty and "auto" mean "no opinion" (autodetect decides); anything else is
+    read generously, because the difference between `1`, `true` and `on` is not
+    a distinction anybody meant to make. A value that is neither is a typo, and
+    a typo must not read as "off": it warns and leaves the decision to the
+    probe, exactly as an unknown `DUBBING_TRANSLATOR_BACKEND` does.
+    """
+    want = (value or "").strip().lower()
+    if want in ("", "auto"):
+        return None
+    if want in ("1", "true", "yes", "on"):
+        return True
+    if want in ("0", "false", "no", "off"):
+        return False
+    print(f"  translate: unknown {LOW_VRAM_ENV}={value!r} (expected 1/0, true/false, "
+          "on/off or auto) → deciding automatically", file=sys.stderr)
+    return None
+
+
+def set_low_vram(choice: bool | None) -> None:
+    """Record the user's explicit choice (the `--low-vram` flag). None clears it.
+
+    Kept as process state rather than threaded through `load()` because the
+    translator is loaded from four places (the translate stage, the timeline's
+    shortener, the studio's per-line re-translate, the app's job child) and a
+    machine's memory is the same in all four. It is deliberately *not* recorded
+    in the manifest either: which weights this machine can hold is a property of
+    the machine, not of the run, and putting it in the translate fingerprint
+    would re-translate every line of every project the first time a user carried
+    one between two computers.
+    """
+    global _LOW_VRAM_FORCED, _LOW_VRAM_STATE
+    _LOW_VRAM_FORCED = choice
+    _LOW_VRAM_STATE = None              # re-resolve, and say so again
+
+
+def choose_low_vram(forced: bool | None, backend: str, vram_bytes: int,
+                    unified_bytes: int) -> tuple[bool, str]:
+    """Whether to run the small translator, and the sentence explaining why.
+
+    Pure the probes are the caller's job. An explicit choice always wins, in
+    both directions: a user who typed `--no-low-vram` on a 12 GB card has said
+    they want the failure, and one who typed `--low-vram` on a 48 GB card may be
+    sharing the card with something this process cannot see.
+    """
+    if forced is not None:
+        return forced, "asked for" if forced else "turned off"
+    if backend == "mlx":
+        if unified_bytes and unified_bytes < AUTO_LOW_VRAM_UNIFIED_BYTES:
+            return True, (f"auto: {unified_bytes / 1024**3:.0f} GiB of unified memory, "
+                          f"under the {AUTO_LOW_VRAM_UNIFIED_BYTES // 1024**3} GiB the "
+                          "6-bit translator wants")
+        return False, "the default weights fit"
+    if vram_bytes and vram_bytes < AUTO_LOW_VRAM_CUDA_BYTES:
+        return True, (f"auto: {vram_bytes / 1024**3:.0f} GiB of VRAM, under the "
+                      f"{AUTO_LOW_VRAM_CUDA_BYTES // 1024**3} GiB the bfloat16 "
+                      "translator needs")
+    return False, "the default weights fit"
+
+
+def _total_vram() -> int:
+    """Bytes on CUDA device 0, or 0 when there is no CUDA to ask.
+
+    Device 0 and not the device the worker will own: `_spare_gpu` hands the
+    translator the *last* card, and a box with two different cards is rare
+    enough that reading one of them is better than importing torch twice.
+    """
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return 0
+        return int(torch.cuda.get_device_properties(0).total_memory)
+    except Exception:
+        return 0
+
+
+def _total_unified() -> int:
+    """Bytes of physical memory, which on Apple Silicon is also the VRAM."""
+    try:
+        return int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
+    except (OSError, ValueError, AttributeError):
+        return 0
+
+
+def low_vram() -> bool:
+    """True when this run loads the small translator. Resolved once, and logged.
+
+    Resolved once per process because the answer must not change between the
+    translate stage and the timeline's shortener the two would load different
+    weights for the same run and because the probes cost a torch import.
+    """
+    global _LOW_VRAM_STATE
+    if _LOW_VRAM_STATE is None:
+        backend = _backend()
+        forced = _LOW_VRAM_FORCED
+        if forced is None:
+            forced = parse_low_vram(os.environ.get(LOW_VRAM_ENV))
+        on, why = choose_low_vram(forced, backend, _total_vram(), _total_unified())
+        # Only the "on" case is announced. Off is the default on every machine
+        # big enough for the default, and a line saying so on every load would
+        # be noise in front of the one line that matters.
+        if on:
+            print(f"  translate: low-VRAM mode on ({why}) smaller translator weights, "
+                  "lower translation quality", file=sys.stderr)
+        _LOW_VRAM_STATE = on
+    return _LOW_VRAM_STATE
+
+
+def _bnb_installed() -> bool:
+    """True when the translator venv carries bitsandbytes (the `lowvram` extra).
+
+    Not cached, unlike vLLM's: the first low-VRAM launch is what *installs* the
+    extra, and the launch after it has to notice that it did.
+    """
+    return translator_venv_has("bitsandbytes")
+
+
+def _lowvram_extra(low: bool) -> bool:
+    """Whether the launch line should carry `--extra lowvram`.
+
+    Two reasons to carry it, and the second is why this is not simply
+    `_bnb_installed()`. Already installed: keep it, or `uv run` uninstalls it
+    (the rule `_worker_cmd` documents for vLLM). Not installed but low-VRAM was
+    asked for on a machine with a CUDA device: install it, because a mode whose
+    dependency is never fetched is a mode that never works. No CUDA means no
+    bitsandbytes worth having (and no wheels to fetch on a Mac), so the flag
+    stays off and `translator/worker.py` degrades to bf16 with a message.
+    """
+    return _bnb_installed() or (low and _cuda_count() > 0)
+
+
+def _worker_cmd(backend: str = "transformers", low_vram: bool = False) -> list[str]:
     """Launch line for a CUDA worker, through the translator uv project venv.
 
     Both workers share one venv (see translator/pyproject.toml), and `uv run`
     re-syncs that venv to the extras its own command line names so a launch
     without `--extra vllm` would uninstall vLLM out from under the next run's
     probe. The flag therefore follows the *venv's* state, not the chosen backend.
+    The same rule governs `--extra lowvram`, with one addition: see
+    `_lowvram_extra`.
     """
     project = REPO_ROOT / "translator"
     script = "worker_vllm.py" if backend == "vllm" else "worker.py"
     extra = ["--extra", "vllm"] if _vllm_installed() else []
+    if _lowvram_extra(low_vram):
+        extra += ["--extra", "lowvram"]
     return ["uv", "run", "--project", str(project), *extra, "python",
             str(project / script), str(CUDA_MODEL_PATH)]
 
@@ -1202,13 +1411,23 @@ def load(device: str | None = None):
         if _WORKER is not None and _WORKER._proc.poll() is None:
             return None, _WORKER, None
         gpu = _spare_gpu()
-        env = None
+        low = low_vram()
+        extra_env: dict[str, str] = {}
         if gpu is not None:
-            env = {**os.environ, "CUDA_VISIBLE_DEVICES": gpu}
+            extra_env["CUDA_VISIBLE_DEVICES"] = gpu
             print(f"  translate: CUDA worker pinned to GPU {gpu}", file=sys.stderr)
+        if low:
+            # The worker reads this and quantises on load. An env var rather than
+            # an argv flag because both workers already take exactly one
+            # positional (the model path) and a user launching one by hand to
+            # debug it should be able to say the same thing.
+            extra_env[LOW_VRAM_WORKER_ENV] = "1"
+        env = {**os.environ, **extra_env} if extra_env else None
+        weights = "4-bit weights" if low else "bf16 weights"
         print(f"  translate: starting {backend} worker for {CUDA_MODEL_PATH.name} "
-              f"(first run builds translator/ venv + loads bf16 weights)", file=sys.stderr)
-        handle = WorkerHandle(_worker_cmd(backend), env=env, own_gpu=gpu is not None)
+              f"(first run builds translator/ venv + loads {weights})", file=sys.stderr)
+        handle = WorkerHandle(_worker_cmd(backend, low_vram=low), env=env,
+                              own_gpu=gpu is not None)
         if handle.own_gpu:
             _WORKER = handle
             atexit.register(handle.close)
@@ -1216,16 +1435,40 @@ def load(device: str | None = None):
     return _load_mlx()
 
 
+def mlx_model_for(low: bool) -> tuple[Path, str, str]:
+    """(local dir, hub id, label) of the MLX weights for that mode. Pure.
+
+    Pure so the setup screen can ask it without resolving the mode through
+    `low_vram`, whose probes import torch a server process has no business
+    holding. The two builds never share a directory, so turning the mode on and
+    off costs a download once and never again.
+    """
+    if low:
+        return LOW_VRAM_MODEL_PATH, LOW_VRAM_HUB_ID, "mlx mxfp4, low VRAM"
+    return MODEL_PATH, HUB_ID, "mlx 6-bit"
+
+
+def mlx_weights() -> tuple[str, str]:
+    """(what to load, how to describe it) for this run's MLX translator.
+
+    A local directory when the download landed, the hub id otherwise so a
+    machine that has neither still works, slowly, on first use.
+    """
+    path, hub, label = mlx_model_for(low_vram())
+    return (str(path) if path.is_dir() else hub), label
+
+
 def _load_mlx():
-    """Load general Gemma 4 (12B, 4-bit) through MLX.
+    """Load general Gemma 4 (12B) through MLX, in whichever quantisation this
+    machine asked for (see `mlx_weights`).
 
     Returns (tokenizer, model, None) to match the transformers-era
     (processor, model, device) call sites device is unused under MLX.
     """
     import mlx_lm
 
-    path = str(MODEL_PATH) if MODEL_PATH.is_dir() else HUB_ID
-    print(f"  translate: loading {path} (mlx 4-bit)", file=sys.stderr)
+    path, label = mlx_weights()
+    print(f"  translate: loading {path} ({label})", file=sys.stderr)
     try:
         model, tokenizer = mlx_lm.load(path)
     except AttributeError:

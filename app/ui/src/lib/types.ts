@@ -525,6 +525,20 @@ export type SetupCheck = {
    * and a progress denominator, never for accounting.
    */
   download_bytes?: number;
+  /**
+   * The `low_vram` row only: whether this machine will load the small
+   * translator weights. Not the same fact as `ok` that row is a setting, and
+   * a setting is never a failure, so it is always green in either position.
+   */
+  enabled?: boolean;
+  /**
+   * Where a setting-shaped row got its answer. `"env"` is a variable exported
+   * in the server's own environment, which the app cannot rewrite; `"env_file"`
+   * is the workspace `.env`, which it can; `"auto"` is nobody having said, so
+   * the machine's memory decided. The control has to know: offering a switch
+   * against an `"env"` value would be offering a change that does not happen.
+   */
+  source?: "env" | "env_file" | "auto" | null;
 };
 
 /** `ok` is the whole checklist's verdict false means the app is not usable. */

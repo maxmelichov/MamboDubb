@@ -278,6 +278,22 @@ export const api = {
     return request<SetupCheck>("/api/setup/hf_token", { method: "DELETE" });
   },
 
+  /**
+   * Turn the low-VRAM translator on or off for this machine, written to the
+   * same workspace `.env`. Machine state, not project state: it is never
+   * recorded in a run, so a project carried to a bigger card is not still
+   * asking for small weights.
+   *
+   * The answer is the re-probed row rather than an echo, and the difference is
+   * load-bearing: a `DUBBING_LOW_VRAM` exported in the server's environment
+   * beats the file, and the row that comes back says so instead of the switch
+   * quietly lying about where it landed.
+   */
+  setLowVram(enabled: boolean): Promise<SetupCheck> {
+    if (USE_FIXTURES) return fixtures.setLowVram(enabled);
+    return request<SetupCheck>("/api/setup/low_vram", json({ enabled }));
+  },
+
   // The server speaks in envelopes ({"projects": [...]}, {"segment": {...}});
   // the components speak in values. The unwrapping lives here and only here —
   // the fixtures return bare values, which is how a mismatch stayed invisible

@@ -161,6 +161,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--device", help="torch device override for TTS")
     p.add_argument("--tts-model", choices=("1.7b", "0.6b"), default=None,
                    help="Qwen3-TTS voice-clone model (default 1.7b; 0.6b accepted only so old runs re-run)")
+    # Deliberately NOT in RECORDED_DEFAULTS. Every other option here describes
+    # the dub; this one describes the machine, and a manifest that remembered it
+    # would hand a 12 GB card's setting to the 48 GB card the project was copied
+    # to. It is also kept out of the translate fingerprint for the same reason: a
+    # machine change must not silently re-translate a finished project.
+    p.add_argument("--low-vram", action=argparse.BooleanOptionalAction, default=None,
+                   help="load smaller translator weights so an ordinary GPU (or a "
+                        "16 GB Mac) can run the 12B translator: 4-bit on CUDA, mxfp4 "
+                        "on Apple Silicon. Costs translation quality. Detected "
+                        "automatically on a small card; --no-low-vram refuses the "
+                        "detection and keeps the full-precision weights")
     return p.parse_args(argv)
 
 
@@ -349,6 +360,11 @@ def main(argv: list[str] | None = None) -> int:
         load_dotenv(REPO_ROOT / ".env")
     except Exception:
         pass
+
+    # After load_dotenv, so a `--low-vram` on the command line still beats a
+    # DUBBING_LOW_VRAM in the .env the app writes, and before any stage runs, so
+    # the choice is settled the first time anything loads the translator.
+    translate.set_low_vram(args.low_vram)
 
     workdir = (args.out or default_workdir(args.source)).resolve()
     workdir.mkdir(parents=True, exist_ok=True)

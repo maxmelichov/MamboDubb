@@ -21,6 +21,13 @@ drop-in replacement rather than a fork of the protocol.
 The worker applies the model's own chat template (one user turn) and greedy-decodes;
 all prompt construction and post-processing stays in dubbing/translate.py so the two
 backends share every rule.
+
+TRANSLATOR_LOAD_4BIT=1 in the environment is low-VRAM mode: the same checkpoint,
+loaded through bitsandbytes as NF4 with a bfloat16 compute dtype, which turns
+~24 GB of weights into roughly 7 and puts the translator on an ordinary card.
+The parent sets it from `dubbing.translate.low_vram`; a hand-launched worker can
+set it too. It degrades to bfloat16, loudly, when bitsandbytes is not installed
+or there is no CUDA device to quantise onto (see `quant_config`).
 """
 
 from __future__ import annotations
@@ -58,18 +65,72 @@ def emit(obj: dict) -> None:
     print(json.dumps(obj, ensure_ascii=False), flush=True)
 
 
+def want_4bit() -> bool:
+    """True when the parent asked for low-VRAM mode (`dubbing.translate.low_vram`)."""
+    return os.environ.get("TRANSLATOR_LOAD_4BIT", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def quant_config(cuda: bool):
+    """The bitsandbytes NF4 config, or None with a reason logged.
+
+    NF4 with a bfloat16 compute dtype and double quantisation: ~4.1 bits per
+    weight against the 16 the default path uses, so 12B of weights lands near
+    7 GB instead of 24. Compute stays bfloat16, which is what keeps this a
+    memory trade rather than a speed one — each block is dequantised on its way
+    into the matmul.
+
+    Two ways this is unavailable, and neither may be a crash. bitsandbytes is an
+    optional extra (`--extra lowvram`), and it is a CUDA library: on a CPU-only
+    box there is nothing for it to quantise onto. Either way the caller falls
+    back to bfloat16, which is the behaviour that existed before this mode, and
+    the message says what to install. A silent fallback would be worse than
+    either outcome: a user who asked for 4-bit and got a 24 GB allocation
+    deserves to be told before the OOM, not after.
+    """
+    if not cuda:
+        log("low-VRAM mode asked for, but there is no CUDA device here: "
+            "bitsandbytes only quantises onto a GPU. Loading bfloat16 instead.")
+        return None
+    try:
+        import bitsandbytes  # noqa: F401
+        import torch
+        from transformers import BitsAndBytesConfig
+    except ImportError as exc:
+        log(f"low-VRAM mode asked for, but bitsandbytes is unavailable ({exc}). "
+            "Install it with `uv sync --project translator --extra lowvram`. "
+            "Loading bfloat16 instead.")
+        return None
+    return BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                              bnb_4bit_compute_dtype=torch.bfloat16,
+                              bnb_4bit_use_double_quant=True)
+
+
 def load(path: str):
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    log(f"loading {path} on {device} (bfloat16)")
+    quant = quant_config(device.startswith("cuda")) if want_4bit() else None
+    log(f"loading {path} on {device} ({'4-bit NF4' if quant else 'bfloat16'})")
     tokenizer = AutoTokenizer.from_pretrained(path)
+    kwargs = {"dtype": torch.bfloat16}
+    if quant is not None:
+        # device_map places the weights as they are quantised, shard by shard, so
+        # the 24 GB bf16 checkpoint never exists in full on either the GPU or in
+        # RAM — which is the whole point on a card that could not hold it.
+        kwargs.update(quantization_config=quant, device_map={"": 0})
     try:
-        model = AutoModelForCausalLM.from_pretrained(path, dtype=torch.bfloat16)
+        model = AutoModelForCausalLM.from_pretrained(path, **kwargs)
     except TypeError:  # transformers < 5 spells it torch_dtype
-        model = AutoModelForCausalLM.from_pretrained(path, torch_dtype=torch.bfloat16)
-    model.to(device).eval()
+        kwargs["torch_dtype"] = kwargs.pop("dtype")
+        model = AutoModelForCausalLM.from_pretrained(path, **kwargs)
+    # A quantised model is already on its device and refuses to be moved: bnb
+    # keeps the quantisation state beside the weights, and `.to()` raises rather
+    # than carry it. device_map put it where it belongs.
+    if quant is None:
+        model.to(device)
+    model.eval()
     log("model loaded")
     return tokenizer, model, device
 

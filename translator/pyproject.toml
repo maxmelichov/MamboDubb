@@ -30,7 +30,23 @@ dependencies = [
 # dropping `--extra vllm` from a launch line would *uninstall* vllm. That is why
 # `dubbing/translate._worker_cmd` adds the flag whenever the extra is present,
 # for either worker, instead of only for the vLLM one.
+#
+# Low-VRAM mode: 4-bit NF4 weights through bitsandbytes, so the 12B translator
+# fits on an ordinary card instead of needing 24 GB. Same venv, same rule about
+# `uv run` re-syncing to the extras on its command line (see the vllm note
+# above) — `dubbing/translate._lowvram_extra` decides when the flag is passed.
+#
+#   uv sync --project translator --extra lowvram
+#
+# Kept an extra rather than a base dependency because bitsandbytes publishes
+# CUDA wheels for Linux and Windows only: on a Mac the MLX path never spawns
+# this worker, and on a CPU-only box there is nothing for it to quantise onto.
+# transformers reads the config through its own integration, so nothing here
+# fights the `transformers >= 5` pin above.
 [project.optional-dependencies]
 vllm = [
     "vllm>=0.27",
+]
+lowvram = [
+    "bitsandbytes>=0.45",
 ]

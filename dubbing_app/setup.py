@@ -62,6 +62,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -341,19 +342,129 @@ def env_path(env_file: Path | None = None) -> Path:
     return (REPO_ROOT / ".env" if env_file is None else Path(env_file)).resolve()
 
 
-def _env_file_has_token(path: Path) -> bool:
+def env_file_value(path: Path, key: str) -> str | None:
+    """What `key` is set to in a `.env` file, or None when it is not in there.
+
+    Read the way python-dotenv reads it, because python-dotenv is what will
+    actually apply the file (`dubbing.cli` and `dubbing_app.worker` both call
+    `load_dotenv`): comments skipped, surrounding quotes stripped, and the last
+    assignment winning over an earlier one. A reader that disagreed with the
+    loader would show the user a setting their runs do not have.
+    """
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return False
+        return None
+    found = None
     for line in text.splitlines():
         line = line.strip()
         if line.startswith("#") or "=" not in line:
             continue
-        key, _, value = line.partition("=")
-        if key.strip() in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN") and value.strip().strip("'\""):
-            return True
-    return False
+        name, _, value = line.partition("=")
+        if name.strip() == key:
+            found = value.strip().strip("'\"")
+    return found
+
+
+def _env_file_has_token(path: Path) -> bool:
+    return any((env_file_value(path, var) or "").strip()
+               for var in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"))
+
+
+def gpu_memory_bytes() -> int:
+    """Total VRAM on the first NVIDIA GPU, or 0 when there is none to ask.
+
+    Asked of `nvidia-smi` rather than of torch, and that is the module's first
+    rule rather than a preference: `GET /api/setup` runs in the server process,
+    and importing torch there to read one number would cost half a gigabyte of
+    resident memory on every machine, including the Macs that have no CUDA at
+    all. The run itself still asks torch (`dubbing.translate._total_vram`);
+    this is the cheap version for a screen.
+    """
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return 0
+    try:
+        out = subprocess.run([exe, "--query-gpu=memory.total",
+                              "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    first = (out.stdout or "").strip().splitlines()
+    try:
+        return int(float(first[0].strip())) * 1024**2      # nvidia-smi reports MiB
+    except (IndexError, ValueError):
+        return 0
+
+
+def low_vram_env_key() -> str:
+    """The variable name the pipeline reads the mode from. Its name, not a copy:
+    the route that writes `.env` has to spell it exactly as the run reads it."""
+    from dubbing import translate
+
+    return translate.LOW_VRAM_ENV
+
+
+def low_vram_state(env_file: Path | None = None) -> tuple[bool, str, str, str]:
+    """(enabled, source, why, backend) the mode this machine will actually run in.
+
+    The threshold and the decision both come from `dubbing.translate`, never
+    restated here, so the screen and the run cannot disagree about what this
+    machine is going to do. The backend is passed as a platform fact rather than
+    read from `translate._backend()`, whose vLLM probe imports torch.
+
+    `source` is where the answer came from: "env" (a variable in the
+    environment, which no file this app writes can override), "env_file" (the
+    workspace `.env`, which the toggle writes) or "auto" (nobody said, so the
+    memory on this machine decided).
+    """
+    from dubbing import translate
+
+    path = env_path(env_file)
+    env_value = os.environ.get(translate.LOW_VRAM_ENV)
+    source = "env" if (env_value or "").strip() else None
+    if source is None:
+        env_value = env_file_value(path, translate.LOW_VRAM_ENV)
+        source = "env_file" if (env_value or "").strip() else None
+    forced = translate.parse_low_vram(env_value)
+    if forced is None:
+        source = "auto"                     # including an unreadable value
+    backend = "mlx" if sys.platform == "darwin" else "transformers"
+    unified = translate._total_unified() if backend == "mlx" else 0
+    vram = 0 if backend == "mlx" else gpu_memory_bytes()
+    enabled, why = translate.choose_low_vram(forced, backend, vram, unified)
+    return enabled, source, why, backend
+
+
+def low_vram_check(env_file: Path | None = None) -> dict[str, Any]:
+    """Which translator weights this machine will load, and why.
+
+    Always `ok` and always `optional`: this row is a *setting*, not a missing
+    thing, and a red tick beside a deliberate choice would send people looking
+    for something to install. What it carries instead is the answer and its
+    provenance (`enabled` and `source`; see `low_vram_state`).
+    """
+    from dubbing import translate
+
+    path = env_path(env_file)
+    enabled, source, why, backend = low_vram_state(env_file)
+
+    if enabled:
+        weights = ("the mxfp4 MLX build, about 6.4 GB" if backend == "mlx"
+                   else "4-bit NF4 weights, about 7 GB")
+        detail = f"on: the translator loads {weights}, and translates less well"
+    else:
+        weights = ("the 6-bit MLX build, 9.7 GB" if backend == "mlx"
+                   else "bfloat16 weights, about 24 GB")
+        detail = f"off: the translator loads {weights}"
+    if source == "auto":
+        detail += f" ({why})"
+    elif source == "env":
+        detail += f", set by {translate.LOW_VRAM_ENV} in the environment"
+    else:
+        detail += f", set in `{path}`"
+    return check("low_vram", "Low-VRAM translator", True, detail,
+                 severity=OPTIONAL, enabled=enabled, source=source, path=str(path))
 
 
 def disk_check(outputs: Path) -> dict[str, Any]:
@@ -399,9 +510,15 @@ def model_downloads() -> dict[str, dict[str, Any]]:
     """
     from dubbing import hebrew, transcript, translate, tts
 
+    # The translator row follows low-VRAM mode, and has to: with the mode on,
+    # a row that reported the 6-bit build would call the machine ready for a
+    # model the run is not going to open, and its Download button would fetch
+    # 9.7 GB the run then ignores before quietly fetching 6.4 GB more.
+    tr_path, tr_hub, _ = translate.mlx_model_for(low_vram_state()[0])
     out: dict[str, dict[str, Any]] = {
-        "model.translate": {"hub": translate.HUB_ID, "path": translate.MODEL_PATH,
-                            "bytes": 9_700_000_000},
+        "model.translate": {"hub": tr_hub, "path": tr_path,
+                            "bytes": 6_400_000_000 if tr_hub == translate.LOW_VRAM_HUB_ID
+                            else 9_700_000_000},
     }
     # Only the default checkpoint is offered. 0.6b exists in tts.TTS_MODELS
     # solely so old manifests that recorded it can re-run; a download button
@@ -455,9 +572,10 @@ def model_checks() -> list[dict[str, Any]]:
             kw.setdefault("hub_bytes", d["bytes"])
         return model(id_, label, path, **kw)
 
+    tr = downloads["model.translate"]
     out = [
-        m("model.translate", "Translation model (Gemma 4 12B)", translate.MODEL_PATH,
-          note=f"downloads from {translate.HUB_ID} on first use"),
+        m("model.translate", "Translation model (Gemma 4 12B)", tr["path"],
+          note=f"downloads from {tr['hub']} on first use"),
     ]
     # One row: the default checkpoint. See model_downloads for why 0.6b is
     # deliberately absent here even though the pipeline can still re-run it.
@@ -613,6 +731,10 @@ def report(outputs: Path) -> dict[str, Any]:
     checks += model_checks()
     checks.append(demucs_check())
     checks.append(disk_check(Path(outputs)))
+    # Last, beside the other row about this machine rather than about a file:
+    # it is the only one that is a choice, and it reads as a footnote to the
+    # model list above it, which is what it is.
+    checks.append(low_vram_check())
     for c in checks:
         c["installable"] = installable(c["id"]) or c["id"] in downloads
         # Only on the rows where it means something: a `stage` on an optional
@@ -664,5 +786,6 @@ def install_plan(report_: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 __all__ = ["report", "probe", "install_plan", "git_commit", "human_bytes", "dir_size", "env_path",
-           "find_uv", "hf_hub_cache", "model_downloads",
+           "env_file_value", "find_uv", "gpu_memory_bytes", "hf_hub_cache",
+           "low_vram_check", "low_vram_env_key", "low_vram_state", "model_downloads",
            "blocking_stage", "TOOLS", "BLOCKING", "DEGRADES", "OPTIONAL", "SEVERITIES"]

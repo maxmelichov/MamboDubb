@@ -203,33 +203,48 @@ class HfTokenBody(Strict):
     token: str
 
 
+class LowVramBody(Strict):
+    """The machine's own setting, not a run's. See `set_low_vram` below."""
+
+    enabled: bool
+
+
 # The two spellings `hf_token_check` accepts, so a delete that removed only one
 # would leave the row green and the user certain they had removed it.
 _HF_TOKEN_KEYS = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")
 
 
-def _rewrite_env_token(path: Path, token: str | None) -> None:
-    """Swap (or drop, `token=None`) the token lines in `.env`, and touch nothing
-    else the file may hold other variables the user put there by hand, and a
-    writer that rewrote them from parsed values would strip their comments and
-    quoting. Line surgery, not serialization. Creates the file when absent; the
-    workspace directory already exists (the server is running out of it).
+def _rewrite_env(path: Path, keys: tuple[str, ...], line: str | None) -> None:
+    """Drop every assignment of `keys` from `.env` and append `line` (or none).
+
+    Touches nothing else the file may hold other variables the user put there
+    by hand, and a writer that rewrote them from parsed values would strip their
+    comments and quoting. Line surgery, not serialization. Creates the file when
+    absent; the workspace directory already exists (the server is running out of
+    it). Every key is dropped even when only one is written back, which is what
+    makes writing the same setting twice idempotent instead of additive.
     """
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
         lines = []
-    kept = [line for line in lines
-            if not ("=" in line and line.partition("=")[0].strip() in _HF_TOKEN_KEYS)]
-    if token is not None:
-        kept.append(f"HF_TOKEN={token}")
+    kept = [old for old in lines
+            if not ("=" in old and old.partition("=")[0].strip() in keys)]
+    if line is not None:
+        kept.append(line)
     path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
-    # A credential file is nobody else's to read. Best effort — .env may sit on
-    # a filesystem that ignores modes, and the write already succeeded.
+    # This file can hold a credential, so it is nobody else's to read. Best
+    # effort .env may sit on a filesystem that ignores modes, and the write
+    # already succeeded.
     try:
         path.chmod(0o600)
     except OSError:
         pass
+
+
+def _rewrite_env_token(path: Path, token: str | None) -> None:
+    """Swap (or drop, `token=None`) the token lines in `.env`, both spellings."""
+    _rewrite_env(path, _HF_TOKEN_KEYS, None if token is None else f"HF_TOKEN={token}")
 
 
 # ---------------------------------------------------------------------------
@@ -547,6 +562,30 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
         which no file edit can undo and the row's `source` says so."""
         _rewrite_env_token(setup.env_path(), None)
         return setup.hf_token_check()
+
+    @app.post("/api/setup/low_vram")
+    def set_low_vram(body: LowVramBody) -> dict[str, Any]:
+        """Turn the low-VRAM translator on or off for this machine.
+
+        Written to the workspace `.env` as `DUBBING_LOW_VRAM`, which is exactly
+        where a job child will read it: `dubbing_app.worker` calls `load_dotenv`
+        before it runs anything, so the setting reaches the pipeline with no
+        plumbing through the queue. It is machine state on purpose and is never
+        recorded in a project the same manifest opened on a 48 GB card must
+        not still be asking for 4-bit weights.
+
+        Takes effect on the next job, not on one already running: the child
+        process read its environment when it started, and reaching into a loaded
+        model to requantise it is not a thing this can honestly offer.
+
+        Returns the re-probed row, so the client learns what the machine will
+        actually do rather than what it was told. Those can differ: a
+        `DUBBING_LOW_VRAM` already exported in the server's own environment wins
+        over the file, and the row's `source` says "env" when it does.
+        """
+        key = setup.low_vram_env_key()
+        _rewrite_env(setup.env_path(), (key,), f"{key}={'1' if body.enabled else '0'}")
+        return setup.low_vram_check()
 
     # -- projects ----------------------------------------------------------
 

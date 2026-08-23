@@ -3436,6 +3436,97 @@ def test_token_delete_removes_only_the_token_lines(client, env_home):
     assert client.delete("/api/setup/hf_token").status_code == 200
 
 
+def test_low_vram_row_is_a_setting_not_a_finding(client, env_home, monkeypatch):
+    """Green in both positions, and optional in both. The row says which
+    translator weights this machine will load; a red tick beside a deliberate
+    choice would send people looking for something to install."""
+    monkeypatch.delenv("DUBBING_LOW_VRAM", raising=False)
+    row = next(c for c in client.get("/api/setup").json()["checks"]
+               if c["id"] == "low_vram")
+    assert row["ok"] is True and row["severity"] == "optional"
+    assert row["required"] is False and row["installable"] is False
+    # Nobody has said, so the machine decided — and the row says which way.
+    assert row["source"] == "auto"
+    assert isinstance(row["enabled"], bool)
+    assert row["detail"].startswith("on: " if row["enabled"] else "off: ")
+
+
+def test_low_vram_toggle_writes_the_env_the_pipeline_reads(client, env_home, monkeypatch):
+    monkeypatch.delenv("DUBBING_LOW_VRAM", raising=False)
+    env_home.write_text("# mine\nOTHER=keep me\n")
+    r = client.post("/api/setup/low_vram", json={"enabled": True})
+    assert r.status_code == 200
+    row = r.json()
+    assert row["id"] == "low_vram" and row["enabled"] is True
+    assert row["source"] == "env_file"
+    lines = env_home.read_text().splitlines()
+    assert lines[:2] == ["# mine", "OTHER=keep me"]      # hand-written lines survive
+    assert lines[-1] == "DUBBING_LOW_VRAM=1"
+    # Off is written, not merely unwritten: "off" and "nobody said" are
+    # different answers, and only the first survives a machine the autodetect
+    # would have decided the other way about.
+    assert client.post("/api/setup/low_vram", json={"enabled": False}).json()["enabled"] is False
+    lines = env_home.read_text().splitlines()
+    assert lines.count("DUBBING_LOW_VRAM=0") == 1        # replaced, never appended
+    assert "DUBBING_LOW_VRAM=1" not in lines
+    # Strict body, like every other endpoint here.
+    assert client.post("/api/setup/low_vram", json={"enabled": True, "x": 1}).status_code == 400
+
+
+def test_low_vram_env_var_beats_the_file_and_the_row_says_so(client, env_home, monkeypatch):
+    """A variable exported in the server's environment is what `load_dotenv`
+    will *not* override, so a switch that claimed to have changed it would be
+    lying. The row reports the value that will actually apply, and names where
+    it came from; the UI reads `source` to withdraw the control."""
+    client.post("/api/setup/low_vram", json={"enabled": False})
+    monkeypatch.setenv("DUBBING_LOW_VRAM", "1")
+    row = next(c for c in client.get("/api/setup").json()["checks"]
+               if c["id"] == "low_vram")
+    assert row["enabled"] is True and row["source"] == "env"
+    assert "DUBBING_LOW_VRAM" in row["detail"]
+
+
+def test_low_vram_save_then_probe_agree(client, env_home, monkeypatch):
+    monkeypatch.delenv("DUBBING_LOW_VRAM", raising=False)
+    saved = client.post("/api/setup/low_vram", json={"enabled": True}).json()
+    probed = next(c for c in client.get("/api/setup").json()["checks"]
+                  if c["id"] == "low_vram")
+    # `installable` is `report`'s to add, and this row is never installable —
+    # every other field has to match, or the switch's receipt disagrees with
+    # the checklist and the user goes hunting for a difference that is not one.
+    assert saved == {k: v for k, v in probed.items() if k != "installable"}
+    assert probed["installable"] is False
+
+
+def test_low_vram_moves_the_translator_row_to_the_weights_it_will_load(
+        client, env_home, monkeypatch):
+    """With the mode on, the checklist must describe the mxfp4 build. A row that
+    kept reporting the 6-bit one would call the machine ready for a model the
+    run never opens, and its Download button would fetch 9.7 GB the run ignores
+    before quietly fetching 6.4 GB more on its own."""
+    from dubbing import translate
+
+    monkeypatch.delenv("DUBBING_LOW_VRAM", raising=False)
+    row = next(c for c in client.get("/api/setup").json()["checks"]
+               if c["id"] == "model.translate")
+    assert row["hub"] == translate.HUB_ID
+
+    client.post("/api/setup/low_vram", json={"enabled": True})
+    row = next(c for c in client.get("/api/setup").json()["checks"]
+               if c["id"] == "model.translate")
+    assert row["hub"] == translate.LOW_VRAM_HUB_ID
+    assert row["download_bytes"] < 9_700_000_000
+    assert str(translate.LOW_VRAM_MODEL_PATH) == row["path"]
+
+
+def test_setup_still_loads_no_torch(client, env_home):
+    """The whole module's first rule, and the low-VRAM row is the one that was
+    tempted to break it: reading VRAM through torch would put half a gigabyte
+    into the server process to answer a question about a checkbox."""
+    client.get("/api/setup")
+    assert "torch" not in sys.modules
+
+
 def test_token_save_then_probe_agree(client, env_home):
     """The row the POST returns and the row GET /api/setup reports are the same
     fact — a save whose receipt disagreed with the checklist would send the

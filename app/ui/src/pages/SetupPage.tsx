@@ -775,6 +775,10 @@ function CheckRow({
             the .env, and the detail line above stops being an instruction the
             moment this ships. */}
         {check.id === "hf_token" ? <HfTokenField ok={check.ok} onChanged={onRecheck} /> : null}
+        {/* The other row that is a choice rather than a finding. Same escape
+            hatch, same contract: the control changes a file on the server and
+            the re-probed row is what says what changed. */}
+        {check.id === "low_vram" ? <LowVramField check={check} onChanged={onRecheck} /> : null}
         {/* This row's install, while it runs — the same two shapes the queue
             header draws, from the same poll (see `InstallProgress`). The row is
             where it belongs when a row's own button started it; when the queue
@@ -974,6 +978,103 @@ function HfTokenField({ ok, onChanged }: { ok: boolean; onChanged: () => void })
       </form>
       {error ? (
         <p className="mt-1.5 text-[12px] leading-relaxed" style={{ color: "var(--color-critical)" }} data-token-error>
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Low-VRAM mode, as two buttons and a sentence about what it costs.
+ *
+ * Not a bare switch, because the honest version of this control is not "on/off"
+ * but "on, off, or let the machine decide", and the third position is the
+ * default a user should mostly stay in. Auto is what the row already says in
+ * words, so the two buttons are the two ways to overrule it, and the one that
+ * matches the current answer is the one that reads as pressed.
+ *
+ * The cost is named on the control itself rather than left to the docs. This is
+ * the only setting in the app that trades output quality for hardware, and a
+ * toggle labelled "Low-VRAM mode" with no consequence beside it is an invitation
+ * to turn it on for no reason: the smaller weights lose names and idioms that
+ * the default gets right, which is a thing to accept deliberately.
+ *
+ * Two states this cannot change, and both say so instead of failing:
+ * a value exported in the server's own environment (`source === "env"`) beats
+ * any file this writes, and a change lands on the next job rather than on one
+ * already running.
+ */
+function LowVramField({ check, onChanged }: { check: SetupCheck; onChanged: () => void }) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const enabled = check.enabled === true;
+  const fromEnv = check.source === "env";
+
+  const choose = useCallback(
+    async (next: boolean) => {
+      if (saving) return;
+      setSaving(true);
+      setError(null);
+      try {
+        await api.setLowVram(next);
+        onChanged();
+      } catch (err) {
+        setError(String(err instanceof Error ? err.message : err));
+      } finally {
+        setSaving(false);
+      }
+    },
+    [saving, onChanged],
+  );
+
+  return (
+    <div className="mt-2 max-w-2xl" data-low-vram>
+      <p className="text-[12px] leading-relaxed text-secondary">
+        Smaller translator weights, so the 12B translator fits on an ordinary graphics card (about
+        7 GB instead of 24) or a 16 GB Mac. It costs translation quality: on Hebrew the smaller
+        weights lose idioms, drift on the spelling of a name, and sometimes borrow a name from the
+        context that the line never mentioned. Leave it off if the full-size weights fit.
+      </p>
+      {fromEnv ? (
+        <p className="mt-1.5 text-[12px] leading-relaxed text-muted">
+          Set by an environment variable, which the app cannot change from here. Unset
+          DUBBING_LOW_VRAM to choose it in the app.
+        </p>
+      ) : (
+        <>
+          <div className="mt-2 flex items-center gap-2">
+            <Button
+              size="sm"
+              data-low-vram-off
+              aria-pressed={!enabled}
+              disabled={saving || !enabled}
+              onClick={() => void choose(false)}
+            >
+              Full weights
+            </Button>
+            <Button
+              size="sm"
+              data-low-vram-on
+              aria-pressed={enabled}
+              disabled={saving || enabled}
+              onClick={() => void choose(true)}
+            >
+              {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+              Low VRAM
+            </Button>
+          </div>
+          <p className="mt-1.5 text-[12px] text-muted">
+            Takes effect on the next run, not on one already going.
+          </p>
+        </>
+      )}
+      {error ? (
+        <p
+          className="mt-1.5 text-[12px] leading-relaxed"
+          style={{ color: "var(--color-critical)" }}
+          data-low-vram-error
+        >
           {error}
         </p>
       ) : null}

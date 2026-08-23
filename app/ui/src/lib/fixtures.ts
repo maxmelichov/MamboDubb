@@ -451,6 +451,44 @@ export function clearHfToken(): Promise<SetupCheck> {
 }
 
 /**
+ * The low-VRAM row, and the fake of `POST /api/setup/low_vram`.
+ *
+ * Modelled on a machine that has enough memory and has not been told
+ * otherwise, because that is the state the switch is interesting in: `auto`
+ * and off, so the demo can turn it on and watch the row say what it now costs.
+ * The row is always `ok` and always `optional` — it is a setting, and a setting
+ * is never a missing thing. Turning it on here also flips `source` from "auto"
+ * to "env_file", which is the real server's answer once the value is written to
+ * a file, and the difference the row's sentence exists to show.
+ */
+let lowVramOn: boolean | null = null;      // null: nobody has said, so auto decides
+
+function lowVramRow(): SetupCheck {
+  const enabled = lowVramOn ?? false;
+  const weights = enabled
+    ? "the mxfp4 MLX build, about 6.4 GB, and translates less well"
+    : "the 6-bit MLX build, 9.7 GB";
+  const where = lowVramOn === null
+    ? " (the default weights fit)"
+    : `, set in \`${FIXTURE_ENV}\``;
+  return {
+    id: "low_vram",
+    label: "Low-VRAM translator",
+    ok: true,
+    severity: "optional",
+    enabled,
+    source: lowVramOn === null ? "auto" : "env_file",
+    path: FIXTURE_ENV,
+    detail: `${enabled ? "on" : "off"}: the translator loads ${weights}${where}`,
+  };
+}
+
+export function setLowVram(enabled: boolean): Promise<SetupCheck> {
+  lowVramOn = enabled;
+  return delay(lowVramRow());
+}
+
+/**
  * The two command-line tools, graded the way `setup.TOOLS` grades them.
  *
  * ffmpeg blocks every stage shells out to it. SoX does not, and saying it
@@ -639,6 +677,10 @@ function setupChecks(ready = false): SetupCheck[] {
       severity: "optional",
       detail: "184 GB free: a 20-minute run writes about 4 GB under outputs/",
     },
+    // Last, as the server appends it, and the same row on both boards: a
+    // machine being "ready" has nothing to do with which translator weights it
+    // chose, and `?ready=1` flipping this one would demo the wrong thing.
+    lowVramRow(),
   ];
   // `required` is the server's derived view of `severity`, and the fixture has to
   // derive it the same way a row that disagreed with itself would let the

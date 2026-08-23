@@ -638,7 +638,7 @@ const go = async (path, ms) => {
 await go("/setup", 300);
 const setup = root.textContent;
 check("setup screen renders", /Readiness/.test(setup));
-check("setup lists every check", document.querySelectorAll("[data-check]").length === 10);
+check("setup lists every check", document.querySelectorAll("[data-check]").length === 11);
 check("passing checks say Ready", /Ready/.test(setup));
 check("failing checks say Missing", /Missing/.test(setup));
 check("state is never colour alone", [...document.querySelectorAll("[data-check]")].every((row) =>
@@ -658,9 +658,11 @@ check("model sizes are shown", /GB/.test(setup));
  * of this screen.
  *
  * Diarization is not among them any more, in either column: its weights ship in
- * the app bundle, so the row is green before the user has pressed anything.
+ * the app bundle, so the row is green before the user has pressed anything. Nor
+ * is the low-VRAM row, in either direction: it is a setting, and a setting is
+ * never a thing to do.
  */
-check("a mixed result is counted", /5 of 10 need attention/.test(setup));
+check("a mixed result is counted", /5 of 11 need attention/.test(setup));
 check(
   "…and the optional rows that are not here are not part of that count",
   [...document.querySelectorAll('[data-check][data-severity="optional"]')].filter((row) =>
@@ -856,7 +858,7 @@ check("…and a click on it starts nothing", fixtureCalls.install === before + 1
 await new Promise((resolve) => setTimeout(resolve, 1400));
 check("the installed row turns Ready", /Ready/.test(rowOf("ffmpeg").textContent));
 check("…and drops its Install button", !installButton("ffmpeg"));
-check("…and the count comes down", /3 of 10 need attention/.test(root.textContent));
+check("…and the count comes down", /3 of 11 need attention/.test(root.textContent));
 check("the other row can be installed again", installButton("sox").disabled === false);
 
 /*
@@ -946,7 +948,7 @@ check(
   "with both tools in, the machine is ready and does not claim all checks pass",
   document.querySelector("[data-readiness]").textContent === "Ready to run",
 );
-check("…with the rows that are still red still counted", /7\/10/.test(root.textContent));
+check("…with the rows that are still red still counted", /8\/11/.test(root.textContent));
 /*
  * The footer's middle sentence, with a real `degrades` row under it.
  *
@@ -1008,13 +1010,41 @@ check(
     rowSeverity("hf_token") === "optional",
 );
 
+/*
+ * Low-VRAM mode, the one row on this screen that is a setting and not a finding.
+ *
+ * It is green in both positions, so "does it work" cannot be read off the tick:
+ * what is asserted is that the row says which weights the machine will load,
+ * that the switch changes that answer, and that the sentence naming the cost is
+ * on screen beside it. The last one is the point of the control — a toggle that
+ * trades translation quality for memory and does not say so gets turned on for
+ * no reason.
+ */
+const lowVram = rowOf("low_vram");
+check("the checklist says which translator weights this machine loads",
+  lowVram != null && /off: the translator loads/.test(lowVram.textContent));
+check("…and names the quality it would cost before it is pressed",
+  /costs translation quality/.test(lowVram.textContent));
+const lowVramOn = lowVram.querySelector("[data-low-vram-on]");
+check("…and the way to turn it on is on the row", lowVramOn != null && !lowVramOn.disabled);
+lowVramOn.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+await new Promise((resolve) => setTimeout(resolve, 300));
+check("turning it on re-probes, and the row says the smaller weights",
+  /on: the translator loads/.test(rowOf("low_vram").textContent));
+check("…and the switch now offers the way back",
+  rowOf("low_vram").querySelector("[data-low-vram-off]")?.disabled === false);
+// Back to the default, so the ready board below is the board it has always been.
+rowOf("low_vram").querySelector("[data-low-vram-off]")
+  .dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+await new Promise((resolve) => setTimeout(resolve, 300));
+
 const recheck = [...document.querySelectorAll("button")].find((b) =>
   b.textContent.includes("Re-check"),
 );
 if (!recheck) throw new Error("smoke: no Re-check button");
 recheck.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
 await new Promise((resolve) => setTimeout(resolve, 300));
-check("re-check re-renders the list", document.querySelectorAll("[data-check]").length === 10);
+check("re-check re-renders the list", document.querySelectorAll("[data-check]").length === 11);
 
 // The gate must not strand the user here: fixture mode never auto-routes, and
 // the import screen is one link away in the nav pill.
@@ -1034,7 +1064,7 @@ check("setup does not trap navigation", /Start dubbing/.test(root.textContent));
  */
 await go("/setup?ready=1", 400);
 const readyRows = [...document.querySelectorAll("[data-check]")];
-check("the ready fixture serves the whole checklist", readyRows.length === 10);
+check("the ready fixture serves the whole checklist", readyRows.length === 11);
 check(
   "…with every row green",
   readyRows.every((row) => /Ready/.test(row.textContent)) &&

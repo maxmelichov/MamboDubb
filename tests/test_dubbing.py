@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import json
 import random
 import sys
@@ -1509,6 +1510,130 @@ def test_worker_cmd_points_at_the_right_script_and_keeps_the_extra(monkeypatch):
     assert "--extra" not in translate._worker_cmd("transformers")
 
 
+def test_translator_venv_probe_answers_no_when_there_is_no_venv(tmp_path, monkeypatch):
+    # `Path.glob` returns a generator, and a generator is truthy whether or not
+    # it will yield: `any(venv.glob(p) for p in patterns)` answered True on
+    # every machine, including ones with no translator venv at all. That made
+    # `_vllm_installed` a constant, which chose the vLLM backend on any Linux
+    # CUDA box and put `--extra vllm` on every launch line.
+    monkeypatch.setattr(translate, "REPO_ROOT", tmp_path)
+    assert not translate.translator_venv_has("vllm")
+    assert not translate.translator_venv_has("bitsandbytes")
+    site = tmp_path / "translator" / ".venv" / "lib" / "python3.12" / "site-packages"
+    (site / "bitsandbytes").mkdir(parents=True)
+    (site / "bitsandbytes" / "__init__.py").write_text("")
+    assert translate.translator_venv_has("bitsandbytes")
+    assert not translate.translator_venv_has("vllm")
+
+
+def test_low_vram_is_parsed_generously_and_a_typo_is_not_off(capsys):
+    # Off must be said, never inferred: a mistyped value that read as "off"
+    # would OOM the card the user was trying to protect.
+    parse = translate.parse_low_vram
+    assert parse("1") is True and parse("TRUE") is True and parse(" on ") is True
+    assert parse("0") is False and parse("no") is False and parse("Off") is False
+    assert parse("") is None and parse(None) is None and parse("auto") is None
+    assert parse("yes please") is None
+    assert "DUBBING_LOW_VRAM" in capsys.readouterr().err
+
+
+def test_low_vram_autodetects_per_backend_and_the_user_always_wins():
+    # Two thresholds because the two defaults are different sizes: 24 GB of
+    # bfloat16 on CUDA, a 9.7 GB MLX quant on a Mac.
+    pick = translate.choose_low_vram
+    assert pick(None, "transformers", 12 * 1024**3, 0)[0] is True     # a 12 GB card
+    assert pick(None, "transformers", 24 * 1024**3, 0)[0] is True     # 24 GB is not enough
+    assert pick(None, "transformers", 48 * 1024**3, 0)[0] is False
+    assert pick(None, "mlx", 0, 16 * 1024**3)[0] is True              # a 16 GB Mac
+    assert pick(None, "mlx", 0, 24 * 1024**3)[0] is False
+    # No probe answered (CPU-only, or a card torch would not describe): the
+    # default weights, which is what that machine did before this existed.
+    assert pick(None, "transformers", 0, 0)[0] is False
+    # An explicit choice beats the probe in BOTH directions.
+    assert pick(True, "transformers", 48 * 1024**3, 0)[0] is True
+    assert pick(False, "transformers", 8 * 1024**3, 0)[0] is False
+    # And it says why, in a sentence the log line is built out of.
+    assert "12 GiB of VRAM" in pick(None, "transformers", 12 * 1024**3, 0)[1]
+
+
+def test_low_vram_flag_beats_the_env_var(monkeypatch, capsys):
+    monkeypatch.setenv(translate.LOW_VRAM_ENV, "1")
+    monkeypatch.setattr(translate, "_backend", lambda: "mlx")
+    monkeypatch.setattr(translate, "_total_unified", lambda: 64 * 1024**3)
+    monkeypatch.setattr(translate, "_total_vram", lambda: 0)
+    translate.set_low_vram(None)
+    assert translate.low_vram() is True                      # the env var alone
+    assert "low-VRAM mode on" in capsys.readouterr().err     # and it says so
+    translate.set_low_vram(False)                            # --no-low-vram
+    assert translate.low_vram() is False
+    translate.set_low_vram(None)                             # do not leak
+
+
+def test_low_vram_swaps_the_mlx_build_and_nothing_else(monkeypatch):
+    monkeypatch.setattr(translate, "_backend", lambda: "mlx")
+    monkeypatch.setattr(translate, "_total_unified", lambda: 64 * 1024**3)
+    monkeypatch.setattr(translate, "_total_vram", lambda: 0)
+    monkeypatch.delenv(translate.LOW_VRAM_ENV, raising=False)
+    translate.set_low_vram(False)
+    assert translate.mlx_weights()[0] == translate.HUB_ID     # nothing on disk here
+    translate.set_low_vram(True)
+    path, label = translate.mlx_weights()
+    assert path == translate.LOW_VRAM_HUB_ID and "low VRAM" in label
+    # A different directory, so turning the mode on and off never re-downloads.
+    assert translate.LOW_VRAM_MODEL_PATH != translate.MODEL_PATH
+    translate.set_low_vram(None)
+
+
+def test_low_vram_worker_gets_the_env_var_and_the_extra(monkeypatch):
+    # The CUDA worker is a subprocess: the mode reaches it as an environment
+    # variable, and bitsandbytes reaches its venv as a `uv run` extra.
+    created = {}
+
+    class FakeHandle:
+        def __init__(self, cmd, **kw):
+            created["cmd"], created["env"] = cmd, kw.get("env")
+            self.own_gpu = kw.get("own_gpu", False)
+
+    monkeypatch.setattr(translate, "_mlx_available", lambda: False)
+    monkeypatch.setattr(translate, "_vllm_available", lambda: False)
+    monkeypatch.setattr(translate, "_vllm_installed", lambda: False)
+    monkeypatch.setattr(translate, "_bnb_installed", lambda: False)
+    monkeypatch.setattr(translate, "_cuda_count", lambda: 1)
+    monkeypatch.setattr(translate, "_spare_gpu", lambda: None)
+    monkeypatch.setattr(translate, "WorkerHandle", FakeHandle)
+    monkeypatch.setattr(translate, "_WORKER", None)
+    monkeypatch.delenv(translate.LOW_VRAM_ENV, raising=False)
+
+    translate.set_low_vram(True)
+    translate.load()
+    assert created["env"][translate.LOW_VRAM_WORKER_ENV] == "1"
+    # Not installed yet, but asked for on a machine with a card: the launch
+    # line installs it, or the mode could never work a first time.
+    assert created["cmd"][created["cmd"].index("--extra") + 1] == "lowvram"
+
+    translate.set_low_vram(False)
+    translate.load()
+    assert created["env"] is None                 # nothing to add: no env copy at all
+    assert "--extra" not in created["cmd"]
+    translate.set_low_vram(None)
+
+
+def test_low_vram_is_never_recorded_in_a_run(tmp_path):
+    # It describes the machine, not the dub. Recorded, it would follow a project
+    # onto a bigger card; in the translate fingerprint, it would re-translate
+    # every line the first time a project was opened on another computer.
+    from dubbing import cli
+
+    assert "low_vram" not in cli.RECORDED_DEFAULTS
+    args = cli.parse_args(["in.mp4", "--low-vram"])
+    assert args.low_vram is True
+    assert "low_vram" not in cli.source_record(args)
+    m = {"source": cli.source_record(args)}
+    on = cli.stage_params(args, m)["translate"]
+    off = cli.stage_params(cli.parse_args(["in.mp4", "--no-low-vram"]), m)["translate"]
+    assert on == off
+
+
 def test_worker_handle_batches_and_reorders_replies(tmp_path):
     # A batched worker may finish short prompts first; request_many must hand the
     # answers back in the order they were asked, matched by id.
@@ -1539,6 +1664,57 @@ def test_worker_handle_batches_and_reorders_replies(tmp_path):
         assert handle.request("after the batch", 10) == "AFTER THE BATCH"
     finally:
         handle.close()
+
+
+def _worker_module(name: str):
+    """`translator/<name>.py` imported by path. Neither worker imports its engine
+    at module scope, which is what makes this safe from the main venv."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        f"translator_{name}", translate.REPO_ROOT / "translator" / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_both_workers_read_the_same_low_vram_switch(monkeypatch):
+    # One env var, both backends, and the same generous spelling the parent
+    # accepts — a worker that only understood "1" would silently run bf16 for
+    # anyone who wrote DUBBING_LOW_VRAM=true.
+    for name in ("worker", "worker_vllm"):
+        module = _worker_module(name)
+        for value, want in (("1", True), ("true", True), ("ON", True),
+                            ("0", False), ("no", False), ("", False)):
+            monkeypatch.setenv("TRANSLATOR_LOAD_4BIT", value)
+            assert module.want_4bit() is want, (name, value)
+        monkeypatch.delenv("TRANSLATOR_LOAD_4BIT")
+        assert module.want_4bit() is False
+
+
+def test_transformers_worker_degrades_loudly_without_bitsandbytes(monkeypatch, capsys):
+    # bitsandbytes is an optional extra and a CUDA library. Neither absence may
+    # be a crash, and neither may be silent: a user who asked for 4-bit and got
+    # a 24 GB allocation has to be told before the OOM, not after.
+    module = _worker_module("worker")
+
+    # No CUDA at all: nothing to quantise onto, and no import is even attempted.
+    assert module.quant_config(cuda=False) is None
+    err = capsys.readouterr().err
+    assert "no CUDA device" in err and "bfloat16" in err
+
+    # CUDA, but the extra was never synced.
+    real_import = builtins.__import__
+
+    def no_bnb(name, *args, **kwargs):
+        if name == "bitsandbytes":
+            raise ImportError("No module named 'bitsandbytes'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_bnb)
+    assert module.quant_config(cuda=True) is None
+    err = capsys.readouterr().err
+    assert "bitsandbytes" in err and "--extra lowvram" in err
 
 
 def test_both_workers_parse_the_same_protocol_line():
