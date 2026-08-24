@@ -86,7 +86,11 @@ STAGE_TAGS = {
     # CLONE_GOOD_OVERLAP retry bar ("accepted" is now its own verdict), and a
     # Hebrew target decodes greedily by default every clip's decode, reference
     # and verdict can differ from v17's.
-    "tts": "tts/v18",
+    # v19: a retry reference is offered only when ECAPA says it is this segment's
+    # own voice (a label is not a person), the alternates are held to the same
+    # test, and a clip that says the right words in another voice is recorded as
+    # "wrong_voice" rather than "ok" different rungs, different verdicts.
+    "tts": "tts/v19",
     # v14: `place` now carries the overrun it measured and why a shortening was
     # abandoned report.json's drift story reads from these. (v13 was claimed on
     # a branch that never landed under that number.)

@@ -12,7 +12,9 @@ user otherwise. Four fields exist for it:
 * `verify.unverified` clips no ASR ever heard (the verifier did not load).
   Never folded into `ok`; the summary says so out loud when nothing was checked.
   `verify.accepted` is the neighbouring verdict: heard, understood, and only
-  good enough after every clone reference had been tried.
+  good enough after every clone reference had been tried. `verify.wrong_voice`
+  is the third: the right words in the wrong person's voice, which word overlap
+  alone scores as a pass and a listener catches in one second.
 * `degraded` what a stage could not load and what it fell back to
   (`m["health"]`, written by the stages themselves: diarization, turn
   refinement, the verify ASR, the reference validator).
@@ -145,12 +147,22 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
     # never reached CLONE_GOOD_OVERLAP, after every reference was tried. It is a
     # real dub and it is not a clean one, and folding it into "ok" is how a run
     # full of half-garbled lines read as fully verified.
-    verify = {"ok": 0, "accepted": 0, "soft": 0, "keep": 0, "unverified": 0}
+    # "wrong_voice" is the third: ECAPA says the clip is a different person from
+    # the segment's own audio (dubbing/tts.py, CLONE_VOICE_MIN). It is a real dub
+    # of the right words and it is the failure a listener notices first, so it is
+    # counted apart and named with the lines it happened on.
+    verify = {"ok": 0, "accepted": 0, "soft": 0, "keep": 0, "unverified": 0,
+              "wrong_voice": 0}
+    wrong_voice = []
     for s in segments:
         got = (s.get("tts") or {}).get("verify")
         if got is None:
             continue          # no clip at all it is counted in `unaccounted`
         verify[got] = verify.get(got, 0) + 1
+        if got == "wrong_voice":
+            wrong_voice.append({"id": s["id"], "start": s["start"],
+                                "speaker": s.get("speaker"),
+                                "voice": (s.get("tts") or {}).get("voice")})
 
     drifts = [s["place"]["drift"] for s in segments if s.get("place")]
     rates = [s["place"]["rate"] for s in segments if s.get("place")]
@@ -195,6 +207,7 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
         "keep_reasons": keep_reasons,
         "unaccounted": unaccounted,
         "verify": verify,
+        "wrong_voice": wrong_voice,
         "shortened": shortened,
         "shorten_abandoned": abandoned,
         "subtitles_failed": subtitles_failed,
@@ -219,6 +232,11 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
     print(f"  {len(segments)} segments: {len(dubbed)} dubbed, {len(kept)} original "
           f"({keep_reasons})", file=sys.stderr)
     print(f"  tts verify: {verify}", file=sys.stderr)
+    if wrong_voice:
+        ids = ", ".join(str(w["id"]) for w in wrong_voice[:10])
+        print(f"  WARNING: {len(wrong_voice)} clip(s) speak the right words in "
+              f"another voice (seg {ids}) re-voice them from a reference of the "
+              "right speaker", file=sys.stderr)
     if verify["unverified"]:
         checked = verify["ok"] + verify["accepted"] + verify["soft"]
         if not checked:

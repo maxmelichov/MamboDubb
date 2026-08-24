@@ -277,6 +277,20 @@ def test_report_counts_what_the_run_could_not_do(tmp_path, monkeypatch):
     assert "segments.diarization" in rep["degraded"]
 
 
+def test_a_clip_in_the_wrong_voice_is_counted_and_named(tmp_path, monkeypatch, capsys):
+    # The right words in another person's voice. Word overlap scores it as a pass
+    # (0.889 on the line that started this), so the only place a reviewer could
+    # ever find it was by embedding the clips themselves report.json says it now.
+    m = report_segments()
+    m["segments"][0]["tts"] = {"clip": "clips/a.wav", "dur": 1.0, "overlap": 0.889,
+                               "verify": "wrong_voice", "voice": 0.066}
+    rep = fake_report_run(m, tmp_path, monkeypatch)
+    assert rep["verify"]["wrong_voice"] == 1 and rep["verify"]["ok"] == 0
+    assert rep["wrong_voice"] == [{"id": 0, "start": 0.0, "speaker": "S0",
+                                   "voice": 0.066}]
+    assert "another voice" in capsys.readouterr().err
+
+
 def test_the_summary_says_when_nothing_was_verified(tmp_path, monkeypatch, capsys):
     fake_report_run(report_segments(), tmp_path, monkeypatch)
     assert "NOT ONE clip was verified" in capsys.readouterr().err

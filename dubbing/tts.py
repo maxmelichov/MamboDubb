@@ -27,6 +27,15 @@ What a retry varies is the *reference* (`Engine.rungs`), because that is the
 ingredient a clone's quality actually turns on the seed is not, and under a
 greedy decode it is inert.
 
+**A different reference must still be the same person.** Varying the reference by
+speaker label dubbed a female line in a male voice: diarization had pooled two
+people under one label, the ladder reached for the other one's window, and word
+overlap scored the result 0.889 because the words were right. Every rung is now
+gated on an ECAPA match to the segment's own audio, the finished clip is asked the
+same question, and a clip that says the words in somebody else's voice is recorded
+as `verify: "wrong_voice"`. Without embeddings none of that can be checked, so the
+ladder offers no substitute references at all.
+
 **A check that did not run is a verdict.** With no verification ASR a clip is
 accepted on length alone and recorded as `verify: "unverified"`, never as "ok",
 and everything this stage could not load lands in `m["health"]` for report.json.
@@ -104,6 +113,12 @@ REF_JOIN_FADE_SEC = 0.02   # fade at the joins of a concatenated reference
 REF_SIM_OUTLIER = 0.25     # candidate mean-cos below this is suspect ...
 REF_SIM_COHERENT = 0.35    # ... but only when the other windows mutually average this
 REF_MATCH_MIN = 0.25       # segment window vs canonical ref: same-voice acceptance
+# The same bar, applied to a *finished* clip against the window it was supposed to
+# sound like. Measured on the run where a female line came back in a male voice:
+# the clip sat at 0.51 to the (male) alternative reference it was actually cloned
+# from and 0.07 to her own audio, while a clone of the right voice lands in the
+# same 0.4-0.5 band as its reference. Anything this low is a different person.
+CLONE_VOICE_MIN = 0.25
 
 # What `_verify` reports when there is no verification ASR at all. It is a
 # verdict of its own, not an "ok": the clip passed the length guard and nothing
@@ -535,7 +550,16 @@ def clip_is_good(verdict: dict[str, Any]) -> bool:
     The upper of the two bars (see CLONE_GOOD_OVERLAP). An unverified clip reads
     as good — there is no ASR to disagree with, so retrying it would only spend
     GPU time re-rolling a verdict nobody can check.
+
+    Words are not the whole test. `voice_ok` is False when ECAPA says the clip is
+    a different person from the segment's own audio, and a clip like that is never
+    good however well it reads: the one that started this was a male clone of a
+    female line scoring 0.889 on word overlap. Absent (no embeddings, or a verdict
+    cached before this existed) is not False, so nothing is failed on a check that
+    never ran.
     """
+    if verdict.get("voice_ok") is False:
+        return False
     return bool(verdict.get("ok")) and verdict.get("overlap", 0.0) >= CLONE_GOOD_OVERLAP
 
 
@@ -675,7 +699,8 @@ class Engine:
         self._asr: dict[str, Any] = {}        # target language → verify ASR (or None)
         self._voc: np.ndarray | None = None
         self._ref_hash: dict[str, str] = {}          # canonical ref path → content hash
-        self._match_cache: dict[tuple, bool] = {}    # (span, canonical path) → same voice?
+        self._match_cache: dict[tuple, bool] = {}    # (span, reference path) → same voice?
+        self._own_win: dict[Any, tuple[float, float] | None] = {}   # segment → its own window
 
     # -- lazy resources ----------------------------------------------------
     @property
@@ -779,8 +804,12 @@ class Engine:
         cleanest windows are concatenated (time order, short fades at the joins)
         up to ~REF_TARGET_SEC. Candidate windows are first ECAPA-validated: a
         window whose voice is an outlier against the speaker's other windows is a
-        diarization mislabel and is dropped (see reject_voice_outliers). With no
-        embedding model, validation is skipped and every candidate stands.
+        diarization mislabel and is dropped (see reject_voice_outliers), and the
+        alternatives are then held to the reference actually built, so a window
+        this stage already doubted cannot come back as retry material. With no
+        embedding model, validation is skipped and every candidate stands and
+        the per-segment gate in `_ref_ladder` is what stops a stranger's window
+        from being cloned anyway.
         """
         by_speaker: dict[str, list[dict]] = {}
         for seg in self.m["segments"]:
@@ -797,7 +826,7 @@ class Engine:
                 got = best_ref_window(self.vocals, seg["start"], seg["end"], REF_TARGET_SEC)
                 if got:
                     cands.append(got)
-            cands = self._validated_candidates(spk, cands)
+            cands, vecs = self._validated_candidates(spk, cands)
             spans = choose_ref_windows(cands)
             wav = concat_ref(self.vocals, spans)
             if not len(wav):
@@ -816,9 +845,17 @@ class Engine:
             info["ref_noise"] = round(min(by_start[s][2] for s in spans), 2)
             # The retry supply: the cleanest candidate windows that are NOT part
             # of the canonical reference, so a ladder rung is genuinely different
-            # audio rather than the canonical clip cut a second way.
+            # audio rather than the canonical clip cut a second way. They come out
+            # of the *validated* pool and are then checked against the reference
+            # that was actually built, because "not an outlier" is a weaker claim
+            # than "the same voice": a two-window speaker has no consensus to be an
+            # outlier against, and `reject_voice_outliers` never rejects everything.
+            # An alternative is retry material for this speaker, so it has to be
+            # this speaker.
             chosen = set(spans)
-            alts = sorted((c for c in cands if (c[0], c[1]) not in chosen),
+            alts = sorted((c for c in cands
+                           if (c[0], c[1]) not in chosen
+                           and self._alt_matches_ref(spk, c, cands, vecs, spans)),
                           key=lambda c: c[2])[:REF_ALTS]
             info["ref_alts"] = [[round(c[0], 2), round(c[1], 2)] for c in alts]
             info["ref_v"] = self.REF_BUILD
@@ -826,23 +863,54 @@ class Engine:
                 print(f"  tts: {spk} reference concatenated from {len(spans)} windows "
                       f"({info['ref_sec']:.1f}s)", file=sys.stderr)
 
-    def _validated_candidates(self, spk: str, cands: list) -> list:
-        """Drop candidate windows whose voice mismatches the speaker's consensus."""
+    def _validated_candidates(self, spk: str, cands: list) -> tuple[list, Any]:
+        """Drop candidate windows whose voice mismatches the speaker's consensus.
+
+        Returns the survivors and their embeddings (None when there are none to
+        have), so the caller can go on asking questions of the same vectors
+        instead of re-embedding the same seconds of audio.
+        """
         if len(cands) < 3:
-            return cands
+            return cands, None
         vecs = _embed_windows(self.vocals_path, [(c[0], c[1]) for c in cands])
         if vecs is None:
             self.note_degraded(
                 "tts.speaker_embeddings",
                 "unavailable: clone references unvalidated a diarization "
                 "mislabel can clone the wrong voice")
-            return cands
+            return cands, None
         keep = reject_voice_outliers(vecs)
         for c, k in zip(cands, keep):
             if not k:
                 print(f"  tts: {spk} ref window {c[0]:.2f}-{c[1]:.2f} rejected "
                       "(voice outlier likely another speaker)", file=sys.stderr)
-        return [c for c, k in zip(cands, keep) if k]
+        return ([c for c, k in zip(cands, keep) if k],
+                vecs[np.asarray(keep, dtype=bool)])
+
+    def _alt_matches_ref(self, spk: str, cand: tuple, cands: list, vecs: Any,
+                         spans: list[tuple[float, float]]) -> bool:
+        """Is this leftover window the same voice as the reference just built?
+
+        The candidates are already embedded (`_validated_candidates`), so this is
+        arithmetic, not another pass over the audio. With no embeddings the answer
+        is yes, exactly as before there is nothing to reject with, and the ladder
+        does its own gating per segment (`_ref_ladder`).
+        """
+        if vecs is None:
+            return True
+        idx = {(c[0], c[1]): i for i, c in enumerate(cands)}
+        ref_ids = [idx[s] for s in spans if s in idx]
+        i = idx.get((cand[0], cand[1]))
+        if i is None or not ref_ids:
+            return True
+        mean = np.mean(vecs[ref_ids], axis=0)
+        mean = mean / (np.linalg.norm(mean) or 1.0)
+        if float(vecs[i] @ mean) >= REF_MATCH_MIN:
+            return True
+        print(f"  tts: {spk} retry window {cand[0]:.2f}-{cand[1]:.2f} dropped "
+              "(not the voice of the reference it would stand in for)",
+              file=sys.stderr)
+        return False
 
     def pinned_ref(self, opts: TtsOpts) -> tuple[Path, str] | None:
         """The reference `tts_opts.ref` names, or None when the segment pins none.
@@ -894,7 +962,7 @@ class Engine:
             start, end, _score, _rms = got
             if end - start < MIN_REF_SEC:
                 canon = self._canonical_ref(seg)
-                if canon is not None and self._matches_canonical((start, end), canon[0]):
+                if canon is not None and self._same_voice((start, end), canon[0]):
                     return canon
             return self.window_ref(start, end)
         # Only if the aligned window is too short or essentially silent: the
@@ -930,43 +998,117 @@ class Engine:
         `build_speaker_refs` kept. A pinned `tts_opts.ref` has no ladder at all:
         the user chose that voice, and swapping it out would hand back exactly the
         one they were overriding.
+
+        **Every rung is checked against the segment's own window, not its label.**
+        A speaker label is a diarization guess, and this pipeline already knows two
+        segments under one label can be two people (`ref_for`). Offering such a
+        rung is how a female line was dubbed in a male voice: her segment escalated
+        to an alternative window that was the *other* speaker in her label, the
+        clone said the right words, and word overlap had nothing to say about it.
+        So a rung is offered only when ECAPA puts its audio and this segment's own
+        audio at the same voice. With no embeddings there is no way to tell, and
+        the ladder offers nothing at all: the segment retries on its own window
+        under the other decode (see `rungs`) rather than borrowing a stranger.
         """
         if opts.ref:
             return []
         out: list[tuple[Path, str]] = []
         seen = {first_key}
+        cands: list[tuple[Path, str]] = []
         canon = self._canonical_ref(seg)
-        if canon is not None and canon[1] not in seen:
-            out.append(canon)
-            seen.add(canon[1])
+        if canon is not None:
+            cands.append(canon)
         info = self.m.get("speakers", {}).get(seg.get("speaker")) or {}
         for span in info.get("ref_alts") or []:
-            got = self.window_ref(float(span[0]), float(span[1]))
-            if got[1] not in seen:
-                out.append(got)
-                seen.add(got[1])
+            cands.append(self.window_ref(float(span[0]), float(span[1])))
+        if not cands:
+            return []           # nothing to check, and nothing to check it against
+        own = self._own_window(seg)
+        skipped: list[str] = []
+        for path, key in cands:
+            if key in seen:
+                continue
+            seen.add(key)
+            if own is None or not self._same_voice(own, path):
+                skipped.append(key)
+                continue
+            out.append((path, key))
+        if skipped:
+            # One line per segment, not per rung: with no embedding model at all
+            # every rung is skipped, and the reason for that is already in
+            # `m["health"]` (see `_same_voice`) rather than in the scrollback.
+            print(f"  tts: seg {seg['id']} retries on its own window; "
+                  f"{len(skipped)} reference(s) are not this segment's voice "
+                  f"({', '.join(skipped)})", file=sys.stderr)
         return out[: MAX_TRIES - 1]
 
-    def _matches_canonical(self, span: tuple[float, float], canon: Path) -> bool:
-        """ECAPA says the aligned window and the canonical ref are the same voice.
+    def _own_window(self, seg: dict[str, Any]) -> tuple[float, float] | None:
+        """The span of the segment's own audio that stands for its voice.
 
-        False whenever embeddings are unavailable the caller then keeps the
+        The cleanest window inside `[start, end]`, which is what `ref_for` clones
+        from, so the ladder is asking about exactly the voice rung 0 used. None
+        when the segment has no usable audio of its own there is then nothing to
+        compare a candidate reference against.
+        """
+        sid = seg.get("uid") or seg["id"]
+        if sid in self._own_win:
+            return self._own_win[sid]
+        span = float(seg["end"]) - float(seg["start"])
+        got = best_ref_window(self.vocals, seg["start"], seg["end"],
+                              min(REF_TARGET_SEC, span))
+        out = (got[0], got[1]) if got and got[3] >= REF_MIN_RMS else None
+        self._own_win[sid] = out
+        return out
+
+    def _same_voice(self, span: tuple[float, float], ref: Path) -> bool:
+        """ECAPA says a window of the vocals and a reference wav are one voice.
+
+        False whenever embeddings are unavailable the callers then keep the
         segment's own audio, exactly the pre-embedding behaviour.
         """
-        key = (round(span[0], 2), round(span[1], 2), str(canon))
+        key = (round(span[0], 2), round(span[1], 2), str(ref))
         got = self._match_cache.get(key)
         if got is None:
             vecs = _embed_windows(self.vocals_path, [span])
-            cvec = _embed_wavfile(canon)
+            cvec = _embed_wavfile(ref)
             if vecs is None or cvec is None:
                 self.note_degraded(
                     "tts.speaker_embeddings",
                     "unavailable: clone references unvalidated short windows "
-                    "clone truncated and nothing confirms the voice")
+                    "clone truncated, the retry ladder cannot offer another "
+                    "speaker's audio, and nothing confirms a finished clip's voice")
             got = (vecs is not None and cvec is not None
                    and float(vecs[0] @ cvec) >= REF_MATCH_MIN)
             self._match_cache[key] = got
         return got
+
+    def _voice_checked(self, verdict: dict[str, Any], clip: Path,
+                       seg: dict[str, Any]) -> dict[str, Any]:
+        """Add "did this come back as the right person" to a clip's verdict.
+
+        Word overlap cannot see a wrong-speaker clone: the words are right, which
+        is exactly how a male take of a female line scored 0.889 and was stored as
+        "ok". One ECAPA cosine between the finished clip and the segment's own
+        audio answers the other half. It costs one embedding of a one-off clip on
+        a model already loaded for reference validation, and it is only asked on
+        the rungs that can substitute another window's voice, so the common path
+        (rung 0, the segment's own reference) pays nothing.
+
+        Absent `voice`/`voice_ok` means the question was not asked no embeddings,
+        or a verdict cached before this existed and no caller treats that as a
+        failure. The answer is deliberately not written into the clip's stored
+        verdict: it belongs to this segment, not to the clip (the same cached clip
+        can be reached by another segment), and asking again costs one embedding.
+        """
+        own = self._own_window(seg)
+        if own is None:
+            return verdict
+        vecs = _embed_windows(self.vocals_path, [own])
+        cvec = _embed_wavfile(clip)
+        if vecs is None or cvec is None:
+            return verdict
+        cos = float(vecs[0] @ cvec)
+        return dict(verdict, voice=round(cos, 3), voice_ok=cos >= CLONE_VOICE_MIN)
 
     def _canonical_ref(self, seg: dict[str, Any]) -> tuple[Path, str] | None:
         """The speaker's canonical clean reference (see build_speaker_refs).
@@ -1167,9 +1309,18 @@ class Engine:
         # ever heard it. A cached verdict from before this existed has no
         # `verified` key and was written by a run that did have an ASR, so it
         # reads as verified every existing record stays exactly as it was.
+        # A clip ECAPA says is somebody else is its own verdict too, and it outranks
+        # both of the others: the words can be perfect and the line still be spoken
+        # by the wrong person, which is the one failure a listener notices instantly.
+        if verdict.get("voice_ok") is False:
+            verify = "wrong_voice"
+        else:
+            verify = "ok" if verdict.get("verified", True) else "unverified"
         rec = {"clip": f"clips/{clip.name}", "dur": verdict["dur"],
                "tries": attempt + 1, "overlap": verdict["overlap"],
-               "verify": "ok" if verdict.get("verified", True) else "unverified"}
+               "verify": verify}
+        if verdict.get("voice") is not None:
+            rec["voice"] = verdict["voice"]
         # Which options this clip was made under, so `run` can spot a segment whose
         # options changed under an otherwise-usable clip. Absent for the defaults,
         # which keeps every existing record byte-identical.
@@ -1188,7 +1339,10 @@ class Engine:
         Rung 0 is the segment's own aligned window under the plan's decode. Rungs
         1+ swap the *reference* — the speaker's canonical clip first, then the
         runners-up — with the seed and the decode held fixed, because the
-        reference is the one ingredient that reliably changes a clone.
+        reference is the one ingredient that reliably changes a clone. Only
+        references ECAPA confirms are this segment's own voice are offered
+        (`_ref_ladder`); when none are, the ladder is just rung 0 and the
+        decode flip, which is a retry on the segment's own audio.
 
         The last rung changes the decode instead, on the original reference. Under
         a sampled plan that is the deterministic final take this stage has always
@@ -1212,6 +1366,12 @@ class Engine:
         nothing better turns up it is returned as "accepted" — a real dub, said
         out loud in report.json to be a second-class one. Below the floor the best
         take is soft-accepted, or the segment falls back to its original audio.
+
+        A third thing can be wrong with a take, and no amount of overlap sees it:
+        the clip can be the wrong person. Takes cloned from a substituted reference
+        are checked against the segment's own voice (`_voice_checked`), a take that
+        fails that check never wins on overlap alone, and if it is nonetheless all
+        this segment has it is returned labelled "wrong_voice" rather than "ok".
         """
         plan = self._plan(seg, text_en)
         if plan is None:
@@ -1219,6 +1379,7 @@ class Engine:
         speak, synth, ref_path, ref_key, base_seed, opts, tgt, src, greedy = plan
         slot = float(seg["end"]) - float(seg["start"])
         best: dict[str, Any] | None = None
+        best_rank = (False, -1.0)
 
         for attempt, (a_path, a_key, a_greedy) in enumerate(self.rungs(seg, plan)):
             clip, meta, verdict = self._attempt(seg["id"], speak, a_path, a_key,
@@ -1227,6 +1388,12 @@ class Engine:
                 continue
             if verdict is None:
                 verdict = self._verify_and_store(clip, meta, speak, tgt, src)
+            if a_key != ref_key:
+                # This rung cloned from somebody else's window, gated on ECAPA
+                # saying it is the same voice. Ask the finished clip the same
+                # question the gate is a check on the *reference*, and a clone
+                # can still drift off it.
+                verdict = self._voice_checked(verdict, clip, seg)
             # A clip the timeline could never absorb (shorten + 1.3x speed-up
             # recover maybe 3x; a 71s clip for a 5.7s slot once shoved everything
             # after it 49s late) is a failure however well it verifies.
@@ -1237,9 +1404,26 @@ class Engine:
             record = self._record(clip, verdict, attempt, opts, text_en)
             if clip_is_good(verdict):
                 return record
-            if verdict["overlap"] > (best or {}).get("overlap", -1.0):
-                best = dict(record, verify="accepted" if verdict["ok"] else "soft")
+            # Right-voice first, overlap second: a wrong-speaker take never wins on
+            # words. Ranked, not filtered, so a segment whose only take is that one
+            # still leaves this stage with audio and with a verdict that says so.
+            rank = (verdict.get("voice_ok") is not False, verdict["overlap"])
+            if rank > best_rank:
+                best_rank = rank
+                verify = "accepted" if verdict["ok"] else "soft"
+                if verdict.get("voice_ok") is False:
+                    verify = "wrong_voice"
+                best = dict(record, verify=verify)
 
+        if (best and best["verify"] == "wrong_voice"
+                and best["overlap"] >= CLONE_SOFT_OVERLAP):
+            # Kept, because it is still this line said out loud and the never-silent
+            # floor is the original audio, not a better clone. Named, because a
+            # listener hears this one instantly and report.json is where they look.
+            print(f"  tts: seg {seg['id']} best take is a different voice "
+                  f"(ECAPA {best.get('voice')}) kept as wrong_voice",
+                  file=sys.stderr)
+            return best
         if best and best["verify"] == "accepted":
             print(f"  tts: seg {seg['id']} accepted below {CLONE_GOOD_OVERLAP:.2f} "
                   f"(overlap {best['overlap']:.2f}) every reference was tried",

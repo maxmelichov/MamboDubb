@@ -40,8 +40,14 @@ export type SegmentTts = {
    * "accepted" sits between "ok" and "soft": the clone cleared the accept floor
    * but never reached `tts.CLONE_GOOD_OVERLAP`, and every clone reference had
    * already been tried. A real dub, and not a clean one.
+   *
+   * "wrong_voice" is the one verdict `overlap` cannot express: the clip says the
+   * right words in somebody else's voice (`tts.CLONE_VOICE_MIN`). It scores high
+   * on overlap by definition, so it has to be read from here.
    */
-  verify: "ok" | "accepted" | "soft" | "keep" | "failed" | string;
+  verify: "ok" | "accepted" | "soft" | "keep" | "wrong_voice" | "failed" | string;
+  /** ECAPA cosine between the clip and the segment's own audio, when measured. */
+  voice?: number;
 };
 
 /** `place` as the manifest stores it (dubbing/timeline.py). */

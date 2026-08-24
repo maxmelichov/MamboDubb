@@ -311,7 +311,9 @@ def test_the_stage_tags_moved():
     # with its original-audio slice, which changes what this stage produces.
     # v18: reference-varying retries, the two-bar accept, and greedy-by-default
     # for Hebrew every one of which can change the clip a segment ends up with.
-    assert manifest.STAGE_TAGS["tts"] == "tts/v18"
+    # v19: the retry ladder is gated on voice identity, so a segment that used to
+    # escalate to another speaker's window now stays on its own audio.
+    assert manifest.STAGE_TAGS["tts"] == "tts/v19"
     # v36: script-derived gloss floors, negations and shorten budgets (CJK/hangul).
     # v37: "%" survives into every TTS target's own vocabulary.
     assert manifest.STAGE_TAGS["translate"] == "translate/v38"

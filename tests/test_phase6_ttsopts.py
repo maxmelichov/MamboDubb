@@ -431,8 +431,15 @@ def test_pinned_reference_is_not_escalated_past(tmp_path, monkeypatch):
 
 def test_unpinned_segment_escalates_to_the_canonical_reference_first(tmp_path, monkeypatch):
     m = {"source": {"src_lang": "he", "tgt_lang": "en"},
+         "files": {"vocals": "stems/vocals.wav"},
          "speakers": {"S1": {"ref": "refs/S1.wav"}}, "segments": []}
     eng = tts.Engine(m, tmp_path)
+    # The escalation is gated on ECAPA agreeing this is the same person; here it
+    # does. (tests/test_clone_retries.py owns the case where it does not.)
+    eng._voc = np.full(10 * tts.REF_SR, 0.2, dtype="float32")
+    one = np.array([1.0, 0.0])
+    monkeypatch.setattr(tts, "_embed_windows", lambda voc, spans: np.stack([one] * len(spans)))
+    monkeypatch.setattr(tts, "_embed_wavfile", lambda p: one)
     (tmp_path / "refs").mkdir(parents=True, exist_ok=True)
     (tmp_path / "refs" / "S1.wav").write_bytes(b"canonical")
     (tmp_path / "refs" / "auto.wav").write_bytes(b"auto")

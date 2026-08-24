@@ -20,7 +20,7 @@ export type SegmentState =
  *
  * "failed" used to be `tts.verify === "failed"` a value `dubbing/tts.py` does
  * not write and never has: the record's `verify` is `"ok"`, `"accepted"`,
- * `"soft"` or `"keep"`, and nothing else is in the corpus of a real run
+ * `"soft"`, `"keep"` or `"wrong_voice"`, and nothing else is in a real run
  * ("accepted" is a dub the retry ladder settled for it is a concern the
  * overlap already carries, not a failure). So the Failed chip
  * counted zero on a run with real failures in it.
@@ -283,16 +283,22 @@ export function totalDuration(segments: Segment[], hint: number | null): number 
 }
 
 /**
- * Verification worth surfacing: a clone that did not say the right words.
+ * Verification worth surfacing: a clone that did not say the right words, or
+ * said them in the wrong voice.
  *
  * A keep has nothing to verify its "clip" is a slice of the original so the
  * check short-circuits on it. Except for the two keeps the pipeline decided
  * against itself: a `tts_failed` line's low overlap is *why* it is a keep, and
  * suppressing it hid the evidence for the one verdict a reviewer most needs to
  * check.
+ *
+ * Overlap alone cannot rank a wrong-speaker clone: it scores *well*, because the
+ * words are right, which is how a male take of a female line reached the mix
+ * looking clean. That verdict comes from the pipeline by name.
  */
 export function verifyConcern(seg: Segment): "none" | "soft" | "bad" {
   if (seg.keep && !pipelineFailed(seg)) return "none";
+  if (seg.tts?.verify === "wrong_voice") return "bad";
   const overlap = seg.verify?.overlap ?? seg.tts?.overlap;
   if (overlap == null) return "none";
   if (overlap < 0.6) return "bad";
