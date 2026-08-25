@@ -112,10 +112,20 @@ The app carries the pipeline source and the models it cannot fetch, and sets
 itself up on first run: no terminal, and **no account or API key for anything**
 (the one model behind a sign-up form is CC-BY-4.0 and ships inside the app).
 
-**macOS (Apple Silicon).** Grab the `.dmg` from the
-[latest release](https://github.com/maxmelichov/MamboDubb/releases/latest), drag
-MamboDubb to Applications, launch. Apple Silicon only: the translator runs on MLX,
-which needs an M-series chip. No Intel or iOS build.
+**macOS (Apple Silicon).** The build is not yet notarized, so dragging the `.dmg`
+into Applications makes macOS say the app is damaged and should go to the Trash.
+That is Gatekeeper, not a bad download. Install with:
+
+```bash
+curl -fsSL https://github.com/maxmelichov/MamboDubb/releases/latest/download/install.sh | sh
+```
+
+That fetches the latest `.dmg`, copies MamboDubb to Applications, clears the
+quarantine bit, signs the app on your Mac, and launches it. Apple Silicon only:
+the translator runs on MLX, which needs an M-series chip. No Intel or iOS build.
+
+If you already have the `.dmg`, either double-click **Install MamboDubb** inside
+it, or run `sh install.sh /path/to/MamboDubb_*.dmg`.
 
 **Windows and Linux.** The desktop shell builds for both:
 `.github/workflows/build-desktop.yml` produces an NSIS installer and an `.msi` for

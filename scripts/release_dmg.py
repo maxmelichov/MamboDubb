@@ -6,14 +6,20 @@
 """Build the release .dmg that opens on a Mac that is not this one.
 
 An unsigned bundle is fine for the machine that built it and dead on arrival
-everywhere else: Gatekeeper quarantines anything downloaded, and for an app with no
-Developer ID signature + notarization ticket the dialog says "MamboDubb is damaged
-and can't be opened" — the one cure is `xattr -dc` in Terminal, which is exactly the
-step this whole app exists to spare people. So the release path is signing and
-notarization or it is not a release path.
+everywhere else: Gatekeeper quarantines anything downloaded, and a linker-signed-only
+.app then shows "MamboDubb is damaged and can't be opened. You should move it to the
+Trash." The lasting fix is a Developer ID signature and a notarization ticket. Until
+those exist, unsigned builds still have to be installable: this script ad-hoc-signs
+the bundle (so the signature actually covers Info.plist and resources), drops
+install.sh into the .dmg as "Install MamboDubb.command", and the README leads with
 
-    uv run --script scripts/release_dmg.py             # the one release command
-    uv run --script scripts/release_dmg.py --dry-run   # print the plan, run nothing
+    curl -fsSL https://github.com/maxmelichov/MamboDubb/releases/latest/download/install.sh | sh
+
+which downloads, copies to /Applications, clears quarantine, re-signs, and launches.
+
+    uv run --script scripts/release_dmg.py                  # the one release command
+    uv run --script scripts/release_dmg.py --dry-run        # print the plan, run nothing
+    uv run --script scripts/release_dmg.py --finish-unsigned  # post-process an already-built .dmg
 
 Signing is Tauri-native, not post-hoc `codesign --deep`: the bundler signs every
 Mach-O inside-out (the uv sidecar included), applies the hardened runtime, submits to
@@ -31,10 +37,9 @@ stapled ticket on the container too means Gatekeeper clears the download even
 offline), and the paranoid post-build verification — `codesign --verify`, `spctl`,
 `stapler validate` — so a bad artifact fails here instead of on a user's Mac.
 
-With none of the four variables set it still builds, UNSIGNED, and shouts about it:
-that artifact is for this machine and for testers who are told the xattr incantation
-up front. Prerequisites, certificate setup, and the release checklist live in
-docs/RELEASING.md.
+With none of the four variables set it still builds, unsigned, ad-hoc-signs the
+bundle, and injects the installer. Prerequisites, certificate setup, and the
+release checklist live in docs/RELEASING.md.
 """
 
 from __future__ import annotations
@@ -42,8 +47,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -52,6 +59,8 @@ import build_desktop  # noqa: E402  the build itself; this script only wraps it
 ROOT = build_desktop.ROOT
 SRC_TAURI = ROOT / "app" / "desktop" / "src-tauri"
 SUBMODULE = ROOT / "third_party" / "Qwen3-TTS"
+INSTALL_SH = ROOT / "install.sh"
+DMG_HELPER_NAME = "Install MamboDubb.command"
 
 # Tauri reads these itself during `tauri build`; the split matters because the first
 # alone signs without notarizing, which on current macOS still gets the app blocked
@@ -110,6 +119,91 @@ def artifact_paths() -> tuple[Path, Path]:
     return app, dmg
 
 
+def adhoc_sign(app: Path) -> None:
+    """Replace linker-signed inner binaries with a real ad-hoc bundle signature.
+
+    An unsigned Tauri .app still has `adhoc,linker-signed` Mach-Os. Gatekeeper then
+    reports the bundle as damaged ("code has no resources but signature indicates
+    they must be present") even after quarantine is cleared. `codesign -s -` of the
+    bundle seals Info.plist and resources so install.sh's `xattr -cr` is enough.
+    """
+    if not app.is_dir():
+        raise SystemExit(f"error: expected {app}")
+    run(["codesign", "--force", "--deep", "--sign", "-", str(app)])
+    run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(app)])
+
+
+def _attach_rw(image: Path) -> tuple[str, Path]:
+    """Attach a read-write disk image; return (device, mountpoint)."""
+    proc = subprocess.run(
+        ["hdiutil", "attach", "-readwrite", "-nobrowse", "-noverify", str(image)],
+        check=True, capture_output=True, text=True,
+    )
+    device = ""
+    mount: Path | None = None
+    for line in proc.stdout.splitlines():
+        if "/Volumes/" in line:
+            parts = line.split()
+            device = parts[0]
+            mount = Path(parts[-1])
+    if not device or mount is None:
+        raise SystemExit(f"error: could not parse hdiutil attach output:\n{proc.stdout}")
+    return device, mount
+
+
+def inject_signed_app_and_helper(app: Path, dmg: Path) -> None:
+    """Put the ad-hoc-signed .app and install.sh into the already-built .dmg.
+
+    Tauri writes the .dmg from the unsigned tree. After we sign the .app we have
+    to copy that signed tree back in, or the image still carries the broken
+    linker-signed bundle. The helper is install.sh under a Finder-friendly name.
+    """
+    if not INSTALL_SH.is_file():
+        raise SystemExit(f"error: missing {INSTALL_SH}")
+    if not dmg.is_file():
+        raise SystemExit(f"error: expected {dmg}")
+
+    with tempfile.TemporaryDirectory(prefix="mambodubb-dmg-") as tmp:
+        tmp_path = Path(tmp)
+        rw = tmp_path / "rw.dmg"
+        rebuilt = tmp_path / "out.dmg"
+        run(["hdiutil", "convert", str(dmg), "-format", "UDRW", "-o", str(rw)])
+        # A few extra MB so replacing the .app + dropping the helper cannot fail
+        # on a volume packed to the last block.
+        run(["hdiutil", "resize", "-size", "180m", str(rw)])
+        print(f"+ hdiutil attach {rw}", flush=True)
+        device, mount = _attach_rw(rw)
+        try:
+            dest_app = mount / "MamboDubb.app"
+            if dest_app.exists():
+                shutil.rmtree(dest_app)
+            print(f"+ ditto {app} -> {dest_app}", flush=True)
+            subprocess.run(["ditto", str(app), str(dest_app)], check=True)
+            helper = mount / DMG_HELPER_NAME
+            print(f"+ copy {INSTALL_SH} -> {helper}", flush=True)
+            shutil.copy2(INSTALL_SH, helper)
+            helper.chmod(0o755)
+            # Hide the .command extension so the icon reads as an installer.
+            subprocess.run(
+                ["SetFile", "-a", "E", str(helper)],
+                check=False, capture_output=True,
+            )
+        finally:
+            run(["hdiutil", "detach", "-quiet", device])
+        run([
+            "hdiutil", "convert", str(rw), "-format", "UDZO",
+            "-imagekey", "zlib-level=9", "-o", str(rebuilt),
+        ])
+        print(f"+ replace {dmg}", flush=True)
+        shutil.move(str(rebuilt), str(dmg))
+
+
+def finish_unsigned(app: Path, dmg: Path) -> None:
+    """Make an unsigned Tauri .dmg installable on a Mac that is not this one."""
+    adhoc_sign(app)
+    inject_signed_app_and_helper(app, dmg)
+
+
 def verify_signed(app: Path, dmg: Path, notarized: bool) -> None:
     """Fail here, not on a user's Mac. Every check is what Gatekeeper will run."""
     run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(app)])
@@ -143,10 +237,27 @@ def main(argv: list[str] | None = None) -> int:
         "--dry-run", action="store_true",
         help="print every command the release would run, run none of them",
     )
+    parser.add_argument(
+        "--finish-unsigned", action="store_true",
+        help="ad-hoc-sign and inject install.sh into an already-built .dmg; skip the build",
+    )
     args = parser.parse_args(argv)
     DRY_RUN = args.dry_run
 
     check_submodule()
+
+    if args.finish_unsigned:
+        if os.environ.get(SIGN_VAR):
+            print(f"{SIGN_VAR} is set; skipping unsigned finish (Tauri already signed)")
+            return 0
+        app, dmg = artifact_paths()
+        if DRY_RUN:
+            print(f"+ (dry-run) ad-hoc-sign {app} and inject {DMG_HELPER_NAME} into {dmg}")
+            return 0
+        finish_unsigned(app, dmg)
+        print(f"\nunsigned artifact: {dmg}")
+        print(f"(ad-hoc signed; {DMG_HELPER_NAME} inside; install.sh is the download path)")
+        return 0
 
     signing = bool(os.environ.get(SIGN_VAR))
     notary_missing = [v for v in NOTARY_VARS if not os.environ.get(v)]
@@ -154,12 +265,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if not signing:
         banner([
-            "BUILDING UNSIGNED — this .dmg works ONLY on this machine.",
-            "On any other Mac, Gatekeeper says the app \"is damaged and",
-            "can't be opened\". Testers must clear quarantine by hand:",
-            "    xattr -dc /Applications/MamboDubb.app",
-            f"For a real release set {SIGN_VAR}, {', '.join(NOTARY_VARS)}",
-            "— see docs/RELEASING.md.",
+            "BUILDING UNSIGNED — Finder-drag of a downloaded .dmg still trips",
+            "Gatekeeper (\"damaged\", move to Trash). This build ad-hoc-signs",
+            "the bundle and ships Install MamboDubb.command inside the .dmg.",
+            "Users install with:",
+            "    curl -fsSL https://github.com/maxmelichov/MamboDubb/releases/latest/download/install.sh | sh",
+            f"A real drag-to-Applications release needs {SIGN_VAR} and",
+            f"{', '.join(NOTARY_VARS)} — see docs/RELEASING.md.",
         ])
     elif not notarizing:
         banner([
@@ -190,10 +302,12 @@ def main(argv: list[str] | None = None) -> int:
         notarize_dmg(dmg)
     if signing:
         verify_signed(app, dmg, notarized=notarizing)
+    elif not DRY_RUN:
+        finish_unsigned(app, dmg)
 
     print(f"\nrelease artifact: {dmg}")
     if not signing:
-        print("(UNSIGNED — see the warning above before giving this to anyone)")
+        print(f"(unsigned, ad-hoc signed, {DMG_HELPER_NAME} inside)")
     return 0
 
 

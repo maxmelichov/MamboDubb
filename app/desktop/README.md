@@ -252,9 +252,11 @@ downgrades that to a warning for CI that only compiles.
 ## Releasing
 
 A `.dmg` from `build_desktop.py build` is a **local** artifact: unsigned, so on any
-other Mac Gatekeeper's quarantine turns it into "MamboDubb is damaged and can't be
-opened", curable only by `xattr -dc` in Terminal — the exact step this app exists to
-spare people. The release path is one command:
+other Mac Gatekeeper's quarantine turns a Finder-drag into "MamboDubb is damaged and
+can't be opened". `release_dmg.py` ad-hoc-signs the bundle and injects
+`install.sh` as **Install MamboDubb.command**; users who downloaded the `.dmg` from
+the internet should run that (or the GitHub `install.sh` one-liner), not drag. The
+notarized release path is one command:
 
 ```bash
 uv run --script scripts/release_dmg.py            # sign + notarize + staple + verify
@@ -265,6 +267,7 @@ It wraps `build_desktop.py build` with the submodule gate, Developer ID signing 
 notarization (Tauri-native, driven by `APPLE_SIGNING_IDENTITY` / `APPLE_ID` /
 `APPLE_PASSWORD` / `APPLE_TEAM_ID`), a stapled ticket on the .dmg container itself,
 and the `codesign` / `spctl` / `stapler` verification Gatekeeper will re-run on the
-user's machine. Without the env vars it still builds, unsigned, behind a loud
-warning. Certificate setup — the one step only a human with the Apple account can do
-— and the full checklist are in [docs/RELEASING.md](../../docs/RELEASING.md).
+user's machine. Without the env vars it still builds, unsigned: it ad-hoc-signs the
+bundle and injects `Install MamboDubb.command`. Certificate setup — the one step
+only a human with the Apple account can do — and the full checklist are in
+[docs/RELEASING.md](../../docs/RELEASING.md).

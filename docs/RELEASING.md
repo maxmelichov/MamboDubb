@@ -8,9 +8,19 @@
 The whole point of the desktop app is that a fresh Mac never needs a terminal. An
 unsigned .dmg breaks that promise at step 1: Gatekeeper quarantines every download,
 and an app with no Developer ID signature and no notarization ticket gets the
-**"MamboDubb is damaged and can't be opened"** dialog on any Mac but the one that
-built it. The only workaround is `xattr -dc`, in Terminal. So a release is signed
-and notarized, or it is not a release.
+**"MamboDubb is damaged and can't be opened. You should move it to the Trash"**
+dialog on any Mac but the one that built it. A signed, notarized .dmg is the only
+way dragging the app to Applications just works.
+
+Until the Developer ID exists, unsigned releases are still shippable: `release_dmg.py`
+ad-hoc-signs the bundle, puts `install.sh` in the .dmg as **Install MamboDubb.command**,
+and users install with
+
+```bash
+curl -fsSL https://github.com/maxmelichov/MamboDubb/releases/latest/download/install.sh | sh
+```
+
+instead of dragging. Attach `install.sh` to the GitHub release as well as the `.dmg`.
 
 The one command:
 
@@ -69,10 +79,10 @@ export APPLE_TEAM_ID="TEAMID"        # the 10 characters in the identity's paren
 ```
 
 Tauri reads all four itself during `tauri build`; the script only checks they exist
-and warns loudly when they do not. With none set it builds **unsigned** and prints
-the tester workaround (`xattr -dc /Applications/MamboDubb.app`); with only the
-identity set it warns that signed-but-unnotarized is still blocked by current macOS
-("Apple could not verify…" instead of "damaged": politer, equally dead).
+and warns loudly when they do not. With none set it builds **unsigned**, ad-hoc-signs
+the bundle, injects `Install MamboDubb.command`, and prints the `install.sh` one-liner;
+with only the identity set it warns that signed-but-unnotarized is still blocked by
+current macOS ("Apple could not verify…" instead of "damaged": politer, equally dead).
 
 ## The release
 

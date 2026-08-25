@@ -52,10 +52,20 @@ days.
 ### macOS
 
 Unsigned builds from CI are quarantined by Gatekeeper and show **"MamboDubb is damaged
-and can't be opened"**. That is not a corrupt download. It is the missing Developer ID
-signature. A real release goes through `scripts/release_dmg.py`, which signs and
-notarizes; see [RELEASING.md](RELEASING.md). To open a CI build anyway:
-`xattr -dc /Applications/MamboDubb.app`.
+and can't be opened. You should move it to the Trash."** That is not a corrupt
+download. It is the missing Developer ID signature. A real drag-to-Applications
+release goes through `scripts/release_dmg.py` with the Apple signing env vars; see
+[RELEASING.md](RELEASING.md). Until then, do not drag the `.app` out of the `.dmg`.
+Install with:
+
+```bash
+curl -fsSL https://github.com/maxmelichov/MamboDubb/releases/latest/download/install.sh | sh
+```
+
+or, for a `.dmg` you already have, `sh install.sh /path/to/MamboDubb_*.dmg`. The
+script copies the app to `/Applications`, clears quarantine, and ad-hoc-signs the
+bundle so it launches. Unsigned `.dmg`s also contain **Install MamboDubb.command**,
+which is the same script.
 
 ### Windows
 

@@ -126,6 +126,14 @@ jobs:
         working-directory: app/desktop
         run: pnpm tauri build
 
+      # Unsigned macOS .dmg: linker-signed Mach-Os look "damaged" to Gatekeeper.
+      # Ad-hoc-sign the bundle and drop install.sh in as Install MamboDubb.command.
+      # No-op on Windows/Linux. Skip when a Developer ID is present (then Tauri
+      # already signed, and rewriting the .dmg would break notarization).
+      - name: Finish the unsigned Mac .dmg
+        if: runner.os == 'macOS'
+        run: uv run --script scripts/release_dmg.py --finish-unsigned
+
       - name: Collect the installers
         uses: actions/upload-artifact@v7
         with:

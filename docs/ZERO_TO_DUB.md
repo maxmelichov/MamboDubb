@@ -10,7 +10,7 @@ clicks alone; "GAP" means the path dead-ends outside the app.
 
 | # | step | what happens | status |
 |---|------|--------------|--------|
-| 1 | Open the .dmg, drag to Applications | Gatekeeper: **"MamboDubb is damaged and can't be opened"** on any Mac but the build machine. The app is unsigned and un-notarized (no `signingIdentity`, no notarization config anywhere in `tauri.conf.json` or `scripts/build_desktop.py`), so the quarantine bit is fatal and the only cure is `xattr -dc` in a terminal. | **GAP release blocker** |
+| 1 | Open the .dmg, drag to Applications | Gatekeeper: **"MamboDubb is damaged and can't be opened"** on any Mac but the build machine if the user drags the `.app`. The app is unsigned and un-notarized (no Developer ID). `install.sh` (and **Install MamboDubb.command** inside the `.dmg`) copies to `/Applications`, clears quarantine, and ad-hoc-signs the bundle so it launches. Drag-to-Applications without that step is still a blocker. | **GAP** drag-install; **WORKS** via `install.sh` |
 | 2 | First launch | The shell copies the bundled payload to `~/Library/Application Support/MamboDubb/workspace`, forces owner-write, stamps `.mambodubb-payload`, stores the path (`provision.rs::resolve_workspace`). Silent and correct; upgrades refresh source dirs wholesale and never touch `.venv`/`.env`/`models`/`outputs`. | WORKS IN-APP |
 | 3 | First `uv sync` | The runner spawns `uv run --project <workspace> python -m dubbing_app.server …` with the **sidecar** uv (`Contents/MacOS/uv`, `workspace.rs::find_uv` no Homebrew needed) and blocks on the ready line. `uv run` builds the ~1.7 GB `.venv`, fetching a managed CPython first. Minutes long, and `main.tsx` renders **nothing at all** until it finishes: `initApiBase()` awaits `start_server` *before the first `root.render`*, so the window is a bare `#110e16` rectangle the whole time. The stderr ring (`get_server_log`) holds the sync's progress, but **no UI code calls it** the sign of life exists and is never shown. | **GAP dead screen** |
 | 4 | Setup screen: tools | `SetupGate` routes to `/setup`; `ffmpeg` and `sox` are red BLOCKING rows with Install buttons. The button runs `brew install …` (`dubbing/tools.py::RECIPES`) and a fresh Mac **has no brew**: `install.py::MANAGERS["brew"]` answers "Get it from https://brew.sh" whose own install line is a terminal command. The unattended path exists only on machines that already broke the zero-terminal rule once. | **GAP dead end without Homebrew** |
@@ -38,10 +38,10 @@ No wrong ids, nothing gated, nothing needing the token step 6 asks for.
 
 ## The gaps, in the order they bite
 
-1. **Unsigned .dmg (release blocker).** Step 1 kills the entire story before the app
-   runs once. Fix is ad-hoc signing at minimum, Developer ID + notarization to actually
-   ship; until then every install instruction begins with the terminal command the
-   product exists to remove.
+1. **Unsigned .dmg (drag-install blocker).** Dragging the `.app` to Applications still
+   dies at Gatekeeper. `install.sh` / **Install MamboDubb.command** is the path that
+   actually launches until Developer ID + notarization exist. The product still owes
+   people a drag-to-Applications install; the one-liner is a stopgap, not the design.
 2. **Dead window through the first sync.** The multi-minute `uv sync` happens behind an
    unrendered webview. The pieces to fix it already exist and are already wired on one
    side: render first, call `start_server` from inside the app, and poll
