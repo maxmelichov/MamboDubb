@@ -1,5 +1,7 @@
 <p align="center">
-  <img src="docs/assets/mambodubb-banner.png" alt="MamboDubb" width="720">
+  <a href="https://github.com/maxmelichov/MamboDubb/releases/latest">
+    <img src="docs/assets/mambodubb-banner.png" alt="MamboDubb" width="760">
+  </a>
 </p>
 
 <h3 align="center">Dub any video into another language entirely on your own machine.</h3>
@@ -9,9 +11,19 @@
   ·
   <a href="#install">Mac · Windows · Linux</a>
   ·
+  <a href="#setup-installs-the-models">Setup</a>
+  ·
   <a href="#quick-start-cli">Run from source</a>
   ·
   <a href="docs/APP_ARCHITECTURE.md">Architecture</a>
+</p>
+
+<p align="center">
+  <sub>
+    Latest release:
+    <a href="https://github.com/maxmelichov/MamboDubb/releases/tag/v0.4.0"><b>v0.4.0</b></a>,
+    where Setup installs every model in one click. No account, no API key.
+  </sub>
 </p>
 
 ---
@@ -19,8 +31,8 @@
 MamboDubb takes a video (a file or a YouTube link), transcribes it, translates the
 transcript with context, speaks every line **in the original speaker's own voice**
 using zero-shot cloning, and mixes the new speech back over the original music at the
-original timing. Nothing is uploaded anywhere: every model ASR, translation,
-voice synthesis, source separation, diarization runs locally.
+original timing. Nothing is uploaded anywhere: every model runs locally, from ASR
+and translation to voice synthesis, source separation and diarization.
 
 ## What it needs
 
@@ -96,14 +108,15 @@ original text and its translation together. Fix a translation in place, choose p
 line whether it is dubbed or keeps the original audio, re-voice a single line in
 seconds, and watch the source and output waveforms side by side.
 
-- **Script-first editing** original + translation on every row, inline edits,
+- **Script-first editing**: original + translation on every row, inline edits,
   RTL-correct Hebrew alongside English.
-- **Per-line control** dub / keep original, re-translate, re-voice, split, merge,
+- **Per-line control**: dub / keep original, re-translate, re-voice, split, merge,
   speaker reassignment, per-segment voice options.
-- **Honest state** every line says whether it is dubbed, kept, waiting, or failed,
+- **Honest state**: every line says whether it is dubbed, kept, waiting, or failed,
   and one click fixes the ones that are waiting.
-- **Hand edits are sacred** a corrected line is locked; no re-run ever overwrites it.
-- **Compare everything** the Orig/Dub buttons play the original span and the
+- **Hand edits are sacred**: a corrected line is locked, and no re-run ever
+  overwrites it.
+- **Compare everything**: the Orig/Dub buttons play the original span and the
   dubbed take of any line, back to back.
 
 ### Install
@@ -150,6 +163,29 @@ Windows needs one extra step (PyPI's default `torch` wheel is CPU-only there)
 and has a few platform notes worth reading first: **[docs/WINDOWS.md](docs/WINDOWS.md)**.
 WSL2 is the easier road if you have it, and the faster one.
 
+### Setup installs the models
+
+Open **Setup** on first run and press **Install everything**. The button prices
+itself before you press it (the total download, in GB) and then pulls the whole
+set: the translator, Qwen3-TTS, every ASR model, spoken-language ID, the Hebrew
+adapter, and speaker diarization. Rows go green as they land. There is no Hugging
+Face account or API key at any point, and nothing in the queue can stop half way
+to ask for one.
+
+- Every missing row also has its own **Download** button, labelled with that
+  model's size, so you can take the 9.7 GB translator now and leave the rest.
+- Diarization needs no download at all: the pyannote community-1 weights
+  (CC-BY-4.0) ship inside the app in `third_party/`, and Setup restores them
+  from that copy, checksum verified, with no network.
+- A model that already sits in your Hugging Face cache counts as installed,
+  but only where the loader actually reads the cache. No row goes green on a
+  file the run cannot open.
+- Prefer the terminal? Every missing row carries the exact command that fixes
+  it, ready to copy, with absolute paths, so it works from any directory.
+- Optional extras are not in "everything". Blocking checks are installed first,
+  then the ones that only degrade quality, so the shortest usable install comes
+  first on a slow connection.
+
 ## Quick start (CLI)
 
 The whole pipeline is also a single headless command:
@@ -160,8 +196,8 @@ uv run python -m dubbing input.mp4 --duration 300        # just the first 5 minu
 ```
 
 The result lands in `outputs/<run>/preview.mp4`, next to a `report.json` that
-accounts for every second of audio. Re-running is incremental finished stages are
-cached and only what changed is redone.
+accounts for every second of audio. Re-running is incremental: finished stages are
+cached, and only what changed is redone.
 
 ## Run as a server (no desktop app)
 
@@ -192,8 +228,9 @@ for the rest of the session. The traffic is plain HTTP; treat the LAN mode as
 
 Targets are bounded by what Qwen3-TTS can speak. Hebrew is not one of its ten
 languages; it is added by a LoRA over the same checkpoint (one extra download,
-see [docs/setup.md](docs/setup.md)), which is switched off again for the other
-ten, so there is no second synthesiser and nothing about them changes. Every
+which Setup fetches with the rest, see [docs/setup.md](docs/setup.md)), and it
+is switched off again for the other ten, so there is no second synthesiser and
+nothing about them changes. Every
 target can also be a source; Arabic is the one language that goes the other way
 only: it can be heard and translated, never spoken, so it is still source-only.
 
@@ -209,7 +246,7 @@ fetch → stems → transcript → segments → translate → tts → timeline �
 
 One module per stage, one `manifest.json` per run as the single source of truth.
 The desktop app is a thin Tauri shell over a local FastAPI server that calls the
-same pipeline the app is a second front end, never a fork. The models:
+same pipeline, so the app is a second front end and never a fork. The models:
 faster-whisper (ASR + verification), Gemma (translation, via MLX), Qwen3-TTS
 (voice cloning), Demucs (music/voice separation), Pyannote (speakers). They load
 sequentially and never co-exist in memory (see [What it needs](#what-it-needs)).
@@ -223,7 +260,7 @@ accepted. Anything the pipeline could not account for is named in the run's
 
 ## Credits
 
-MamboDubb is a pipeline, not a model all of the intelligence below is the work
+MamboDubb is a pipeline, not a model: all of the intelligence below is the work
 of the teams that built and released these models openly. Full credit to them:
 
 | Model | By | Used for |
