@@ -2211,8 +2211,13 @@ def test_setup_grades_every_check_and_required_is_derived_from_it(client):
     assert by_id["ffmpeg"] == by_id["uv"] == "blocking"
     assert by_id["model.translate"] == by_id["model.asr.en"] == "blocking"
     assert by_id[f"model.tts.{tts.DEFAULT_TTS_MODEL}"] == "blocking"
-    # The run works and is worse: a third language nobody noticed.
-    assert by_id["model.lid"] == "degrades"
+    # The run works and is worse: a third language nobody noticed, or every
+    # character in the video dubbed in one voice. Diarization sat in `optional`
+    # while the only fix for it was a Hugging Face account, because a grade that
+    # says "this matters" beside a fix the app cannot offer is only noise. The
+    # app restores the bundled weights itself now, so the grade can say what a
+    # missing copy actually costs.
+    assert by_id["model.lid"] == by_id["model.diarization"] == "degrades"
     # Irrelevant until asked for, or self-downloading. sox is here on evidence:
     # the only sox caller in the tree is qwen_tts's 25Hz tokenizer, and the
     # pipeline loads only 12Hz checkpoints — a brewless Mac dubs without it.
@@ -2220,7 +2225,7 @@ def test_setup_grades_every_check_and_required_is_derived_from_it(client):
     # diarization loaded a gated repo, which made "you need a Hugging Face
     # account" part of a fresh install. It does not any more, so the credential
     # may never again be why a machine is not green.
-    for optional in ("sox", "hf_token", "model.diarization", "model.asr.he",
+    for optional in ("sox", "hf_token", "model.asr.he",
                      "model.asr.tgt", "model.tts.he", "model.g2p.he", "model.demucs",
                      "disk"):
         assert by_id[optional] == "optional", optional
@@ -2557,9 +2562,16 @@ def test_setup_marks_the_rows_the_app_can_install(client):
     # package manager this app may drive still has a button, and this set is
     # what the UI reads to draw it.
     static = {"ffmpeg"} if install_mod.static_route("ffmpeg") else set()
-    assert installable == set(install_mod.INSTALLERS) | set(setup_mod.model_downloads()) | static
+    # Plus the diarization row wherever a copy of the bundled weights is still
+    # on this machine to restore from. It is in no download table and never will
+    # be (the upstream repo is gated), so it is named separately here for the
+    # same reason it is a separate route: it fetches nothing.
+    restore = ({install_mod.DIARIZATION_ID}
+               if install_mod.diarization_source() is not None else set())
+    assert installable == (set(install_mod.INSTALLERS)
+                           | set(setup_mod.model_downloads()) | static | restore)
     assert installable & set(tools.recipes()) == set(tools.auto_installers()) | static
-    # And never the rows no table covers: gated pipelines and self-fetching caches.
+    # And never the rows no table and no route covers: self-fetching caches.
     assert {"model.demucs", "model.g2p.he", "hf_token", "disk"}.isdisjoint(installable)
     assert all(isinstance(c["installable"], bool) for c in checks)
 
@@ -3221,6 +3233,156 @@ def test_download_that_completes_but_fails_its_probe_is_not_success(monkeypatch,
 
 
 # ---------------------------------------------------------------------------
+# restoring the bundled diarization weights (no token, no network)
+# ---------------------------------------------------------------------------
+# The one install here that downloads nothing. Upstream is gated, so the button
+# reads the copy that shipped with the app and proves it arrived whole.
+
+
+def a_weights_dir(root: Path, *, damaged: bool = False) -> Path:
+    """A miniature of `third_party/pyannote-speaker-diarization-community-1`:
+    a couple of files and the SHA256SUMS that vouches for them."""
+    import hashlib
+
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "segmentation").mkdir(exist_ok=True)
+    files = {"config.yaml": b"version: 1\n",
+             "segmentation/pytorch_model.bin": b"weights" * 100}
+    lines = []
+    for rel, blob in files.items():
+        (root / rel).write_bytes(blob)
+        digest = hashlib.sha256(blob if not damaged else b"other").hexdigest()
+        lines.append(f"{digest}  {rel}")
+    (root / "SHA256SUMS").write_text("\n".join(lines) + "\n")
+    return root
+
+
+@pytest.fixture()
+def diarization(tmp_path, monkeypatch):
+    """A source to restore from and a workspace to restore into, with every
+    real-machine route switched off: no /Applications payload and no checkout,
+    so what a test asserts is its own fixture and not the developer's laptop."""
+    target = tmp_path / "workspace" / "third_party" / "pyannote-speaker-diarization-community-1"
+    monkeypatch.setattr(install_mod, "diarization_target", lambda: target)
+    monkeypatch.setattr(install_mod, "DIARIZATION_BUNDLE_ROOTS", ())
+    monkeypatch.delenv(install_mod.DIARIZATION_SOURCE_ENV, raising=False)
+    return {"target": target, "source": tmp_path / "payload"}
+
+
+def test_diarization_has_no_route_when_nothing_carries_a_copy(diarization):
+    """A stripped install: no payload, no checkout, nothing to copy. The honest
+    answer is no button, not a button that 400s."""
+    assert install_mod.diarization_source() is None
+    assert install_mod.installable(install_mod.DIARIZATION_ID) is False
+    assert install_mod.diarization_command() is None
+    assert install_mod.route(install_mod.DIARIZATION_ID) is None
+
+
+def test_diarization_restores_from_the_bundled_copy_and_verifies_it(diarization,
+                                                                    monkeypatch):
+    """The whole point of the row: the weights come back with no account, no
+    token and no network, and the copy is checked against the manifest that
+    shipped beside it rather than believed."""
+    source = a_weights_dir(diarization["source"])
+    monkeypatch.setenv(install_mod.DIARIZATION_SOURCE_ENV, str(source))
+    assert install_mod.diarization_source() == ("copy", source)
+    assert install_mod.installable(install_mod.DIARIZATION_ID) is True
+    assert "copying the weights that shipped" in install_mod.route(
+        install_mod.DIARIZATION_ID)
+
+    lines: list[str] = []
+    install_mod.restore_diarization(lines.append)
+    target = diarization["target"]
+    assert (target / "config.yaml").read_bytes() == b"version: 1\n"
+    assert (target / "segmentation" / "pytorch_model.bin").is_file()
+    assert any("verified 2 files" in line for line in lines)
+    # Nothing is left half-written beside it.
+    assert not (target.parent / f"{target.name}.incoming").exists()
+
+
+def test_a_damaged_copy_is_refused_and_the_workspace_is_left_alone(diarization,
+                                                                  monkeypatch):
+    """A full disk or a truncated payload must not land a broken pipeline that
+    a run discovers fifty lines in as a tensor shape complaint."""
+    source = a_weights_dir(diarization["source"], damaged=True)
+    monkeypatch.setenv(install_mod.DIARIZATION_SOURCE_ENV, str(source))
+    with pytest.raises(RuntimeError, match="does not match SHA256SUMS"):
+        install_mod.restore_diarization(lambda line: None)
+    assert not diarization["target"].exists()
+    assert not (diarization["target"].parent
+                / f"{diarization['target'].name}.incoming").exists()
+
+
+def test_the_diarization_row_is_installable_and_says_what_the_button_does(client,
+                                                                         diarization,
+                                                                         monkeypatch):
+    """The row, end to end: a button, the command as data for anyone who would
+    rather type it, and no `hub`, because there is nothing to download and the
+    one repo that would be is the gated one."""
+    from dubbing import segments
+    from dubbing_app import setup as setup_mod
+
+    source = a_weights_dir(diarization["source"])
+    monkeypatch.setenv(install_mod.DIARIZATION_SOURCE_ENV, str(source))
+    monkeypatch.setattr(segments, "DIARIZATION_DIR", diarization["target"])
+
+    row = {c["id"]: c for c in client.get("/api/setup").json()["checks"]}[
+        install_mod.DIARIZATION_ID]
+    assert row["ok"] is False and row["severity"] == "degrades"
+    assert row["installable"] is True
+    assert row["fix"] == f"cp -R {source}/. {diarization['target']}"
+    assert f"`{row['fix']}`" in row["detail"]
+    assert "hub" not in row
+    # And "install everything" picks it up: it is missing, fixable from here and
+    # not optional, which is exactly the plan's own rule.
+    plan = setup_mod.install_plan(client.get("/api/setup").json())
+    assert install_mod.DIARIZATION_ID in {item["id"] for item in plan}
+
+
+def test_the_diarization_row_says_the_honest_alternative_when_there_is_no_copy(
+        client, diarization, monkeypatch):
+    """No payload and no checkout: the row must not invent a command. What it
+    offers instead is the two things that do work, and neither is a login."""
+    from dubbing import segments
+
+    monkeypatch.setattr(segments, "DIARIZATION_DIR", diarization["target"])
+    row = {c["id"]: c for c in client.get("/api/setup").json()["checks"]}[
+        install_mod.DIARIZATION_ID]
+    assert row["ok"] is False and row["installable"] is False and "fix" not in row
+    assert "reinstall the app" in row["detail"]
+    assert segments.DIARIZATION_HUB_ENV in row["detail"]
+    # Never a demand for an account, on the row that used to be the reason for one.
+    assert "token" not in row["detail"].lower()
+
+
+def test_restoring_diarization_runs_through_the_one_install_slot(diarization,
+                                                                monkeypatch):
+    """Same slot, same re-probe, same verdict shape as a download or a brew:
+    there is no second install path to keep honest."""
+    from dubbing_app import setup as setup_mod
+
+    source = a_weights_dir(diarization["source"])
+    monkeypatch.setenv(install_mod.DIARIZATION_SOURCE_ENV, str(source))
+    probed: list[str] = []
+
+    def probe(id_):
+        probed.append(id_)
+        return {"id": id_, "label": "Diarization", "ok": True, "detail": "",
+                "severity": "degrades", "required": False}
+
+    inst = install_mod.Installer(probe, recipes={})
+    inst.start(install_mod.DIARIZATION_ID)
+    assert inst.wait(10.0)
+    status = inst.status()
+    assert status["ok"] is True and status["error"] is None
+    assert probed == [install_mod.DIARIZATION_ID]
+    # No byte fields: nothing was downloaded, and a progress denominator for a
+    # local copy would be a spinner pretending to be a download.
+    assert "bytes_total" not in status
+    assert (diarization["target"] / "config.yaml").is_file()
+
+
+# ---------------------------------------------------------------------------
 # install everything: POST|DELETE /api/setup/install_all
 # ---------------------------------------------------------------------------
 # One button for a screen full of red rows. Nothing here installs anything
@@ -3281,9 +3443,12 @@ def test_install_plan_never_queues_anything_that_needs_a_credential(client):
     # weights ship with the app, so the only gated repo in the tree is never
     # something the queue could reach for.
     assert "model.diarization" not in downloads
-    # ...and the row says so: no hub, no size, no Download button to press.
+    # Its row still has a button, and that is not a contradiction: the button
+    # restores a copy this machine already carries (`install.diarization_source`),
+    # verifies it against SHA256SUMS, and touches no repo, gated or otherwise.
     row = {c["id"]: c for c in client.get("/api/setup").json()["checks"]}["model.diarization"]
-    assert row["installable"] is False and "hub" not in row
+    assert "hub" not in row and "download_bytes" not in row
+    assert row["installable"] is (install_mod.diarization_source() is not None)
 
 
 @pytest.fixture()

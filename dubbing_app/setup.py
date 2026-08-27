@@ -20,18 +20,25 @@ Report shape::
 
     {"ok": bool, "checks": [{"id", "label", "ok", "detail", "required": bool,
                              "severity": "blocking"|"degrades"|"optional",
-                             "installable": bool, "path"?, "bytes"?,
-                             "hub"?, "download_bytes"?}, ...]}
+                             "installable": bool, "path"?, "found_at"?, "bytes"?,
+                             "hub"?, "download_bytes"?, "fix"?}, ...]}
 
 `installable` is the server's answer to "can the app fix this for me?" true for
 exactly the ids `dubbing_app.install` can install (`install.installable`: an argv
-for this platform, or the static ffmpeg build where no unattended package manager
-exists) plus the models in `model_downloads()`, the hub snapshots the app can
-fetch itself. The UI needs it
+for this platform, the static ffmpeg build where no unattended package manager
+exists, or the bundled diarization weights when this machine still carries a copy
+to restore them from) plus the models in `model_downloads()`, the hub snapshots
+the app can fetch itself. The UI needs it
 as a flag rather than a list of its own, or the two sides drift and a button
 appears on a row whose `POST /api/setup/install` is a 400. A downloadable model
 row also carries `hub` and `download_bytes`, so the button can say what it costs
-("Download (~9.7 GB)") before it is pressed.
+("Download (~9.7 GB)") before it is pressed. `fix` is the same courtesy for a row
+whose repair is not a download: the command, as data, so the UI can offer to copy
+it rather than making the user select it out of a sentence.
+
+`path` is always where the pipeline *would* load a model from, even when it is
+found somewhere else; `found_at` says where it actually is when the two differ
+(a model the loader auto-downloaded into the Hugging Face cache).
 
 `ok` is the conjunction of the **required** checks only.
 
@@ -46,7 +53,8 @@ the first two mean anything:
   translator, the default TTS checkpoint and the English verifier. Exactly the
   ``required`` set, and `required` is derived from this so the two cannot drift.
 * ``degrades`` the run **works and is worse**. No language-ID model means
-  foreign speech is never detected. Nothing here stops a run, and nothing here
+  foreign speech is never detected; no diarization weights mean every character
+  in the video is dubbed in one voice. Nothing here stops a run, and nothing here
   is nothing.
 * ``optional`` irrelevant until you ask for it: the per-language-pair models,
   the self-downloading caches, free disk and now the HF token, which used to
@@ -247,9 +255,10 @@ def probe(id_: str) -> dict[str, Any] | None:
     """One check, by id or None if it is not one this can answer alone.
 
     Exactly the ids the app can install: the tools, re-checked with a fresh
-    `shutil.which`, and the hub-snapshot models, re-`stat`ed on disk. A check
-    that is neither (`disk`, the token, the self-downloading caches) is nothing
-    the install slot ever finishes, so nothing ever asks for it here.
+    `shutil.which`, the hub-snapshot models, re-`stat`ed on disk, and the
+    diarization weights the restore route puts back. A check that is none of
+    those (`disk`, the token, the self-downloading caches) is nothing the
+    install slot ever finishes, so nothing ever asks for it here.
     `dubbing_app.install` calls this when its worker exits, so the row the UI
     redraws is fresh evidence and not the worker's opinion of itself.
     """
@@ -257,7 +266,7 @@ def probe(id_: str) -> dict[str, Any] | None:
 
     spec = TOOLS.get(id_)
     if spec is None:
-        if id_ not in model_downloads():
+        if id_ not in model_downloads() and not installable(id_):
             return None
         row = next((c for c in model_checks() if c["id"] == id_), None)
         if row is None:
@@ -528,9 +537,12 @@ def model_downloads() -> dict[str, dict[str, Any]]:
     reason. It used to be the one *gated* model in the tree, kept out because a
     download button that stops to ask for a Hugging Face account is worse than no
     button. Now its CC-BY-4.0 weights are checked into `third_party/` and ship
-    inside the app (`segments.DIARIZATION_DIR`), so there is nothing to download:
-    a row with a Download button would be offering the user something they
-    already have.
+    inside the app (`segments.DIARIZATION_DIR`), so there is nothing to download.
+    Its row is installable all the same, through a route that is not in this
+    table because it fetches nothing: `install.restore_diarization` copies the
+    weights back from the payload or the checkout they shipped in and verifies
+    them against SHA256SUMS. Keeping it out of *this* table is what guarantees
+    the gated repo is never something the app reaches for.
 
     The hub ids are the pipeline's own where the pipeline has one
     (`translate.HUB_ID`, `tts.TTS_MODELS[...]["hub"]`, `transcript.*_HUB`,
@@ -632,14 +644,26 @@ def model_checks() -> list[dict[str, Any]]:
         # Green on every install, because the weights are in the payload: 31 MB
         # of CC-BY-4.0 pyannote checked into `third_party/` and copied into the
         # workspace on first launch. The row is here to *say* so — a screen that
-        # lists nine models and silently omits the tenth reads as an omission —
-        # and it has no Download button because there is nothing to download.
-        # Missing means someone deleted it from the workspace; the note says how
-        # to get it back, and the run still works (one voice for everyone).
+        # lists nine models and silently omits the tenth reads as an omission.
+        #
+        # It has no Download button, and never will: the upstream repo is the one
+        # gated thing in the tree. What it has instead is a *Restore* one. When
+        # the copy is gone the app can put it back from the payload it shipped in
+        # or from the checkout it was cloned into, with no network and no account
+        # (`install.diarization_source`), and `fix` carries the same line for a
+        # user who would rather type it.
+        #
+        # `degrades`, not `optional`, and only since that button existed. The row
+        # is graded for the state it is in when it is red, and red here means
+        # every character in the video is dubbed in one voice: the run works and
+        # is worse, which is what `degrades` means. It sat in `optional` while
+        # the only fix was a Hugging Face account, because a grade that says
+        # "this matters" beside a fix the app could not offer is just noise. The
+        # fix is now one button, so the grade can tell the truth, and "install
+        # everything" picks it up along with the rest.
         m("model.diarization", "Speaker diarization (pyannote community-1)",
-          segments.DIARIZATION_DIR, severity=OPTIONAL,
-          note="ships with the app; restore it from the repo, or set "
-               f"DUB_DIARIZATION_HUB={segments.DIARIZATION_MODEL} with a token"),
+          segments.DIARIZATION_DIR, severity=DEGRADES,
+          **diarization_repair()),
         # Hebrew is a dub TARGET only with both of these. Optional every other
         # target runs without them but a Hebrew run is refused up front when
         # either is missing, so the report is where a user finds out first.
@@ -649,6 +673,32 @@ def model_checks() -> list[dict[str, Any]]:
         g2p_check(),
     ]
     return out
+
+
+def diarization_repair() -> dict[str, str]:
+    """The `note` and `fix` for the diarization row: what its absence costs, and
+    the line that ends it.
+
+    Two answers, because there are two situations and only one of them has a
+    command. A machine that still carries the copy the weights shipped in gets
+    that copy's restore line, which is also what the button runs. A machine that
+    carries none of them (a stripped install, a workspace pruned by hand) gets
+    the honest alternative instead of a command that would fail: reinstall, or
+    name a mirror. What it never gets is "log in to Hugging Face": the upstream
+    repo is gated, and this row exists precisely so nobody is asked for that.
+    """
+    from dubbing import segments
+
+    from .install import diarization_command
+
+    note = "ships with the app; without it every speaker is dubbed in one voice"
+    fix = diarization_command()
+    if fix:
+        return {"note": note, "fix": fix}
+    return {"note": note + ": no copy of it is left on this machine, so reinstall "
+                          "the app, or point `"
+                          f"{segments.DIARIZATION_HUB_ENV}` at a directory or a "
+                          f"mirror of {segments.DIARIZATION_MODEL} you can reach"}
 
 
 def g2p_check() -> dict[str, Any]:
@@ -811,8 +861,10 @@ def install_plan(report_: dict[str, Any]) -> list[dict[str, Any]]:
       that mentions a token is `hf_token`, which installs nothing, and no hub id
       in `model_downloads()` is gated the one gated repo in the tree,
       `segments.DIARIZATION_MODEL`, is not in that table at all because its
-      weights ship with the app. Every repo this can queue is public, so the
-      queue never stops half way to ask the user for something.
+      weights ship with the app. Every repo this can queue is public, and the
+      one queued item that is not a repo at all is the diarization restore,
+      which reads a copy already on this machine. So the queue never stops half
+      way to ask the user for something.
     * **Nothing graded `optional`.** A Korean checkpoint has nothing to say
       about a Hebrew→English run, and a button that says "everything" must not
       quietly mean "and 40 GB you will never open". Blocking first, then
@@ -836,5 +888,6 @@ def install_plan(report_: dict[str, Any]) -> list[dict[str, Any]]:
 
 __all__ = ["report", "probe", "install_plan", "git_commit", "human_bytes", "dir_size", "env_path",
            "env_file_value", "find_uv", "gpu_memory_bytes", "hf_hub_cache",
+           "hf_cache_repo", "diarization_repair",
            "low_vram_check", "low_vram_env_key", "low_vram_state", "model_downloads",
            "blocking_stage", "TOOLS", "BLOCKING", "DEGRADES", "OPTIONAL", "SEVERITIES"]

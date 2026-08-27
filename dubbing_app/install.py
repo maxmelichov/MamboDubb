@@ -44,8 +44,12 @@ Four rules shape this module, each of them a refusal:
   `setup.model_downloads()` (models → hub repo + local dir). An id in neither
   table is a 400 that says how to install it by hand — which still covers the
   models no snapshot can satisfy: Demucs and the Hebrew G2P (they fetch their
-  own caches on first use). Diarization was on that list while it was gated; it
-  is a plain public snapshot now (`setup.model_downloads`).
+  own caches on first use). Diarization is the one id that is in neither table
+  and still has a button, because its fix is not a download at all: the weights
+  shipped with the app, so the button copies them back from the payload (or
+  restores them from the checkout) and verifies the copy against SHA256SUMS.
+  The gated upstream repo is never reached for, and no route here can ask the
+  user for a Hugging Face account.
 * **At most one install at a time, process-wide.** Not for memory (a `brew` runs
   nothing of ours) but because two package managers writing the same prefix is a
   broken prefix, and because the screen can only honestly show one spinner.
@@ -124,6 +128,28 @@ Probe = Callable[[str], dict[str, Any] | None]
 # build. Bump deliberately, with the binaries it fetches re-checked.
 STATIC_FFMPEG_SPEC = "static-ffmpeg==3.0"
 
+# The diarization weights, which are the one install here that downloads nothing.
+# Upstream (`segments.DIARIZATION_MODEL`) is gated: free and CC-BY-4.0, but with
+# an accept-the-terms click and a read token in front of the files, and a token
+# is exactly what this app promises never to ask for. So the restore route reads
+# from the copy that already shipped: the 31 MB under `third_party/`, checked
+# into the repo and staged into the desktop payload. It verifies that copy against the
+# SHA256SUMS that travels beside it.
+DIARIZATION_ID = "model.diarization"
+# An explicit source directory, for a machine that has neither a checkout nor an
+# .app to read from: point it at an unpacked copy and the button works again.
+DIARIZATION_SOURCE_ENV = "DUB_DIARIZATION_SOURCE"
+# Where a macOS install keeps the payload the workspace was copied from
+# (`provision.rs`: `Contents/Resources/workspace`). Globbed rather than named,
+# because the bundle's name is the app's and this module does not own it. There
+# is no equivalent constant for Windows or Linux, and inventing one that is wrong
+# would be worse than the honest sentence the row falls back to.
+DIARIZATION_BUNDLE_GLOB = "*.app/Contents/Resources/workspace"
+DIARIZATION_BUNDLE_ROOTS = (Path("/Applications"), Path.home() / "Applications")
+# The file every candidate source has to carry: it is both the proof that the
+# directory is the weights and the manifest the copy is checked against.
+DIARIZATION_SUMS = "SHA256SUMS"
+
 
 def static_route(id_: str) -> bool:
     """True when the button installs `id_` as a static build instead of running
@@ -160,12 +186,91 @@ def static_route(id_: str) -> bool:
     return True
 
 
+def diarization_target() -> Path:
+    """Where the weights belong: the pipeline's own constant, never a copy."""
+    from dubbing import segments
+
+    return segments.DIARIZATION_DIR
+
+
+def _is_diarization_copy(path: Path) -> bool:
+    return (path / DIARIZATION_SUMS).is_file()
+
+
+def diarization_source() -> tuple[str, Path] | None:
+    """`(kind, where)` the app would restore the diarization weights from, or
+    None when this machine carries no copy to restore from.
+
+    Two kinds, because there are two ways this app is installed and they keep
+    the same 31 MB in different places:
+
+    * ``"copy"`` a directory holding the weights: the `DUB_DIARIZATION_SOURCE`
+      override first, then the payload inside a macOS .app, which is what the
+      workspace was provisioned from and is still there, read-only and intact,
+      after someone deletes the working copy.
+    * ``"git"`` a checkout. The weights are committed (they are payload, not
+      user state), so `git checkout --` is a restore from the object store with
+      no network and no account, and it is the route on a developer machine.
+
+    Never a download. The upstream repo is the one gated thing in the tree, and
+    a button that stops to ask for a Hugging Face account is the button this
+    app exists not to have.
+    """
+    target = diarization_target()
+    override = (os.environ.get(DIARIZATION_SOURCE_ENV) or "").strip()
+    if override:
+        candidate = Path(override)
+        if candidate.resolve() != target.resolve() and _is_diarization_copy(candidate):
+            return "copy", candidate
+    for root in DIARIZATION_BUNDLE_ROOTS:
+        try:
+            payloads = sorted(root.glob(DIARIZATION_BUNDLE_GLOB))
+        except OSError:                      # an unreadable /Applications
+            continue
+        for payload in payloads:
+            candidate = payload / "third_party" / target.name
+            if candidate.resolve() != target.resolve() and _is_diarization_copy(candidate):
+                return "copy", candidate
+    repo = target.parents[1]                 # <root>/third_party/<name>
+    if (repo / ".git").exists() and shutil.which("git") is not None:
+        return "git", repo
+    return None
+
+
+def diarization_command() -> str | None:
+    """The line a user would type to do by hand what the button does, or None
+    when there is nothing on this machine to restore from. The Setup row carries
+    it, so a machine with no button still has an answer instead of a red row."""
+    source = diarization_source()
+    if source is None:
+        return None
+    kind, where = source
+    target = diarization_target()
+    if kind == "git":
+        return f"git -C {where} checkout -- {target.relative_to(where)}"
+    return f"cp -R {where}/. {target}"
+
+
+def diarization_route() -> str | None:
+    """One phrase naming what pressing Install on the diarization row does."""
+    source = diarization_source()
+    if source is None:
+        return None
+    kind, where = source
+    if kind == "git":
+        return f"by restoring the committed weights from the checkout at {where}"
+    return f"by copying the weights that shipped with the app, from {where}"
+
+
 def installable(id_: str) -> bool:
-    """Can the app install `id_` by itself? The tools it has an argv for, plus
-    the ones it can fetch a static build of. Read by `setup.report` and
+    """Can the app install `id_` by itself? The tools it has an argv for, the
+    ones it can fetch a static build of, and the diarization weights when this
+    machine still carries the copy they shipped in. Read by `setup.report` and
     `setup.probe` so the flag that puts a button on a row and the code behind
     the button are the same answer — a row whose POST is a 400 is worse than no
     button, and so is a missing button for an install that would have worked."""
+    if id_ == DIARIZATION_ID:
+        return diarization_source() is not None
     return id_ in INSTALLERS or static_route(id_)
 
 
@@ -174,6 +279,8 @@ def route(id_: str) -> str | None:
     when it would not (no recipe, or a manager that is not on this machine and
     no static fallback). The Setup row's detail carries it, so the user knows
     what pressing the button does *before* pressing it."""
+    if id_ == DIARIZATION_ID:
+        return diarization_route()
     if static_route(id_):
         return "as a static build into the workspace (tools/bin), with no package manager needed"
     argv = INSTALLERS.get(id_)
@@ -217,6 +324,90 @@ def fetch_static_ffmpeg(log: Callable[[str], None]) -> tuple[str, str]:
 
     log("fetching the pinned ffmpeg/ffprobe build for this platform")
     return static_run.get_or_fetch_platform_executables_else_raise()
+
+
+def verify_diarization(root: Path) -> int:
+    """Check every file `root`'s SHA256SUMS names and return how many passed.
+    Raises when one is missing or does not match.
+
+    The manifest is the same one `tests/test_phase2_segments.py` checks the
+    bundled copy against, and it travels with the weights, so what is verified
+    here is that *this* copy arrived whole. A half-finished `cp` into a full
+    disk is the realistic failure, and pyannote's own error for it would be a
+    tensor shape complaint fifty lines into a run.
+    """
+    import hashlib
+
+    sums = root / DIARIZATION_SUMS
+    try:
+        lines = sums.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise RuntimeError(f"no {DIARIZATION_SUMS} beside the restored weights: {exc}")
+    checked = 0
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        expected, _, rel = line.partition(" ")
+        rel = rel.strip().lstrip("*")
+        target = root / rel
+        if not target.is_file():
+            raise RuntimeError(f"{rel} is missing from the restored weights")
+        digest = hashlib.sha256(target.read_bytes()).hexdigest()
+        if digest != expected:
+            raise RuntimeError(f"{rel} does not match {DIARIZATION_SUMS}: the copy "
+                               "is damaged, so it was not left in place")
+        checked += 1
+    if not checked:
+        raise RuntimeError(f"{DIARIZATION_SUMS} named no files to verify")
+    return checked
+
+
+def restore_diarization(log: Callable[[str], None]) -> Path:
+    """Put the bundled diarization weights back, and prove they arrived.
+
+    Module-level like `fetch_static_ffmpeg` and `snapshot_download`, so a test
+    swaps the whole thing and no 31 MB moves. Nothing here touches the network:
+    the source is a copy this machine already has (`diarization_source`).
+
+    The copy route stages into a sibling directory and only moves it into place
+    once the hashes agree, so a full disk or a damaged payload leaves the
+    workspace exactly as it was rather than leaving a half-written pipeline for
+    a run to crash on. The git route cannot do that (the checkout writes where
+    the weights belong), so it verifies after the fact and says so if it fails,
+    which is still the checkout's own state, repairable by running it again.
+    """
+    source = diarization_source()
+    if source is None:
+        raise RuntimeError(
+            "nothing on this machine carries the diarization weights to restore "
+            f"from. Set {DIARIZATION_SOURCE_ENV} to an unpacked copy, or reinstall "
+            "the app, or point DUB_DIARIZATION_HUB at a mirror you can reach")
+    kind, where = source
+    target = diarization_target()
+    if kind == "git":
+        argv = ["git", "-C", str(where), "checkout", "--",
+                str(target.relative_to(where))]
+        log("$ " + " ".join(argv))
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=300)
+        if proc.returncode != 0:
+            raise RuntimeError(f"`{' '.join(argv)}` exited {proc.returncode}: "
+                               f"{(proc.stderr or proc.stdout)[-500:]}")
+        checked = verify_diarization(target)
+    else:
+        log(f"copying the bundled weights from {where}")
+        staging = target.parent / f"{target.name}.incoming"
+        shutil.rmtree(staging, ignore_errors=True)
+        staging.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copytree(where, staging, dirs_exist_ok=True)
+            checked = verify_diarization(staging)
+            shutil.rmtree(target, ignore_errors=True)
+            staging.replace(target)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+    log(f"verified {checked} files against {DIARIZATION_SUMS}")
+    return target
 
 
 def snapshot_download(**kwargs: Any) -> Any:
@@ -307,6 +498,13 @@ class Installer:
                           f"so installing a static ffmpeg/ffprobe build into "
                           f"{tools.tools_bin()}"],
                     target=self._run_static, args=(id_,))
+            if id_ == DIARIZATION_ID and installable(id_):
+                source = diarization_source()
+                assert source is not None            # installable() just said so
+                return self._begin(
+                    id_, [f"# restoring the bundled diarization weights from "
+                          f"{source[1]}, and verifying them against {DIARIZATION_SUMS}"],
+                    target=self._run_restore, args=(id_,))
             spec = self.downloads.get(id_)
             if spec is None:
                 raise invalid(self._refusal(id_))
@@ -461,6 +659,22 @@ class Installer:
         except Exception as exc:                       # network, auth, disk — all of it
             error = (f"{type(exc).__name__}: {exc} partial files are kept, "
                      "so starting the install again resumes the download")
+            self._line(error)
+        self._finish(id_, ok, error)
+
+    def _run_restore(self, id_: str) -> None:
+        """The worker behind the diarization row: a local copy, then a hash
+        check. No timeout and no network, so the only failure modes are a full
+        disk and a damaged source, and both of them are named rather than left
+        for a run to hit."""
+        ok, error = False, None
+        try:
+            # Looked up as a module global so a test's monkeypatch is what runs.
+            restore_diarization(self._line)
+            ok = True
+            self._line("restore complete")
+        except Exception as exc:                       # disk, permissions, a bad copy
+            error = f"{type(exc).__name__}: {exc}"
             self._line(error)
         self._finish(id_, ok, error)
 
@@ -699,6 +913,8 @@ class InstallQueue:
                 self._failed.append(id_)
 
 
-__all__ = ["INSTALLERS", "Installer", "InstallQueue", "fetch_static_ffmpeg",
-           "installable", "manual_command", "route", "snapshot_download",
-           "static_route"]
+__all__ = ["DIARIZATION_ID", "INSTALLERS", "Installer", "InstallQueue",
+           "diarization_command", "diarization_route", "diarization_source",
+           "diarization_target", "fetch_static_ffmpeg", "installable",
+           "manual_command", "restore_diarization", "route", "snapshot_download",
+           "static_route", "verify_diarization"]

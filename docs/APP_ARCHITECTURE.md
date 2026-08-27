@@ -560,11 +560,15 @@ dies halfway and an absent model directory silently becomes a multi-gigabyte dow
     but a running server spawns its job child with `sys.executable` and never shells out to
     it, so naming a stage for it would be a guess dressed as a fact.
   * `degrades` the run **works and is worse**: `model.lid` (foreign speech is never
-    detected). It stops nothing and it is not nothing.
+    detected) and `model.diarization` (every character in the video dubbed in one
+    voice). It stops nothing and it is not nothing. Diarization is green on every
+    install, because it is the one model that ships in the payload rather than
+    downloading, so its row has no hub id and no `download_bytes`. When the copy is
+    gone the button restores it from the payload or the checkout it shipped in and
+    verifies it against `SHA256SUMS` (`install.restore_diarization`): no network, no
+    account, and never the gated upstream repo.
   * `optional` irrelevant until asked for: the per-language-pair models, the
-    self-downloading Demucs cache, free disk, `hf_token` and `model.diarization`
-    (green on every install it is the one model that ships in the payload rather
-    than downloading, so its row has no hub id and no Download button).
+    self-downloading Demucs cache, free disk and `hf_token`.
     The token row was `degrades` for as long as diarization loaded the gated
     `pyannote/speaker-diarization-community-1`; the same CC-BY-4.0 weights are now
     checked into `third_party/` and copied into the workspace on first launch
@@ -586,16 +590,27 @@ dies halfway and an absent model directory silently becomes a multi-gigabyte dow
 * **No model is loaded and no import is heavy**: `shutil.which`, `os.environ`, `stat`,
   `shutil.disk_usage`. Milliseconds, safe to poll, and it must stay that way.
 * **`installable` is the server's answer to "can the app fix this?"** true for exactly
-  the keys of `install.INSTALLERS` (`ffmpeg`, `sox` → `brew install …`), so the UI puts an
-  Install button on a failing row without keeping its own copy of the whitelist. The id maps
-  to a **hardcoded argv**; nothing from the request body is ever executed, and a model id is
-  refused with a 400 that points at the download command already in its `detail`. One
-  install at a time, tracked in-process not in `JobQueue`, which is for work that loads
-  models and would make a `brew` wait behind a render.
+  three sets: the keys of `install.INSTALLERS` (`ffmpeg`, `sox` → `brew install …`, plus
+  the static ffmpeg build where no package manager can run unattended), the keys of
+  `setup.model_downloads()` (public hub snapshots, fetched with `snapshot_download` into
+  the directory the pipeline reads), and `model.diarization` when this machine still
+  carries a copy of the bundled weights to restore from. The UI puts a button on a failing
+  row from that flag alone, without keeping its own copy of the whitelist. The id maps to a
+  **hardcoded action**; nothing from the request body is ever executed or interpolated, and
+  an id in none of the three is a 400 that points at the command already in its `detail`.
+  Nothing installable needs a credential: every hub in the table is public, and the one
+  gated repo in the tree is never fetched at all. One install at a time, tracked in-process
+  not in `JobQueue`, which is for work that loads models and would make a `brew` wait behind
+  a render. `POST /api/setup/install_all` runs the whole missing set through that same slot.
 * **Paths come from the pipeline's own constants** (`translate.MODEL_PATH`,
   `tts.TTS_MODELS`, `transcript.WHISPER_MODEL` / `SRC_ASR_MODEL` / `EN_ASR_MODEL` /
   `TARGET_ASR_MODEL` / `LID_MODEL`), never restated. A hardcoded copy would drift and then
-  report a green tick for a directory the pipeline does not open.
+  report a green tick for a directory the pipeline does not open. A row with a hub id is
+  also satisfied by the **Hugging Face cache** (`models--org--name` with something under
+  `blobs/`), because that is where the loaders' own hub-id fallback downloads to: `path`
+  stays the pipeline's constant and `found_at` says where it really is. Probing only
+  `models/` made `model.translate` and `model.tts.*` read MISSING forever on machines where
+  translation and TTS demonstrably work.
 
 ## UI contract
 

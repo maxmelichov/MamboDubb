@@ -551,7 +551,8 @@ function toolRow(id: string, ready = false): SetupCheck {
  * only through the HF-token row; that row is `optional` now (diarization no
  * longer needs a credential), so language ID carries `degrades` here as it does
  * on the server. Diarization is not in this table at all: its weights ship with
- * the app, so it has no hub id, no size and no button — see `setupChecks`.
+ * the app, so it has no hub id and no size, and the button its row can have is a
+ * restore rather than a download. See `setupChecks`.
  */
 const MODEL_ROWS: Record<
   string,
@@ -650,14 +651,17 @@ function setupChecks(ready = false): SetupCheck[] {
     modelRow("model.lid", ready),
     // Green before the user has done anything, and that is the demo. The
     // CC-BY-4.0 weights ride in the app bundle (`segments.DIARIZATION_DIR`), so
-    // there is no hub id, no size and no Download button on this row — a fresh
-    // machine already tells speakers apart. It stays on the list because a
-    // checklist that silently omits a model reads as an omission, not a fact.
+    // there is no hub id and no size on this row: a fresh machine already tells
+    // speakers apart. It stays on the list because a checklist that silently
+    // omits a model reads as an omission, not a fact. `degrades` rather than
+    // `optional`, as the server grades it: red here means every character in
+    // the video dubbed in one voice, and the app can now put the weights back
+    // itself (`install.restore_diarization`) with no account and no network.
     {
       id: "model.diarization",
       label: "Speaker diarization (pyannote community-1)",
       ok: true,
-      severity: "optional",
+      severity: "degrades",
       detail: "31 MB in third_party/pyannote-speaker-diarization-community-1 (ships with the app)",
     },
     {

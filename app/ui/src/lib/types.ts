@@ -516,6 +516,18 @@ export type SetupCheck = {
   installable?: boolean;
   /** Where this check looked a binary's path, a model's directory. */
   path?: string | null;
+  /**
+   * Where a model actually turned up, when that is not `path`: a checkpoint the
+   * loader auto-downloaded into the Hugging Face cache is present and working,
+   * and `path` still names the place it belongs.
+   */
+  found_at?: string;
+  /**
+   * A failing row whose repair is not a download: the command, as data. It is
+   * also in `detail`, backticked, so it renders as code with a Copy button; the
+   * field is here so nothing has to parse a sentence to get at it.
+   */
+  fix?: string;
   /** Model rows: bytes on disk when present, 0 when missing. */
   bytes?: number;
   /**
