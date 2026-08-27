@@ -71,16 +71,26 @@ PAYLOAD_FILES = ("pyproject.toml", "uv.lock", ".python-version", ".env.example",
 # bloat the .app or leak this machine's environment into someone else's.
 EXCLUDE_NAMES = {
     "__pycache__", ".git", ".venv", ".pytest_cache", ".DS_Store", ".mypy_cache",
-    ".ruff_cache", "models", "outputs", "demucs_out", "node_modules",
+    ".ruff_cache", "node_modules",
 }
 EXCLUDE_SUFFIXES = (".egg-info", ".pyc")
+# Excluded only near the repo root (the root itself and its direct children, so
+# a stray `translator/models` full of weights still stays out). "models" at any
+# depth once silently dropped `third_party/Qwen3-TTS/qwen_tts/core/models`,
+# which is source code, and every install refreshed from that payload had a TTS
+# that could not import itself (issue #14).
+EXCLUDE_SHALLOW_NAMES = {"models", "outputs", "demucs_out"}
 
 
 def _ignore(directory: str, names: list[str]) -> set[str]:
-    return {
+    dropped = {
         name for name in names
         if name in EXCLUDE_NAMES or name.endswith(EXCLUDE_SUFFIXES)
     }
+    here = Path(directory).resolve()
+    if here == ROOT or here.parent == ROOT:
+        dropped |= {name for name in names if name in EXCLUDE_SHALLOW_NAMES}
+    return dropped
 
 
 def _writable(path: Path) -> None:
