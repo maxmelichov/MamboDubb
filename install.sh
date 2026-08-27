@@ -56,13 +56,17 @@ if [ -n "$SCRIPT_DIR" ] && [ -d "$SCRIPT_DIR/$APP_NAME" ]; then
     SIBLING="$SCRIPT_DIR/$APP_NAME"
 fi
 
-TMPDIR=$(mktemp -d "${TMPDIR:-/tmp}/mambodubb-install.XXXXXX")
+# Never reuse the name TMPDIR: macOS exports it, open(1) hands the caller
+# environment to the launched app, and this directory is deleted on exit.
+# An app that inherited it as TMPDIR dies writing temp files (engine said
+# "No such file or directory ... mambodubb-install...." on first launch).
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/mambodubb-install.XXXXXX")
 MOUNT=""
 cleanup() {
     if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
         hdiutil detach "$MOUNT" -quiet >/dev/null 2>&1 || true
     fi
-    rm -rf "$TMPDIR"
+    rm -rf "$WORK"
 }
 trap cleanup EXIT INT HUP TERM
 
@@ -98,7 +102,7 @@ else
         info "Using local disk image: $dmg"
     else
         url=$(latest_dmg_url)
-        dmg="$TMPDIR/MamboDubb.dmg"
+        dmg="$WORK/MamboDubb.dmg"
         info "Downloading $url"
         curl -fL --progress-bar -o "$dmg" "$url" || die "download failed"
     fi
@@ -115,7 +119,7 @@ else
     info "Mounting disk image…"
     # Mount at a path this script chooses: nothing to parse out of hdiutil,
     # no volume-name collisions, and the cleanup trap knows the path up front.
-    MOUNT="$TMPDIR/mnt"
+    MOUNT="$WORK/mnt"
     hdiutil attach -nobrowse -readonly -mountpoint "$MOUNT" "$dmg" >/dev/null \
         || die "could not mount the disk image"
     [ -d "$MOUNT/$APP_NAME" ] || die "disk image has no $APP_NAME"
