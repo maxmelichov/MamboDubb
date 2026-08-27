@@ -1,5 +1,8 @@
 # Releasing the macOS .dmg
 
+> `uv run scripts/preflight.py` gates every push and nothing ships on a red; see
+> [SHIPPING.md](SHIPPING.md) for the gate and the full ship ritual.
+
 > Windows and Linux installers come out of
 > [`.github/workflows/build-desktop.yml`](../.github/workflows/build-desktop.yml)
 > instead, unsigned and with their own caveats. See
