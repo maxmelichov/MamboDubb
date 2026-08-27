@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://github.com/maxmelichov/MamboDubb/releases/latest">
-    <img src="docs/assets/mambodubb-banner.png" alt="MamboDubb" width="760">
+    <img src="docs/assets/mambodubb-logo.png" alt="MamboDubb" width="360">
   </a>
 </p>
 
