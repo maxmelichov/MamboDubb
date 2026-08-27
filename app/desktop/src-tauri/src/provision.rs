@@ -13,11 +13,37 @@
 //! fresh install can tell two speakers apart before it has touched the network, and a
 //! deleted or half-copied one heals on the next upgrade instead of staying broken.
 //!
-//! The copy is versioned: a `.mambodubb-payload` marker at the workspace root records
-//! the app version that wrote it. On upgrade the source trees are replaced wholesale
-//! (dir-by-dir, so deleted upstream files cannot linger and shadow), while `.venv`,
-//! `.env`, `models/` and `outputs/` — everything the payload never contains but the
-//! user's machine accumulates — are left alone.
+//! The copy is stamped: a `.mambodubb-payload` marker at the workspace root records
+//! the app version that wrote it *and a digest of the payload tree it was written
+//! from*. On upgrade the source trees are replaced wholesale (dir-by-dir, so deleted
+//! upstream files cannot linger and shadow), while `.venv`, `.env`, `models/` and
+//! `outputs/` — everything the payload never contains but the user's machine
+//! accumulates — are left alone.
+//!
+//! The digest is the load-bearing half, and it was learned the hard way (issue #15).
+//! The marker used to hold the version alone, which quietly assumed that a version
+//! string identifies a payload. It does not. Shipping a payload hotfix means
+//! rebuilding the disk image under the tag that is already broken, because the fix is
+//! to the *contents* and the release it repairs is the one people already have. Under
+//! a version-only marker that rebuild is indistinguishable from the copy on disk, so
+//! the refresh declines, and a user who redownloads the fixed image gets the identical
+//! failure with nothing to explain it. That is exactly what happened to the 0.4.0
+//! rebuild for #14: the .app carried the restored `qwen_tts/core/models/`, the
+//! extracted workspace never received it, and every dub came out as untranslated
+//! source audio.
+//!
+//! So the identity recorded is a content identity: every relative path and every byte
+//! of the bundled payload, folded into one SHA-256 (`payload_digest`). Any difference
+//! that could matter (a restored module, a changed file, a file dropped upstream)
+//! moves the digest and earns a refresh, whether or not the version moved with it.
+//! Hashing ~44 MB costs a fraction of a second and buys the guarantee that what is on
+//! disk is what shipped.
+//!
+//! A marker written by an older build carries a version and no digest. It is treated
+//! as stale exactly once: there is no way to know what tree produced it, the honest
+//! answer is "refresh and find out", and the useful side effect is that every install
+//! predating this scheme collects the #14 payload fix on its next launch. The rewritten
+//! marker carries a digest, so the refresh does not repeat.
 //!
 //! `set_workspace` stays the escape hatch: a stored path that is not the provisioned
 //! root is the user's own checkout, and it is never touched.
@@ -27,13 +53,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use sha2::{Digest, Sha256};
 use tauri::Manager;
 
 use crate::workspace::{
     default_workspace, is_project_dir, store_workspace, stored_workspace_setting,
 };
 
-/// Marker file recording which app version last wrote the payload copy.
+/// Marker file recording which app version last wrote the payload copy, and the
+/// digest of the payload tree it was written from: `"<version> <hex>\n"`.
 pub const PAYLOAD_MARKER: &str = ".mambodubb-payload";
 
 /// Workspace entries a refresh must never touch: none of them exist in the payload,
@@ -42,8 +70,14 @@ pub const PAYLOAD_MARKER: &str = ".mambodubb-payload";
 /// contained it: it is where `dubbing/tools.py` puts binaries the app installed for
 /// this machine (the static ffmpeg a brewless Mac or a winget-less Windows box gets),
 /// and re-downloading those on every app upgrade would be a silent 100 MB tax.
-pub const PRESERVED: &[&str] =
-    &[".venv", ".env", "models", "outputs", "tools", PAYLOAD_MARKER];
+pub const PRESERVED: &[&str] = &[
+    ".venv",
+    ".env",
+    "models",
+    "outputs",
+    "tools",
+    PAYLOAD_MARKER,
+];
 
 /// The workspace the runner should use, provisioning it first if this is a fresh
 /// install. The precedence is deliberate:
@@ -98,7 +132,11 @@ pub fn resolve_workspace(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 /// (`~/Library/Application Support`) and Linux (`~/.local/share`) resolve both to the
 /// same path, so existing installs there are unaffected.
 fn provisioned_root(app: &tauri::AppHandle) -> Result<PathBuf, tauri::Error> {
-    Ok(app.path().local_data_dir()?.join("MamboDubb").join("workspace"))
+    Ok(app
+        .path()
+        .local_data_dir()?
+        .join("MamboDubb")
+        .join("workspace"))
 }
 
 /// The bundled payload, per the `bundle.resources` map in tauri.conf.json.
@@ -119,6 +157,7 @@ fn payload_source(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 
 /// First copy: payload → empty (or absent) destination, then stamp the marker.
 pub fn provision(source: &Path, dest: &Path, version: &str) -> Result<(), String> {
+    let digest = payload_digest(source)?;
     copy_tree(source, dest).map_err(|err| {
         format!(
             "failed to provision workspace {} from {}: {err}",
@@ -126,14 +165,17 @@ pub fn provision(source: &Path, dest: &Path, version: &str) -> Result<(), String
             source.display()
         )
     })?;
-    write_marker(dest, version)
+    write_marker(dest, version, &digest)
 }
 
-/// Replace the payload-owned entries of an existing copy when the marker says it was
-/// written by a different app version. `PRESERVED` entries are never touched; each
+/// Replace the payload-owned entries of an existing copy unless the marker proves the
+/// copy already came from this exact payload: same app version *and* same content
+/// digest. Either one moving is a refresh, and a marker with no digest at all (written
+/// before this scheme) counts as stale. `PRESERVED` entries are never touched; each
 /// payload entry is removed and re-copied whole.
 pub fn refresh_if_stale(source: &Path, dest: &Path, version: &str) -> Result<(), String> {
-    if payload_version(dest).as_deref() == Some(version) {
+    let digest = payload_digest(source)?;
+    if payload_stamp(dest) == Some((version.to_string(), digest.clone())) {
         return Ok(());
     }
     let entries = fs::read_dir(source)
@@ -147,23 +189,78 @@ pub fn refresh_if_stale(source: &Path, dest: &Path, version: &str) -> Result<(),
         let target = dest.join(&name);
         remove_entry(&target)
             .and_then(|_| copy_tree(&entry.path(), &target))
-            .map_err(|err| {
-                format!("failed to refresh {} in workspace: {err}", target.display())
-            })?;
+            .map_err(|err| format!("failed to refresh {} in workspace: {err}", target.display()))?;
     }
-    write_marker(dest, version)
+    write_marker(dest, version, &digest)
 }
 
-/// The version recorded in the marker, `None` when absent or unreadable (both mean
-/// "refresh": pre-marker copies predate this scheme and deserve one).
-pub fn payload_version(root: &Path) -> Option<String> {
+/// The identity recorded in the marker: version *and* payload digest. `None` whenever
+/// either is missing, which is the whole point of returning a pair rather than just the
+/// version. An absent marker, an unreadable one, and a version-only one from an older
+/// build all mean the same thing here: nothing on disk can claim this copy matches a
+/// particular payload, so none of them gets to short-circuit a refresh.
+pub fn payload_stamp(root: &Path) -> Option<(String, String)> {
     let text = fs::read_to_string(root.join(PAYLOAD_MARKER)).ok()?;
-    let trimmed = text.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
+    let mut fields = text.split_whitespace();
+    let version = fields.next()?.to_string();
+    let digest = fields.next()?.to_string();
+    Some((version, digest))
 }
 
-fn write_marker(root: &Path, version: &str) -> Result<(), String> {
-    fs::write(root.join(PAYLOAD_MARKER), format!("{version}\n"))
+/// A content identity for a payload tree: every relative path and every byte of every
+/// file it holds, in a fixed order, folded into one SHA-256.
+///
+/// Directory listings arrive in whatever order the filesystem feels like, so names are
+/// sorted at every level; without that the same tree hashes differently on two machines
+/// and every launch would "detect drift". Paths go into the hash beside the bytes, so
+/// moving a file is a change even when no byte of content moved, and each entry carries
+/// a type tag and its length so that no arrangement of files can be reshuffled into the
+/// same byte stream as another.
+///
+/// Symlinks are followed, matching `copy_tree`: this must hash exactly what a copy
+/// would write, or the marker would describe a tree that was never provisioned.
+pub fn payload_digest(source: &Path) -> Result<String, String> {
+    let mut hasher = Sha256::new();
+    hash_tree(&mut hasher, source, "")
+        .map_err(|err| format!("failed to hash payload {}: {err}", source.display()))?;
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+fn hash_tree(hasher: &mut Sha256, path: &Path, rel: &str) -> io::Result<()> {
+    if path.is_dir() {
+        hasher.update(b"dir\0");
+        hasher.update(rel.as_bytes());
+        hasher.update(b"\0");
+        let mut names: Vec<_> = fs::read_dir(path)?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<io::Result<Vec<_>>>()?;
+        names.sort();
+        for name in names {
+            let child = name.to_string_lossy();
+            let child_rel = if rel.is_empty() {
+                child.into_owned()
+            } else {
+                format!("{rel}/{child}")
+            };
+            hash_tree(hasher, &path.join(&name), &child_rel)?;
+        }
+    } else {
+        let bytes = fs::read(path)?;
+        hasher.update(b"file\0");
+        hasher.update(rel.as_bytes());
+        hasher.update(b"\0");
+        hasher.update((bytes.len() as u64).to_le_bytes());
+        hasher.update(&bytes);
+    }
+    Ok(())
+}
+
+fn write_marker(root: &Path, version: &str, digest: &str) -> Result<(), String> {
+    fs::write(root.join(PAYLOAD_MARKER), format!("{version} {digest}\n"))
         .map_err(|err| format!("failed to write payload marker: {err}"))
 }
 
@@ -257,7 +354,9 @@ mod tests {
 
         assert!(dest.join("pyproject.toml").is_file());
         assert!(dest.join("dubbing_app/server.py").is_file());
-        assert_eq!(payload_version(&dest).as_deref(), Some("0.1.3"));
+        let (version, digest) = payload_stamp(&dest).expect("marker stamped");
+        assert_eq!(version, "0.1.3");
+        assert_eq!(digest, payload_digest(source.path()).unwrap());
         // What we provisioned must pass the same predicate set_workspace applies.
         assert!(is_project_dir(&dest));
     }
@@ -275,7 +374,10 @@ mod tests {
         let dest = dest.path().join("workspace");
         provision(source.path(), &dest, "1").unwrap();
 
-        let mode = fs::metadata(dest.join("pyproject.toml")).unwrap().permissions().mode();
+        let mode = fs::metadata(dest.join("pyproject.toml"))
+            .unwrap()
+            .permissions()
+            .mode();
         assert_ne!(mode & 0o200, 0, "uv sync needs to write here");
     }
 
@@ -292,6 +394,89 @@ mod tests {
         refresh_if_stale(source.path(), &dest, "0.2.0").unwrap();
         let text = fs::read_to_string(dest.join("dubbing_app/server.py")).unwrap();
         assert_eq!(text, "# local edit\n");
+    }
+
+    /// Issue #15: the payload hotfix case. Same version, different contents, and the
+    /// old version-only marker declined to refresh, so the fix never landed.
+    #[test]
+    fn a_rebuilt_payload_under_the_same_version_is_stale() {
+        let source = TempDir::new("rebuild-src");
+        make_payload(source.path());
+        let dest = TempDir::new("rebuild-dst");
+        let dest = dest.path().join("workspace");
+        provision(source.path(), &dest, "0.4.0").unwrap();
+
+        // The .dmg is rebuilt under the same tag with the missing module restored.
+        fs::create_dir_all(source.path().join("dubbing/core/models")).unwrap();
+        fs::write(
+            source.path().join("dubbing/core/models/__init__.py"),
+            "# the fix\n",
+        )
+        .unwrap();
+
+        refresh_if_stale(source.path(), &dest, "0.4.0").unwrap();
+
+        assert!(
+            dest.join("dubbing/core/models/__init__.py").is_file(),
+            "a payload hotfix must reach an existing workspace without a version bump"
+        );
+    }
+
+    /// A marker from a build that recorded the version alone: refresh once, then stamp
+    /// the new format so it does not refresh forever.
+    #[test]
+    fn a_version_only_marker_is_stale_exactly_once() {
+        let source = TempDir::new("legacy-src");
+        make_payload(source.path());
+        let dest = TempDir::new("legacy-dst");
+        let dest = dest.path().join("workspace");
+        copy_tree(source.path(), &dest).unwrap();
+        fs::write(dest.join(PAYLOAD_MARKER), "0.4.0\n").unwrap();
+        assert_eq!(payload_stamp(&dest), None, "no digest to compare against");
+
+        fs::write(source.path().join("dubbing_app/server.py"), "# v2\n").unwrap();
+        refresh_if_stale(source.path(), &dest, "0.4.0").unwrap();
+        assert_eq!(
+            fs::read_to_string(dest.join("dubbing_app/server.py")).unwrap(),
+            "# v2\n"
+        );
+
+        // Now stamped in full, a second launch is a no-op again.
+        let (version, digest) = payload_stamp(&dest).expect("rewritten in the new format");
+        assert_eq!(version, "0.4.0");
+        assert_eq!(digest, payload_digest(source.path()).unwrap());
+        fs::write(dest.join("dubbing_app/server.py"), "# local edit\n").unwrap();
+        refresh_if_stale(source.path(), &dest, "0.4.0").unwrap();
+        assert_eq!(
+            fs::read_to_string(dest.join("dubbing_app/server.py")).unwrap(),
+            "# local edit\n"
+        );
+    }
+
+    #[test]
+    fn the_digest_is_stable_across_trees_and_moves_with_content() {
+        let a = TempDir::new("dig-a");
+        make_payload(a.path());
+        let b = TempDir::new("dig-b");
+        make_payload(b.path());
+        assert_eq!(
+            payload_digest(a.path()).unwrap(),
+            payload_digest(b.path()).unwrap(),
+            "identical trees in different places must hash the same"
+        );
+
+        let before = payload_digest(a.path()).unwrap();
+        fs::write(a.path().join("dubbing_app/server.py"), "# v2\n").unwrap();
+        assert_ne!(before, payload_digest(a.path()).unwrap(), "content change");
+
+        // A rename moves no bytes, and must still register.
+        let renamed = payload_digest(b.path()).unwrap();
+        fs::rename(
+            b.path().join("dubbing_app/server.py"),
+            b.path().join("dubbing_app/other.py"),
+        )
+        .unwrap();
+        assert_ne!(renamed, payload_digest(b.path()).unwrap(), "path change");
     }
 
     #[test]
@@ -312,7 +497,11 @@ mod tests {
         // ...a local edit that the upgrade is expected to roll over...
         fs::write(dest.join("dubbing_app/server.py"), "# stale local edit\n").unwrap();
         // ...and a file the new payload no longer ships.
-        fs::write(dest.join("dubbing_app/removed_module.py"), "gone upstream\n").unwrap();
+        fs::write(
+            dest.join("dubbing_app/removed_module.py"),
+            "gone upstream\n",
+        )
+        .unwrap();
 
         // The new version ships a changed server.py.
         fs::write(source.path().join("dubbing_app/server.py"), "# v2\n").unwrap();
@@ -326,11 +515,23 @@ mod tests {
             !dest.join("dubbing_app/removed_module.py").exists(),
             "dir-wholesale refresh must not leave deleted files to shadow imports"
         );
-        assert!(dest.join(".venv/bin/python").is_file(), ".venv survives upgrades");
-        assert_eq!(fs::read_to_string(dest.join(".env")).unwrap(), "HF_TOKEN=secret\n");
-        assert!(dest.join("models/gemma/weights.bin").is_file(), "models survive");
+        assert!(
+            dest.join(".venv/bin/python").is_file(),
+            ".venv survives upgrades"
+        );
+        assert_eq!(
+            fs::read_to_string(dest.join(".env")).unwrap(),
+            "HF_TOKEN=secret\n"
+        );
+        assert!(
+            dest.join("models/gemma/weights.bin").is_file(),
+            "models survive"
+        );
         assert!(dest.join("outputs").is_dir());
-        assert_eq!(payload_version(&dest).as_deref(), Some("0.2.0"));
+        assert_eq!(
+            payload_stamp(&dest),
+            Some(("0.2.0".to_string(), payload_digest(source.path()).unwrap()))
+        );
     }
 
     #[test]
@@ -340,7 +541,7 @@ mod tests {
         let dest = TempDir::new("nomark-dst");
         let dest = dest.path().join("workspace");
         copy_tree(source.path(), &dest).unwrap();
-        assert_eq!(payload_version(&dest), None);
+        assert_eq!(payload_stamp(&dest), None);
 
         fs::write(source.path().join("dubbing_app/server.py"), "# v2\n").unwrap();
         refresh_if_stale(source.path(), &dest, "0.2.0").unwrap();
