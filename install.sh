@@ -104,10 +104,21 @@ else
     fi
     # Strip quarantine on the image itself so the copy does not inherit it.
     xattr -cr "$dmg" 2>/dev/null || true
+    # A failed earlier run can leave the image mounted; macOS then mounts the
+    # next one at "/Volumes/MamboDubb 2", whose space broke the old $NF parse.
+    # Detach leftovers so retrying converges instead of stacking mounts.
+    for vol in /Volumes/MamboDubb*; do
+        if [ -d "$vol/$APP_NAME" ]; then
+            hdiutil detach "$vol" -quiet >/dev/null 2>&1 || true
+        fi
+    done
     info "Mounting disk image…"
-    attach=$(hdiutil attach -nobrowse -readonly "$dmg") || die "could not mount the disk image"
-    MOUNT=$(printf '%s\n' "$attach" | awk '/\/Volumes\//{print $NF; exit}')
-    [ -n "$MOUNT" ] && [ -d "$MOUNT/$APP_NAME" ] || die "disk image has no $APP_NAME"
+    # Mount at a path this script chooses: nothing to parse out of hdiutil,
+    # no volume-name collisions, and the cleanup trap knows the path up front.
+    MOUNT="$TMPDIR/mnt"
+    hdiutil attach -nobrowse -readonly -mountpoint "$MOUNT" "$dmg" >/dev/null \
+        || die "could not mount the disk image"
+    [ -d "$MOUNT/$APP_NAME" ] || die "disk image has no $APP_NAME"
     SRC="$MOUNT/$APP_NAME"
 fi
 
