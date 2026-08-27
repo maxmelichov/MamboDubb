@@ -2,8 +2,8 @@
  * Setup the first-run screen, and the place to come back to when something
  * on the machine changed underneath the app.
  *
- * `GET /api/setup` is a list of fast filesystem checks: the two binaries, the
- * token, each model directory, free disk. This screen is a checklist of them
+ * `GET /api/setup` is a list of fast filesystem checks: the two binaries, each
+ * model directory, free disk. This screen is a checklist of them
  * and nothing else. Three rules it follows, all of them the editor's:
  *
  * - **Never colour alone.** Every row carries a glyph, a word ("Ready",
@@ -18,7 +18,7 @@
  *   server's `report` conjoins the required rows only). SoX is the row this
  *   exists for: the shipped pipeline never calls it.
  * - **A failure says what it costs.** Every missing row used to be the same red
- *   X, so a gated Hugging Face token (the run works, everyone in the video
+ *   X, so absent diarization weights (the run works, everyone in the video
  *   becomes one speaker) looked exactly like a missing ffmpeg (nothing runs at
  *   all), which looked exactly like a Korean TTS checkpoint a Hebrew→English run
  *   will never open. The server now grades them `severity` is `blocking`,
@@ -50,7 +50,7 @@
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowRight, Check, Copy, Download, ExternalLink, Loader2, Minus, RefreshCw, X } from "lucide-react";
+import { ArrowRight, Check, Copy, Download, Loader2, Minus, RefreshCw, X } from "lucide-react";
 import { PageShell } from "../components/AppShell";
 import {
   Badge,
@@ -60,7 +60,6 @@ import {
   ErrorBlock,
   Eyebrow,
   Progress,
-  TextInput,
 } from "../components/ui";
 import { USE_FIXTURES, api } from "../lib/api";
 import type { SetupInstallState } from "../lib/api";
@@ -304,7 +303,7 @@ export function SetupPage() {
    *
    * `ready` is the server's verdict on the *required* rows, and the footer used
    * to lump every other failure into "optional items missing for wider language
-   * pairs" which is a specific, wrong claim about a missing HF token. Split by
+   * pairs" which is a specific, wrong claim about most of them. Split by
    * grade, each sentence is about the thing it names.
    */
   const blocking = failing.filter((check) => severityOf(check) === "blocking");
@@ -355,9 +354,9 @@ export function SetupPage() {
               <Eyebrow>Readiness</Eyebrow>
               <p className="mt-2 text-lg font-semibold tracking-tight" data-readiness>
                 {/* "All checks pass" is only true when they all do. `ready` is
-                    the verdict on the BLOCKING rows, so it can be true with a
-                    gated token and an un-downloaded cache still red above this
-                    line and that state is "ready to run", not "all pass". */}
+                    the verdict on the BLOCKING rows, so it can be true with an
+                    un-downloaded cache and a Korean checkpoint still red above
+                    this line and that state is "ready to run", not "all pass". */}
                 {status ? (
                   ready ? (
                     failing.length === 0 ? (
@@ -478,9 +477,9 @@ export function SetupPage() {
           )}
           <span className="ml-auto max-w-xs text-[12px] leading-relaxed text-muted" data-footer>
             {/* `ready` is the server's verdict on the REQUIRED checks only, so it
-                can be true while degraded and optional rows sit above this line —
+                can be true while degraded and optional rows sit above this line:
                 saying "nothing is missing" under a MISSING badge reads as a lie,
-                and so does calling a gated token an "optional item for wider
+                and so does filing a real defect under "optional items for wider
                 language pairs", which is what this used to do. */}
             {blocking.length > 0
               ? "A required tool is missing: runs will fail."
@@ -492,7 +491,7 @@ export function SetupPage() {
                     "just worse."
                   : `Everything required is ready; ${optional.length} optional ` +
                     `item${optional.length === 1 ? " is" : "s are"} not installed, ` +
-                    "and nothing needs them."}
+                    `and nothing needs ${optional.length === 1 ? "it" : "them"}.`}
           </span>
         </CardSection>
       </Card>
@@ -692,7 +691,7 @@ function CheckRow({
   /** Any install is running. One at a time, so every other button greys out. */
   busy: boolean;
   onInstall: (id: string) => void;
-  /** Re-run the whole checklist a token save can only turn rows green. */
+  /** Re-run the whole checklist, because a row's control changed the machine. */
   onRecheck: () => void;
 }) {
   const severity = severityOf(check);
@@ -770,12 +769,7 @@ function CheckRow({
             <Detail text={check.detail} />
           </p>
         ) : null}
-        {/* The one row whose fix is a paste, not a download. The field lives in
-            the row so "where do I put it" never comes up the server writes
-            the .env, and the detail line above stops being an instruction the
-            moment this ships. */}
-        {check.id === "hf_token" ? <HfTokenField ok={check.ok} onChanged={onRecheck} /> : null}
-        {/* The other row that is a choice rather than a finding. Same escape
+        {/* The one row that is a choice rather than a finding. An escape
             hatch, same contract: the control changes a file on the server and
             the re-probed row is what says what changed. */}
         {check.id === "low_vram" ? <LowVramField check={check} onChanged={onRecheck} /> : null}
@@ -843,147 +837,18 @@ function CheckRow({
   );
 }
 
-/**
- * The gated upstream pipeline: `dubbing/segments.py DIARIZATION_MODEL`. Named
- * here only so the sentence that explains what a token is *for* can point at the
- * thing it is for. It is no longer what the app fetches the same CC-BY-4.0
- * weights ship inside the app, and need no account at all.
+/*
+ * There is no token field on this screen any more, and no `hf_token` row for it
+ * to hang off. It used to be the fix for a real problem: diarization loaded a
+ * gated repo, and without a token every character in the video was dubbed in
+ * one voice. Since v0.4.0 the same CC-BY-4.0 weights ship inside the app
+ * (`segments.DIARIZATION_DIR`, and the app can put them back itself), so the
+ * row could only ever say "optional, nothing here needs it" while showing a
+ * paste box and a NOT INSTALLED badge. That is a checklist advertising a
+ * problem nobody has, and the paragraph explaining why it did not matter was
+ * the tell. `HF_TOKEN` and `DUB_DIARIZATION_HUB` still work in `.env` for
+ * anyone who wants the gated upstream repo; they are settings, not setup.
  */
-const PYANNOTE_REPO = "pyannote/speaker-diarization-community-1";
-
-/**
- * The token, pasted instead of hand-edited.
- *
- * This field used to be the fix for a real problem: diarization loaded a gated
- * repo, and without a token every character in the video was dubbed in one
- * voice. It is not that any more the same weights ship inside the app, the row
- * is `optional`, and nothing on a fresh machine is waiting on it. So the copy no
- * longer sells anything. It says what a token is still for (fetching the gated
- * upstream models instead of the bundled copy), and gets out
- * of the way; a field that talks a user into an account they do not need is the
- * same wall as before wearing a friendlier sentence.
- *
- * Two rules survive unchanged, because they are about credentials, not copy:
- *
- * - **Masked, and never echoed.** `type=password`, and the server's answer is
- *   the re-probed row a saved token cannot be read back out of this app.
- * - **The row is the receipt.** On save the whole checklist re-probes; the row
- *   flipping to "set" is the server saying it found the token where the
- *   pipeline will look, which no local success state can claim.
- */
-function HfTokenField({ ok, onChanged }: { ok: boolean; onChanged: () => void }) {
-  const [token, setToken] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const save = useCallback(async () => {
-    if (!token.trim() || saving) return;
-    setSaving(true);
-    setError(null);
-    try {
-      await api.saveHfToken(token);
-      setToken(""); // Its work is done; a credential does not linger in state.
-      onChanged();
-    } catch (err) {
-      // The server's sentence is written around the token, never with it.
-      setError(String(err instanceof Error ? err.message : err));
-    } finally {
-      setSaving(false);
-    }
-  }, [token, saving, onChanged]);
-
-  const remove = useCallback(async () => {
-    setSaving(true);
-    setError(null);
-    try {
-      await api.clearHfToken();
-      onChanged();
-    } catch (err) {
-      setError(String(err instanceof Error ? err.message : err));
-    } finally {
-      setSaving(false);
-    }
-  }, [onChanged]);
-
-  if (ok) {
-    // Saved. One quiet way out — the row above already says Ready, and the
-    // re-probe after Remove is what says whether removing worked (a token set
-    // in the shell's environment survives any file edit, and the row will say
-    // so by staying green).
-    return (
-      <button
-        type="button"
-        data-token-remove
-        disabled={saving}
-        onClick={() => void remove()}
-        className="mt-1.5 rounded-md text-[12px] font-semibold text-secondary underline underline-offset-4 transition-colors hover:text-primary disabled:opacity-50"
-      >
-        Remove token
-      </button>
-    );
-  }
-
-  return (
-    <div className="mt-2 max-w-2xl" data-token-field>
-      <p className="text-[12px] leading-relaxed text-secondary">
-        Not needed. Speakers are told apart without one: the dub gives each person their own
-        voice on a machine that has never signed in to Hugging Face. A token only matters if you
-        would rather fetch the gated{" "}
-        <a
-          href={`https://huggingface.co/${PYANNOTE_REPO}`}
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex items-baseline gap-0.5 font-semibold text-primary underline underline-offset-4 hover:opacity-80"
-        >
-          {PYANNOTE_REPO}
-          <ExternalLink aria-hidden className="h-3 w-3 self-center" />
-        </a>{" "}
-        upstream instead of the copy that ships with the app. If you have{" "}
-        <a
-          href="https://huggingface.co/settings/tokens"
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex items-baseline gap-0.5 font-semibold text-primary underline underline-offset-4 hover:opacity-80"
-        >
-          one
-          <ExternalLink aria-hidden className="h-3 w-3 self-center" />
-        </a>
-        , paste it here and the app writes it to the right file itself.
-      </p>
-      <form
-        className="mt-2 flex items-center gap-2"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void save();
-        }}
-      >
-        <TextInput
-          // A credential field: masked, and with every browser affordance that
-          // could store or "improve" the paste turned off.
-          type="password"
-          autoComplete="off"
-          spellCheck={false}
-          data-token-input
-          className="h-8 max-w-xs font-mono text-[12px]"
-          placeholder="hf_..."
-          value={token}
-          disabled={saving}
-          onChange={(event) => setToken(event.target.value)}
-          aria-label="Hugging Face token"
-        />
-        <Button size="sm" type="submit" data-token-save disabled={saving || !token.trim()}>
-          {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-          Save
-        </Button>
-      </form>
-      {error ? (
-        <p className="mt-1.5 text-[12px] leading-relaxed" style={{ color: "var(--color-critical)" }} data-token-error>
-          {error}
-        </p>
-      ) : null}
-    </div>
-  );
-}
 
 /**
  * Low-VRAM mode, as two buttons and a sentence about what it costs.

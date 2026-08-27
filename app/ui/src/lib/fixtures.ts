@@ -341,7 +341,7 @@ export function health(): Promise<Health> {
 
 /**
  * `GET /api/setup`, deliberately mixed: a fresh machine with neither
- * command-line tool, no HF token, and the models in every state the screen has
+ * command-line tool and the models in every state the screen has
  * to draw. A checklist where everything passes demos nothing, and the failure
  * rows are where the copy has to earn its keep each one says what to do, not
  * just that it is missing.
@@ -352,8 +352,7 @@ export function health(): Promise<Health> {
  * one *mid-download when the page mounts* (seeded below the state a user who
  * reloaded during an 81 GB fetch comes back to, and the one that proves the
  * page picks a running install back up), and one no button can fix (Demucs
- * fetches its own cache; the detail line's command is the whole answer). Plus
- * the token, which no download satisfies at all.
+ * fetches its own cache; the detail line's command is the whole answer).
  *
  * ## `?ready=1` the provisioned machine
  *
@@ -365,7 +364,7 @@ export function health(): Promise<Health> {
  * what a demo of the finished product shows and it cannot be reached by
  * clicking, because two of these rows have no button. So any URL carrying
  * `?ready=1` (`/setup?ready=1`) serves the all-green board instead: every tool
- * found, the token set, every model on disk, nothing downloading. It is read
+ * found, every model on disk, nothing downloading. It is read
  * from the live URL on each call rather than captured once, so flipping it on
  * or off is a navigation and not a reload.
  */
@@ -384,8 +383,8 @@ export function setup(): Promise<SetupStatus> {
   const checks = setupChecks();
   // `ok` is the conjunction of the BLOCKING checks only, exactly as
   // `setup.report` computes it. It used to be `every(c => c.ok)`, which made the
-  // fixture stricter than the server: a machine with a gated token and an
-  // un-downloaded Demucs cache is ready to run, and this said it was not so
+  // fixture stricter than the server: a machine with an un-downloaded Demucs
+  // cache is ready to run, and this said it was not so
   // the whole "everything required is ready, N optional things are missing"
   // branch of the footer could not be reached in the only mode that is tested.
   return delay({
@@ -398,57 +397,16 @@ export function setup(): Promise<SetupStatus> {
 const installed = new Set<string>();
 
 /**
- * The token row, in whichever state this fake session has it and the fake of
- * `POST|DELETE /api/setup/hf_token`. The save rejects the same shapes the
- * server rejects (no `hf_` prefix, whitespace inside), because the field's
- * inline error path only exists in the mode that is tested. The "token" is
- * never kept only the fact that one was saved, which is also all the real
- * server ever sends back.
+ * The workspace `.env` this fake machine reads, for any row whose detail names
+ * a file path.
  *
- * `optional`, and the demo has to say so. This row was `degrades` while
- * diarization loaded a gated repo; it is not any more (the weights ship with
- * the app), and a fixture still painting an attention row for a credential
- * nothing needs would be demoing a wall the app removed.
+ * There is no `hf_token` row here any more, and the fixture is where that is
+ * easiest to see: a demo that painted a credential row for a token nothing
+ * needs would be demoing a wall the app removed. The diarization weights ship
+ * with the app, so the checklist below has no token in it and no
+ * `saveHfToken`/`clearHfToken` fakes to go with one.
  */
-let hfTokenSaved = false;
-
 const FIXTURE_ENV = "/Users/you/DubbingQwen/.env";
-
-function hfTokenRow(ready = false): SetupCheck {
-  const saved = ready || hfTokenSaved;
-  return {
-    id: "hf_token",
-    label: "Hugging Face token",
-    ok: saved,
-    severity: "optional",
-    detail: saved
-      ? `set in \`${FIXTURE_ENV}\``
-      : "not set: nothing needs one. The diarization weights ship with the app, so speakers " +
-        "are told apart without an account. Only for fetching gated upstream models " +
-        `instead; it would go in \`${FIXTURE_ENV}\``,
-  };
-}
-
-export function saveHfToken(token: string): Promise<SetupCheck> {
-  const t = token.trim();
-  if (/\s/.test(t)) {
-    return Promise.reject(new ApiError("invalid_request",
-      "that token has whitespace inside it: a copy that caught a line break or a trailing word. " +
-      "Copy just the hf_… string, nothing around it.", 400));
-  }
-  if (!t.startsWith("hf_") || t.length <= "hf_".length) {
-    return Promise.reject(new ApiError("invalid_request",
-      "that does not look like a Hugging Face token: they start with hf_. " +
-      "Copy it from https://huggingface.co/settings/tokens", 400));
-  }
-  hfTokenSaved = true;
-  return delay(hfTokenRow());
-}
-
-export function clearHfToken(): Promise<SetupCheck> {
-  hfTokenSaved = false;
-  return delay(hfTokenRow());
-}
 
 /**
  * The low-VRAM row, and the fake of `POST /api/setup/low_vram`.
@@ -548,8 +506,8 @@ function toolRow(id: string, ready = false): SetupCheck {
  *
  * `severity` defaults to blocking, and one row is here precisely because it is
  * not. The screen has three grades and the fixture used to reach the middle one
- * only through the HF-token row; that row is `optional` now (diarization no
- * longer needs a credential), so language ID carries `degrades` here as it does
+ * only through the HF-token row, which does not exist any more (diarization
+ * needs no credential), so language ID carries `degrades` here as it does
  * on the server. Diarization is not in this table at all: its weights ship with
  * the app, so it has no hub id and no size, and the button its row can have is a
  * restore rather than a download. See `setupChecks`.
@@ -644,7 +602,6 @@ function setupChecks(ready = false): SetupCheck[] {
   const rows: SetupCheck[] = [
     toolRow("ffmpeg", ready),
     toolRow("sox", ready),
-    hfTokenRow(ready),
     modelRow("model.translate", ready),
     modelRow("model.tts.1.7b", ready),
     modelRow("model.asr.en", ready),

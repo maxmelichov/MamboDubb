@@ -262,23 +262,6 @@ export const api = {
   },
 
   /**
-   * Save the Hugging Face token into the workspace `.env` — the server does
-   * the file edit, so nobody has to find a hidden folder. The answer is the
-   * re-probed `hf_token` row; the token itself never comes back in any
-   * response, which is the contract that makes a masked input honest.
-   */
-  saveHfToken(token: string): Promise<SetupCheck> {
-    if (USE_FIXTURES) return fixtures.saveHfToken(token);
-    return request<SetupCheck>("/api/setup/hf_token", json({ token }));
-  },
-
-  /** Remove the saved token from `.env`. Same answer shape: the fresh row. */
-  clearHfToken(): Promise<SetupCheck> {
-    if (USE_FIXTURES) return fixtures.clearHfToken();
-    return request<SetupCheck>("/api/setup/hf_token", { method: "DELETE" });
-  },
-
-  /**
    * Turn the low-VRAM translator on or off for this machine, written to the
    * same workspace `.env`. Machine state, not project state: it is never
    * recorded in a run, so a project carried to a bigger card is not still

@@ -44,10 +44,10 @@ found somewhere else; `found_at` says where it actually is when the two differ
 
 `severity` is what `required` could never say. A boolean has two values and this
 question has three, so everything that was not required was reported as one
-undifferentiated "informational" which put a missing HF token (every speaker
-in the video collapsed into one) on the same row as a Korean TTS checkpoint a
-Hebrew→English run will never open. Three grades, and the third is what makes
-the first two mean anything:
+undifferentiated "informational" which put a missing diarization model (every
+speaker in the video collapsed into one) on the same row as a Korean TTS
+checkpoint a Hebrew→English run will never open. Three grades, and the third is
+what makes the first two mean anything:
 
 * ``blocking`` the run **fails** without it. The command-line tools, the
   translator, the default TTS checkpoint and the English verifier. Exactly the
@@ -57,12 +57,16 @@ the first two mean anything:
   in the video is dubbed in one voice. Nothing here stops a run, and nothing here
   is nothing.
 * ``optional`` irrelevant until you ask for it: the per-language-pair models,
-  the self-downloading caches, free disk and now the HF token, which used to
-  sit in ``degrades`` because diarization was gated behind it. It is not any
-  more the CC-BY-4.0 weights ship inside the app
-  (``segments.DIARIZATION_DIR``) so the row states a fact instead of asking
-  for a credential, and a machine that has never signed in to Hugging Face
-  reads as fully ready.
+  the self-downloading caches, and free disk.
+
+There is no credential row of any kind, and that is deliberate rather than an
+oversight. A Hugging Face token once sat here, first as ``degrades`` and then as
+``optional``, because diarization loaded a gated repo. Since v0.4.0 the
+CC-BY-4.0 weights ship inside the app (``segments.DIARIZATION_DIR``) and every
+other model is public, so a machine that has never signed in to Hugging Face is
+not missing anything and has no row to read. ``HF_TOKEN`` and
+``DUB_DIARIZATION_HUB`` still work for anyone who wants the gated upstream repo
+instead; that is a setting in ``.env``, not a checklist item.
 """
 
 from __future__ import annotations
@@ -353,38 +357,20 @@ def model(id_: str, label: str, path: Path, *, severity: str = BLOCKING,
 # individual checks
 # ---------------------------------------------------------------------------
 
-def hf_token_check(env_file: Path | None = None) -> dict[str, Any]:
-    """Presence only. The value is a credential and never leaves this process —
-    the report says "set" or "not set" and nothing that could reconstruct it.
-
-    **Optional, and that is the whole point of this row now.** It used to be
-    `degrades`, and truthfully so: diarization loaded a gated repo, no token
-    meant every speaker in the video collapsed into one voice, and the only fix
-    was a Hugging Face account. A shippable app cannot ask for that, so it does
-    not: the CC-BY-4.0 weights ship with the app (`segments.DIARIZATION_DIR`)
-    and a machine with no token diarizes exactly as well as one with. The row
-    stays because a token is still *usable*
-    it selects the gated upstream repo via `DUB_DIARIZATION_HUB`, and it is
-    what other gated models would need but it may never again be the reason a
-    fresh install is not green.
-
-    The unset row still names the **absolute** `.env` path, backticked so the UI
-    sets it as code and offers to copy it: on a machine with three checkouts,
-    only this process knows which `.env` it will actually read.
-    """
-    path = env_path(env_file)
-    for var in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
-        if (os.environ.get(var) or "").strip():
-            return check("hf_token", "Hugging Face token", True, f"set via {var}",
-                         severity=OPTIONAL, source="env", path=str(path))
-    if _env_file_has_token(path):
-        return check("hf_token", "Hugging Face token", True, f"set in `{path}`",
-                     severity=OPTIONAL, source="env_file", path=str(path))
-    return check("hf_token", "Hugging Face token", False,
-                 "not set: nothing needs one. The diarization weights ship with the "
-                 "app, so speakers are told apart without an account. Only for fetching "
-                 f"gated upstream models instead; it would go in `{path}`",
-                 severity=OPTIONAL, source=None, path=str(path))
+# There is no `hf_token` row here any more, and the reason is worth writing
+# down because the removed check argued the opposite in its own docstring. That
+# argument was written while diarization loaded a gated repo: no token meant
+# every speaker in the video collapsed into one voice, so a row about the token
+# was a row about a real defect. Since v0.4.0 the CC-BY-4.0 weights ship with
+# the app (`segments.DIARIZATION_DIR`, restorable in-app), every model installs
+# with no credential, and a machine that has never signed in to Hugging Face
+# dubs exactly as well as one that has. A row that can only ever say "not set"
+# on a perfectly healthy install is advertising a problem nobody has, and
+# "optional, and truthfully so" is still a row the user has to read and
+# dismiss. The *capability* is untouched: `HF_TOKEN` in `.env` and
+# `DUB_DIARIZATION_HUB` still select the gated upstream repo
+# (`dubbing/segments.py diarization_sources`). It is simply not a checklist
+# item, because nothing about it is unfinished.
 
 
 def env_path(env_file: Path | None = None) -> Path:
@@ -414,11 +400,6 @@ def env_file_value(path: Path, key: str) -> str | None:
         if name.strip() == key:
             found = value.strip().strip("'\"")
     return found
-
-
-def _env_file_has_token(path: Path) -> bool:
-    return any((env_file_value(path, var) or "").strip()
-               for var in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"))
 
 
 def gpu_memory_bytes() -> int:
@@ -846,7 +827,6 @@ def report(outputs: Path) -> dict[str, Any]:
 
     downloads = model_downloads()
     checks: list[dict[str, Any]] = [tool(id_, *spec) for id_, spec in TOOLS.items()]
-    checks.append(hf_token_check())
     checks += model_checks()
     checks.append(demucs_check())
     checks.append(disk_check(Path(outputs)))
@@ -877,8 +857,8 @@ def install_plan(report_: dict[str, Any]) -> list[dict[str, Any]]:
       that is half there costs only the half that is not).
     * **Only what the app can install by itself** — `installable`, the same flag
       that puts a button on the row. Everything else is out by construction, and
-      that is also where the credentials question answers itself: the one check
-      that mentions a token is `hf_token`, which installs nothing, and no hub id
+      that is also where the credentials question answers itself: no check here
+      asks for a token at all, and no hub id
       in `model_downloads()` is gated the one gated repo in the tree,
       `segments.DIARIZATION_MODEL`, is not in that table at all because its
       weights ship with the app. Every repo this can queue is public, and the

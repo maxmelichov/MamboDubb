@@ -15,7 +15,7 @@ clicks alone; "GAP" means the path dead-ends outside the app.
 | 3 | First `uv sync` | The runner spawns `uv run --project <workspace> python -m dubbing_app.server …` with the **sidecar** uv (`Contents/MacOS/uv`, `workspace.rs::find_uv` no Homebrew needed) and blocks on the ready line. `uv run` builds the ~1.7 GB `.venv`, fetching a managed CPython first. Minutes long, and `main.tsx` renders **nothing at all** until it finishes: `initApiBase()` awaits `start_server` *before the first `root.render`*, so the window is a bare `#110e16` rectangle the whole time. The stderr ring (`get_server_log`) holds the sync's progress, but **no UI code calls it** the sign of life exists and is never shown. | **GAP dead screen** |
 | 4 | Setup screen: tools | `SetupGate` routes to `/setup`; `ffmpeg` and `sox` are red BLOCKING rows with Install buttons. The button runs `brew install …` (`dubbing/tools.py::RECIPES`) and a fresh Mac **has no brew**: `install.py::MANAGERS["brew"]` answers "Get it from https://brew.sh" whose own install line is a terminal command. The unattended path exists only on machines that already broke the zero-terminal rule once. | **GAP dead end without Homebrew** |
 | 5 | Setup screen: models | Every red model row has a Download button with its price on it; `POST /api/setup/install` maps the id through `setup.model_downloads()` to a `snapshot_download` that resumes if torn off, with byte progress on a 2 s poll. All nine hub ids public and ungated; the one gated model in the tree, diarization, is not in that table at all because its weights ship in the payload. ~18 GB for the blocking set. | WORKS IN-APP |
-| 6 | HF token | Nothing needs one. Diarization was the only gated model in the tree, and its weights are CC-BY-4.0, so the identical 31 MB is checked into `third_party/pyannote-speaker-diarization-community-1` and copied into the workspace on first launch (`segments.DIARIZATION_DIR`) no download, no account, and every speaker keeps their own voice. The row is OPTIONAL and informational; `POST /api/setup/hf_token` still writes the workspace `.env` for anyone who wants `DUB_DIARIZATION_HUB` pointed at the gated upstream repo instead. | WORKS IN-APP no credential |
+| 6 | HF token | Nothing needs one, and Setup no longer says so, because a row that says it is a row about a credential. Diarization was the only gated model in the tree, and its weights are CC-BY-4.0, so the identical 31 MB is checked into `third_party/pyannote-speaker-diarization-community-1` and copied into the workspace on first launch (`segments.DIARIZATION_DIR`) no download, no account, and every speaker keeps their own voice. The `hf_token` row, its paste box and `POST|DELETE /api/setup/hf_token` are all removed; anyone who wants `DUB_DIARIZATION_HUB` pointed at the gated upstream repo puts it and `HF_TOKEN` in `.env`, as `.env.example` describes. | NOT A STEP no credential |
 | 7 | First dub | With 1 to 6 survived: pick a video (native dialog, absolute path), the job runs, Demucs and the Hebrew G2P fetch their own caches mid-run (network again, progress in the job log). Renders, previews, reveals in Finder. | WORKS IN-APP |
 
 ## Hub repos, verified
@@ -50,10 +50,13 @@ No wrong ids, nothing gated, nothing needing the token step 6 asks for.
    only zero-terminal on machines that already have brew. Bundling static builds (or
    downloading them the way models are downloaded) is the shape of the fix; the
    `MANAGERS` message is honest but honesty is not a dub.
-4. ~~**The HF token is a hand-edit in a hidden folder.**~~ Closed twice over: the POST
-   that writes the workspace `.env` exists (with a field on the Setup row), and then the
-   reason to want one went away: the CC-BY-4.0 diarization weights ship inside the
-   app, so a fresh machine needs no Hugging Face account at all.
+4. ~~**The HF token is a hand-edit in a hidden folder.**~~ Closed by deletion rather than
+   by plumbing. There was a POST that wrote the workspace `.env` and a field on the Setup
+   row to drive it; then the reason to want a token went away, because the CC-BY-4.0
+   diarization weights ship inside the app and a fresh machine needs no Hugging Face
+   account at all. Both the row and the endpoint are gone: a step nobody has to take is
+   not a step to make easier. The `.env` setting stays for the one person who wants the
+   gated upstream repo.
 5. **A failed server start has no surface.** If `start_server` errors (sync failed,
    offline first launch), `desktop.ts` swallows it into a `null` base URL and the
    import screen reports a generic fetch failure; the stderr tail that names the real

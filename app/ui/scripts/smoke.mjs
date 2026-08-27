@@ -638,7 +638,7 @@ const go = async (path, ms) => {
 await go("/setup", 300);
 const setup = root.textContent;
 check("setup screen renders", /Readiness/.test(setup));
-check("setup lists every check", document.querySelectorAll("[data-check]").length === 11);
+check("setup lists every check", document.querySelectorAll("[data-check]").length === 10);
 check("passing checks say Ready", /Ready/.test(setup));
 check("failing checks say Missing", /Missing/.test(setup));
 check("state is never colour alone", [...document.querySelectorAll("[data-check]")].every((row) =>
@@ -651,23 +651,23 @@ check("failing checks explain themselves",
 check("commands render as code, not backticks", !setup.includes("`"));
 check("model sizes are shown", /GB/.test(setup));
 /*
- * Eight rows are failing and five of them are things to do. The rest are
- * optional — a tool the shipped pipeline never calls, a credential nothing
- * needs and a cache that fetches itself — and a headline that counted them was
- * the reason a machine with nothing wrong with it still met a number at the top
- * of this screen.
+ * Seven rows are failing and five of them are things to do. The rest are
+ * optional a tool the shipped pipeline never calls and a cache that fetches
+ * itself and a headline that counted them was the reason a machine with
+ * nothing wrong with it still met a number at the top of this screen.
  *
  * Diarization is not among them any more, in either column: its weights ship in
  * the app bundle, so the row is green before the user has pressed anything. Nor
  * is the low-VRAM row, in either direction: it is a setting, and a setting is
- * never a thing to do.
+ * never a thing to do. Nor is a Hugging Face token, which is not a row at all
+ * now: nothing in this list needs a credential.
  */
-check("a mixed result is counted", /5 of 11 need attention/.test(setup));
+check("a mixed result is counted", /5 of 10 need attention/.test(setup));
 check(
   "…and the optional rows that are not here are not part of that count",
   [...document.querySelectorAll('[data-check][data-severity="optional"]')].filter((row) =>
     /Not installed/.test(row.textContent),
-  ).length === 3,
+  ).length === 2,
 );
 const diarizationRow = document.querySelector('[data-check="model.diarization"]');
 check(
@@ -682,9 +682,9 @@ check("no continue while something is missing", ![...document.querySelectorAll("
 /*
  * What a failure COSTS, not just that there is one.
  *
- * Every missing row used to be the same red X and the same word. So a gated
- * Hugging Face token the run works, everybody in the video becomes one
- * speaker was drawn identically to a missing ffmpeg, which was drawn
+ * Every missing row used to be the same red X and the same word. So absent
+ * diarization weights the run works, everybody in the video becomes one
+ * speaker were drawn identically to a missing ffmpeg, which was drawn
  * identically to a Demucs cache that downloads itself on first use. Three very
  * different situations, one alarm, and a list that teaches you to ignore it.
  *
@@ -749,21 +749,19 @@ check(
 /*
  * The commands are copyable.
  *
- * These are `uv run hf download …` lines and absolute `.env` paths sixty
- * characters of exactness, in an 11.5px monospace span, inside a desktop shell
- * with no address bar to paste into. Selecting one by dragging is not an
- * interaction, it is a transcription error waiting to happen.
+ * These are `uv run hf download …` lines sixty characters of exactness, in an
+ * 11.5px monospace span, inside a desktop shell with no address bar to paste
+ * into. Selecting one by dragging is not an interaction, it is a transcription
+ * error waiting to happen.
  */
 const copyButtons = [...document.querySelectorAll("[data-copy]")];
 check("the parts meant to be typed are one click to the clipboard", copyButtons.length > 0);
-const tokenCopy = [...document.querySelectorAll('[data-check="hf_token"] [data-copy]')].find((b) =>
-  b.getAttribute("data-copy").endsWith(".env"),
-);
-check("…including the absolute path of the .env the server actually reads", tokenCopy != null);
-tokenCopy.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+const fetchCopy = copyButtons.find((b) => /^uv run hf download /.test(b.getAttribute("data-copy")));
+check("…including the whole download command, not the model name out of it", fetchCopy != null);
+fetchCopy.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
 await new Promise((resolve) => setTimeout(resolve, 80));
-check("clicking one copies it exactly", clipboard.text === tokenCopy.getAttribute("data-copy"));
-check("…and says it did", /Copied/.test(tokenCopy.getAttribute("title")));
+check("clicking one copies it exactly", clipboard.text === fetchCopy.getAttribute("data-copy"));
+check("…and says it did", /Copied/.test(fetchCopy.getAttribute("title")));
 
 /*
  * Install from the app.
@@ -825,7 +823,7 @@ check(
 check("a missing installable row offers to install itself",
   Boolean(installButton("ffmpeg")) && Boolean(installButton("sox")));
 check("a row nothing can install offers no button",
-  !installButton("hf_token") && !installButton("model.demucs") && !downloadButton("model.demucs"));
+  !installButton("model.demucs") && !downloadButton("model.demucs"));
 // A hub-snapshot model is the one kind of gigabyte the app now fetches itself,
 // and the button must say the price before the click.
 check("a downloadable model row offers a sized Download button",
@@ -858,7 +856,7 @@ check("…and a click on it starts nothing", fixtureCalls.install === before + 1
 await new Promise((resolve) => setTimeout(resolve, 1400));
 check("the installed row turns Ready", /Ready/.test(rowOf("ffmpeg").textContent));
 check("…and drops its Install button", !installButton("ffmpeg"));
-check("…and the count comes down", /3 of 11 need attention/.test(root.textContent));
+check("…and the count comes down", /3 of 10 need attention/.test(root.textContent));
 check("the other row can be installed again", installButton("sox").disabled === false);
 
 /*
@@ -948,15 +946,16 @@ check(
   "with both tools in, the machine is ready and does not claim all checks pass",
   document.querySelector("[data-readiness]").textContent === "Ready to run",
 );
-check("…with the rows that are still red still counted", /8\/11/.test(root.textContent));
+check("…with the rows that are still red still counted", /8\/10/.test(root.textContent));
 /*
  * The footer's middle sentence, with a real `degrades` row under it.
  *
- * Language ID is what carries that grade now: the run works and is worse — a
+ * Language ID is what carries that grade now: the run works and is worse a
  * third language nobody notices is kept as recorded. It used to be the HF token
  * standing here, which was true while diarization was gated and is not any
- * more, and a footer that said "will still run just worse" over a credential
- * nothing needs would be the wall this release removed, redrawn in prose.
+ * more. A footer that said "will still run just worse" over a credential
+ * nothing needs would be the wall this release removed, redrawn in prose, so
+ * the token is neither in this sentence nor on the screen at all.
  */
 check(
   "…and the footer says the run works and is worse, not that something is missing",
@@ -978,9 +977,8 @@ for (let waited = 0; waited < 10000; waited += 250) {
 check("the last thing the app can fetch lands too", /Ready/.test(rowOf("model.lid").textContent));
 /*
  * Nothing left that the app can install, so the one button is not there. The
- * rows still red are a token nobody needs, and two caches that fetch
- * themselves — offering to "install everything" over those would be a button
- * that installs nothing.
+ * row still red is a cache that fetches itself, and offering to "install
+ * everything" over that would be a button that installs nothing.
  */
 check("…and the one-button offer is gone when nothing is left to install",
   installAllButton() == null && installQueuePanel() == null);
@@ -992,22 +990,26 @@ check(
 );
 /*
  * And the sentence a shipped app should end on. Every red row left is
- * `optional` — the HF token among them, because the diarization weights ship
- * with the app and no account is involved in telling speakers apart. This branch
- * of the footer was unreachable while the token row was graded `degrades`.
+ * `optional`, and none of them is a credential: the diarization weights ship
+ * with the app, so no account is involved in telling speakers apart and there
+ * is no token row here to be red about.
  */
 check(
   "…and the footer says nothing needs what is left",
-  /Everything required is ready; 2 optional items are not installed, and nothing needs them\./.test(
+  /Everything required is ready; 1 optional item is not installed, and nothing needs it\./.test(
     document.querySelector("[data-footer]").textContent,
   ),
 );
 check(
-  "…because every row still red is optional, the token row included",
+  "…because every row still red is optional",
   [...document.querySelectorAll("[data-check]")]
     .filter((row) => /Missing|Not installed/.test(row.textContent))
-    .every((row) => row.getAttribute("data-severity") === "optional") &&
-    rowSeverity("hf_token") === "optional",
+    .every((row) => row.getAttribute("data-severity") === "optional"),
+);
+check(
+  "…and no row on this screen asks for a Hugging Face token",
+  document.querySelector('[data-check="hf_token"]') === null &&
+    !/Hugging Face token/.test(document.body.textContent),
 );
 
 /*
@@ -1044,7 +1046,7 @@ const recheck = [...document.querySelectorAll("button")].find((b) =>
 if (!recheck) throw new Error("smoke: no Re-check button");
 recheck.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
 await new Promise((resolve) => setTimeout(resolve, 300));
-check("re-check re-renders the list", document.querySelectorAll("[data-check]").length === 11);
+check("re-check re-renders the list", document.querySelectorAll("[data-check]").length === 10);
 
 // The gate must not strand the user here: fixture mode never auto-routes, and
 // the import screen is one link away in the nav pill.
@@ -1064,7 +1066,7 @@ check("setup does not trap navigation", /Start dubbing/.test(root.textContent));
  */
 await go("/setup?ready=1", 400);
 const readyRows = [...document.querySelectorAll("[data-check]")];
-check("the ready fixture serves the whole checklist", readyRows.length === 11);
+check("the ready fixture serves the whole checklist", readyRows.length === 10);
 check(
   "…with every row green",
   readyRows.every((row) => /Ready/.test(row.textContent)) &&

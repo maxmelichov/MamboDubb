@@ -2178,10 +2178,15 @@ def test_setup_report_shape(client):
     body = client.get("/api/setup").json()
     assert isinstance(body["ok"], bool)
     by_id = {c["id"]: c for c in body["checks"]}
-    for wanted in ("ffmpeg", "sox", "hf_token", "model.translate", "model.tts.1.7b",
+    for wanted in ("ffmpeg", "sox", "model.translate", "model.tts.1.7b",
                    "model.asr.en", "model.lid", "model.diarization", "model.demucs",
                    "disk"):
         assert wanted in by_id, wanted
+    # And nothing about a credential. There is no `hf_token` row any more: the
+    # diarization weights ship with the app, every model installs without an
+    # account, and a checklist row that can only ever say "not set, and nothing
+    # needs it" is advertising a problem no user has.
+    assert "hf_token" not in by_id
     for c in body["checks"]:
         assert {"id", "label", "ok", "detail", "required"} <= set(c)
         assert isinstance(c["ok"], bool) and isinstance(c["detail"], str) and c["label"]
@@ -2193,9 +2198,9 @@ def test_setup_report_shape(client):
 
 
 def test_setup_grades_every_check_and_required_is_derived_from_it(client):
-    """`required` has two values and the question has three: a missing HF token
-    (every speaker in the video collapsed into one) was reported exactly as
-    informationally as a Korean checkpoint a Hebrew→English run never opens."""
+    """`required` has two values and the question has three: absent diarization
+    weights (every speaker in the video collapsed into one) were reported exactly
+    as informationally as a Korean checkpoint a Hebrew→English run never opens."""
     from dubbing_app import setup as setup_mod
 
     checks = client.get("/api/setup").json()["checks"]
@@ -2221,11 +2226,10 @@ def test_setup_grades_every_check_and_required_is_derived_from_it(client):
     # Irrelevant until asked for, or self-downloading. sox is here on evidence:
     # the only sox caller in the tree is qwen_tts's 25Hz tokenizer, and the
     # pipeline loads only 12Hz checkpoints — a brewless Mac dubs without it.
-    # `hf_token` is here for a bigger reason: it used to be `degrades` because
-    # diarization loaded a gated repo, which made "you need a Hugging Face
-    # account" part of a fresh install. It does not any more, so the credential
-    # may never again be why a machine is not green.
-    for optional in ("sox", "hf_token", "model.asr.he",
+    # No credential row appears in any grade: `hf_token` used to sit here, first
+    # as `degrades` and then as `optional`, because diarization loaded a gated
+    # repo. It does not any more, so the row is gone rather than demoted.
+    for optional in ("sox", "model.asr.he",
                      "model.asr.tgt", "model.tts.he", "model.g2p.he", "model.demucs",
                      "disk"):
         assert by_id[optional] == "optional", optional
@@ -2270,7 +2274,7 @@ def test_setup_names_the_stage_a_blocking_check_would_kill(client):
     assert checks["model.translate"]["stage"] == "translate"
     assert checks["model.asr.en"]["stage"] == "tts"
     # Only where it means something: a stage on an optional row reads as urgency.
-    assert "stage" not in checks["disk"] and "stage" not in checks["hf_token"]
+    assert "stage" not in checks["disk"] and "stage" not in checks["model.demucs"]
     # And `None` is an honest answer for a blocking check with no stage to name:
     # `uv` is how this project's environment is built, but a running server
     # spawns its job child with `sys.executable` and never shells out to it, so
@@ -2278,42 +2282,30 @@ def test_setup_names_the_stage_a_blocking_check_would_kill(client):
     assert checks["uv"]["severity"] == "blocking" and checks["uv"]["stage"] is None
 
 
-def test_setup_token_row_names_the_env_file_by_absolute_path(monkeypatch, tmp_path):
-    """"Put HF_TOKEN in .env" is a scavenger hunt on a machine with three
-    checkouts; only this process knows which `.env` it will read."""
-    from dubbing_app import setup as setup_mod
-
-    monkeypatch.delenv("HF_TOKEN", raising=False)
-    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
-    env = tmp_path / ".env"
-    row = setup_mod.hf_token_check(env)
-    assert row["ok"] is False and row["severity"] == "optional"
-    assert f"`{env}`" in row["detail"]          # backticked, so the UI can copy it
-    assert Path(row["path"]).is_absolute()
-
-
-def test_setup_token_row_no_longer_asks_for_an_account_to_tell_speakers_apart(monkeypatch,
-                                                                              tmp_path):
-    """The row that made this app unshippable.
+def test_setup_asks_for_no_credential_anywhere_and_still_diarizes(client, monkeypatch):
+    """The row that made this app unshippable, and is now not a row at all.
 
     Diarization used to load a gated repo, so a machine with no Hugging Face
-    account dubbed every character in the video in one voice — and the setup
-    screen said so, in the middle grade, next to a paste field. The weights are
-    CC-BY-4.0 and now ship inside the app (`segments.DIARIZATION_DIR`), so the
-    row states a fact instead of asking for a credential: `optional`, and its
-    sentence promises nothing it cannot keep.
+    account dubbed every character in the video in one voice, and the setup
+    screen said so in the middle grade beside a paste field. The weights are
+    CC-BY-4.0 and ship inside the app since v0.4.0
+    (`segments.DIARIZATION_DIR`), so the honest report is silence: no row, no
+    badge, no paragraph explaining why the badge does not matter.
+
+    What is asserted here is both halves, because removing the row would be a
+    lie if the second half were not true. No check mentions a token, and the
+    pipeline still finds a diarization source on a machine that has never had
+    one.
     """
     from dubbing import segments
-    from dubbing_app import setup as setup_mod
 
     monkeypatch.delenv("HF_TOKEN", raising=False)
     monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
     monkeypatch.delenv(segments.DIARIZATION_HUB_ENV, raising=False)
-    row = setup_mod.hf_token_check(tmp_path / ".env")
-    assert row["severity"] == "optional"
-    # No claim that skipping it costs anything, because it does not.
-    assert "single speaker" not in row["detail"]
-    assert "one voice" not in row["detail"]
+    body = client.get("/api/setup").json()
+    assert not any("token" in c["id"] for c in body["checks"])
+    blob = json.dumps(body).lower()
+    assert "hugging face token" not in blob and "hf_token" not in blob
     # And the pipeline agrees: with no token at all there is still a source, and
     # not one of the sources it would try needs one.
     sources = segments.diarization_sources()
@@ -2341,32 +2333,19 @@ def test_setup_model_paths_come_from_the_pipeline(client):
             assert f"model.tts.{key}" not in by_id
 
 
-def test_setup_reports_token_presence_never_the_value(client, monkeypatch):
+def test_setup_never_reports_a_token_even_when_the_machine_has_one(client, monkeypatch):
+    """A developer machine with HF_TOKEN exported gets the same checklist as a
+    machine that has never heard of Hugging Face.
+
+    The report used to grow a green "set via HF_TOKEN" row here, which read as
+    the app noticing a credential it might use. It has no use for one, so it
+    does not look, and nothing resembling the value can appear in the response
+    for the simple reason that nothing reads it.
+    """
     monkeypatch.setenv("HF_TOKEN", "hf_supersecret_value")
     body = client.get("/api/setup").json()
-    check = next(c for c in body["checks"] if c["id"] == "hf_token")
-    assert check["ok"] is True and check["required"] is False
     assert "hf_supersecret_value" not in json.dumps(body)
-
-    monkeypatch.delenv("HF_TOKEN")
-    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
-    from dubbing_app import setup as setup_mod
-
-    monkeypatch.setattr(setup_mod, "REPO_ROOT", Path("/nonexistent"))
-    check = next(c for c in client.get("/api/setup").json()["checks"] if c["id"] == "hf_token")
-    assert check["ok"] is False
-
-
-def test_setup_reads_token_from_env_file(tmp_path):
-    from dubbing_app import setup as setup_mod
-
-    env = tmp_path / ".env"
-    env.write_text("# comment\nHF_TOKEN='hf_from_file'\n", encoding="utf-8")
-    check = setup_mod.hf_token_check(env)
-    assert check["ok"] is True and "hf_from_file" not in json.dumps(check)
-    env.write_text("HF_TOKEN=\n", encoding="utf-8")
-    assert setup_mod.hf_token_check(env)["ok"] is False
-    assert setup_mod.hf_token_check(tmp_path / "missing")["ok"] is False
+    assert not any("token" in c["id"] for c in body["checks"])
 
 
 def test_setup_loads_no_model(client):
@@ -2596,7 +2575,7 @@ def test_setup_marks_the_rows_the_app_can_install(client):
                            | set(setup_mod.model_downloads()) | static | restore)
     assert installable & set(tools.recipes()) == set(tools.auto_installers()) | static
     # And never the rows no table and no route covers: self-fetching caches.
-    assert {"model.demucs", "model.g2p.he", "hf_token", "disk"}.isdisjoint(installable)
+    assert {"model.demucs", "model.g2p.he", "disk"}.isdisjoint(installable)
     assert all(isinstance(c["installable"], bool) for c in checks)
 
 
@@ -2606,6 +2585,8 @@ def test_install_refuses_an_id_it_has_no_recipe_for(client):
     from dubbing import tools
 
     for bad in ("model.demucs", "model.g2p.he", "hf_token", "disk", "rm -rf /"):
+        # `hf_token` is in this list precisely because it is no longer a row: an
+        # id the report never mentions must still be refused rather than run.
         r = client.post("/api/setup/install", json={"id": bad})
         assert r.status_code == 400, bad
         message = r.json()["error"]["message"]
@@ -3429,7 +3410,7 @@ def test_install_plan_queues_only_the_missing_rows_the_app_can_fix():
     plan = setup_mod.install_plan(a_report(
         ("ffmpeg", False, "blocking", True),
         ("uv", True, "blocking", True),               # already there — not re-run
-        ("hf_token", False, "degrades", False),       # nothing to install
+        ("model.g2p.he", False, "degrades", False),   # nothing to install
         ("model.demucs", False, "optional", False),   # fetches its own cache
         ("model.tts.ko", False, "optional", True),    # a language nobody asked for
         ("model.lid", False, "degrades", True, {"download_bytes": 100}),
@@ -3450,15 +3431,15 @@ def test_install_plan_orders_required_first_and_keeps_the_screens_order():
 
 
 def test_install_plan_never_queues_anything_that_needs_a_credential(client):
-    """The one check that wants a token installs nothing, and no gated repo is in
-    the download table — so the queue can never stop half way to ask the user for
-    something. Asserted against the real report, because this is a claim about
-    the actual tables, not a synthetic one."""
+    """No check wants a token, and no gated repo is in the download table so the
+    queue can never stop half way to ask the user for something. Asserted
+    against the real report, because this is a claim about the actual tables,
+    not a synthetic one."""
     from dubbing import segments
 
     plan = setup_mod.install_plan(client.get("/api/setup").json())
     ids = {item["id"] for item in plan}
-    assert "hf_token" not in ids
+    assert not any("token" in id_ for id_ in ids)
     downloads = setup_mod.model_downloads()
     assert ids <= set(install_mod.INSTALLERS) | set(downloads)
     gated = segments.DIARIZATION_MODEL
@@ -3621,15 +3602,21 @@ def test_a_row_button_clears_the_finished_queue(client, stub_plan):
 
 
 # ---------------------------------------------------------------------------
-# HF token in-app (hf-token-ux lane): POST|DELETE /api/setup/hf_token
+# The workspace `.env`, written by the server
 # ---------------------------------------------------------------------------
-# The .env write, done by the server so nobody has to find a hidden folder.
 # Everything here redirects `setup.env_path()` into tmp_path by pointing the
 # module's REPO_ROOT there — env_path resolves it per call, so a client built
-# before the monkeypatch still writes where the test looks. The two env vars
-# are cleared first: `hf_token_check` reads them ahead of the file, and a
-# developer machine with HF_TOKEN exported would turn every "not set" claim
-# below into a lie.
+# before the monkeypatch still writes where the test looks. The two token env
+# vars are cleared first so a developer machine with HF_TOKEN exported cannot
+# influence anything below.
+#
+# There used to be a `POST|DELETE /api/setup/hf_token` lane here, with a paste
+# box and a Save on the Setup screen behind it. Both are gone: the diarization
+# weights ship with the app, so the token was a credential the product had no
+# use for, and an endpoint that writes one into `.env` for a row nobody is
+# looking at is surface with no reader. `HF_TOKEN` and `DUB_DIARIZATION_HUB` in
+# `.env` still work for anyone who wants the gated upstream repo, which is what
+# `.env.example` documents and what `dubbing/segments.py` reads.
 
 from dubbing_app import setup as setup_mod  # noqa: E402
 
@@ -3642,63 +3629,20 @@ def env_home(tmp_path, monkeypatch):
     return tmp_path / ".env"
 
 
-def test_token_save_creates_env_and_flips_the_row(client, env_home):
-    token = "hf_abcdefghijklmnop"
-    r = client.post("/api/setup/hf_token", json={"token": token})
-    assert r.status_code == 200
-    row = r.json()
-    assert row["id"] == "hf_token" and row["ok"] is True
-    # The answer is the row, never the credential — not even a suffix of it.
-    assert token not in r.text
-    assert env_home.read_text() == f"HF_TOKEN={token}\n"
-    # A credential file is nobody else's to read.
-    assert (env_home.stat().st_mode & 0o777) == 0o600
+def test_no_token_endpoint_is_left_to_write_a_credential(client, env_home):
+    """The save and the clear are gone, and gone means 404/405, not a quiet 200.
 
-
-def test_token_save_preserves_other_lines_and_replaces_both_spellings(client, env_home):
-    env_home.write_text("# my notes\nOTHER=keep me\nHF_TOKEN=hf_old\n"
-                        "HUGGING_FACE_HUB_TOKEN=hf_older\nQUOTED='v'\n")
-    r = client.post("/api/setup/hf_token", json={"token": "hf_newtoken123"})
-    assert r.status_code == 200
-    lines = env_home.read_text().splitlines()
-    # Hand-written lines survive verbatim — comments, quoting, order.
-    assert lines[:2] == ["# my notes", "OTHER=keep me"]
-    assert "QUOTED='v'" in lines
-    # Exactly one token line remains, and it is the new one. Leaving the old
-    # HUGGING_FACE_HUB_TOKEN behind would shadow nothing today and confuse
-    # everyone the day the new one is deleted.
-    assert lines.count("HF_TOKEN=hf_newtoken123") == 1
-    assert not any(l.startswith(("HF_TOKEN=hf_old", "HUGGING_FACE_HUB_TOKEN")) for l in lines)
-
-
-def test_token_bad_shapes_are_400_and_never_echoed(client, env_home):
-    for bad in ("", "   ", "hf_", "not-a-token", "sk-something",
-                "hf_with space", "hf_with\nnewline", "hf_with\ttab"):
-        r = client.post("/api/setup/hf_token", json={"token": bad})
-        assert r.status_code == 400, bad
-        assert envelope_of(r)["code"] == "invalid_request"
-        # The 400 explains the shape without quoting the paste — an error
-        # message is the one string that ends up in bug reports. Skipped for
-        # the pastes shorter than the `hf_` prefix the message legitimately
-        # names; nothing that short is a secret.
-        if len(bad.strip()) > len("hf_"):
-            assert bad not in envelope_of(r)["message"], bad
-    assert not env_home.exists()
-    # Strict body: an extra field is a 400, same as every other endpoint.
-    r = client.post("/api/setup/hf_token", json={"token": "hf_okokok", "x": 1})
-    assert r.status_code == 400
-
-
-def test_token_delete_removes_only_the_token_lines(client, env_home):
-    env_home.write_text("OTHER=keep me\nHF_TOKEN=hf_gone\nHUGGING_FACE_HUB_TOKEN=hf_also\n")
-    r = client.delete("/api/setup/hf_token")
-    assert r.status_code == 200
-    row = r.json()
-    assert row["id"] == "hf_token" and row["ok"] is False
+    A route kept "just in case" after its only caller was deleted is the way a
+    removed feature comes back as an undocumented one: it writes a real
+    credential to a real file with nothing on any screen saying it happened.
+    Nothing else in `.env` is touched by their absence either, which is the
+    second assertion: an untouched file is the proof that no handler ran.
+    """
+    env_home.write_text("OTHER=keep me\n", encoding="utf-8")
+    for call in (lambda: client.post("/api/setup/hf_token", json={"token": "hf_abcdefgh"}),
+                 lambda: client.delete("/api/setup/hf_token")):
+        assert call().status_code in (404, 405)
     assert env_home.read_text() == "OTHER=keep me\n"
-    # Deleting when there is nothing to delete is not an error — the row is
-    # already telling the truth, and a second click must not turn red.
-    assert client.delete("/api/setup/hf_token").status_code == 200
 
 
 def test_low_vram_row_is_a_setting_not_a_finding(client, env_home, monkeypatch):
@@ -3792,13 +3736,17 @@ def test_setup_still_loads_no_torch(client, env_home):
     assert "torch" not in sys.modules
 
 
-def test_token_save_then_probe_agree(client, env_home):
-    """The row the POST returns and the row GET /api/setup reports are the same
-    fact — a save whose receipt disagreed with the checklist would send the
-    user hunting for a difference that does not exist."""
-    client.post("/api/setup/hf_token", json={"token": "hf_agreement"})
-    checks = {c["id"]: c for c in client.get("/api/setup").json()["checks"]}
-    assert checks["hf_token"]["ok"] is True
-    client.delete("/api/setup/hf_token")
-    checks = {c["id"]: c for c in client.get("/api/setup").json()["checks"]}
-    assert checks["hf_token"]["ok"] is False
+def test_a_token_in_the_env_file_changes_nothing_on_the_checklist(client, env_home):
+    """`.env` is still where `HF_TOKEN` goes, and the checklist still has
+    nothing to say about it.
+
+    This is the line between the UI that was removed and the capability that was
+    not. A user who wants the gated upstream diarization repo writes the token
+    and `DUB_DIARIZATION_HUB` into this file by hand and the pipeline reads
+    both; Setup neither congratulates them for it nor lists its absence as
+    something to fix.
+    """
+    env_home.write_text("HF_TOKEN=hf_bymyownhand\n", encoding="utf-8")
+    body = client.get("/api/setup").json()
+    assert "hf_bymyownhand" not in json.dumps(body)
+    assert not any("token" in c["id"] for c in body["checks"])

@@ -27,7 +27,9 @@ directory's `LICENSE` and `NOTICE.md`.
 
 A token is still *usable*, and only for one thing: set `DUB_DIARIZATION_HUB` to the
 gated repo id to fetch the canonical repo from upstream instead, with `HF_TOKEN=hf_...`
-in `.env` (or the field on the Setup screen, which writes it for you).
+in `.env`. Both lines go in by hand, and there is nothing about either on the Setup
+screen: a checklist row for a credential nothing needs was a problem the app was
+advertising rather than one anybody had.
 
 ## Models
 

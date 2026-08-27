@@ -543,14 +543,14 @@ dies halfway and an absent model directory silently becomes a multi-gigabyte dow
              "path": "/…", "bytes": 10424182784}]}
 ```
 
-* Ids: `ffmpeg`, `sox`, `uv`, `hf_token`, `model.translate`, `model.tts.<key>` (one per
+* Ids: `ffmpeg`, `sox`, `uv`, `model.translate`, `model.tts.<key>` (one per
   `tts.TTS_MODELS`), `model.asr.he`, `model.asr.src`, `model.asr.en`, `model.asr.tgt`,
   `model.lid`, `model.diarization`, `model.demucs`, `model.tts.he`, `model.g2p.he`, `disk`. `label` and `detail`
   are for display; `id` is stable.
 * **`severity` is the grade, and `required` is derived from it.** A boolean has two values
   and the question has three, so everything that was not required was reported as one
-  undifferentiated "informational" which put a gated `HF_TOKEN` (every speaker in the
-  video collapsed into one) on the same row as a Korean checkpoint a Hebrew→English run
+  undifferentiated "informational" which put absent diarization weights (every speaker in
+  the video collapsed into one) on the same row as a Korean checkpoint a Hebrew→English run
   never opens.
   * `blocking` the run **fails**: `ffmpeg`, `sox`, `uv`, the translator, the default TTS
     checkpoint, the English ASR that verifies every clip. `required: true`, and these rows
@@ -568,25 +568,29 @@ dies halfway and an absent model directory silently becomes a multi-gigabyte dow
     verifies it against `SHA256SUMS` (`install.restore_diarization`): no network, no
     account, and never the gated upstream repo.
   * `optional` irrelevant until asked for: the per-language-pair models, the
-    self-downloading Demucs cache, free disk and `hf_token`.
-    The token row was `degrades` for as long as diarization loaded the gated
-    `pyannote/speaker-diarization-community-1`; the same CC-BY-4.0 weights are now
-    checked into `third_party/` and copied into the workspace on first launch
-    (`segments.DIARIZATION_DIR`), so a machine with no Hugging Face account tells
-    speakers apart like any other and **readiness may never again depend on a
-    credential**.
+    self-downloading Demucs cache and free disk.
+* **There is no credential row, in any grade.** An `hf_token` row lived here, `degrades`
+  for as long as diarization loaded the gated `pyannote/speaker-diarization-community-1`
+  and then `optional` once it did not. Since v0.4.0 the same CC-BY-4.0 weights are checked
+  into `third_party/` and copied into the workspace on first launch
+  (`segments.DIARIZATION_DIR`), every other hub in the tables is public, and a machine with
+  no Hugging Face account tells speakers apart like any other. So the row is **gone**
+  rather than demoted: a checklist entry that can only ever say "not set, and nothing needs
+  it" is advertising a problem no user has, and the paragraph it grew explaining why the
+  badge did not matter was the proof. **Readiness may never again depend on a credential**,
+  and neither may the screen's attention.
 * **`ok` is the conjunction of the `required` checks only** unchanged, and now equal to
   "no blocking check fails". A client must not compute readiness as "every row passes":
   that is stricter than the server and makes the "ready, with things missing" state
   unreachable.
-* **The token is reported as present or absent, never echoed.** It is optional, and the
-  only thing it still buys is `DUB_DIARIZATION_HUB` pointed at the gated upstream repo.
-  Env first
-  (`HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN`), then a `HF_TOKEN=` line in `.env` whose
-  **absolute** path the failing row names, backticked, because "put it in `.env`" is a
-  scavenger hunt on a machine with three checkouts and only the server knows which one it
-  reads. Backticked spans in `detail` are the parts meant to be typed; the UI sets them as
-  code and offers each as one click to the clipboard.
+* **The token is not read, not reported and not writable through the API.** There is no
+  `POST|DELETE /api/setup/hf_token`; it existed for the removed row's paste box, and an
+  endpoint that writes a credential into `.env` for a screen nobody is looking at is
+  surface with no reader. The capability is untouched and lives where settings live:
+  `HF_TOKEN` (or `HUGGING_FACE_HUB_TOKEN`) plus `DUB_DIARIZATION_HUB` in `.env`, read by
+  `dubbing/segments.py diarization_sources` and documented in `.env.example`. Backticked
+  spans in `detail` are still the parts meant to be typed; the UI sets them as code and
+  offers each as one click to the clipboard.
 * **No model is loaded and no import is heavy**: `shutil.which`, `os.environ`, `stat`,
   `shutil.disk_usage`. Milliseconds, safe to poll, and it must stay that way.
 * **`installable` is the server's answer to "can the app fix this?"** true for exactly
