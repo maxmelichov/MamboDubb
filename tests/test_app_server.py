@@ -2464,7 +2464,8 @@ def test_a_model_row_passes_from_the_hf_cache_its_loader_downloads_into(tmp_path
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
 
     def row():
-        return setup_mod.model("model.x", "X", local, hub="org/thing", hub_bytes=99)
+        return setup_mod.model("model.x", "X", local, hub="org/thing", hub_bytes=99,
+                               hub_cached=True)
 
     assert row()["ok"] is False
     blobs = tmp_path / "hub" / "models--org--thing" / "blobs"
@@ -2486,6 +2487,29 @@ def test_a_model_row_passes_from_the_hf_cache_its_loader_downloads_into(tmp_path
     (local / "weights.bin").write_bytes(b"y" * 512)
     here = row()
     assert here["ok"] is True and here["bytes"] == 512 and "found_at" not in here
+
+
+def test_a_cached_copy_only_counts_where_the_loader_would_read_it(tmp_path, monkeypatch):
+    """The other half of the two-location probe, and the half that keeps it from
+    becoming the opposite lie. Language ID and the Hebrew LoRA read their local
+    directory and nothing else (`transcript.load_lid` returns None without it,
+    `hebrew.attach_adapter` raises), so a `models--*` in the cache does not make
+    either feature work and a green row for one would send the user away from
+    the thing that is actually broken."""
+    from dubbing_app import setup as setup_mod
+
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
+    downloads = setup_mod.model_downloads()
+    for id_ in ("model.lid", "model.tts.he"):
+        hub = downloads[id_]["hub"]
+        blobs = tmp_path / "hub" / f"models--{hub.replace('/', '--')}" / "blobs"
+        blobs.mkdir(parents=True)
+        (blobs / "0a1b").write_bytes(b"x" * 4096)
+        assert downloads[id_].get("cached") is not True, id_
+    rows = {c["id"]: c for c in setup_mod.model_checks()}
+    for id_ in ("model.lid", "model.tts.he"):
+        assert rows[id_]["ok"] is False, id_
+        assert "found_at" not in rows[id_], id_
 
 
 def test_every_failing_model_row_carries_the_command_that_fixes_it(client, tmp_path,

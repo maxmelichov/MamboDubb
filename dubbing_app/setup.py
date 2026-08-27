@@ -283,7 +283,7 @@ def probe(id_: str) -> dict[str, Any] | None:
 
 def model(id_: str, label: str, path: Path, *, severity: str = BLOCKING,
           note: str = "", hub: str = "", hub_bytes: int = 0,
-          fix: str = "") -> dict[str, Any]:
+          hub_cached: bool = False, fix: str = "") -> dict[str, Any]:
     """A model's presence and size, in **either** place the pipeline reads it
     from. `path` always comes from the pipeline module that loads it, so this
     cannot describe a stale location.
@@ -300,6 +300,15 @@ def model(id_: str, label: str, path: Path, *, severity: str = BLOCKING,
     (`models--org--name` with something under `blobs/`), and a row that passes
     there says which of the two places answered.
 
+    `hub_cached` is what keeps that from becoming the opposite lie, and it is
+    per model rather than global because the fallback is. Language ID
+    (`transcript.py`: `if not LID_MODEL.is_dir(): return None`) and the Hebrew
+    LoRA (`hebrew.attach_adapter`) read the local directory and nothing else, so
+    a cached copy of those does not make the feature work, and a green row for
+    one would be exactly the "cheerful tick for a model the pipeline cannot
+    find" this module's second rule exists to prevent. A model is marked cached
+    only when **every** loader that opens it accepts the hub id.
+
     A missing row's whole job is to be actionable: when the hub repo is known,
     the detail carries the exact download command (backticked so the UI sets it
     as code) and the row carries `hub` and `download_bytes`, which is what lets
@@ -310,7 +319,7 @@ def model(id_: str, label: str, path: Path, *, severity: str = BLOCKING,
     """
     present = path.is_dir() and any(path.iterdir()) if path.is_dir() else False
     where = path
-    if not present and hub:
+    if not present and hub and hub_cached:
         cached = hf_cache_repo(hub)
         if cached is not None:
             present, where = True, cached
@@ -551,6 +560,16 @@ def model_downloads() -> dict[str, dict[str, Any]]:
     (docs/MULTILANG_PLAN.md). `bytes` is the download size measured from real
     installs approximate on purpose, good enough for a button label and a
     progress denominator, never for accounting.
+
+    `cached` says whether a copy in the Hugging Face cache is as good as one in
+    `models/`, and it is a per-model fact because the loaders differ. The
+    translator, the TTS checkpoint and the source ASRs all fall back to the hub
+    id, so a cached copy is what the run will actually open. Language ID, the
+    Hebrew LoRA and the two verification ASRs have at least one caller that reads
+    the directory or gives up (`transcript.load_lid`, `hebrew.attach_adapter`,
+    `transcript.load_target_asr`), so for them only the directory counts.
+    Absent means false: a row claiming a model is present has to be right about
+    every loader that opens it, not just the forgiving one.
     """
     from dubbing import hebrew, transcript, translate, tts
 
@@ -562,7 +581,7 @@ def model_downloads() -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {
         "model.translate": {"hub": tr_hub, "path": tr_path,
                             "bytes": 6_400_000_000 if tr_hub == translate.LOW_VRAM_HUB_ID
-                            else 9_700_000_000},
+                            else 9_700_000_000, "cached": True},
     }
     # Only the default checkpoint is offered. 0.6b exists in tts.TTS_MODELS
     # solely so old manifests that recorded it can re-run; a download button
@@ -571,13 +590,13 @@ def model_downloads() -> dict[str, dict[str, Any]]:
     out[f"model.tts.{tts.DEFAULT_TTS_MODEL}"] = {
         "hub": tts_default["hub"],
         "path": tts.REPO_ROOT / "models" / tts_default["dir"],
-        "bytes": 4_500_000_000,
+        "bytes": 4_500_000_000, "cached": True,
     }
     out.update({
         "model.asr.he": {"hub": transcript.WHISPER_HUB, "path": transcript.WHISPER_MODEL,
-                         "bytes": 1_600_000_000},
+                         "bytes": 1_600_000_000, "cached": True},
         "model.asr.src": {"hub": transcript.SRC_ASR_HUB, "path": transcript.SRC_ASR_MODEL,
-                          "bytes": 1_600_000_000},
+                          "bytes": 1_600_000_000, "cached": True},
         "model.asr.en": {"hub": "Systran/faster-whisper-base.en",  # tts._ASR_CANDIDATES
                          "path": transcript.EN_ASR_MODEL, "bytes": 150_000_000},
         "model.asr.tgt": {"hub": "Systran/faster-whisper-base",    # tts._ASR_CANDIDATES_MULTI
@@ -614,6 +633,7 @@ def model_checks() -> list[dict[str, Any]]:
         if d:
             kw.setdefault("hub", d["hub"])
             kw.setdefault("hub_bytes", d["bytes"])
+            kw.setdefault("hub_cached", bool(d.get("cached")))
         return model(id_, label, path, **kw)
 
     tr = downloads["model.translate"]
