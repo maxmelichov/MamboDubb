@@ -273,29 +273,61 @@ def probe(id_: str) -> dict[str, Any] | None:
 
 
 def model(id_: str, label: str, path: Path, *, severity: str = BLOCKING,
-          note: str = "", hub: str = "", hub_bytes: int = 0) -> dict[str, Any]:
-    """A model directory's presence and size. `path` always comes from the
-    pipeline module that loads it, so this cannot describe a stale location.
+          note: str = "", hub: str = "", hub_bytes: int = 0,
+          fix: str = "") -> dict[str, Any]:
+    """A model's presence and size, in **either** place the pipeline reads it
+    from. `path` always comes from the pipeline module that loads it, so this
+    cannot describe a stale location.
+
+    Two locations, because the loaders have two. `translate.py` and `tts.py`
+    both fall back to the hub id when `models/<dir>` is absent, and a hub-id
+    load downloads into the Hugging Face cache and never into `models/`. A probe
+    that stats only the local directory therefore reports MISSING forever on a
+    machine where translation and TTS demonstrably work, and the file it is
+    looking for is never going to appear. `demucs_check` learned this first and
+    its reasoning is the general one: a check that cannot pass teaches the user
+    to ignore the whole screen, and a *blocking* row that cannot pass teaches it
+    hardest. So a known `hub` is also looked for in the cache
+    (`models--org--name` with something under `blobs/`), and a row that passes
+    there says which of the two places answered.
 
     A missing row's whole job is to be actionable: when the hub repo is known,
     the detail carries the exact download command (backticked so the UI sets it
     as code) and the row carries `hub` and `download_bytes`, which is what lets
     the Setup screen label its button "Download (~9.7 GB)" instead of just
     "Download". "Missing" without the command or the size is a scavenger hunt.
+    `fix` is the same promise for a model with no hub to fetch from: the command
+    that repairs it, backticked, and on the row as data so a UI can copy it.
     """
     present = path.is_dir() and any(path.iterdir()) if path.is_dir() else False
-    size = dir_size(path) if present else 0
+    where = path
+    if not present and hub:
+        cached = hf_cache_repo(hub)
+        if cached is not None:
+            present, where = True, cached
+    size = dir_size(where) if present else 0
     if present:
-        detail = f"{human_bytes(size)} in {path}"
+        origin = f"{path}" if where == path else f"the Hugging Face cache ({where})"
+        detail = f"{human_bytes(size)} in {origin}"
     else:
         detail = f"missing: {path}" + (f" ({note})" if note else "")
         if hub:
             approx = f" (~{human_bytes(hub_bytes)})" if hub_bytes else ""
             detail += f". Fetch it{approx}: `uv run hf download {hub} --local-dir {path}`"
+        elif fix:
+            detail += f". Restore it: `{fix}`"
+    # `path` stays the pipeline's own constant whichever place answered: it is
+    # where this model belongs, and a row that renamed itself after the cache
+    # would stop being checkable against `dubbing`'s constants. Where it was
+    # actually found, when that is somewhere else, is a second field.
     extra: dict[str, Any] = {"path": str(path), "bytes": size}
+    if where != path:
+        extra["found_at"] = str(where)
     if hub:
         extra["hub"] = hub
         extra["download_bytes"] = hub_bytes
+    if fix:
+        extra["fix"] = fix
     return check(id_, label, present, detail, severity=severity, **extra)
 
 
@@ -653,6 +685,23 @@ def hf_hub_cache() -> Path:
     if hf_home:
         return Path(hf_home) / "hub"
     return Path.home() / ".cache" / "huggingface" / "hub"
+
+
+def hf_cache_repo(hub: str) -> Path | None:
+    """The Hugging Face cache directory holding `hub`, or None when it holds no
+    bytes of it. The second of the two places `model()` looks, and the one a
+    hub-id load actually fills.
+
+    "Holds it" is `blobs/` with something in it, not merely the directory
+    existing: an interrupted or metadata-only fetch leaves the `models--*` shell
+    behind, and calling that present would be the opposite failure to the one
+    this exists to fix.
+    """
+    repo = hf_hub_cache() / f"models--{hub.replace('/', '--')}"
+    blobs = repo / "blobs"
+    if repo.is_dir() and blobs.is_dir() and any(blobs.iterdir()):
+        return repo
+    return None
 
 
 def demucs_check() -> dict[str, Any]:

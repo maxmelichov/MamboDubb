@@ -2445,6 +2445,82 @@ def test_setup_demucs_passes_from_the_hf_cache(tmp_path, monkeypatch):
     assert setup_mod.hf_hub_cache() == tmp_path / "hf_home" / "hub"
 
 
+def test_a_model_row_passes_from_the_hf_cache_its_loader_downloads_into(tmp_path,
+                                                                       monkeypatch):
+    """The same two-location probe demucs got, generalised to every row with a
+    hub. `translate.py` and `tts.py` both fall back to the hub id when
+    `models/<dir>` is absent, and that download lands in the HF cache, so a row
+    that stats only the local directory reads MISSING on a machine where the
+    feature demonstrably works. A blocking row that cannot pass is the strongest
+    possible instruction to ignore the whole screen."""
+    from dubbing_app import setup as setup_mod
+
+    local = tmp_path / "models" / "thing"
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
+
+    def row():
+        return setup_mod.model("model.x", "X", local, hub="org/thing", hub_bytes=99)
+
+    assert row()["ok"] is False
+    blobs = tmp_path / "hub" / "models--org--thing" / "blobs"
+    blobs.mkdir(parents=True)
+    # An empty `blobs/` is an interrupted fetch, not a model: the same reading
+    # `demucs_check` makes, so the two rows cannot disagree about the same cache.
+    assert row()["ok"] is False
+    (blobs / "0a1b").write_bytes(b"x" * 2048)
+    found = row()
+    assert found["ok"] is True and found["bytes"] == 2048
+    # `path` stays the place the pipeline would load from, so the row is still
+    # checkable against `dubbing`'s constants; `found_at` says where it really is.
+    assert found["path"] == str(local)
+    assert found["found_at"] == str(blobs.parent)
+    assert "Hugging Face cache" in found["detail"]
+    # And the local directory still wins when it has something in it: that is
+    # the path the loader prefers, so it is the path the row must report.
+    local.mkdir(parents=True)
+    (local / "weights.bin").write_bytes(b"y" * 512)
+    here = row()
+    assert here["ok"] is True and here["bytes"] == 512 and "found_at" not in here
+
+
+def test_every_failing_model_row_carries_the_command_that_fixes_it(client, tmp_path,
+                                                                   monkeypatch):
+    """`setup.model`'s docstring makes this promise, and the rows that broke it
+    were both of the blocking ones: "missing" with no command is a scavenger
+    hunt, and the row is the only place a user with no terminal ever looks.
+
+    Two halves. Every failing model row has *a* backticked command, and a row
+    that names a hub has exactly the download line for that hub, with an
+    absolute `--local-dir` (a relative one installs the weights wherever the
+    terminal happened to be, which is nowhere the app looks)."""
+    import re
+
+    from dubbing_app import setup as setup_mod
+
+    checks = client.get("/api/setup").json()["checks"]
+    model_rows = [c for c in checks if c["id"].startswith("model.")]
+    assert model_rows
+    for row in model_rows:
+        if row["ok"]:
+            continue
+        commands = re.findall(r"`([^`]+)`", row["detail"])
+        assert commands, f"{row['id']} says missing and names no command"
+        if row.get("hub"):
+            expected = (f"uv run hf download {row['hub']} "
+                        f"--local-dir {row['path']}")
+            assert expected in commands, row["id"]
+            assert Path(row["path"]).is_absolute(), row["id"]
+    # The rows that are *always* downloadable carry the command whether or not
+    # this machine happens to be missing them, so the claim above is not vacuous
+    # on a developer's fully-populated checkout. Both places the probe looks are
+    # pointed somewhere empty, or a cached copy would make this vacuous too.
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "empty-cache"))
+    for id_, spec in setup_mod.model_downloads().items():
+        built = setup_mod.model(id_, id_, Path(spec["path"]).parent / "nothing-here",
+                                hub=spec["hub"], hub_bytes=spec["bytes"])
+        assert f"`uv run hf download {spec['hub']} --local-dir " in built["detail"]
+
+
 # ---------------------------------------------------------------------------
 # installing a missing tool from the app
 # ---------------------------------------------------------------------------
