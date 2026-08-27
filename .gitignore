@@ -10,7 +10,9 @@ dist/
 build/
 *.egg-info/
 
-# Local model weights (large; download with hf)
+# Local model weights (large; download with hf). No trailing slash on the
+# first form: it also catches a symlinked models, which "models/" does not.
+/models
 models/
 
 # OS / IDE
@@ -18,7 +20,8 @@ models/
 .idea/
 .vscode/
 
-# Runtime outputs
+# Runtime outputs (same symlink story as /models above)
+/outputs
 outputs/
 demucs_out/
 *.wav
