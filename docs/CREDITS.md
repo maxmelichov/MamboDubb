@@ -1,6 +1,6 @@
 # Credits
 
-MamboDubb is a pipeline, not a model: all of the intelligence below is the work of the teams that built and released these models openly. Full credit to them:
+MamboDubb is a pipeline. All of the intelligence below is the work of the teams that built and released these models openly. Full credit to them:
 
 | Model | By | Used for |
 |---|---|---|

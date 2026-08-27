@@ -22,7 +22,7 @@ Give it a video file or a YouTube link. It transcribes, translates, speaks every
 curl -fsSL https://github.com/maxmelichov/MamboDubb/releases/latest/download/install.sh | sh
 ```
 
-Then open **Setup** in the app and press **Install everything**. It downloads all the models (about 16 GB, sizes shown before you click) and every row goes green. That's it.
+Then open **Setup** in the app and press **Install everything**. It downloads all the models (about 16 GB, sizes shown before you click) and every row goes green.
 
 **Windows / Linux:** run from source for now ([Windows notes](docs/WINDOWS.md), [status](docs/CROSS_PLATFORM.md)):
 
@@ -42,7 +42,7 @@ More on the server: [docs/SERVER.md](docs/SERVER.md).
 | **Mac** (M-series) | 16 GB minimum, 24 GB comfortable | 25 GB |
 | **NVIDIA** | 12 GB with [low-VRAM mode](docs/LOW_VRAM.md), 32 GB full | 25 GB |
 
-A 3 minute clip takes 20 to 40 minutes. Fixing one line afterwards costs one line, not one run.
+A 3 minute clip takes 20 to 40 minutes. Fixing one line afterwards only re-runs that line.
 
 ## Languages
 
@@ -70,4 +70,4 @@ Result lands in `outputs/<run>/preview.mp4`.
 
 ## Credits
 
-MamboDubb is a pipeline, not a model. The intelligence is the work of the teams behind [Qwen3-TTS](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) (voice cloning), [Gemma](https://huggingface.co/mlx-community/gemma-4-12B-it-6bit) (translation), [Whisper](https://github.com/SYSTRAN/faster-whisper) via [ivrit.ai](https://huggingface.co/ivrit-ai/whisper-large-v3-turbo-ct2) and deepdml (transcription), [Demucs](https://github.com/adefossez/demucs) (music separation), [pyannote](https://huggingface.co/pyannote/speaker-diarization-community-1) (speakers, CC-BY-4.0, redistributed in `third_party/`), [SpeechBrain](https://huggingface.co/speechbrain) (speaker and language ID), [Silero VAD](https://github.com/snakers4/silero-vad), and the Hebrew stack: [QwenTTS-he](https://huggingface.co/notmax123/QwenTTS-he-1.7B) + [RenikudPlus](https://github.com/maxmelichov/RenikudPlus). Full table with roles: [docs/CREDITS.md](docs/CREDITS.md).
+MamboDubb is a pipeline. The intelligence is the work of the teams behind [Qwen3-TTS](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) (voice cloning), [Gemma](https://huggingface.co/mlx-community/gemma-4-12B-it-6bit) (translation), [Whisper](https://github.com/SYSTRAN/faster-whisper) via [ivrit.ai](https://huggingface.co/ivrit-ai/whisper-large-v3-turbo-ct2) and deepdml (transcription), [Demucs](https://github.com/adefossez/demucs) (music separation), [pyannote](https://huggingface.co/pyannote/speaker-diarization-community-1) (speakers, CC-BY-4.0, redistributed in `third_party/`), [SpeechBrain](https://huggingface.co/speechbrain) (speaker and language ID), [Silero VAD](https://github.com/snakers4/silero-vad), and the Hebrew stack: [QwenTTS-he](https://huggingface.co/notmax123/QwenTTS-he-1.7B) + [RenikudPlus](https://github.com/maxmelichov/RenikudPlus). Full table with roles: [docs/CREDITS.md](docs/CREDITS.md).
