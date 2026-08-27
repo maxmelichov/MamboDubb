@@ -12,7 +12,8 @@ from __future__ import annotations
 import pytest
 
 from dubbing import PASSTHROUGH_REASON
-from dubbing import edit, manifest, report as report_mod, segments as seg_mod, timeline
+from dubbing import cli, edit, manifest, report as report_mod, segments as seg_mod
+from dubbing import timeline
 from dubbing import tts as tts_mod
 
 
@@ -585,6 +586,72 @@ def test_report_counts_an_unvoiced_segment_as_unaccounted(tmp_path, monkeypatch)
     assert rep["unaccounted"] == [0]
     # And counting the verdicts does not die on the segment that has none.
     assert rep["verify"]["keep"] == 1
+
+
+def tts_failed_run(*, dubbed_first=False):
+    """The issue #15 shape: every line kept because synthesis produced nothing.
+
+    A `tts_failed` keep still carries a clip and a placement (the segment's own
+    source audio, standing in for the dub that never arrived), so `unaccounted`
+    stays empty and the run has nothing else to complain about. That is exactly
+    why it used to pass for a clean run.
+    """
+    first = seg(start=0.0, end=2.0, text_en="Hello",
+                keep=not dubbed_first,
+                keep_reason=None if dubbed_first else "tts_failed",
+                tts={"clip": "clips/a.wav", "dur": 2.0,
+                     "verify": "ok" if dubbed_first else "keep"},
+                place={"start": 0.0, "end": 2.0, "clip": "clips/a.wav",
+                       "drift": 0.0, "rate": 1.0, "overrun": 0.0})
+    second = seg(id=1, start=2.0, end=4.0, text_en="World", keep=True,
+                 keep_reason="tts_failed",
+                 tts={"clip": "clips/b.wav", "dur": 2.0, "verify": "keep"},
+                 place={"start": 2.0, "end": 4.0, "clip": "clips/b.wav",
+                        "drift": 0.0, "rate": 1.0, "overrun": 0.0})
+    return mk(first, second)
+
+
+def with_clips(tmp_path):
+    (tmp_path / "clips").mkdir()
+    for name in ("a.wav", "b.wav"):
+        (tmp_path / "clips" / name).write_bytes(b"clip")
+
+
+def test_a_run_that_dubbed_nothing_at_all_is_not_a_clean_run(tmp_path, monkeypatch,
+                                                             capsys):
+    # Issue #15: TTS never loaded, every segment fell back to its own audio, and
+    # the report said dubbed 0 / degraded {} / exit 0 over a preview that is the
+    # untranslated source video. A stage that did not run is not a fallback.
+    with_clips(tmp_path)
+    rep = fake_report_run(tts_failed_run(), tmp_path, monkeypatch)
+
+    assert rep["dubbed"] == 0 and rep["keep_reasons"] == {"tts_failed": 2}
+    assert rep["unaccounted"] == []          # nothing else was going to catch it
+    assert rep["tts_unavailable"] == {"kept": 2}
+    assert "untranslated original" in rep["degraded"]["tts.synthesis"]
+    assert "FAIL: TTS produced nothing" in capsys.readouterr().err
+
+
+def test_a_partial_tts_failure_is_still_the_per_segment_fallback(tmp_path,
+                                                                 monkeypatch, capsys):
+    # The boundary. One line dubbed and one kept is the safety net working as
+    # designed: a warning in `keep_reasons`, not a failed run.
+    with_clips(tmp_path)
+    rep = fake_report_run(tts_failed_run(dubbed_first=True), tmp_path, monkeypatch)
+
+    assert rep["dubbed"] == 1 and rep["keep_reasons"] == {"tts_failed": 1}
+    assert rep["tts_unavailable"] is None
+    assert "tts.synthesis" not in rep["degraded"]
+    assert "FAIL: TTS produced nothing" not in capsys.readouterr().err
+
+
+def test_a_run_that_dubbed_nothing_exits_nonzero():
+    """The app's job runner reads the exit code, so this is what reaches the UI."""
+    assert cli.report_failed({"unaccounted": [], "tts_unavailable": {"kept": 11}})
+    assert not cli.report_failed({"unaccounted": [], "tts_unavailable": None})
+    assert cli.report_failed({"unaccounted": [3], "tts_unavailable": None})
+    # A stage that never learned the field still decides on the ones it has.
+    assert not cli.report_failed({"unaccounted": []})
 
 
 def test_render_fails_loudly_when_a_segment_ends_up_with_no_audio(tmp_path, monkeypatch):

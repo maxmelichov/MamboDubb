@@ -350,6 +350,22 @@ def apply_force(m: dict[str, Any], force: str | None) -> list[str]:
     return [force] + manifest.clear_downstream(m, force)
 
 
+def report_failed(result: dict[str, Any]) -> bool:
+    """Whether a finished run has nothing worth handing over.
+
+    Two ways to reach the end of every stage with no usable dub, and the exit
+    code is the only channel that carries either one out of here: the app's job
+    runner reads it, `dubbing_app/worker.py` turns it into a failed job, and the
+    UI paints the stage red. Everything else the report has to say is a warning.
+
+    * `unaccounted` a segment with no audio behind it, so the mix has a hole.
+    * `tts_unavailable` nothing was synthesized at all, so the "dub" is the
+      source audio in the source language (issue #15). Read with `.get`: a
+      report from before this field existed still gets judged on the rest.
+    """
+    return bool(result["unaccounted"] or result.get("tts_unavailable"))
+
+
 def main(argv: list[str] | None = None) -> int:
     tools.utf8_stdio()          # a Windows console is not UTF-8; every stage prints Hebrew
     args = parse_args(argv)
@@ -498,7 +514,7 @@ def main(argv: list[str] | None = None) -> int:
             result = report.run(m, workdir)
             manifest.mark_stage(m, stage, fp)
             save()
-            if result["unaccounted"]:
+            if report_failed(result):
                 return 1
             continue
 

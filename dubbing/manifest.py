@@ -109,7 +109,11 @@ STAGE_TAGS = {
     # transcript-origin stamping. (v2 was claimed for the first half alone.)
     # v4: source_mismatch the report says when most of the heard speech is
     # not written in the declared source language's script (wrong declaration).
-    "report": "report/v4",
+    # v5: tts_unavailable a run where every line that was supposed to be dubbed
+    # fell back to source audio is a stage that never ran, not a per-segment
+    # fallback. It now names itself in `degraded` and exits the CLI nonzero
+    # instead of reporting a clean run over an untranslated preview.
+    "report": "report/v5",
 }
 
 # Anything not listed here is dropped on save. This is what stops the segment

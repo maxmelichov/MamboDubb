@@ -17,7 +17,11 @@ user otherwise. Four fields exist for it:
   alone scores as a pass and a listener catches in one second.
 * `degraded` what a stage could not load and what it fell back to
   (`m["health"]`, written by the stages themselves: diarization, turn
-  refinement, the verify ASR, the reference validator).
+  refinement, the verify ASR, the reference validator), plus `tts.synthesis`
+  which this stage adds because no stage can report its own total absence.
+* `tts_unavailable` every line that was supposed to be dubbed fell back to
+  source audio, which is a stage that never ran rather than a per-segment
+  fallback, and is the one warning here that also exits the CLI nonzero.
 * `overrun`, `shorten_abandoned`, `subtitles_failed` a drifted line that
   nothing could rescue, and a kept span showing "…" instead of a subtitle.
 * `stale_locked_clips` a clip the user approved for a line that has since
@@ -183,6 +187,24 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
                         if (s.get("text_en") or "").strip() == "…"]
     # What ran degraded this run, written by the stages themselves.
     health = dict(m.get("health") or {})
+    # ...plus the one degradation no stage is in a position to report about
+    # itself. A `tts_failed` keep is the TTS stage's per-segment safety net: that
+    # line did not come out usable, the source audio stands in for it, and the run
+    # is a dub with one gap. The same reason on *every* line that was supposed to
+    # be dubbed is a different event wearing the same name. It means the engine
+    # never loaded and nothing was synthesized at all, so the "dub" the mix
+    # produces is the source audio end to end, in the source language.
+    #
+    # That used to finish clean (issue #15): `degraded` empty, exit 0, a
+    # preview.mp4 indistinguishable from a successful run until someone listened
+    # to it. The boundary is total failure, not any failure: a partial pile of
+    # tts_failed keeps is the fallback working as designed and still exits 0.
+    tts_unavailable = None
+    if keep_reasons.get("tts_failed") and not dubbed:
+        tts_unavailable = {"kept": keep_reasons["tts_failed"]}
+        health["tts.synthesis"] = (
+            f"produced nothing all {tts_unavailable['kept']} segment(s) fell "
+            "back to source audio, so this dub is the untranslated original")
     # A locked clip whose text has moved on since it was made: the pipeline may
     # not replace it (the user approved it) and may not pretend it is current.
     stale_locked = [{"id": s["id"], "uid": s.get("uid")}
@@ -212,6 +234,9 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
         "shorten_abandoned": abandoned,
         "subtitles_failed": subtitles_failed,
         "stale_locked_clips": stale_locked,
+        # Not a warning: the one report field that means "this run produced no
+        # dub at all". `cli.main` exits 1 on it, the same as `unaccounted`.
+        "tts_unavailable": tts_unavailable,
         "degraded": health,
         "overrun": {"count": len(overruns),
                     "max": round(max(overruns, default=0.0), 2)},
@@ -232,6 +257,11 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
     print(f"  {len(segments)} segments: {len(dubbed)} dubbed, {len(kept)} original "
           f"({keep_reasons})", file=sys.stderr)
     print(f"  tts verify: {verify}", file=sys.stderr)
+    if tts_unavailable:
+        print(f"  FAIL: TTS produced nothing all {tts_unavailable['kept']} "
+              "segment(s) fell back to their source audio, so this run's dub is "
+              "the untranslated original. The synthesis engine did not load; the "
+              "per-segment errors above say why.", file=sys.stderr)
     if wrong_voice:
         ids = ", ".join(str(w["id"]) for w in wrong_voice[:10])
         print(f"  WARNING: {len(wrong_voice)} clip(s) speak the right words in "
