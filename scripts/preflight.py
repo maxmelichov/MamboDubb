@@ -395,6 +395,44 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def check_dmg_helper() -> None:
+    """The Install MamboDubb.command inside a built .dmg must be the repo's
+    install.sh, byte for byte. The release-assets digest check cannot see this:
+    a stale helper baked into the image matches its own upload perfectly. A DMG
+    once shipped carrying the TMPDIR-clobbering installer a full commit after
+    the script itself was fixed, because the finish step had run against an
+    older tree. Comparing the embedded file to install.sh catches that class."""
+    dmgs = sorted((ROOT / DMG_DIR).glob("MamboDubb_*.dmg"))
+    if not dmgs:
+        record(SKIP, "dmg-helper", "no built .dmg to inspect")
+        return
+    if sys.platform != "darwin" or not shutil.which("hdiutil"):
+        record(SKIP, "dmg-helper", "hdiutil unavailable; cannot open the image")
+        return
+    dmg = dmgs[-1]
+    want = sha256(ROOT / "install.sh")
+    proc = run(["hdiutil", "attach", "-nobrowse", "-readonly", str(dmg)])
+    if proc.returncode != 0:
+        record(FAIL, "dmg-helper", f"could not mount {dmg.name}")
+        return
+    mount = None
+    for line in proc.stdout.splitlines():
+        if "/Volumes/" in line:
+            mount = Path(line.split("\t")[-1].strip())
+    try:
+        helper = (mount / "Install MamboDubb.command") if mount else None
+        if helper is None or not helper.is_file():
+            record(FAIL, "dmg-helper", f"{dmg.name} has no Install MamboDubb.command")
+        elif sha256(helper) != want:
+            record(FAIL, "dmg-helper",
+                   f"{dmg.name} embeds a stale installer; rerun release_dmg.py --finish-unsigned")
+        else:
+            record(PASS, "dmg-helper", f"{dmg.name} embeds the current install.sh")
+    finally:
+        if mount:
+            run(["hdiutil", "detach", "-quiet", str(mount)])
+
+
 def check_release_assets() -> None:
     if not shutil.which("gh"):
         record(SKIP, "release-assets", "gh not on PATH; cannot compare with the latest release")
@@ -473,6 +511,7 @@ CHECKS = (
     check_em_dashes,
     check_tests,
     check_typecheck,
+    check_dmg_helper,
     check_release_assets,
     check_readme_links,
 )
