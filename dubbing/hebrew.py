@@ -48,7 +48,11 @@ CODES = frozenset({"he", "iw"})
 ADAPTER_DIR = REPO_ROOT / "models" / "QwenTTS-he-1.7B"
 ADAPTER_HUB = "notmax123/QwenTTS-he-1.7B"
 ADAPTER_MODEL = "1.7b"
-ADAPTER_DOWNLOAD = f"uv run hf download {ADAPTER_HUB} --local-dir models/{ADAPTER_DIR.name}"
+# Absolute, like every other fetch command this app hands a user. `--local-dir` is
+# resolved against the working directory, so a relative `models/QwenTTS-he-1.7B`
+# pasted into a terminal that is not the repo root puts 236 MB somewhere nothing
+# will ever look for it, and the Setup row stays red with no sign of why.
+ADAPTER_DOWNLOAD = f"uv run hf download {ADAPTER_HUB} --local-dir {ADAPTER_DIR}"
 # Mixed into every Hebrew clip's cache key, alongside the IPA actually synthesized.
 # Bump it if the adapter is ever replaced by a differently-trained one.
 ADAPTER_TAG = "qwentts-he-lora-v1"
@@ -65,7 +69,7 @@ G2P_HUB = "notmax123/RenikudPlus"
 # July revision's IPA and no other. Bump only after a validated →he run.
 G2P_REVISION = "3d4b716a0004c56042032cefb42a806708ed0bcb"
 G2P_DOWNLOAD = (f"uv run hf download {G2P_HUB} model.onnx --revision {G2P_REVISION} "
-                f"--local-dir models/{G2P_DIR.name}")
+                f"--local-dir {G2P_DIR}")
 G2P_PACKAGE = "renikud-plus"
 
 # The G2P is gender-conditioned: 0 unknown, 1 male, 2 female. The pipeline does not

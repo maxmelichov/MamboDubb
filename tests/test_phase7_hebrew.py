@@ -172,6 +172,22 @@ def test_a_hebrew_target_without_its_models_is_refused_with_the_command(monkeypa
     assert hebrew.ADAPTER_DOWNLOAD in str(exc.value)
 
 
+def test_the_fetch_commands_name_an_absolute_local_dir():
+    """`--local-dir` is resolved against the working directory, so a relative one
+    is a command that only works from the repo root. Pasted anywhere else it
+    downloads 236 MB into a `models/` beside wherever the terminal happened to
+    be, reports success, and leaves the Setup row red with nothing saying why.
+    Every other row's command is absolute (`setup.model` interpolates the whole
+    path); these two are hand-written and used by the CLI refusals as well."""
+    from pathlib import Path
+
+    for command, where in ((hebrew.ADAPTER_DOWNLOAD, hebrew.ADAPTER_DIR),
+                           (hebrew.G2P_DOWNLOAD, hebrew.G2P_DIR)):
+        local_dir = command.split("--local-dir", 1)[1].strip()
+        assert Path(local_dir).is_absolute(), command
+        assert local_dir == str(where)
+
+
 def test_a_hebrew_target_needs_the_checkpoint_the_adapter_fits(monkeypatch):
     monkeypatch.setattr(hebrew, "adapter_ready", lambda: True)
     monkeypatch.setattr(hebrew, "g2p_ready", lambda: True)
