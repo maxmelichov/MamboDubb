@@ -119,32 +119,98 @@ CARRIER_TEXT = "רגע אחד בבקשה, ועכשיו נמשיך הלאה."
 # audio on the front of the shipped clip. Nothing may count ASR tokens here again;
 # the carrier is located by matching its CHARACTERS (see `tts.carrier_boundary`).
 #
-# How far the ASR's reading of the carrier may drift from CARRIER_TEXT, as a fraction
-# of the carrier's length in characters, before the match stops being a match. The
-# worst real mis-hearing of the eight above scored 0.269 and a clip with no carrier in
-# front of it at all scores near 1.0, so this sits between them with room on the
-# measured side. Above it there is no proof the carrier is where we think, and the
-# take is discarded and remade cold.
-CARRIER_MATCH_MAX = 0.40
-# The cut is proven from the other side too: the clip is re-transcribed after cutting
-# and its first CARRIER_HEAD_WORDS words have to be the sentence's own first words,
-# within CARRIER_HEAD_MAX of character drift. Two words rather than one because a
-# single mis-heard opening word is ordinary and would reject good takes; 0.34 passes
-# every correct cut measured (worst 0.18, "שמי כריסטינה" heard as "שמי קליסטינה") and
-# rejects both of the bad ones (0.70 and above).
+# There used to be a CARRIER_MATCH_MAX = 0.40 here as well, a ceiling on how far the
+# ASR's reading of the carrier could drift from CARRIER_TEXT before the boundary was
+# refused outright. It is gone because it was measuring the wrong thing, and it took
+# the whole feature down with it: over 10 freshly generated carrier clips it refused
+# the cut on 10, every line fell back to the cold decode the carrier exists to prevent,
+# and the fix shipped disabled by its own guard.
+#
+# Two separate facts killed it. First, the ASR does not transcribe the carrier, it
+# hallucinates over it: the warm-up is rushed and content-free, so whisper returns
+# gibberish that happens to have Hebrew letters in it ("וגטא דבאפ הוא סחיון אנישייב
+# נייל,", "רגשי הדת בפאב הוא השיון הניצויד הלאה,"). The best prefix distance on those
+# 10 clips ran 14 to 18 against a 26-letter carrier, i.e. 0.54 to 0.69, never once
+# under the 0.40 bar. Second, and fatally for the whole idea, the distance does not
+# rank boundaries by whether they are RIGHT. On segment 27 of the run fe713ff was
+# written from, the wrong cut (the word-count bug's, mid-carrier) scores 5 and the
+# correct one also scores 5; on segment 25 the wrong cut scores 12 where every correct
+# boundary above scores 14 or worse. A number that a known-bad boundary beats cannot
+# be the thing that certifies a good one, at any threshold. There is no separation to
+# tune, so raising the ceiling was never the fix, and it is not what happens below.
+#
+# What the alignment IS good for is two narrower jobs, and it keeps both. It can say
+# whether a carrier is there at all, and it can rank candidate cut points. Neither
+# needs an absolute distance, so neither uses one.
+#
+# A clip with the carrier in front of it produces a distance curve with a floor in it:
+# the score falls as the prefix grows to cover the carrier and climbs steeply once the
+# prefix starts eating the sentence. A clip with no carrier has no such shape, only a
+# slow climb from the first word. That descent, first word's score minus the floor, is
+# how presence is decided, and it separates cleanly where the raw distance does not:
+# 1 on the no-carrier clip against 6 to 10 on all ten carrier clips.
+CARRIER_DESCENT_MIN = 5
+# How far above the floor a prefix may score and still be worth trying as a cut point.
+# The floor itself is often a letter or two off the truth, because the ASR's gibberish
+# does not end exactly where the carrier does: on 3 of the 10 clips the best-scoring
+# prefix stopped one word short and would have left the carrier's own last word on the
+# clip. Those neighbours score within 1 of the floor, so instead of trusting the argmin
+# the boundaries within this slack are all offered, best first, and each is cut and
+# LISTENED TO until one is proven clean (see `tts.carrier_boundary` and the far-side
+# check below). Ranking is advisory; only the listening is fatal.
+CARRIER_MATCH_SLACK = 2
+# The cut is proven from the other side, and since the pre-cut threshold above is gone
+# this is now the ONLY thing that can refuse a take: the clip is re-transcribed after
+# cutting and has to open on the sentence's own first CARRIER_HEAD_WORDS words, within
+# CARRIER_HEAD_MAX of character drift. That is the right place for the only fatal
+# check to sit, because it is the one that reads the audio that would actually ship,
+# and because the failure it looks for (carrier letters still on the front) is the
+# failure that matters. Two words rather than one because a single mis-heard opening
+# word is ordinary and would reject good takes; 0.34 passes every correct cut measured
+# (worst 0.18, "שמי כריסטינה" heard as "שמי קליסטינה") and rejects both of the bad
+# ones from fe713ff's run (0.70 and above).
 CARRIER_HEAD_WORDS = 2
 CARRIER_HEAD_MAX = 0.34
+# The head is compared as LETTERS against the best-matching prefix of what was heard,
+# not as CARRIER_HEAD_WORDS words against CARRIER_HEAD_WORDS words. Same reasoning as
+# the carrier itself: the ASR re-splits words freely and a fixed word count is not a
+# fixed amount of material. On 2 of the 10 clips whisper broke the sentence's own
+# first word in two ("כשמבינים" heard as "שהם מבינים"), so a two-word head covered
+# nine letters where the line's own two words are eleven, and a correct cut scored as
+# a mismatch and was thrown away.
+#
+# Comparing prefixes that way is generous in one direction, though, and this bounds it.
+# Carrier left on the front is expensive, because every stray letter has to be deleted
+# to reach the line. A cut that ate the start of the LINE is cheap, because a couple of
+# missing letters are a couple of insertions. So the match is required to be a match of
+# roughly the whole head and not of a truncated one: the winning prefix may fall at
+# most this many letters short of the head's own length. At 1 a clip that opens mid-word
+# ("מבינים" for "כשמבינים") is refused where the drift ratio alone would have kept it.
+CARRIER_HEAD_SHORT = 1
 # A coarse bound on where a boundary can possibly be, not the reason it is trusted:
-# see the note above about what happens when a duration band is the only guard. A
-# correct boundary measured between 2.86s and 3.62s over the same 8 clips.
-CARRIER_MIN_SEC = 2.5
+# see the note above about what happens when a duration band is the only guard. Over
+# fe713ff's 8 clips a correct boundary sat between 2.86s and 3.62s, and the floor was
+# 2.5s on that evidence. The 10 clips measured since put correct boundaries as early
+# as 2.34s, and on two of them the 2.5s floor was the only thing refusing a cut that
+# was otherwise right, so the floor moves down with room under the new minimum. It can
+# afford to: widening a band that only ever bounded the search costs nothing now that
+# every candidate inside it is cut and listened to before it can ship.
+CARRIER_MIN_SEC = 2.0
 CARRIER_MAX_SEC = 5.0
 # Mixed into every carrier-synthesized clip's cache key. Bump it with CARRIER_TEXT,
 # because a different lead-in decodes a different sentence behind it, and with any
 # change to where the carrier is cut, because that changes the audio that ships.
 # v1 clips were cut by counting ASR tokens and some of them still carry the tail of
 # the carrier, so none of them may be replayed.
-CARRIER_TAG = "he-carrier-v2"
+# v2 clips must not be replayed either, and for the opposite reason: almost none of
+# them have a carrier cut off them at all. The v2 gate refused the cut on 10 of 10
+# measured clips, and the caller's answer to a refusal is to re-decode the line cold
+# and write THAT into the same cache entry, because the key records that a carrier was
+# attempted and not whether one survived. So a v2 entry is, in practice, exactly the
+# cold-start audio this feature exists to replace, filed as though it were the fix.
+# Nothing distinguishes the two cases by key, and the cut point moved as well, so the
+# whole generation goes.
+CARRIER_TAG = "he-carrier-v3"
 
 _CARRIER_IPA: str | None = None
 

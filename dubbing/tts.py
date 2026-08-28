@@ -295,84 +295,129 @@ def _prefix_distances(chunks, target: str) -> list[int]:
     return out
 
 
-def carrier_boundary(words, carrier_text: str | None = None, *,
-                     lo: float | None = None, hi: float | None = None,
-                     max_ratio: float | None = None) -> float | None:
-    """Where the real sentence starts, in a clip the carrier was decoded in front of.
+def carrier_candidates(words, carrier_text: str | None = None, *,
+                       lo: float | None = None, hi: float | None = None,
+                       slack: int | None = None,
+                       descent: int | None = None) -> list[float]:
+    """Where the real sentence might start, best guess first, in a carrier clip.
 
     `words` are the verification ASR's words over the whole generated clip as
-    `(text, start)` pairs. The boundary is found by ALIGNING the carrier's own
-    characters against that transcript: of every prefix of the words, the one whose
-    letters are closest to `CARRIER_TEXT`'s letters is the carrier, and the sentence
-    starts at the word after it. Nothing here counts tokens. The count is what the
-    first version of this did and it is what broke it: the ASR splits a fixed phrase
-    into a different number of words from clip to clip (6, 7 and 8 over eight clips
-    of one run), and a count that is one too low points at the carrier's own last
-    word while still landing well inside any plausible duration band. Matching
-    characters is immune to that: a mis-split costs nothing at all, because the
-    letters are the same either way and only the boundaries between them moved.
+    `(text, start)` pairs. The carrier is located by ALIGNING its own characters
+    against that transcript: for every prefix of the words, the edit distance from
+    that prefix's letters to `CARRIER_TEXT`'s letters. Nothing here counts tokens.
+    The count is what the first version of this did and it is what broke it: the ASR
+    splits a fixed phrase into a different number of words from clip to clip (6, 7
+    and 8 over eight clips of one run), and a count that is one too low points at the
+    carrier's own last word while still landing well inside any plausible duration
+    band. Matching characters is immune to that: a mis-split costs nothing at all,
+    because the letters are the same either way and only the boundaries between them
+    moved.
 
     Silence-gap detection was tried before either of those and is worse than both:
     the carrier holds a comma, so the first long-enough gap is inside it.
 
-    Three things have to hold or `None` comes back. The match has to be a match, i.e.
-    within `max_ratio` of the carrier's length in characters; there has to be a word
-    after it, or the ASR heard no sentence; and the time has to be inside [lo, hi],
-    which is a sanity bound on the answer and NOT the thing that makes it trustworthy
-    (see hebrew.CARRIER_MIN_SEC). `None` is not a fallback cut, it is a refusal: the
-    caller re-makes the clip with no carrier at all rather than ship one with a
-    syllable of it still attached. And it is not the last guard either. The cut is
-    proven from the other side afterwards by `carrier_gone`, which is what catches a
-    boundary that is right about which word and wrong about when it starts.
+    What this function does NOT do is decide whether the answer is good enough. It
+    used to, against `CARRIER_MATCH_MAX`, and that is the bug being fixed here: the
+    distance is not a measure of whether a boundary is right. The ASR does not read
+    the rushed carrier, it hallucinates over it, so a correct boundary scores 14 to
+    18 out of 26 letters; meanwhile the known-bad mid-carrier cut from fe713ff's own
+    run scores 5. A threshold that a wrong answer beats cannot certify a right one,
+    so there is no threshold, and the take is not refused here at all. See
+    `hebrew.CARRIER_DESCENT_MIN` for the measured distributions.
 
-    Ties go to the LONGER prefix. When the ASR breaks the carrier's last word in two,
-    the second piece is as cheap to keep as to drop and both prefixes score the same;
-    keeping it cuts the carrier off completely, and cutting one word too many is a
-    failure `carrier_gone` sees and refuses, where leaving carrier behind is the one
-    that ships.
+    Two things the distance curve IS good for, and both are used. Its SHAPE says
+    whether a carrier is present: with one the score falls to a floor and then climbs
+    steeply as the prefix starts eating the sentence, without one it only ever climbs.
+    A descent smaller than `descent` means nothing was decoded in front of this line
+    and there is nothing to cut, so the list comes back empty. And its ORDER ranks the
+    plausible cut points: every prefix within `slack` of the floor whose following
+    word starts inside [lo, hi], best score first, ties to the LONGER prefix.
+
+    The caller cuts at each in turn and listens to the result, keeping the first that
+    `carrier_gone` proves clean. That is why more than one is offered: on 3 of 10
+    measured clips the best-scoring prefix stopped one word short of the truth and
+    cutting there would have left the carrier's last word on the clip, while the
+    correct boundary sat one place down the list. Ties go to the longer prefix for the
+    same reason, that leaving carrier behind is the failure that ships and cutting one
+    word too many is one the far-side check sees.
     """
     lo = hebrew_mod.CARRIER_MIN_SEC if lo is None else lo
     hi = hebrew_mod.CARRIER_MAX_SEC if hi is None else hi
-    max_ratio = hebrew_mod.CARRIER_MATCH_MAX if max_ratio is None else max_ratio
+    slack = hebrew_mod.CARRIER_MATCH_SLACK if slack is None else slack
+    descent = hebrew_mod.CARRIER_DESCENT_MIN if descent is None else descent
     target = _letters(carrier_text or hebrew_mod.CARRIER_TEXT)
     words = [(str(w), float(t)) for w, t in words]
     if not target or not words:
-        return None
+        return []
     dist = _prefix_distances([_letters(w) for w, _ in words], target)
-    best = min(range(len(dist)), key=lambda i: (dist[i], -i))
-    if dist[best] > max_ratio * len(target):
-        return None
-    if best + 1 >= len(words):
-        return None
-    t = words[best + 1][1]
-    return t if lo <= t <= hi else None
+    floor = min(dist)
+    if dist[0] - floor < descent:
+        return []
+    keep = [i for i in range(len(dist) - 1)
+            if dist[i] <= floor + slack and lo <= words[i + 1][1] <= hi]
+    keep.sort(key=lambda i: (dist[i], -i))
+    return [words[i + 1][1] for i in keep]
+
+
+def carrier_boundary(words, carrier_text: str | None = None, **kw) -> float | None:
+    """The single best guess at where the sentence starts, or `None` for none.
+
+    The head of `carrier_candidates`. Nothing in the pipeline uses this to make a cut
+    (a cut is made against the whole list, so a second-best boundary still gets its
+    chance to be listened to), but "the boundary the alignment likes most" is the
+    thing worth asserting about in tests and worth printing in a log.
+    """
+    found = carrier_candidates(words, carrier_text, **kw)
+    return found[0] if found else None
 
 
 def carrier_gone(heard: str, sentence: str, carrier_text: str | None = None, *,
-                 head: int | None = None, max_ratio: float | None = None) -> bool:
+                 head: int | None = None, max_ratio: float | None = None,
+                 short: int | None = None) -> bool:
     """True when a cut clip's transcript really does open on the sentence.
 
-    This is the half of the proof `carrier_boundary` cannot give. That function
-    decides which ASR word the sentence starts at; this one checks the audio that
-    came back after cutting there, so a boundary that named the right word but sat a
-    beat early, or an alignment that was confidently wrong, is caught by hearing the
-    result rather than by trusting the arithmetic that produced it.
+    This is the whole proof, and since `carrier_candidates` stopped refusing takes on
+    a distance threshold it is the ONLY thing that can refuse one. That is the right
+    place for it. Everything upstream reasons about a transcript of the carrier, which
+    the ASR does not actually read; this reads the audio that would ship and asks the
+    one question that matters about it, which is whether the line now starts where the
+    line starts. A boundary that named the right word but sat a beat early, or an
+    alignment that was confidently wrong, is caught by hearing the result rather than
+    by trusting the arithmetic that produced it.
 
-    The test is an anchor, not an overlap score: the first `head` words of `heard`,
-    as one run of letters, have to be within `max_ratio` of the first `head` words of
-    `sentence`. Two words rather than one because a single mis-heard opening word is
-    ordinary; anchored at the start rather than counted across the whole line because
-    the failure being looked for is extra material at the front, and a bag-of-words
-    score cannot see that at all (`word_overlap` divides by the target's length, so
-    inserted words cost it exactly nothing).
+    The test is an anchor, not an overlap score: the sentence's first `head` words, as
+    one run of letters, have to match the front of `heard` within `max_ratio`.
+    Anchored at the start rather than counted across the whole line because the failure
+    being looked for is extra material at the front, and a bag-of-words score cannot
+    see that at all (`word_overlap` divides by the target's length, so inserted words
+    cost it exactly nothing). Two words rather than one because a single mis-heard
+    opening word is ordinary and would reject good takes.
 
-    On top of that, no word of the carrier that is not also a word of the sentence
-    may appear anywhere in that head. That is redundant with the anchor most of the
-    time and free, and it is the check that names the failure in the log when a
-    whole carrier word survives the cut.
+    Both sides used to be cut to `head` WORDS and compared. They are not any more, for
+    the same reason the carrier is matched as characters: a fixed word count is not a
+    fixed amount of material when the ASR is free to re-split words. On 2 of the 10
+    clips measured, whisper heard the line's own first word "כשמבינים" as two words
+    "שהם מבינים", so the heard head held nine letters against the line's eleven and a
+    correct cut was scored as a mismatch and thrown away. Instead the line's head is
+    matched against the best-scoring PREFIX of everything heard, which a re-split
+    cannot move.
+
+    That generosity is bounded in the direction it needs to be. Carrier still on the
+    front is expensive under this test, because every stray letter has to be deleted
+    before the line can match. A cut that ate the START of the line is cheap, because
+    the missing letters are only a few insertions, so the ratio alone would let a clip
+    opening mid-word through. Hence `short`: the winning prefix may fall at most that
+    many letters short of the head's own length, which is what rejects "מבינים" where
+    "כשמבינים" was wanted.
+
+    On top of all that, no word of the carrier that is not also a word of the sentence
+    may appear anywhere near the front. That is redundant with the anchor most of the
+    time and free, and it is the check that names the failure in the log when a whole
+    carrier word survives the cut.
     """
     head = hebrew_mod.CARRIER_HEAD_WORDS if head is None else head
     max_ratio = hebrew_mod.CARRIER_HEAD_MAX if max_ratio is None else max_ratio
+    short = hebrew_mod.CARRIER_HEAD_SHORT if short is None else short
     said = _tokens(sentence, "he")
     got = _tokens(heard, "he")
     if not said or not got:
@@ -381,8 +426,17 @@ def carrier_gone(heard: str, sentence: str, carrier_text: str | None = None, *,
     if carrier_only & set(got[:max(head, 4)]):
         return False
     want = "".join(said[:head])
-    have = "".join(got[:head])
-    return _prefix_distances([have], want)[0] <= max_ratio * len(want)
+    have = "".join(got)
+    if not want:
+        return False
+    # Distance from the wanted head to every prefix of what was heard. The winner is
+    # the cheapest, and among equally cheap ones the one closest to the head's own
+    # length, so "as long as it should be" beats a truncation that scores the same.
+    row = _prefix_distances(list(have), want)
+    best = min(range(len(row)), key=lambda k: (row[k], abs(k + 1 - len(want))))
+    if best + 1 < len(want) - short:
+        return False           # the clip opens inside the line, not at the top of it
+    return row[best] <= max_ratio * len(want)
 
 
 def source_script_leak(heard: str, src: str, tgt: str) -> bool:
@@ -1283,10 +1337,23 @@ class Engine:
         """Cut the warm-up carrier off the front of a just-generated clip.
 
         True when the clip now starts at the sentence, and that is a fact about the
-        cut audio rather than a hope about it: the boundary is found by matching the
-        carrier's characters against the transcript (`carrier_boundary`) and the
-        result is then re-transcribed and required to open on the sentence's own
-        first words (`carrier_gone`). Either half refusing is a False.
+        cut audio rather than a hope about it. `carrier_candidates` proposes the cut
+        points its alignment finds plausible, best first; each is cut and the result
+        re-transcribed and required to open on the sentence's own first words
+        (`carrier_gone`); the first that passes is the one kept. No candidates, or
+        none that pass, is a False.
+
+        Trying more than one is the point rather than a fallback. The alignment reads
+        a transcript of a phrase the ASR does not really transcribe, so its favourite
+        boundary is off by a word on about a third of clips, in both directions; what
+        it is reliably right about is the neighbourhood. Listening is what settles
+        which neighbour, and listening is cheap next to the decode that produced the
+        clip. Nothing is trusted because it scored well, only because it was heard.
+
+        The safety property is unchanged and does not depend on the ranking: a cut
+        only ever ships after `carrier_gone` has passed on that exact audio, so a
+        take whose carrier cannot be proven gone still cannot ship, no matter how
+        many places were tried.
 
         False also leaves the clip exactly as it was, byte for byte, which is why
         the cut is written beside it and only moved into place once it is proven.
@@ -1302,18 +1369,19 @@ class Engine:
             return False
         cut = clip.with_suffix(".cut.wav")
         try:
-            at = carrier_boundary(self._asr_words(model, clip, tgt))
-            if at is None:
-                return False
-            audio.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{at:.3f}", "-i", str(clip),
-                       "-acodec", "pcm_s16le", "-ar", str(audio.SR), "-ac", "1", str(cut)])
-            heard = " ".join(w for w, _ in self._asr_words(model, cut, tgt))
-            if not carrier_gone(heard, speak):
+            heard = ""
+            for at in carrier_candidates(self._asr_words(model, clip, tgt)):
+                audio.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{at:.3f}",
+                           "-i", str(clip), "-acodec", "pcm_s16le",
+                           "-ar", str(audio.SR), "-ac", "1", str(cut)])
+                heard = " ".join(w for w, _ in self._asr_words(model, cut, tgt))
+                if carrier_gone(heard, speak):
+                    cut.replace(clip)
+                    return True
+            if heard:
                 print(f"  tts: the cut clip opens on {heard[:60]!r}, not on the line",
                       file=sys.stderr)
-                return False
-            cut.replace(clip)
-            return True
+            return False
         except Exception as exc:
             print(f"  tts: carrier boundary unreadable ({exc})", file=sys.stderr)
             return False

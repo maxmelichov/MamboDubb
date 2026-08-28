@@ -90,7 +90,18 @@ STAGE_TAGS = {
     # own voice (a label is not a person), the alternates are held to the same
     # test, and a clip that says the right words in another voice is recorded as
     # "wrong_voice" rather than "ok" different rungs, different verdicts.
-    "tts": "tts/v22",
+    "tts": "tts/v23",
+    # v23: the Hebrew warm-up carrier is no longer refused on a distance threshold
+    # against the ASR's reading of it. That threshold rejected the cut on 10 of 10
+    # measured clips, so every Hebrew line fell back to the cold decode the carrier
+    # exists to prevent and the feature shipped disabled by its own guard. The
+    # alignment now ranks candidate cut points instead of certifying one, and the
+    # only fatal check is the far-side one, which cuts and re-transcribes and keeps
+    # the first boundary that really does open on the line. Hebrew clips change
+    # audibly: the stutter inside אנשים and the devoiced /e/ of שֶׁ both go. As in
+    # v21 this tag alone would not retire the cached clips, so hebrew.CARRIER_TAG
+    # goes to v3 with it, and see there for why the v2 entries are the broken audio
+    # rather than the fixed audio.
     # v22: a generated clip is trimmed at BOTH ends, not only the front. The
     # trailing hush averaged 0.12-0.22s across the demo runs, ~5% of clip length,
     # and the timeline measures the file: that silence was being time-compressed

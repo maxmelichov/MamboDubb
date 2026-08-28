@@ -331,7 +331,11 @@ def test_the_stage_tags_moved():
     # escalate to another speaker's window now stays on its own audio.
     # v20: a Hebrew line is decoded behind a warm-up carrier that is cut back off,
     # so every Hebrew clip is different audio from the one v19 would have made.
-    assert manifest.STAGE_TAGS["tts"] == "tts/v22"
+    # v23: and it is now actually cut off. Under v21's threshold the cut was refused
+    # on every clip measured, so a v21/v22 Hebrew entry holds the cold decode rather
+    # than the warmed one; different audio again, and this time the audio the feature
+    # was written to produce in the first place.
+    assert manifest.STAGE_TAGS["tts"] == "tts/v23"
     # v36: script-derived gloss floors, negations and shorten budgets (CJK/hangul).
     # v37: "%" survives into every TTS target's own vocabulary.
     assert manifest.STAGE_TAGS["translate"] == "translate/v38"
@@ -458,6 +462,104 @@ def test_a_boundary_that_cannot_be_established_is_refused():
     assert tts.carrier_boundary(late) is None
 
 
+# Real word streams again, but from ten clips generated against the carrier code as
+# it shipped, and these are the ones that took the feature down. Whisper does not
+# transcribe the warm-up, it hallucinates over it: the phrase is rushed and content
+# free, so what comes back is Hebrew-shaped gibberish. The best prefix distance on
+# these ran 14 to 18 against a 26-letter carrier and the v21 gate refused every one
+# of them at 10.4, which meant every Hebrew line in the run fell back to the cold
+# decode the carrier exists to prevent.
+
+# Segment 25's own clip, the line the defect was reported on. Note the carrier came
+# back as "וגטא דבאפ הוא סחיון אנישייב נייל," and the line's own first word
+# "כשמבינים" came back as two words, "שהם מבינים".
+GIBBERISH = [
+    ("וגטא", 0.0), ("דבאפ", 0.62), ("הוא", 1.04),
+    ("סחיון", 1.38), ("אנישייב", 1.82), ("נייל,", 2.36),
+    ("שהם", 2.76), ("מבינים", 3.02), ("שאם", 3.42),
+]
+GIBBERISH_TEXT = "כשמבינים שאם אנשים מאמינים בך ואתה מאמין שהם מאמינים בך."
+# The same line under a sampled decode. Here the alignment's favourite prefix is the
+# correct one, which is the easy case.
+GIBBERISH_OK = [
+    ("וגא", 0.0), ("עדת", 0.38), ("בפאף", 0.68),
+    ("וסכי", 1.2), ("אונצ", 1.84), ("'וית", 2.1),
+    ("הלאה.", 2.3), ("כשמבינים", 2.6), ("שאם", 3.16),
+]
+# The control: the same text decoded with no carrier in front of it at all.
+NO_CARRIER = [
+    ("כשמבינים", 0.0), ("שאם", 0.78), ("אנשים", 1.12),
+    ("מאמינים", 1.72), ("בך", 2.46), ("ואתה", 2.82),
+    ("מאמין", 3.36), ("שהם", 3.76), ("מאמינים", 4.04),
+]
+
+
+def test_a_hallucinated_carrier_transcript_is_still_cut():
+    """The regression this file exists to hold shut from now on.
+
+    Every one of these scores far worse against CARRIER_TEXT than any threshold
+    could have tolerated, and every one of them has a carrier on the front that has
+    to come off. Distance is not what decides that any more, so they all produce
+    candidates rather than a refusal.
+    """
+    assert tts.carrier_candidates(GIBBERISH)
+    assert tts.carrier_candidates(GIBBERISH_OK)
+    # And the distances really are that bad, i.e. this is not a test that would pass
+    # by accident if the old threshold came back.
+    letters = tts._letters(hebrew.CARRIER_TEXT)
+    for stream in (GIBBERISH, GIBBERISH_OK):
+        floor = min(tts._prefix_distances([tts._letters(w) for w, _ in stream], letters))
+        assert floor > hebrew.CARRIER_HEAD_MAX * len(letters)
+        assert floor >= 14
+
+
+def test_the_carrier_distance_cannot_rank_boundaries_by_correctness():
+    """Why the threshold was not raised instead: there is nothing to raise it to.
+
+    A distance ceiling can only work if correct boundaries score better than wrong
+    ones. They do not. SPLIT_7's mid-carrier cut, the one fe713ff was written to
+    stop, scores better than the FLOOR of every real clip above, so any ceiling that
+    admits a good clip admits that bad cut several times over.
+    """
+    letters = tts._letters(hebrew.CARRIER_TEXT)
+    bad = tts._prefix_distances([tts._letters(w) for w, _ in SPLIT_7], letters)[5]
+    good = min(tts._prefix_distances([tts._letters(w) for w, _ in GIBBERISH], letters))
+    assert bad < good
+    # Which is exactly why nothing downstream may reintroduce one.
+    assert not hasattr(hebrew, "CARRIER_MATCH_MAX")
+
+
+def test_a_clip_with_no_carrier_on_it_is_refused():
+    """Presence is decided by the shape of the curve, not by the size of the score.
+
+    NO_CARRIER's best score (21) is not far off GIBBERISH's (17), so magnitude
+    cannot separate them. The descent can: a carrier makes the score fall to a floor
+    and then climb, and with no carrier it only ever climbs.
+    """
+    assert tts.carrier_candidates(NO_CARRIER) == []
+    letters = tts._letters(hebrew.CARRIER_TEXT)
+    curve = tts._prefix_distances([tts._letters(w) for w, _ in NO_CARRIER], letters)
+    assert curve[0] - min(curve) < hebrew.CARRIER_DESCENT_MIN
+    for stream in (GIBBERISH, GIBBERISH_OK, CLEAN):
+        curve = tts._prefix_distances([tts._letters(w) for w, _ in stream], letters)
+        assert curve[0] - min(curve) >= hebrew.CARRIER_DESCENT_MIN
+
+
+def test_the_true_boundary_is_offered_even_when_it_scores_second():
+    """Why candidates are a list and not an answer.
+
+    On this clip the best-scoring prefix stops one word short, at 2.36, which would
+    leave the carrier's last word "נייל," on the front of the shipped line. The
+    correct boundary, 2.76, scores one worse. Both are offered, best first, and the
+    far-side check is what picks between them.
+    """
+    found = tts.carrier_candidates(GIBBERISH)
+    assert found[0] == 2.36
+    assert 2.76 in found
+    # The alignment's favourite is still what `carrier_boundary` reports.
+    assert tts.carrier_boundary(GIBBERISH) == 2.36
+
+
 def test_the_cut_is_proven_from_the_far_side_too():
     """`carrier_gone` hears the result instead of trusting the arithmetic."""
     # A correct cut, mis-heard the way this ASR really does mis-hear these lines.
@@ -472,6 +574,30 @@ def test_the_cut_is_proven_from_the_far_side_too():
     assert tts.carrier_gone("לוח עדות.", SPLIT_7_TEXT) is False
     # And a clip nothing was heard in proves nothing either way, so it is refused.
     assert tts.carrier_gone("", SPLIT_7_TEXT) is False
+
+
+def test_a_re_split_first_word_does_not_reject_a_correct_cut():
+    """The other half of the 10-of-10 failure, and the reason the head is letters.
+
+    This is what segment 25's correctly cut clip actually transcribes as: the line
+    opens "כשמבינים שאם" and whisper heard the first word as two, "שהם מבינים". Held
+    to two words against two words the heard head is nine letters against eleven and
+    the take was thrown away; matched as a prefix, a re-split costs nothing, which is
+    the same argument that moved the carrier itself off token counting.
+    """
+    assert tts.carrier_gone("שהם מבינים שאם אנשים מאמינים", GIBBERISH_TEXT) is True
+
+
+def test_a_cut_that_opens_inside_the_first_word_is_refused():
+    """Matching a prefix is generous in one direction, so the length is pinned too.
+
+    Dropping the line's opening syllable is only a couple of insertions and would
+    pass on drift alone, so the winning prefix also has to be about as long as the
+    head it matched. Leaving carrier on the front stays expensive either way, since
+    every stray letter has to be deleted before the line can match at all.
+    """
+    assert tts.carrier_gone("מבינים שאם אנשים", GIBBERISH_TEXT) is False
+    assert tts.carrier_gone("נייל שהם מבינים שאם", GIBBERISH_TEXT) is False
 
 
 class _FakeAsr:
@@ -544,6 +670,60 @@ def test_a_cut_that_does_not_open_on_the_line_is_discarded(tmp_path, monkeypatch
     assert not clip.with_suffix(".cut.wav").exists()
     # ... and it did do the work: it cut, listened, and refused what it heard.
     assert len(asr.seen) == 2
+
+
+class _StepAsr(_FakeAsr):
+    """Like `_FakeAsr`, but each cut it is asked about gets its own answer.
+
+    `_cut_carrier` now cuts once per candidate until one is proven, so the far-side
+    transcript is not a single fixed reply any more.
+    """
+
+    def __init__(self, whole, afters):
+        super().__init__(whole, None)
+        self.afters = list(afters)
+
+    def transcribe(self, path, **kw):
+        self.seen.append(path)
+        words = self.afters.pop(0) if path.endswith(".cut.wav") else self.whole
+        seg = type("S", (), {"words": [type("W", (), {"word": w, "start": t})()
+                                       for w, t in words]})()
+        return [seg], None
+
+
+def test_a_boundary_that_leaves_carrier_behind_falls_to_the_next_candidate(
+        tmp_path, monkeypatch):
+    """The 10-of-10 clip, driven all the way through the shipped path.
+
+    The alignment's favourite cut on this stream is 2.36, which leaves "נייל," on
+    the front. That take is cut, listened to and refused, and the next candidate
+    (2.76, the correct one) is cut, listened to and kept. The clip only ever ships
+    because something heard it open on the line, which is the property that has to
+    survive any retuning here.
+    """
+    asr = _StepAsr(GIBBERISH, [
+        [("נייל", 0.0), ("שהם", 0.4), ("מבינים", 0.66), ("שאם", 1.06)],
+        [("שהם", 0.0), ("מבינים", 0.26), ("שאם", 0.66), ("אנשים", 1.0)],
+    ])
+    eng, clip = _cut_engine(tmp_path, monkeypatch, asr)
+    assert eng._cut_carrier(clip, "he", GIBBERISH_TEXT) is True
+    assert clip.read_bytes() == b"cut"
+    assert not clip.with_suffix(".cut.wav").exists()
+    # One read of the whole clip, then one per candidate it had to listen to.
+    assert len(asr.seen) == 3
+
+
+def test_no_candidate_proving_clean_is_still_a_refusal(tmp_path, monkeypatch):
+    """Trying more places must not turn into eventually accepting one of them."""
+    asr = _StepAsr(GIBBERISH, [
+        [("נייל", 0.0), ("שהם", 0.4), ("מבינים", 0.66)],
+        [("נמשיך", 0.0), ("הלאה", 0.4), ("שהם", 0.8)],
+        [("מבינים", 0.0), ("שאם", 0.4), ("אנשים", 0.8)],
+    ])
+    eng, clip = _cut_engine(tmp_path, monkeypatch, asr)
+    assert eng._cut_carrier(clip, "he", GIBBERISH_TEXT) is False
+    assert clip.read_bytes() == b"whole"        # the take is discarded, not guessed at
+    assert not clip.with_suffix(".cut.wav").exists()
 
 
 def test_the_carrier_widens_the_token_budget_it_shares():
