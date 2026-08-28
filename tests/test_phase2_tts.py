@@ -73,6 +73,35 @@ def test_word_overlap_english_unchanged():
     assert tts.word_overlap("hello world", "hello") == 0.5
 
 
+def test_word_overlap_forgives_the_asr_its_own_word_boundaries():
+    """The verify ASR wrote "All right." for a clip that says "Alright.".
+
+    A one-word line has no other words to carry the score, so that spelling choice
+    took the take from 1.0 to 0.0, failed every rung of the ladder, and aired the
+    source audio instead. Both directions, because which side splits the word is
+    the ASR's choice, not the translator's.
+    """
+    assert tts.word_overlap("Alright.", "All right.") == 1.0
+    assert tts.word_overlap("All right.", "Alright.") == 1.0
+    assert tts.word_overlap("Welcome home", "Wellcome home") == 1.0
+
+
+def test_word_overlap_still_fails_a_take_that_says_something_else():
+    """The letter bar is a spelling repair, not a second chance for a bad clone."""
+    assert tts.word_overlap("Alright.", "Chelsea.") == 0.0
+    assert tts.word_overlap("Nice, well done.", "Something else entirely here.") == 0.0
+    assert tts.word_overlap("Just fine.", "") == 0.0
+    # Two real words that merely look alike stay two different words.
+    assert tts.word_overlap("I saw you at the prayer.",
+                            "I saw you at the player.") < 1.0
+
+
+def test_word_overlap_credits_each_target_word_once():
+    """A repeated word in the heard text cannot pay for a word that was not said."""
+    assert abs(tts.word_overlap("okay okay okay", "okay") - 1 / 3) < 1e-9
+    assert tts.word_overlap("okay", "okay okay okay") == 1.0
+
+
 # ----------------------------------------------------------------- length guards
 
 

@@ -58,6 +58,7 @@ a "sound like this take", not "sound angry" and it is the honest limit here.
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import re
@@ -213,12 +214,94 @@ def _tokens(text: str, lang: str = "en") -> list[str]:
     return re.findall(r"[\w']+", (text or "").lower(), re.UNICODE)
 
 
+# How close two runs of letters have to be to count as one word the verify ASR
+# spelled its own way. The ASR chooses its own word boundaries and orthography and
+# is under no obligation to choose the translator's: it wrote "All right." for the
+# clip that says "Alright.". On a long line one such disagreement costs a fraction
+# of the score, but a one-word line has no other words to carry it, so the take
+# scored 0.0, every rung of the ladder scored 0.0, and the segment fell back to
+# keep-original the Hebrew aired undubbed under an English subtitle.
+# Measured on that run: a boundary or spelling variant of the same word sits at
+# 0.93 and up ("alright"/"allright" 0.93, "wellcome"/"welcome" 0.93), while pairs
+# that are genuinely different words land below ("prayer"/"player" 0.83,
+# "sleep"/"sweep" 0.80, "chelsea" vs an unrelated clause 0.44). 0.85 separates
+# them, which is why a garbled clone gains nothing here.
+NEAR_WORD_RATIO = 0.85
+# Below this many letters a ratio is noise rather than evidence: two- and
+# three-letter words are mostly each other's near-neighbours.
+NEAR_WORD_MIN_LETTERS = 4
+# How many adjacent tokens may be joined into one word. Two covers the boundary
+# split that motivates this ("all right"); three leaves room for a compound
+# without opening the door to matching a whole clause against one word.
+NEAR_WORD_MAX_RUN = 3
+
+
+def _near_word(a: str, b: str) -> bool:
+    """Two letter runs that are the same word written differently (see NEAR_WORD_RATIO)."""
+    if a == b:
+        return True
+    if min(len(a), len(b)) < NEAR_WORD_MIN_LETTERS:
+        return False
+    return difflib.SequenceMatcher(None, a, b).ratio() >= NEAR_WORD_RATIO
+
+
+def _leftovers(a: list[str], b: list[str]) -> tuple[list[str], list[str]]:
+    """Each side's tokens that the exact multiset match did not account for, in order."""
+    matched = Counter(a) & Counter(b)
+    out = []
+    for side, other in ((a, Counter(matched)), (b, Counter(matched))):
+        rest = []
+        for tok in side:
+            if other[tok]:
+                other[tok] -= 1
+            else:
+                rest.append(tok)
+        out.append(rest)
+    return out[0], out[1]
+
+
+def _boundary_credit(a: list[str], b: list[str]) -> int:
+    """Target tokens the heard text says, only with different word boundaries.
+
+    Both lists are the leftovers of the exact pass, still in order, so a word the
+    ASR simply got right has already been counted and cannot be counted twice.
+    A run of up to NEAR_WORD_MAX_RUN adjacent tokens on either side is joined into
+    one letter run and the two runs are compared as words; the credit is the number
+    of *target* tokens the match consumes, so "all right" heard for "alright"
+    credits one and "alright" heard for "all right" credits two.
+
+    The bar is a near-identical letter run (`_near_word`), so this repairs the
+    ASR's spelling, not the clone's content: a take that says something else has no
+    run of letters to match with.
+    """
+    i = j = credit = 0
+    while i < len(a) and j < len(b):
+        hit = None
+        for na in range(1, min(NEAR_WORD_MAX_RUN, len(a) - i) + 1):
+            for nb in range(1, min(NEAR_WORD_MAX_RUN, len(b) - j) + 1):
+                if _near_word("".join(a[i:i + na]), "".join(b[j:j + nb])):
+                    hit = (na, nb)
+                    break
+            if hit:
+                break
+        if hit:
+            credit += hit[0]
+            i += hit[0]
+            j += hit[1]
+        else:
+            i += 1
+            j += 1
+    return credit
+
+
 def word_overlap(target: str, heard: str, lang: str = "en") -> float:
     a, b = _tokens(target, lang), _tokens(heard, lang)
     if not a:
         return 0.0
     common = sum((Counter(a) & Counter(b)).values())
-    return common / len(a)
+    if common < len(a):
+        common += _boundary_credit(*_leftovers(a, b))
+    return min(common, len(a)) / len(a)
 
 
 def clip_exceeds_slot(clip_sec: float, slot_sec: float) -> bool:
