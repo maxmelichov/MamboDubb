@@ -1,9 +1,15 @@
 # MamboDubb on macOS, Windows and Linux
 
-The desktop shell is no longer a Mac-only build. The Rust shell, the payload staging
+**The short version: macOS is the only OS with an installer. On Windows and Linux you
+run from source, and that path works today.**
+
+The desktop shell is not Mac-only *in the code*. The Rust shell, the payload staging
 script and `tauri.conf.json` are per-platform correct, and
-[`.github/workflows/build-desktop.yml`](../.github/workflows/build-desktop.yml) builds
-installers for all three on GitHub's runners.
+[`.github/workflows/build-desktop.yml`](../.github/workflows/build-desktop.yml) is
+written to build installers for all three on GitHub's runners. That workflow has never
+run: GitHub Actions is disabled on the account, so no Windows or Linux artifact has ever
+been produced. The releases page carries the Mac `.dmg` and `install.sh`, and nothing
+else. There is no date for that changing.
 
 **Read the status table before you trust anything below it.** Everything here was
 written and reviewed on an Apple Silicon Mac. What that machine can prove is that the
@@ -16,36 +22,45 @@ than pretending otherwise.
 
 | | macOS (arm64) | Windows (x64) | Linux (x64) |
 |---|---|---|---|
-| Rust shell compiles | ✅ locally + CI | ⏳ CI only | ⏳ CI only |
-| Unit tests pass | ✅ locally (37) | ⏳ CI only | ⏳ CI only |
-| Installer produced | ✅ `.dmg` (+ `.app`) | ⏳ `.exe` (NSIS) + `.msi` | ⏳ `.deb` + `.AppImage` |
-| Installer **launches** | ✅ verified by hand | ❓ unverified | ❓ unverified |
+| Rust shell compiles | ✅ locally | ❌ never built | ❌ never built |
+| Unit tests pass | ✅ locally (37) | ❌ never run | ❌ never run |
+| Installer produced | ✅ `.dmg` (+ `.app`), on releases | ❌ none exists | ❌ none exists |
+| Installer **launches** | ✅ verified by hand | ❓ nothing to launch | ❓ nothing to launch |
 | First-run provisioning | ✅ verified by hand | ❓ unverified | ❓ unverified |
 | `uv sync` in the provisioned workspace | ✅ verified | ❓ unverified | ❓ unverified |
-| Headless pipeline from source | ✅ | ✅ documented in [WINDOWS.md](WINDOWS.md) | ✅ (CUDA path) |
-| Signed / notarized | ⚠️ see [RELEASING.md](RELEASING.md) | ❌ not signed | n/a |
+| Headless pipeline and studio from source | ✅ | ✅ this is the path, see [WINDOWS.md](WINDOWS.md) | ✅ this is the path (CUDA) |
+| Signed / notarized | ⚠️ ad-hoc signed only, see [RELEASING.md](RELEASING.md) | n/a | n/a |
 
-✅ verified · ⏳ built in CI, not launched by a human · ❓ needs a real machine · ❌ open item
+✅ verified · ❓ needs a real machine and an artifact to test · ❌ has not happened
 
 Intel Macs are **not** in the matrix: `macos-latest` is Apple Silicon, so the `.dmg` is
 arm64-only. Staging supports `--target x86_64-apple-darwin`, so adding an Intel (or
 universal) row is a matrix entry away when someone has a machine to test it on.
 
-## Getting the installers
+## Getting a build
 
-They are not attached to a release yet. They are workflow artifacts.
+**macOS:** the [latest release](https://github.com/maxmelichov/MamboDubb/releases/latest)
+carries `MamboDubb_<version>_aarch64.dmg` and `install.sh`. Use the one-liner below.
 
-1. Push a `v*` tag, or open **Actions → build-desktop → Run workflow** on any branch.
-2. Wait for the three jobs (~20 to 40 min each; the Rust cache makes reruns much faster).
-3. Open the run and download the artifact for your OS from the **Artifacts** section
-   at the bottom:
-   - `mambodubb-macos-aarch64` → `MamboDubb_<version>_aarch64.dmg`
-   - `mambodubb-windows-x86_64` → `MamboDubb_<version>_x64-setup.exe`, `..._x64_en-US.msi`
-   - `mambodubb-linux-x86_64` → `MamboDubb_<version>_amd64.deb`,
-     `MamboDubb_<version>_amd64.AppImage`
+**Windows and Linux:** there is nothing to download. Run from source:
 
-GitHub always hands artifacts over as a `.zip`; unzip it first. They expire after 30
-days.
+```bash
+git clone --recurse-submodules https://github.com/maxmelichov/MamboDubb.git
+cd MamboDubb && uv sync
+cd app/ui && pnpm install && pnpm build && cd ../..
+uv run mambodubb          # the full editor at http://127.0.0.1:4400
+```
+
+That is the same server the Mac app wraps, so you get the whole studio in a browser.
+Windows has extra steps, mostly around CUDA wheels: [WINDOWS.md](WINDOWS.md), and WSL2
+is the easier road. An NVIDIA GPU is what you want on either OS; `translate.load()`
+switches from MLX to the CUDA worker in `translator/` on its own.
+
+If someone re-enables Actions, `build-desktop.yml` is ready: push a `v*` tag or run the
+workflow by hand, and each job uploads `mambodubb-macos-aarch64`,
+`mambodubb-windows-x86_64` (`-setup.exe`, `.msi`) and `mambodubb-linux-x86_64` (`.deb`,
+`.AppImage`) as a `.zip` artifact that expires after 30 days. Nobody has done that yet,
+so the two sections below are what the code intends, not what anyone has seen work.
 
 ## Per-OS install notes
 
@@ -79,10 +94,13 @@ just works needs Developer ID signing and notarization through
 
 ### Windows
 
-Install with the NSIS `-setup.exe` (per-user, no admin prompt) or the `.msi`. Both are
-unsigned, so **SmartScreen** shows "Windows protected your PC" on first run: click
-**More info → Run anyway**. Some corporate policies block unsigned installers outright,
-and there is no workaround short of code signing (open item below).
+No installer exists. Run from source, as above and in [WINDOWS.md](WINDOWS.md). The rest
+of this section describes a packaged build nobody has produced yet.
+
+It would install from the NSIS `-setup.exe` (per-user, no admin prompt) or the `.msi`.
+Both would be unsigned, so **SmartScreen** shows "Windows protected your PC" on first
+run: click **More info → Run anyway**. Some corporate policies block unsigned installers
+outright, and there is no workaround short of code signing (open item below).
 
 WebView2 is present on every Windows 10 1803+ and Windows 11 machine. The installer is
 configured with `downloadBootstrapper`, so on the rare machine without it, it is fetched
@@ -97,7 +115,10 @@ the detailed guide and it applies to the packaged app too.
 
 ### Linux
 
-The `.deb` is the better install if you are on Debian/Ubuntu:
+No `.deb` and no AppImage exist. Run from source, as above. The rest of this section
+describes a packaged build nobody has produced yet.
+
+The `.deb` would be the better install on Debian/Ubuntu:
 
 ```bash
 sudo apt install ./MamboDubb_*_amd64.deb
@@ -161,8 +182,9 @@ The provisioned workspace lives in `~/.local/share/MamboDubb/workspace`.
    and a five-minute video takes hours. On a CPU-only machine of any OS the app *works*
    and is unusably slow for anything but a short clip. The app does not currently warn
    about this at setup time.
-3. **Nobody has run the Windows or Linux installers.** Everything in the ❓ rows above.
-   The specific things a real machine has to confirm: the installer completes; the app
+3. **Nobody has built the Windows or Linux installers, let alone run them.** Actions is
+   disabled on the account, so the first task is a machine that can build them at all.
+   Then the ❓ rows above: the installer completes; the app
    window opens (WebView2 / WebKitGTK); first-run provisioning writes the workspace to
    the local data dir; `uv sync` completes there (~10 GB, and the Qwen3-TTS editable
    install is the fragile part); `ffmpeg`/`sox` detection and the Setup screen's install

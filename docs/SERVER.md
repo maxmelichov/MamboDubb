@@ -9,6 +9,8 @@ uv run mambodubb --port 4400                          # -> http://127.0.0.1:4400
 
 `--outputs` picks the run directory root (default `outputs/`); pass `--ui-dir ""` to serve the API alone.
 
+On Windows and Linux this is not just an option, it is the way in: no installer is built for either OS. Clone with `--recurse-submodules`, `uv sync`, then the two lines above. Windows has extra steps around CUDA wheels in [WINDOWS.md](WINDOWS.md); the state of packaging is in [CROSS_PLATFORM.md](CROSS_PLATFORM.md).
+
 ## Security model
 
 On the default loopback bind no login is needed; requests with a non-local `Host` header are refused (DNS-rebinding guard). Binding any other address (`--host 0.0.0.0` for LAN use) **requires a token**: pass `--token`, or let the server generate one. It prints a one-click `?token=...` link that sets a cookie for the rest of the session. The traffic is plain HTTP; treat the LAN mode as "trusted home network", not "the internet".

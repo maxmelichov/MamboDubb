@@ -3,12 +3,14 @@
 Both halves, the headless pipeline (`python -m dubbing`) and the studio server
 (`mambodubb`), run on native Windows 10/11 with an NVIDIA GPU.
 
-This page is the **run-from-source** guide. There is also a packaged desktop
-installer (`.exe` / `.msi`) built by CI. See
-[CROSS_PLATFORM.md](CROSS_PLATFORM.md) for how to get it and what about it is
-still unverified. Everything below about CUDA wheels, `ffmpeg`/`sox` and vLLM
-applies to the packaged app too, because it provisions and runs the same source
-tree.
+This page is the **run-from-source** guide, and on Windows that is the only way
+in: there is no `.exe` or `.msi` to download. The packaging code exists but has
+never been built, because Actions is disabled on the account; see
+[CROSS_PLATFORM.md](CROSS_PLATFORM.md). Everything below would apply to a
+packaged app anyway, because it provisions and runs this same source tree.
+
+You end up with the full studio in a browser at `http://127.0.0.1:4400`, the same
+editor the Mac app wraps.
 
 **The short version:** if you have WSL2, use it (see the last section). Native
 Windows works and is supported, but the translator runs on a plain transformers
