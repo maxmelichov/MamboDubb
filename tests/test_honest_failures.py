@@ -397,7 +397,7 @@ def test_the_synth_is_told_which_language_to_speak(tmp_path, monkeypatch):
 
     class FakeSynth:
         def generate(self, speak, ref, out, *, seed, greedy, opts=None,
-                     synth=None, lang=None):
+                     synth=None, lang=None, carrier=None):
             calls.append(lang)
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_bytes(b"x")

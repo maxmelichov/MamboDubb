@@ -254,6 +254,44 @@ def max_new_tokens(text: str, lang: str = "en") -> int:
     return max(96, min(2048, int(sec * CODEC_HZ)))
 
 
+def carrier_budget(tokens: int) -> int:
+    """A token budget widened to cover the warm-up carrier decoded in front of it.
+
+    The budget is sized from the line's own words (`max_new_tokens`), so a carrier
+    prepended to the text would otherwise eat the end of the sentence rather than
+    lengthen the decode, giving a silently truncated last clause, a worse bug
+    than the one the carrier is here to fix. The cap stays the same: 2048 is the
+    ceiling `max_new_tokens` already imposes, not something the carrier may raise.
+    """
+    return min(2048, tokens + int(hebrew_mod.CARRIER_MAX_SEC * CODEC_HZ))
+
+
+def carrier_boundary(starts, n_carrier: int, *, lo: float | None = None,
+                     hi: float | None = None) -> float | None:
+    """Where the real sentence starts, in a clip the carrier was decoded in front of.
+
+    `starts` are the verification ASR's word start times over the whole generated
+    clip; the sentence begins at the word after the carrier's `n_carrier` of them.
+    Silence-gap detection was tried first and is not good enough here: the carrier
+    holds a comma, so the first long-enough gap is inside it, and the run of pauses
+    around its final word puts the biggest gap in a different place from clip to
+    clip. Word timestamps put the boundary in exactly the same place all 11 times.
+
+    The answer is only returned inside [lo, hi]. The carrier is a fixed prefix, so
+    what it takes to say barely moves, and a boundary outside that band means the
+    ASR did not segment it the way it always does. `None` is not a fallback cut, it
+    is a refusal: the caller re-makes the clip with no carrier at all rather than
+    ship one with a syllable of it still attached.
+    """
+    lo = hebrew_mod.CARRIER_MIN_SEC if lo is None else lo
+    hi = hebrew_mod.CARRIER_MAX_SEC if hi is None else hi
+    starts = list(starts)
+    if n_carrier < 0 or len(starts) <= n_carrier:
+        return None
+    t = float(starts[n_carrier])
+    return t if lo <= t <= hi else None
+
+
 def source_script_leak(heard: str, src: str, tgt: str) -> bool:
     """True when an ASR transcript is dominated by the SOURCE language's script.
 
@@ -1129,9 +1167,58 @@ class Engine:
         return None
 
     # -- synthesis ---------------------------------------------------------
+    def _carrier_for(self, tgt: str) -> str | None:
+        """The warm-up phrase this segment is decoded behind, or None for none.
+
+        Hebrew only, because the defect is Hebrew's: the LoRA needs a few seconds
+        of its own output in context before it stops speaking the source speaker's
+        accent, and the ten base languages the checkpoint knows natively have no
+        such warm-up to do. A base-language line inside a Hebrew run gets None here
+        exactly as it gets the adapter switched off.
+
+        And only when a verification ASR for the target actually loaded. The cut is
+        made on that ASR's word timestamps, so without one there is no way to prove
+        the shipped clip is free of the carrier, and a carrier that cannot be
+        proven gone must not be prepended in the first place.
+        """
+        if not self.hebrew_for(tgt) or self.asr_for(tgt) is None:
+            return None
+        return hebrew_mod.carrier()
+
+    def _cut_carrier(self, clip: Path, tgt: str) -> bool:
+        """Cut the warm-up carrier off the front of a just-generated clip.
+
+        True when the clip now starts at the sentence. False when the boundary
+        could not be established in the band `carrier_boundary` trusts, and the
+        clip has been left exactly as it was: the caller's answer to that is to
+        re-make it with no carrier, never to guess at a cut.
+
+        The clip is rewritten in place and everything downstream (the length
+        guard, the ASR verify, the placement) sees only the sentence, so a
+        carrier cannot reach the timeline or lengthen the slot it has to fit.
+        """
+        model = self.asr_for(tgt)
+        if model is None:
+            return False
+        try:
+            segs, _ = model.transcribe(str(clip), language=tgt, word_timestamps=True,
+                                       condition_on_previous_text=False, vad_filter=False)
+            starts = [float(w.start) for s in segs for w in (s.words or [])]
+        except Exception as exc:
+            print(f"  tts: carrier boundary unreadable ({exc})", file=sys.stderr)
+            return False
+        at = carrier_boundary(starts, hebrew_mod.CARRIER_WORDS)
+        if at is None:
+            return False
+        audio.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{at:.3f}", "-i", str(clip),
+                   "-acodec", "pcm_s16le", "-ar", str(audio.SR), "-ac", "1",
+                   str(clip.with_suffix(".cut.wav"))])
+        clip.with_suffix(".cut.wav").replace(clip)
+        return True
+
     def _cache_key(self, speak: str, ref_key: str, seed: int, greedy: bool,
                    opts: TtsOpts = ttsopts.DEFAULT, tgt: str | None = None,
-                   synth: str | None = None) -> str:
+                   synth: str | None = None, carrier: bool = False) -> str:
         """Everything that changes the audio, hashed. Nothing that changes it may
         stay out of here, or an edited segment silently replays its old clip.
 
@@ -1152,6 +1239,11 @@ class Engine:
         pronunciation. It hangs off the *call's* language, so an English line
         voiced inside a Hebrew run (adapter disabled the base model exactly)
         keeps the key it would have had anywhere else.
+
+        The warm-up carrier is in that suffix too. It is not audible in the clip,
+        being cut back off, but it changes the context the sentence is decoded in
+        and therefore the audio, so a cached clip from before it existed is a clip
+        of the old, cold-start read and must not be replayed as if it were this one.
         """
         # The target language is part of the key so a ru clip never collides with
         # an en clip of the same text. "en" is left out of the blob to keep every
@@ -1166,6 +1258,10 @@ class Engine:
         if self.hebrew_for(tgt):
             ipa = hashlib.sha1((synth or "").encode("utf-8")).hexdigest()[:10]
             blob += f"|{hebrew_mod.ADAPTER_TAG}:{ipa}"
+            # Only when one was actually used, so a clip made without a carrier
+            # (no ASR to cut on) keeps the key it would have had before this.
+            if carrier:
+                blob += f"|{hebrew_mod.CARRIER_TAG}"
         return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
 
     def _verify(self, clip: Path, speak: str, tgt: str | None = None,
@@ -1279,16 +1375,34 @@ class Engine:
         so a greedy ladder was MAX_TRIES byte-identical takes filed under
         different cache keys. What varies a rung now is the reference or the
         decode, both of which are in the key on their own.
+
+        A Hebrew target is decoded behind a warm-up carrier and the carrier is cut
+        off here, before anything else touches the clip. That ordering is the
+        contract: `_verify` must hear the sentence and nothing else, and the file
+        that leaves this method has to be the same audio the timeline will place.
         """
         synth = speak if synth is None else synth
-        key = self._cache_key(speak, ref_key, seed, greedy, opts, tgt, synth)
+        carrier = self._carrier_for(tgt or self.tgt_lang)
+        key = self._cache_key(speak, ref_key, seed, greedy, opts, tgt, synth,
+                              carrier is not None)
         clip = self.clips / f"{key}.wav"
         meta = self.clips / f"{key}.json"
         if clip.is_file() and meta.is_file():
             return clip, meta, json.loads(meta.read_text(encoding="utf-8"))
         try:
             self.synth_for(opts).generate(speak, ref_path, clip, seed=seed, greedy=greedy,
-                                          opts=opts, synth=synth, lang=tgt)
+                                          opts=opts, synth=synth, lang=tgt,
+                                          carrier=carrier)
+            # A carrier that cannot be located cannot be cut, and a clip that still
+            # has one on the front is not this line, so the take is thrown away and
+            # remade cold. That is today's audio, i.e. the floor this change sits on:
+            # the worst a failed cut can do is give back the clip we already had.
+            if carrier is not None and not self._cut_carrier(clip, tgt or self.tgt_lang):
+                print(f"  tts: seg {seg_id} carrier boundary not found "
+                      "re-synthesising without one", file=sys.stderr)
+                self.synth_for(opts).generate(speak, ref_path, clip, seed=seed,
+                                              greedy=greedy, opts=opts, synth=synth,
+                                              lang=tgt, carrier=None)
         except Exception as exc:
             print(f"  tts: seg {seg_id} generate failed ({exc})", file=sys.stderr)
             return clip, meta, {"failed": True}
@@ -1601,7 +1715,7 @@ class _Synth:
 
     def generate(self, speak: str, ref: Path, out: Path, *, seed: int, greedy: bool,
                  opts: TtsOpts = ttsopts.DEFAULT, synth: str | None = None,
-                 lang: str | None = None) -> Path:
+                 lang: str | None = None, carrier: str | None = None) -> Path:
         """`speak` is the line in its own script; `synth` is what the model is told.
 
         They differ only for Hebrew, where `synth` is the stressed IPA. The token
@@ -1612,12 +1726,24 @@ class _Synth:
         and exists so a segment with its own `tgt_lang` is spoken in that language,
         and so a Hebrew-loaded synth can also voice a base-language line which it
         does with the adapter switched off, i.e. as the plain base model.
+
+        `carrier` is a warm-up phrase decoded in front of the line so the sentence
+        does not start from a cold context (see `hebrew.CARRIER_TEXT`). It is text,
+        not audio: it goes into the same field, ahead of `synth`, and the clip that
+        comes back therefore *begins with it*. Cutting it off again is the caller's
+        job, because the boundary is read off the verification ASR and this class
+        has no ASR (see `Engine._cut_carrier`). Nothing here may be handed to a
+        caller that will not make that cut.
         """
         import torch
 
         model = self._load()
         lang = (lang or self.lang).lower()
         text = synth if synth is not None else speak
+        budget = opts.max_new_tokens or max_new_tokens(speak, lang)
+        if carrier:
+            text = f"{carrier} {text}"
+            budget = carrier_budget(budget)
         torch.manual_seed(int(seed))
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(int(seed))
@@ -1633,7 +1759,7 @@ class _Synth:
             wavs, sr = model.generate_voice_clone(
                 text=text, language=self._language(model, lang),
                 voice_clone_prompt=self._prompts[key],
-                max_new_tokens=opts.max_new_tokens or max_new_tokens(speak, lang),
+                max_new_tokens=budget,
                 repetition_penalty=opts.repetition_penalty or REPETITION_PENALTY,
                 **sampling_kwargs(greedy, opts),
             )

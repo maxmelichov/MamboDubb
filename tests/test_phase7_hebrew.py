@@ -329,7 +329,9 @@ def test_the_stage_tags_moved():
     # for Hebrew every one of which can change the clip a segment ends up with.
     # v19: the retry ladder is gated on voice identity, so a segment that used to
     # escalate to another speaker's window now stays on its own audio.
-    assert manifest.STAGE_TAGS["tts"] == "tts/v19"
+    # v20: a Hebrew line is decoded behind a warm-up carrier that is cut back off,
+    # so every Hebrew clip is different audio from the one v19 would have made.
+    assert manifest.STAGE_TAGS["tts"] == "tts/v20"
     # v36: script-derived gloss floors, negations and shorten budgets (CJK/hangul).
     # v37: "%" survives into every TTS target's own vocabulary.
     assert manifest.STAGE_TAGS["translate"] == "translate/v38"
@@ -375,3 +377,78 @@ def test_a_hebrew_target_decodes_greedily_unless_the_segment_says_otherwise(
     monkeypatch.setattr(en, "ref_for",
                         lambda seg, opts=DEFAULT: (tmp_path / "r.wav", "ref:1.00-4.00"))
     assert en._plan(base, "hello world").greedy is False
+
+
+# ------------------------------------------------------------- warm-up carrier
+
+# The talker decodes from the SOURCE speaker's x-vector, so a Hebrew line that
+# starts cold carries an English accent for its first seconds and only then
+# settles into the adapter's Hebrew. The fix is to decode a fixed Hebrew phrase
+# first and cut it back off, and what these tests hold is the part that has to be
+# exact: the sentence the user hears must not contain a syllable of it, and a
+# boundary that cannot be trusted must fall back to today's audio, not to a guess.
+
+
+def test_the_carrier_is_phonemized_like_any_other_hebrew(fake_g2p):
+    hebrew.free()
+    assert hebrew.carrier() == f"<ipa:{hebrew.CARRIER_TEXT}>"
+    # Once per process, not once per line: it is the same phrase every time.
+    hebrew.carrier()
+    assert fake_g2p.count(hebrew.CARRIER_TEXT) == 1
+    hebrew.free()
+
+
+def test_the_boundary_is_the_word_after_the_carrier():
+    starts = [0.0, 0.66, 1.12, 1.94, 2.70, 3.20, 3.60, 3.78]
+    assert tts.carrier_boundary(starts, hebrew.CARRIER_WORDS) == 3.60
+
+
+def test_a_boundary_outside_the_trusted_band_is_refused():
+    """None is a refusal, not a cut: the caller re-makes the clip without one."""
+    n = hebrew.CARRIER_WORDS
+    # Too early to be the end of this carrier, so the ASR ran the words together.
+    assert tts.carrier_boundary([0.1 * i for i in range(n + 2)], n) is None
+    # Too late, so it split one of them and the count no longer means what it did.
+    assert tts.carrier_boundary([1.0 * i for i in range(n + 2)], n) is None
+    # And a clip the ASR heard no sentence in at all has no boundary to give.
+    assert tts.carrier_boundary([0.0, 0.66, 1.12], n) is None
+    assert tts.carrier_boundary([], n) is None
+
+
+def test_the_carrier_widens_the_token_budget_it_shares():
+    """It is decoded out of the same budget, so the sentence must not pay for it."""
+    plain = tts.max_new_tokens("שלום עולם ומה שלומך היום", "he")
+    assert tts.carrier_budget(plain) > plain
+    # The ceiling is still `max_new_tokens`', not something the carrier may raise.
+    assert tts.carrier_budget(2048) == 2048
+
+
+def test_only_hebrew_is_decoded_behind_a_carrier(tmp_path, monkeypatch, fake_g2p):
+    hebrew.free()
+    monkeypatch.setattr(tts.Engine, "asr_for", lambda self, tgt=None: object())
+    assert _engine(tmp_path, tgt="he")._carrier_for("he") is not None
+    # The ten languages the checkpoint speaks natively have no warm-up to do, and
+    # that includes a base-language line voiced inside a Hebrew run.
+    assert _engine(tmp_path, tgt="he")._carrier_for("en") is None
+    assert _engine(tmp_path, tgt="ru")._carrier_for("ru") is None
+    hebrew.free()
+
+
+def test_no_verification_asr_means_no_carrier(tmp_path, monkeypatch):
+    """The cut is made on that ASR's word timestamps.
+
+    Without one there is no way to show the shipped clip is free of the carrier,
+    and a carrier that cannot be proven gone is one that must never be prepended.
+    """
+    monkeypatch.setattr(tts.Engine, "asr_for", lambda self, tgt=None: None)
+    assert _engine(tmp_path, tgt="he")._carrier_for("he") is None
+
+
+def test_the_cache_key_carries_the_carrier_only_where_one_was_used(tmp_path):
+    eng = _engine(tmp_path)
+    args = ("שלום עולם.", "ref:1.00-4.00", 42, False, DEFAULT, None, "ʃalˈom ʔolˈam.")
+    # Not audible in the clip, but it changes the context the sentence decodes in
+    # and so the audio: a cached clip of the cold read may not be replayed as this.
+    assert eng._cache_key(*args, carrier=True) != eng._cache_key(*args, carrier=False)
+    # And a Hebrew clip made without one keeps the key it had before this existed.
+    assert eng._cache_key(*args, carrier=False) == eng._cache_key(*args)

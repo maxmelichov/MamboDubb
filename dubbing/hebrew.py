@@ -30,6 +30,12 @@ example character for character:
 The IPA is a **synthesis input, never a record**. `manifest.SEGMENT_KEYS` is a
 whitelist and IPA is not on it: what is stored, subtitled and ASR-verified is
 always the Hebrew orthography.
+
+The same is true of the **warm-up carrier** further down: a fixed Hebrew phrase
+decoded ahead of every line and cut back off before anything downstream sees the
+clip, because the adapter's Hebrew only asserts itself a few seconds into a decode
+that starts from an English speaker's x-vector. It is a synthesis input too, and it
+never reaches the audio, the manifest or the subtitles.
 """
 
 from __future__ import annotations
@@ -80,6 +86,58 @@ G2P_PACKAGE = "renikud-plus"
 SPEAKER_UNKNOWN = 0
 
 STRESS = "ˈ"          # U+02C8, the primary-stress marker the adapter was trained with
+
+
+# ------------------------------------------------------------------- warm-up carrier
+
+# The talker decodes autoregressively from a reference x-vector, and that vector is
+# cut from the SOURCE speaker, an English one in the pair this was found on. At
+# step zero the only thing conditioning the acoustics is that English voice, and the
+# adapter's Hebrew prior only takes over once there is enough of the model's own
+# Hebrew in the context to condition on. Measured over 29 clips of a real en→he run,
+# the VoxLingua107 Hebrew posterior starts at 0.59 and does not settle near its
+# ceiling until about 2.5-3s in (0.85 past 2s, p=0.004 paired against the onset),
+# which is what "the first four or five words sound wrong" is, in numbers.
+#
+# So the line is not synthesized cold. A fixed Hebrew phrase is decoded first and cut
+# back off, and the sentence the user hears begins already warm. The phrase is
+# content-free and identical for every line and every video: this is a property of
+# the decoder, not of anything a particular clip says.
+#
+# Length is the active ingredient, not the words. In the sweep that chose this one,
+# a 0.9s carrier did nothing and a 1.7s carrier was not significant (+0.055,
+# p=0.56); only at ~3.5s did the onset move (+0.171 overall, p=0.019, better on 10
+# of 11 lines; +0.302 on the lines that actually had a bad onset). Shorten this text
+# and the fix stops working, so re-measure before touching it.
+CARRIER_TEXT = "רגע אחד בבקשה, ועכשיו נמשיך הלאה."
+# How many words the verification ASR segments the carrier into. The cut is made at
+# the start of the word after these, so this has to match what the ASR actually
+# emits, not what the text looks like it should be. Checked stable across 11 clips.
+CARRIER_WORDS = 6
+# The band the cut is trusted in. The carrier is a fixed prefix, so its spoken length
+# barely moves (measured 3.52-3.70s); a boundary outside this means the ASR did not
+# segment it the usual way, and the clip is re-made without a carrier rather than
+# shipped with part of one still on it.
+CARRIER_MIN_SEC = 2.5
+CARRIER_MAX_SEC = 5.0
+# Mixed into every carrier-synthesized clip's cache key. Bump it with CARRIER_TEXT:
+# a different lead-in decodes a different sentence behind it.
+CARRIER_TAG = "he-carrier-v1"
+
+_CARRIER_IPA: str | None = None
+
+
+def carrier() -> str:
+    """The carrier phrase as IPA, phonemized once per process.
+
+    Through the same G2P the real line goes through rather than a hardcoded
+    transcription, so a G2P revision cannot leave the carrier spelled in a
+    convention the adapter no longer speaks while the sentence moves on.
+    """
+    global _CARRIER_IPA
+    if _CARRIER_IPA is None:
+        _CARRIER_IPA = phonemize(CARRIER_TEXT)
+    return _CARRIER_IPA
 
 
 def is_hebrew(lang: str | None) -> bool:
@@ -166,8 +224,9 @@ def phonemize(text: str, *, speaker: int = SPEAKER_UNKNOWN) -> str:
 
 def free() -> None:
     """Drop the G2P session the Engine's `close`, and the tests."""
-    global _G2P
+    global _G2P, _CARRIER_IPA
     _G2P = None
+    _CARRIER_IPA = None      # it came out of that session; a new one re-derives it
 
 
 # ---------------------------------------------------------------- adapter plumbing

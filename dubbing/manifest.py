@@ -90,7 +90,13 @@ STAGE_TAGS = {
     # own voice (a label is not a person), the alternates are held to the same
     # test, and a clip that says the right words in another voice is recorded as
     # "wrong_voice" rather than "ok" different rungs, different verdicts.
-    "tts": "tts/v19",
+    "tts": "tts/v20",
+    # v20: a Hebrew line is decoded behind a fixed warm-up carrier that is then cut
+    # back off (hebrew.CARRIER_TEXT). The talker starts from the source speaker's
+    # x-vector, so the first seconds of a cold decode carry their accent and not the
+    # adapter's Hebrew. Measured, the LID posterior opens at 0.59 and only settles
+    # past ~2.5s, which is the "first few words sound wrong" report. Warming the
+    # context first moves the sentence's own onset +0.171 (p=0.019).
     # v14: `place` now carries the overrun it measured and why a shortening was
     # abandoned report.json's drift story reads from these. (v13 was claimed on
     # a branch that never landed under that number.)

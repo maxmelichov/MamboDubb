@@ -31,7 +31,7 @@ class FakeSynth:
         self.calls: list[dict] = []
 
     def generate(self, speak, ref, out, *, seed, greedy, opts=DEFAULT,
-                 synth=None, lang=None):
+                 synth=None, lang=None, carrier=None):
         self.calls.append({"ref": ref.name, "seed": seed, "greedy": greedy})
         out.parent.mkdir(parents=True, exist_ok=True)
         sf.write(str(out), np.full(audio.SR, 0.2, dtype="float32"), audio.SR)
