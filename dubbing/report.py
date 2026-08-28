@@ -26,6 +26,10 @@ user otherwise. Four fields exist for it:
   nothing could rescue, and a kept span showing "…" instead of a subtitle.
 * `stale_locked_clips` a clip the user approved for a line that has since
   changed. The pipeline may not replace it and may not pass it off as current.
+* `faint_endings` a dubbed line whose closing fricative is so far under the line
+  it ends that a listener will hear the last word go missing. The one failure in
+  this list that `verify` structurally cannot see: an ASR reads the word off its
+  vowel and scores a full pass on an /s/ nobody can hear.
 """
 
 from __future__ import annotations
@@ -84,6 +88,64 @@ def uncovered_spans(source_wav: Path, words: list[dict], segments: list[dict],
                               "duration": round(t1 - t0, 2), "rms": round(level, 4)})
         i = j
     return spans
+
+
+# How far under a line's own speech level its closing fricative may sit before
+# this says so. Set from the corpus rather than from taste: across the four demo
+# runs the 113 lines that close on a fricative have a median of -10.8 dB and a
+# tenth percentile of -18.5 dB, so this bar names about a tenth of lines and the
+# ones it names are the genuinely dead endings, not the merely soft ones.
+FAINT_ENDING_DB = -18.0
+
+
+def faint_line_endings(workdir: Path, dubbed: list[dict]) -> list[dict]:
+    """Dubbed lines whose closing fricative is too quiet to survive the mix.
+
+    The acoustic counterpart to `verify`, and it exists because `verify`
+    structurally cannot see this class of failure at all. Word overlap asks an
+    ASR what it heard, and an ASR reads "us" off the vowel and never reports that
+    the /s/ after it was inaudible under a music bed. Energy is a witness that
+    can, and it costs one FFT per 30 ms of the last 0.6 s of each clip.
+
+    What it is honestly worth. It catches an ending that is gone or nearly gone,
+    which is the shape `trim_trailing_silence` used to manufacture before it
+    learned to stop on a fricative. It did NOT catch the line it was written in
+    response to: measured over the four demo runs, the "…to us" /s/ lands 13.8 dB
+    under its own line where the median line lands at 10.8 dB and the tenth
+    percentile at 18.5 dB. On every clip-level number tried (fricative level, and
+    the level of whatever follows the fricative) that line is mid-distribution.
+    So this is not the check that would have caught it, and it is not offered as
+    one. What it is: the cheapest number that makes the failure *arguable from
+    evidence* rather than from one person's ear, and a tripwire on any future
+    regression that starts eating final consonants across a population.
+
+    Reported, not enforced, and the threshold is deliberately out at the tenth
+    percentile. Faint final fricatives are mostly a property of this voice rather
+    than of the pipeline, so a bar tight enough to fail this line would fail half
+    of every run.
+
+    Lines that end in no fricative are not measured; `final_fricative_db` returns
+    None and they are skipped. The gap that leaves is a closing fricative missing
+    outright rather than merely faint, which needs per-language orthography to
+    know to expect, and is not attempted here.
+    """
+    out = []
+    for s in dubbed:
+        rec = (s.get("place") or {}).get("clip") or (s.get("tts") or {}).get("clip")
+        if not rec:
+            continue
+        path = workdir / rec
+        if not path.exists():
+            continue
+        try:
+            samples = audio.decode_mono(path, audio.SR)
+        except RuntimeError:
+            continue
+        level = audio.final_fricative_db(samples, audio.SR)
+        if level is None or level >= FAINT_ENDING_DB:
+            continue
+        out.append({"id": s["id"], "start": s["start"], "db": round(level, 1)})
+    return out
 
 
 def declared_source_mismatch(m: dict[str, Any],
@@ -221,6 +283,7 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
                     for s in segments if tts.clip_text_stale(s)]
     spans = uncovered_spans(workdir / m["files"]["source_wav"], words, segments,
                             float(m["source"]["duration"]))
+    faint_endings = faint_line_endings(workdir, dubbed)
 
     report = {
         # What this report is a report *about*. Nothing else on disk says so: an
@@ -255,6 +318,7 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
             "mean": round(sum(drifts) / len(drifts), 3) if drifts else 0.0,
             "over_soft": sum(1 for d in drifts if d > timeline.DRIFT_SOFT),
         },
+        "faint_endings": faint_endings,
         "speed": {"max": round(max(rates, default=1.0), 3),
                   "compressed": sum(1 for r in rates if r > 1.01)},
         "uncovered_audible": spans,
@@ -301,6 +365,11 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
     if overruns:
         print(f"  overrun: {len(overruns)} clip(s) still talking past the next "
               f"speaker's onset, worst {report['overrun']['max']}s", file=sys.stderr)
+    if report["faint_endings"]:
+        worst = min(report["faint_endings"], key=lambda f: f["db"])
+        print(f"  faint endings: {len(report['faint_endings'])} line(s) close on a "
+              f"fricative too quiet to carry, worst {worst['db']}dB under the line "
+              f"at {worst['start']:.2f}s (seg {worst['id']})", file=sys.stderr)
     if abandoned:
         # Its own heading, and its own truth. These lines used to print under the
         # overrun count and each claimed to be "still late", so a run with one

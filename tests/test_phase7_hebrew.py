@@ -350,7 +350,12 @@ def test_the_stage_tags_moved():
     # (or the whole line) to one unlucky seed now has a take.
     # v30: the verifier's digits are spelled before comparison, so a take that
     # used to be retried and filed as "accepted" now stops the ladder.
-    assert manifest.STAGE_TAGS["tts"] == "tts/v30"
+    # v31: the trailing trim stops on a fricative as well as on loudness, so a
+    # line ending in an unvoiced consonant keeps audio the old gate cut off as
+    # though it were hush. Every cached clip is retired, which is the point: a
+    # clip trimmed under the old rule had the evidence removed from it, so a take
+    # that ended mid-/s/ is indistinguishable from one that ended in silence.
+    assert manifest.STAGE_TAGS["tts"] == "tts/v31"
     # v36: script-derived gloss floors, negations and shorten budgets (CJK/hangul).
     # v37: "%" survives into every TTS target's own vocabulary.
     # v39: a repetition the speaker actually made survives the "X, X" repair.

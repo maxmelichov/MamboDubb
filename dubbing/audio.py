@@ -228,18 +228,19 @@ def final_fricative_db(samples: np.ndarray, sample_rate: int,
     median of the frames within 25 dB of the loudest, i.e. the line's own working
     level, so the answer does not move with how loudly this take was generated.
 
-    Why a fricative and not just "the last phoneme": the failure this was written
-    for is a line that ends on a perfectly audible sound which is *not the one
-    the words call for*. In "and not the hedgehogs to us" the /s/ came out 21 dB
-    under the line, and 30 ms behind it the model left a voiced murmur 14 dB
-    *louder* than the /s/. Measuring "the last thing with energy in it" finds the
-    murmur, calls the ending healthy and misses the bug entirely; measuring the
-    tilted frames specifically finds the /s/ and reports how far down it is.
+    Why a fricative and not just "the last phoneme": a line can end on a
+    perfectly audible sound that is not the one the words call for. Qwen likes to
+    leave a voiced murmur 100 to 300 ms behind the sentence, and "the last thing
+    with energy in it" finds the murmur and calls the ending healthy. The tilted
+    frames are the consonant itself.
 
-    Why any of this exists: word overlap against an ASR transcript passed this
-    line three times while a native listener heard the last word go missing each
-    time. ASR reads "us" off the vowel alone and is perfectly content with an
-    /s/ nobody can hear, so it is the wrong witness. Energy is the right one.
+    Be clear about what this does and does not catch. It catches an ending that
+    is *gone* or nearly so, which is the shape the trailing trim used to produce
+    before `is_fricative` was added to it. It did NOT catch the line that started
+    this work: the /s/ of "and not the hedgehogs to us", which three native
+    listeners heard go missing, measures 13.8 dB under its line against a corpus
+    median of 10.8 dB, i.e. squarely mid-distribution. That line is not
+    acoustically unusual for this voice; see `report.faint_line_endings`.
     """
     n = int(win_sec * sample_rate)
     hop = max(1, n // 3)
@@ -256,13 +257,25 @@ def final_fricative_db(samples: np.ndarray, sample_rate: int,
     if peak < -70.0:
         return None
     ref = float(np.median([v for v in levels if v > peak - 25.0]))
-    # Only the closing stretch: an /s/ in the middle of the line says nothing
-    # about whether the line finished.
+    # Only the closing stretch, and within it only the *last* run of tilted
+    # frames. Both halves matter. An /s/ in the middle of the line says nothing
+    # about whether the line finished, and taking the loudest fricative in the
+    # tail is just as wrong: in "…the hedgehogs to us" the /s/ of "hedgehogs" is
+    # 4 dB hotter than the /s/ of "us" and sits inside the same 0.6 s, so the
+    # loudest reading scores the ending on a fricative two words early. The peak
+    # of the run (not its dying edge) is what a listener hears it as.
     first = max(0, len(levels) - int(tail_sec * sample_rate / hop))
-    tail = [levels[i] for i in range(first, len(levels)) if tilted[i]]
-    if not tail:
+    last = None
+    for i in range(len(levels) - 1, first - 1, -1):
+        if tilted[i]:
+            last = i
+            break
+    if last is None:
         return None
-    return float(max(tail) - ref)
+    start = last
+    while start > first and tilted[start - 1]:
+        start -= 1
+    return float(max(levels[start : last + 1]) - ref)
 
 
 def frame_rms(audio: np.ndarray, sr: int, hop_sec: float = 0.1) -> np.ndarray:

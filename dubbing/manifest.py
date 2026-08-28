@@ -116,7 +116,17 @@ STAGE_TAGS = {
     # own voice (a label is not a person), the alternates are held to the same
     # test, and a clip that says the right words in another voice is recorded as
     # "wrong_voice" rather than "ok" different rungs, different verdicts.
-    "tts": "tts/v30",
+    "tts": "tts/v31",
+    # v31: the trailing trim stops on a fricative as well as on loudness. An
+    # unvoiced /s/ ends a word 12 to 30 dB under the line it closes, which is
+    # under the RMS gate, so the backward scan walked past it, stopped on the
+    # vowel before it and put the pad there: the file ended mid-fricative and the
+    # last word of "and not the hedgehogs to us" lost its /s/ to the trim that
+    # was meant to be dropping hush. Frames are now kept when they are loud *or*
+    # quiet-and-high (`audio.is_fricative`). This retires every cached clip,
+    # which it must: the clips carrying the bug were trimmed on the old rule and
+    # the evidence was removed from them, so nothing short of re-generating can
+    # tell a clip that ended in hush from one that ended mid-/s/.
     # v30: word_overlap spells the heard text's digits before comparing. The
     # spoken line is digit-free by construction and the ASR is under no such rule,
     # so two correct radio calls scored 0.56 and 0.82, walked the whole ladder and

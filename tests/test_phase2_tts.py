@@ -401,3 +401,109 @@ def test_the_asr_writing_a_number_as_digits_does_not_fail_a_take():
     # A take that says a different number is still wrong.
     assert tts.word_overlap("Twenty-eight, this is eighteen.",
                             "31, this is 12.") < 0.5
+
+
+# ------------------------------------------------------- the trailing trim and /s/
+#
+# An unvoiced fricative is quiet and high. The trailing trim's RMS gate is a
+# loudness test, so on its own it reads a sentence-final /s/ as hush and cuts it:
+# the scan walks past the fricative, stops on the vowel before it, and puts the
+# pad there. That is how "and not the hedgehogs to us" lost the /s/ of its last
+# word. `audio.is_fricative` is the second question the gate now asks.
+
+
+def _sibilant(seconds: float, dbfs: float, sample_rate: int) -> "np.ndarray":
+    """Noise tilted towards the top of the band, at a chosen level: a rough /s/."""
+    import numpy as np
+    rng = np.random.default_rng(0)
+    # First difference is a crude 6 dB/octave high shelf enough to put the
+    # energy where a fricative puts it, which is all `is_fricative` looks at.
+    x = np.diff(np.concatenate([[0.0], rng.standard_normal(int(seconds * sample_rate))]))
+    return (10 ** (dbfs / 20)) * x / float(np.sqrt(np.mean(x ** 2)))
+
+
+def _vowel(seconds: float, sample_rate: int) -> "np.ndarray":
+    import numpy as np
+    t = np.arange(int(seconds * sample_rate)) / sample_rate
+    return 0.2 * np.sin(2 * np.pi * 120 * t) + 0.1 * np.sin(2 * np.pi * 360 * t)
+
+
+def test_is_fricative_separates_a_quiet_sibilant_from_a_loud_vowel():
+    from dubbing import audio
+    sr = audio.SR
+    # 26 dB apart, and the quiet one is the fricative: loudness alone would get
+    # this exactly backwards, which is the whole point.
+    assert audio.is_fricative(_sibilant(0.05, -46.0, sr), sr) is True
+    assert audio.is_fricative(_vowel(0.05, sr), sr) is False
+
+
+def test_is_fricative_ignores_a_noise_floor_so_hush_is_still_trimmed():
+    from dubbing import audio
+    sr = audio.SR
+    # Below FRICATIVE_FLOOR. Tilted the same way, but at a level no consonant
+    # reaches; if this read as speech no clip would ever have its hush removed.
+    assert audio.is_fricative(_sibilant(0.05, -70.0, sr), sr) is False
+
+
+def test_the_trailing_trim_keeps_a_final_fricative_it_used_to_cut(tmp_path):
+    import numpy as np
+    import soundfile as sf
+    from dubbing import audio
+    sr = audio.SR
+    speech_end = 0.40 + 0.03 + 0.12          # vowel, closure, /s/
+    clip = np.concatenate([
+        _vowel(0.40, sr),
+        np.zeros(int(0.03 * sr)),            # the closure before the /s/
+        _sibilant(0.12, -46.0, sr),          # the /s/, 26 dB under the vowel
+        (10 ** (-80 / 20)) * np.random.default_rng(1).standard_normal(int(0.5 * sr)),
+    ]).astype("float32")
+    sf.write(str(tmp_path / "in.wav"), clip, sr)
+    audio.trim_trailing_silence(tmp_path / "in.wav", tmp_path / "out.wav")
+    kept = len(sf.read(str(tmp_path / "out.wav"))[0]) / sr
+
+    # The fricative survives whole...
+    assert kept >= speech_end
+    # ...and the half-second of hush after it does not.
+    assert kept < speech_end + 0.20
+
+    # What the loudness gate alone would have done: stopped on the vowel and
+    # ended the file mid-/s/, taking the last word's consonant with it.
+    hop = sr // 50
+    for i in range(0, len(clip) - hop, hop):
+        j = len(clip) - i - hop
+        if float(np.sqrt(np.mean(clip[j:j + hop] ** 2))) >= 0.012:
+            assert (j + hop + int(0.06 * sr)) / sr < speech_end
+            break
+    else:                                     # pragma: no cover - guard
+        raise AssertionError("no frame cleared the RMS gate")
+
+
+def test_final_fricative_db_measures_the_last_fricative_not_the_loudest(tmp_path):
+    import numpy as np
+    from dubbing import audio
+    sr = audio.SR
+    # Two fricatives inside the tail window, the earlier one 10 dB hotter: the
+    # shape of "...the hedgehogs to us", where scoring the ending on the loudest
+    # fricative scores it on a consonant two words early.
+    clip = np.concatenate([
+        _vowel(0.30, sr),
+        _sibilant(0.10, -36.0, sr),          # "hedgehogs"
+        _vowel(0.20, sr),
+        _sibilant(0.10, -46.0, sr),          # "us", the one that matters
+    ]).astype("float32")
+    got = audio.final_fricative_db(clip, sr)
+    ref = 20 * np.log10(float(np.sqrt(np.mean(_vowel(0.30, sr) ** 2))))
+    assert got is not None
+    # Scored on the -46 dB fricative, not the -36 dB one.
+    assert abs(got - (-46.0 - ref)) < 3.0
+
+
+def test_final_fricative_db_is_none_when_the_line_ends_on_a_vowel():
+    import numpy as np
+    from dubbing import audio
+    sr = audio.SR
+    clip = np.concatenate([_vowel(0.30, sr), _sibilant(0.10, -40.0, sr),
+                           _vowel(0.70, sr)]).astype("float32")
+    # The only fricative is outside the 0.6 s closing window, so there is no
+    # closing fricative to score and the caller is told so rather than guessed at.
+    assert audio.final_fricative_db(clip, sr) is None
