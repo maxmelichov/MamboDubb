@@ -153,6 +153,25 @@ def speech_units(text: str, lang: str) -> int:
     return max(1, len((text or "").split()))
 
 
+def scripts_used(text: str) -> set[str]:
+    """The script buckets `text` actually writes letters in.
+
+    A letter in no known bucket is ignored rather than named: the caller asks
+    "does this text use a script that one does not", and an unrecognised letter
+    is no evidence either way.
+    """
+    out: set[str] = set()
+    for ch in text or "":
+        if not ch.isalpha():
+            continue
+        code = ord(ch)
+        for name, ranges in _RANGES.items():
+            if any(lo <= code <= hi for lo, hi in ranges):
+                out.add(name)
+                break
+    return out
+
+
 def count_letters(text: str, script: str) -> int:
     """Letters of `text` belonging to `script` (non-letters never count)."""
     ranges = _RANGES[script]

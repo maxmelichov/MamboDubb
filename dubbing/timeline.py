@@ -71,11 +71,19 @@ RATE_MIN = 0.82       # slowest we stretch a short dub to fill its slot (below t
                       # early and leaving a silent tail
 DRIFT_SOFT = 0.50     # lateness that justifies escalating to RATE_MAX
 DRIFT_MAX = 1.50      # lateness that justifies asking for a shorter translation
-OVERHANG_MAX = 0.25   # ...and how far a line already pinned at RATE_MAX may still
+OVERHANG_MAX = 0.50   # ...and how far a line already pinned at RATE_MAX may still
                       # end past its own speaker before it justifies the same ask.
                       # A line nothing is waiting on never trips DRIFT_MAX however
                       # badly it fits, because its overhang goes into the pause the
-                      # source left rather than into the next speaker.
+                      # source left rather than into the next speaker. Set at
+                      # DRIFT_SOFT deliberately: rewriting a line changes what was
+                      # said, which is a real cost and not one to pay for a clip
+                      # that is merely a little long, so the bar is the same half
+                      # second this module already treats as the point where being
+                      # out of position stops being a rounding error. Measured at
+                      # 0.25 it also caught lines overhanging by a third of a
+                      # second, where the rewrite bought ~0.2s of alignment and one
+                      # in seven came back with the meaning bent.
 SHORTEN_ROUNDS = 2
 TAIL_MAX = 0.60       # how far a too-long clip may run past its own segment's end
                       # into a following gap only when the next segment is the

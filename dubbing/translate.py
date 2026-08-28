@@ -66,7 +66,8 @@ from pathlib import Path
 from typing import Any
 
 from . import USER_KEEP_REASONS, numwords
-from .script import count_letters, is_script, same_script, script_for, speech_units
+from .script import (count_letters, is_script, same_script, script_for,
+                     scripts_used, speech_units)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODEL_PATH = REPO_ROOT / "models" / "gemma-4-12B-it-6bit"
@@ -1789,6 +1790,16 @@ def shorten(processor, model, source_text: str, current_en: str, max_words: int,
     out = _run(processor, model, instruction, max(64, want * 4 + 40))
     out = (out or "").strip().strip('"')
     if not is_target_text(out, target) or "[[C" in out or _not_a_translation(out, source_text):
+        return None
+    # A rewrite may not introduce a script the line it replaces does not use.
+    # Asked to be concise the translator will leave a name in the Latin it knows
+    # instead of the Cyrillic the full translation had already transliterated it
+    # into, and the voice then has no pronunciation for the word and drops it in
+    # silence: on the he-ru demo run "Сквебиас" came back as "Squebias" and the
+    # disease's name simply vanished from the spoken line. The name guard below
+    # cannot catch that one, because a name at the head of a sentence is not
+    # distinguishable from ordinary capitalisation and is deliberately skipped.
+    if scripts_used(out) - scripts_used(current_en):
         return None
     n = speech_units(out, target)
     if n >= have or n < max(3, 0.5 * have):

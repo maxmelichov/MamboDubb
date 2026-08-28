@@ -677,3 +677,43 @@ def test_shorten_refuses_a_rewrite_that_is_not_shorter_in_units(monkeypatch):
     monkeypatch.setattr(translate, "_run", lambda *a, **k: line)
     assert translate.shorten(None, None, "首相は…", line, 8,
                              source="ja", target="ja") is None
+
+
+def test_shorten_refuses_a_rewrite_that_romanises_a_name(monkeypatch):
+    # The real he-ru failure: the full translation had transliterated the
+    # disease into Cyrillic, the shortened rewrite put it back in Latin, and the
+    # Russian voice had no pronunciation for it and dropped the word in silence.
+    # `_proper_nouns` cannot see it — the name is sentence-initial, so it is
+    # indistinguishable from ordinary capitalisation — so the script guard must.
+    current = "Сквебиас — это тяжелое заболевание кожи, очень заразное для людей."
+    rewrite = "Squebias — тяжелое кожное заболевание, очень заразное для людей."
+    monkeypatch.setattr(translate, "_run", lambda *a, **k: rewrite)
+    assert translate.shorten(None, None, "…", current, 8,
+                             source="he", target="ru") is None
+
+
+def test_shorten_allows_a_rewrite_that_keeps_the_name_in_the_lines_own_script(
+        monkeypatch):
+    current = "Сквебиас — это тяжелое заболевание кожи, очень заразное для людей."
+    rewrite = "Сквебиас — тяжелое кожное заболевание, заразное для людей."
+    monkeypatch.setattr(translate, "_run", lambda *a, **k: rewrite)
+    assert translate.shorten(None, None, "…", current, 8,
+                             source="he", target="ru") == rewrite
+
+
+def test_shorten_still_allows_latin_where_the_line_already_had_it(monkeypatch):
+    # A name the full translation itself left in Latin is not an introduction,
+    # so the guard must not fire and cost the rescue a legitimate rewrite.
+    current = "NASA отправляет Artemis к Луне в следующем году, как и планировалось."
+    rewrite = "NASA отправляет Artemis к Луне в следующем году."
+    monkeypatch.setattr(translate, "_run", lambda *a, **k: rewrite)
+    assert translate.shorten(None, None, "…", current, 8,
+                             source="en", target="ru") == rewrite
+
+
+def test_scripts_used_names_only_the_scripts_present():
+    from dubbing import script as script_mod
+    assert script_mod.scripts_used("Привет") == {"cyrillic"}
+    assert script_mod.scripts_used("NASA и Artemis") == {"latin", "cyrillic"}
+    assert script_mod.scripts_used("שלום") == {"hebrew"}
+    assert script_mod.scripts_used("123 — ...") == set()
