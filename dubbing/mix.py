@@ -182,10 +182,20 @@ def assemble(m: dict[str, Any], workdir: Path, raw: Path) -> float:
     # twice, once in each language. Counting those spans as claimed is what makes
     # the fill mean "speech nothing accounted for" again, which is the only reason
     # it exists.
+    # Nor is a segment's own source span, and that one is not the same interval as
+    # its placement. A clip is placed on the speech it was measured against and is
+    # exactly as long as it is; a slowed-down clip, or one anchored earlier than
+    # the ASR's boundary, leaves seconds of the segment's OWN window carrying no
+    # placement. The fill aired the actor saying that very line: a 1.12s "צ'לסי."
+    # was dubbed at 36.95-37.68 and the original played on at 37.68-38.42, so
+    # "Chelsea" was heard twice, once in each language, 0.2s apart. Those seconds
+    # are the most accounted-for in the file the segment is what dubbed them so
+    # they are claimed by the segment, not by the geometry of its clip.
+    own = [(float(s["start"]), float(s["end"])) for s in segments]
     absorbed = [(float(f["start"]), float(f["end"]))
                 for s in segments for f in (s.get("merged_from") or [])]
     fill = unclaimed_spans(
-        [(s["place"]["start"], s["place"]["end"]) for s in segments] + absorbed,
+        [(s["place"]["start"], s["place"]["end"]) for s in segments] + own + absorbed,
         media_end)
     voc_path = workdir / m["files"]["vocals"]
     voiced: list[tuple[float, float]] = []

@@ -194,7 +194,11 @@ STAGE_TAGS = {
     # than into the next speaker, so the lateness trigger could not see it: it
     # fired on none of the four demo runs while 9 to 14 lines a run sat pinned.
     "timeline": "timeline/v18",
-    "mix": "mix/v10",
+    # v11: the vocals fill treats a segment's own source span as claimed, not
+    # just the interval its clip happens to occupy. A slowed or early-anchored
+    # clip left seconds of its own window unclaimed and the fill aired the actor
+    # saying the same line: "Chelsea" was heard in both languages, 0.2s apart.
+    "mix": "mix/v11",
     # v10: the vocals fill skips a span another segment absorbed. A stranded
     # opener's words are dubbed inside the segment that took them, and filling
     # its seconds with the original recording played the line twice, once in

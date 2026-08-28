@@ -73,8 +73,16 @@ def _wav(path, a):
     sf.write(str(path), a.astype(np.float32), SR, subtype="FLOAT")
 
 
-def _seg(i, start, end, clip):
-    return {"id": i, "keep": False, "place": {"start": start, "end": end, "clip": clip}}
+def _seg(i, start, end, clip, src=None):
+    """A placed segment. `src` is its own source span, defaulting to the placement.
+
+    The two are the same interval only when the clip exactly fills the slot it was
+    measured against; `src` is how a test says they differ (see the double-play
+    test below).
+    """
+    a, b = src if src else (start, end)
+    return {"id": i, "keep": False, "start": a, "end": b,
+            "place": {"start": start, "end": end, "clip": clip}}
 
 
 def _assemble(tmp_path, vocals, *, segs=None, dur=6.0):
@@ -120,6 +128,25 @@ def test_placed_clip_regions_are_not_touched_by_fill(tmp_path):
     assert float(np.max(np.abs(inside))) < 1e-6
     gap = out[int(2.0 * SR) : int(3.0 * SR)]           # sanity: fill did run
     assert audio.rms(gap) > 0.05
+
+
+def test_a_segments_own_seconds_never_carry_the_original_too(tmp_path):
+    """A dubbed line's own window is the most accounted-for time in the file.
+
+    A clip is placed on the speech it was measured against and is exactly as long
+    as it is, so a slowed-down clip (or one anchored earlier than the ASR's
+    boundary) leaves part of its OWN segment carrying no placement. The fill aired
+    the actor saying that very line: a 1.12s "צ'לסי." dubbed at 36.95-37.68 with
+    the original playing on to 38.42, and "Chelsea" was heard twice 0.2s apart.
+    """
+    _wav(tmp_path / "a.wav", np.zeros(SR))
+    # Source span 0.5-2.5s; the clip only occupies the first second of it.
+    segs = [_seg(0, 0.5, 1.5, "a.wav", src=(0.5, 2.5))]
+    out = _assemble(tmp_path, _tone(6.0), segs=segs)
+    assert float(np.max(np.abs(out[int(1.6 * SR) : int(2.4 * SR)]))) < 1e-6
+    # Time outside any segment still carries the original, which is the point of
+    # the fill and must not be lost to this.
+    assert audio.rms(out[int(3.5 * SR) : int(4.5 * SR)]) > 0.05
 
 
 def test_sliver_gap_below_threshold_is_skipped(tmp_path):
