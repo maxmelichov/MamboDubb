@@ -79,7 +79,11 @@ STAGE_TAGS = {
     # now spell at all) — merged past a parallel claim on v36.
     # v38: Hebrew joined _PERCENT (אחוז), so "X%" in a Hebrew dub no longer
     # borrows English "percent" for tts.prepare_text to silently strip.
-    "translate": "translate/v38",
+    "translate": "translate/v39",
+    # v39: the "X, X" repair no longer deletes a repetition the speaker made. Its
+    # premise is a decode that flattened two distinct source words onto one, and
+    # the source is the witness to that; a source that repeats the word adjacently
+    # ("בסדר. בסדר?") keeps its repetition, and the character's second beat with it.
     # Two lines each claimed tts/v15 for different logic (the Hebrew LoRA vs the
     # honest-failure records), so the merged tag moves past both.
     # v16: Hebrew targets synthesize from stressed IPA through the Qwen3-TTS Hebrew
@@ -100,7 +104,15 @@ STAGE_TAGS = {
     # own voice (a label is not a person), the alternates are held to the same
     # test, and a clip that says the right words in another voice is recorded as
     # "wrong_voice" rather than "ok" different rungs, different verdicts.
-    "tts": "tts/v23",
+    "tts": "tts/v24",
+    # v24: word_overlap forgives the verify ASR its own word boundaries and
+    # spelling. The ASR wrote "All right." for a clip that says "Alright."; on a
+    # one-word line there are no other words to carry the score, so the take read
+    # 0.0, every rung of the ladder read 0.0, and the line fell back to
+    # keep-original with the Hebrew airing under an English subtitle. A run of
+    # adjacent tokens on either side now counts when its letters are near-identical
+    # (0.85, measured against pairs that are genuinely different words), so what
+    # changes is which takes are kept, not which are made.
     # v23: the Hebrew warm-up carrier is no longer refused on a distance threshold
     # against the ASR's reading of it. That threshold rejected the cut on 10 of 10
     # measured clips, so every Hebrew line fell back to the cold decode the carrier

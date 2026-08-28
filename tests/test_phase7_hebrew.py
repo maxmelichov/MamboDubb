@@ -335,10 +335,13 @@ def test_the_stage_tags_moved():
     # on every clip measured, so a v21/v22 Hebrew entry holds the cold decode rather
     # than the warmed one; different audio again, and this time the audio the feature
     # was written to produce in the first place.
-    assert manifest.STAGE_TAGS["tts"] == "tts/v23"
+    # v24: the verify ASR's own word boundaries no longer fail a take, so a line
+    # that used to keep its original audio now keeps a clip.
+    assert manifest.STAGE_TAGS["tts"] == "tts/v24"
     # v36: script-derived gloss floors, negations and shorten budgets (CJK/hangul).
     # v37: "%" survives into every TTS target's own vocabulary.
-    assert manifest.STAGE_TAGS["translate"] == "translate/v38"
+    # v39: a repetition the speaker actually made survives the "X, X" repair.
+    assert manifest.STAGE_TAGS["translate"] == "translate/v39"
 
 
 def test_ipa_is_not_a_manifest_field():

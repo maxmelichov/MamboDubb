@@ -179,7 +179,9 @@ def test_translate_stage_tag_bumped():
     # script-derived, so zh/ja/ko sources and targets are judged in their own unit.
     # v37: "%" becomes the target's own spoken word for every TTS target —
     # ja/ko/zh percentages no longer vanish, it/pt no longer say "percent".
-    assert manifest.STAGE_TAGS["translate"] == "translate/v38"
+    # v39: a repetition the speaker actually made survives the "X, X" repair, so
+    # a drama line keeps the beat the actor played.
+    assert manifest.STAGE_TAGS["translate"] == "translate/v39"
 
 
 # ------------------------------------------------------- per-segment gloss gating
