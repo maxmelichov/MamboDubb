@@ -197,6 +197,74 @@ def test_turn_boundary_on_a_segment_edge_does_not_split():
     assert [s["text"] for s in segs] == ["aaa bbb ccc", "ddd eee fff"]
 
 
+# ------------------------------------------------- handovers inside a sentence
+
+# The three mid-sentence handover cuts measured on a Hebrew drama, as word
+# timings. Each is one punctuated sentence with a diarization handover landing
+# inside it; before the snap each produced two fragments that translated to
+# nonsense.
+DOCTOR = [(123.36, 123.92, "בסדר,", "S0"), (123.96, 124.16, "נדבר", "S0"),
+          (124.16, 124.26, "עם", "S0"), (124.26, 124.54, "הרופא", "S0"),
+          (124.54, 124.68, "של", "S1"), (124.68, 125.14, "החטיבה.", "S1")]
+GIRLFRIEND = [(214.98, 215.48, "מה", "S0"), (215.48, 215.70, "איתך?", "S0"),
+              (215.76, 215.86, "אתה", "S0"), (215.86, 216.00, "יש", "S0"),
+              (216.00, 216.12, "לך", "S1"), (216.12, 216.54, "חברה?", "S1")]
+
+
+def _turns_at(handover: float, spec):
+    return [{"speaker": "S0", "start": spec[0][0], "end": handover},
+            {"speaker": "S1", "start": handover, "end": spec[-1][1]}]
+
+
+def test_a_handover_inside_one_sentence_does_not_cut_it_in_half():
+    """One sentence, no interior boundary to move to: the cut goes.
+
+    "נדבר עם הרופא של החטיבה" was cut after "הרופא" and dubbed as "we'll talk to
+    the doctor." and "of the brigade." — two fragments, each translated alone.
+    A handover with nowhere to land inside a single punctuated sentence is a
+    diarization slip, and the whole sentence is worth more than the attribution.
+    """
+    segs = segments.words_to_segments(spkwords(DOCTOR),
+                                      turns=_turns_at(124.54, DOCTOR))
+    assert [s["text"] for s in segs] == ["בסדר, נדבר עם הרופא של החטיבה."]
+
+
+def test_a_handover_inside_a_sentence_moves_to_the_boundary_beside_it():
+    """Two sentences: the cut lands on the one the ASR actually drew.
+
+    "מה איתך? אתה יש לך חברה?" was cut after "יש", so both halves came out as
+    fragments; the boundary after "איתך?" is 0.27s from the handover and is where
+    the split belongs.
+    """
+    segs = segments.words_to_segments(spkwords(GIRLFRIEND),
+                                      turns=_turns_at(216.00, GIRLFRIEND))
+    assert [s["text"] for s in segs] == ["מה איתך?", "אתה יש לך חברה?"]
+
+
+def test_a_handover_already_on_a_sentence_end_is_untouched():
+    """Ordinary Q+A: the handover is where the question mark is, and stays."""
+    spec = [(0.0, 0.5, "Did", "S0"), (0.5, 0.8, "you?", "S0"),
+            (0.9, 1.3, "Yes", "S1"), (1.3, 1.7, "I", "S1"), (1.7, 2.1, "did.", "S1")]
+    segs = segments.words_to_segments(spkwords(spec), turns=_turns_at(0.85, spec))
+    assert [s["text"] for s in segs] == ["Did you?", "Yes I did."]
+
+
+def test_an_unpunctuated_read_keeps_every_handover_it_had():
+    """No terminator anywhere means the ASR drew no boundaries, not that there is
+    one sentence here: a short unpunctuated exchange must still split in two."""
+    segs = segments.words_to_segments(spkwords(FAST_QA), turns=FAST_QA_TURNS)
+    assert [s["text"] for s in segs] == ["aaa bbb ccc", "ddd eee fff"]
+
+
+def test_a_handover_far_from_any_boundary_still_cuts():
+    """A real interruption mid-sentence is a speaker change; only a near miss moves."""
+    spec = [(0.0, 0.5, "One", "S0"), (0.6, 1.1, "two", "S0"), (1.2, 1.7, "three", "S0"),
+            (1.8, 2.3, "four", "S0"), (2.4, 2.9, "five", "S1"), (3.0, 3.5, "six", "S1"),
+            (3.6, 4.1, "seven", "S1"), (4.2, 4.7, "eight.", "S1")]
+    segs = segments.words_to_segments(spkwords(spec), turns=_turns_at(2.35, spec))
+    assert [s["text"] for s in segs] == ["One two three four", "five six seven eight."]
+
+
 # -------------------------------------------------------------- inter-turn gap splitting
 
 # Whisper smears word timings across a real pause (word gaps here are all far

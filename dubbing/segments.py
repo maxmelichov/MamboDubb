@@ -125,6 +125,16 @@ ISLAND_GAP_MAX = 0.60
 # is the better estimate of when the voice actually began.
 HANDOFF_SNAP = 0.30
 
+# How far an unprotected handover cut may travel to land on a sentence boundary.
+# Same error budget as HANDOFF_SNAP and for the same reason a diarization
+# boundary is a time estimate, not a word index but wider, because this one is
+# spent moving the cut onto an exact boundary the ASR already drew rather than
+# nudging a start. Measured on the three mid-sentence cuts in a Hebrew drama:
+# the nearest sentence boundary sat 0.27s, 0.60s and 0.64s away, and the wrong
+# side of each was 0.54s to 1.18s away, so a metre this wide takes the right one
+# every time and still declines to move a cut with no boundary anywhere near it.
+HANDOFF_SENTENCE_SNAP = 1.00
+
 # Who speaks when and the weights are in this repository, which is the whole
 # story of this block. The upstream pipeline is *gated*: it is free and CC-BY-4.0
 # ("released under the CC-BY-4.0 license and will always remain freely
@@ -434,6 +444,70 @@ def _turn_boundaries(turns: list[dict[str, Any]]) -> list[tuple[float, bool]]:
     return bounds
 
 
+def _sentence_bounds(seg: dict[str, Any], words: list[dict[str, Any]],
+                     ends: list[float]) -> list[tuple[int, float]]:
+    """(word index, time) for every place a sentence ends inside or around a segment.
+
+    The two edges count: a cut that lands on one is not a cut at all, which is
+    exactly the answer wanted when a handover falls inside a single sentence that
+    fills the whole segment.
+    """
+    out = [(0, float(seg["start"]))]
+    for j in range(1, len(words)):
+        if SENTENCE_END.search(words[j - 1].get("text") or ""):
+            out.append((j, 0.5 * (ends[j - 1] + words[j]["t"])))
+    out.append((len(words), float(seg["end"])))
+    return out
+
+
+def _snap_handoff(seg: dict[str, Any], words: list[dict[str, Any]],
+                  ends: list[float], i: int, b: float) -> int | None:
+    """A handover cut moved onto the nearest sentence boundary, or None to drop it.
+
+    A diarization handover is a *time* with a few hundred milliseconds of error,
+    and the split turns it into a word index by asking which side each word's
+    midpoint falls on. Inside a sentence that error costs the whole line. Both
+    halves come out grammatical fragments, each is translated on its own, and each
+    is voiced with its own prosody: on a Hebrew drama "יש לך חברה?" was cut after
+    "יש" and the two pieces were dubbed "Are you..." and "Are you a friend?", and
+    "מי שיכול לעמוד על הרגליים, שיצא החוצה" was cut after the preposition and came
+    out as "Whoever can stand up." and "The legs, they will go out."
+
+    This module already refuses to do that to itself: SENTENCE_MAX exists so the
+    length splitter never breaks a lone sentence mid-clause, "because splitting one
+    makes both halves translate badly and gives them separate, clashing TTS
+    prosody". The speaker splitter had no such rule, and its cuts are the ones with
+    the error bar on them.
+
+    So the cut moves to the nearest sentence end the ASR already drew, within
+    HANDOFF_SENTENCE_SNAP. A cut already on one does not move. A cut with no
+    boundary in range stays where it is a real interruption mid-sentence is
+    still a speaker change, and leaving it is the old behaviour. And a cut whose
+    nearest boundary is a segment edge is dropped: one sentence spanning a
+    handover with no boundary to move to is a diarization slip far more often than
+    two characters splitting a sentence between them, and the fragments are certain
+    damage where the merged line is at worst one clause in the wrong voice.
+
+    Protected cuts never reach here (see `_split_speaker_turns`): those sit in real
+    silence, where there is nothing to snap to and no fragment to make.
+
+    All of it rests on the ASR having drawn sentence boundaries here at all, so
+    that is checked first: a stretch whose last word carries no terminator was
+    never punctuated, and "no interior sentence end" then means the read is
+    unpunctuated, not that the handover is inside one sentence. Nothing moves
+    there fast dialogue with no full stops in it keeps every cut it had.
+    """
+    if not SENTENCE_END.search(words[-1].get("text") or ""):
+        return i
+    cands = _sentence_bounds(seg, words, ends)
+    if any(j == i for j, _ in cands):
+        return i
+    j, dist = min(((j, abs(t - b)) for j, t in cands), key=lambda jt: jt[1])
+    if dist > HANDOFF_SENTENCE_SNAP:
+        return i
+    return None if j in (0, len(words)) else j
+
+
 def _split_speaker_turns(segs: list[dict[str, Any]],
                          turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Split each segment at diarization speaker changes that fall inside it.
@@ -463,6 +537,10 @@ def _split_speaker_turns(segs: list[dict[str, Any]],
             # sides keep a word even when the boundary grazes the segment edge.
             i = sum(1 for w, e in zip(words, ends) if 0.5 * (w["t"] + e) < b)
             i = min(max(i, 1), len(words) - 1)
+            if not protect:
+                i = _snap_handoff(seg, words, ends, i, b)
+                if i is None:
+                    continue
             cuts[i] = cuts.get(i, False) or protect
         if not cuts:
             out.append(seg)
