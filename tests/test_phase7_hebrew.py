@@ -331,7 +331,7 @@ def test_the_stage_tags_moved():
     # escalate to another speaker's window now stays on its own audio.
     # v20: a Hebrew line is decoded behind a warm-up carrier that is cut back off,
     # so every Hebrew clip is different audio from the one v19 would have made.
-    assert manifest.STAGE_TAGS["tts"] == "tts/v20"
+    assert manifest.STAGE_TAGS["tts"] == "tts/v21"
     # v36: script-derived gloss floors, negations and shorten budgets (CJK/hangul).
     # v37: "%" survives into every TTS target's own vocabulary.
     assert manifest.STAGE_TAGS["translate"] == "translate/v38"
@@ -398,21 +398,152 @@ def test_the_carrier_is_phonemized_like_any_other_hebrew(fake_g2p):
     hebrew.free()
 
 
-def test_the_boundary_is_the_word_after_the_carrier():
-    starts = [0.0, 0.66, 1.12, 1.94, 2.70, 3.20, 3.60, 3.78]
-    assert tts.carrier_boundary(starts, hebrew.CARRIER_WORDS) == 3.60
+# Real word streams, whisper-large-v3-turbo over clips this repo's own Hebrew path
+# generated for outputs/demo_en_he. CLEAN is the usual reading, six tokens. SPLIT_8
+# and SPLIT_7 are segments 25 and 27 of the same run, where the ASR broke the same
+# fixed phrase into eight and seven tokens: those two are the bug this file exists
+# to hold shut, because counting six words in either of them points the cut at the
+# carrier's own last words and still lands inside any plausible duration band.
+
+CLEAN = [("רגע", 0.0), ("אחד", 0.58), ("בבקשה,", 1.06), ("ועכשיו", 1.76),
+         ("נמשיך", 2.38), ("הלאה.", 2.80), ("אני", 3.24), ("תמיד", 3.46),
+         ("אומרת", 3.80), ("לאנשים,", 4.20)]
+CLEAN_TEXT = "אני תמיד אומרת לאנשים, תעשו את מה שמפחיד אתכם."
+
+# אחד came back as "סאגה הד", an "או" appeared out of nowhere, and הלאה became הלאק.
+SPLIT_8 = [("רגע", 0.0), ("סאגה", 0.48), ("הד", 1.0), ("בבקשה,", 1.16),
+           ("ועכשיו", 1.86), ("או", 2.42), ("נמשיך", 2.56), ("הלאק", 2.96),
+           ("שמבינים", 3.30), ("שאם", 3.92), ("אנשים", 4.32), ("מאמינים", 4.78)]
+SPLIT_8_TEXT = "כשמבינים שאם אנשים מאמינים בך ואתה מאמין שהם מאמינים בך."
+
+# הלאה came back as two tokens, "על אשצה".
+SPLIT_7 = [("רוג", 0.0), ("אחד", 0.38), ("בבקשה", 0.78), ("ועכשיו", 1.54),
+           ("נמשיך", 2.08), ("על", 2.50), ("אשצה,", 2.62), ("זהו", 3.20),
+           ("לוח", 3.64), ("עדות.", 3.92)]
+SPLIT_7_TEXT = "זהו לוח עדות."
 
 
-def test_a_boundary_outside_the_trusted_band_is_refused():
+def test_the_boundary_is_where_the_carrier_stops_being_heard():
+    assert tts.carrier_boundary(CLEAN) == 3.24
+
+
+def test_a_mis_split_carrier_does_not_move_the_boundary():
+    """The observed failure, both shapes of it.
+
+    Counting words put segment 25's cut at 2.56 and segment 27's at 2.62, both
+    comfortably inside [2.5, 5.0] and both in the middle of the carrier: the clips
+    would have shipped opening on "נמשיך הלאק" and on "אשצה". Matching characters
+    cannot be moved by a split or an invented token, because the letters either
+    side of a boundary the ASR imagined are the same letters.
+    """
+    assert tts.carrier_boundary(SPLIT_8) == 3.30
+    assert tts.carrier_boundary(SPLIT_7) == 3.20
+
+
+def test_a_boundary_that_cannot_be_established_is_refused():
     """None is a refusal, not a cut: the caller re-makes the clip without one."""
-    n = hebrew.CARRIER_WORDS
-    # Too early to be the end of this carrier, so the ASR ran the words together.
-    assert tts.carrier_boundary([0.1 * i for i in range(n + 2)], n) is None
-    # Too late, so it split one of them and the count no longer means what it did.
-    assert tts.carrier_boundary([1.0 * i for i in range(n + 2)], n) is None
-    # And a clip the ASR heard no sentence in at all has no boundary to give.
-    assert tts.carrier_boundary([0.0, 0.66, 1.12], n) is None
-    assert tts.carrier_boundary([], n) is None
+    # A clip that does not begin with this carrier at all: nothing to align to, so
+    # there is no cut to make and the take is thrown away.
+    sentence = [("זהו", 0.0), ("לוח", 0.62), ("עדות", 1.20), ("שלם", 1.90),
+                ("ומדויק", 2.60), ("מאוד", 3.20), ("היום", 3.80)]
+    assert tts.carrier_boundary(sentence) is None
+    # The carrier was heard but the ASR found no sentence behind it, so there is no
+    # word after the match to cut to.
+    assert tts.carrier_boundary(CLEAN[:6]) is None
+    assert tts.carrier_boundary([]) is None
+    # And the band still bounds the answer, even when the letters line up: this is
+    # not what makes the cut trustworthy, but it is still an answer nothing sane
+    # can produce.
+    late = [(w, t * 3.0) for w, t in CLEAN]
+    assert tts.carrier_boundary(late) is None
+
+
+def test_the_cut_is_proven_from_the_far_side_too():
+    """`carrier_gone` hears the result instead of trusting the arithmetic."""
+    # A correct cut, mis-heard the way this ASR really does mis-hear these lines.
+    assert tts.carrier_gone("שמבינים שאם אנשים מאמינים", SPLIT_8_TEXT) is True
+    assert tts.carrier_gone("שמי קליסטינה קוק, ואני", "שמי כריסטינה קוק, ואני מומחית")
+    # The two bad cuts, i.e. what would have shipped. The first still has a whole
+    # carrier word on it; the second only has the tail of one, which is why the
+    # anchor and not the word list is what has to catch it.
+    assert tts.carrier_gone("נמשיך הלאק שמבינים שאם", SPLIT_8_TEXT) is False
+    assert tts.carrier_gone("אשצה זהו לוח עדות.", SPLIT_7_TEXT) is False
+    # A cut that ate the start of the sentence instead of the end of the carrier.
+    assert tts.carrier_gone("לוח עדות.", SPLIT_7_TEXT) is False
+    # And a clip nothing was heard in proves nothing either way, so it is refused.
+    assert tts.carrier_gone("", SPLIT_7_TEXT) is False
+
+
+class _FakeAsr:
+    """Word timestamps out of a script, keyed by which file is being read.
+
+    `_cut_carrier` transcribes twice: the generated clip, to find the boundary,
+    and the file it cut, to prove what came out. This hands each of them its own
+    answer so both halves of the decision can be driven from a test.
+    """
+
+    def __init__(self, whole, after):
+        self.whole, self.after = whole, after
+        self.seen: list[str] = []
+
+    def transcribe(self, path, **kw):
+        self.seen.append(path)
+        words = self.after if path.endswith(".cut.wav") else self.whole
+        seg = type("S", (), {"words": [type("W", (), {"word": w, "start": t})()
+                                       for w, t in words]})()
+        return [seg], None
+
+
+def _cut_engine(tmp_path, monkeypatch, asr):
+    """An engine whose `_cut_carrier` can run without ffmpeg or a model."""
+    eng = _engine(tmp_path, tgt="he")
+    monkeypatch.setattr(tts.Engine, "asr_for", lambda self, tgt=None: asr)
+    # ffmpeg's only job here is to write the cut file; the bytes stand in for it.
+    monkeypatch.setattr(tts.audio, "run",
+                        lambda cmd, **kw: __import__("pathlib").Path(cmd[-1])
+                        .write_bytes(b"cut"))
+    clip = tmp_path / "clip.wav"
+    clip.write_bytes(b"whole")
+    return eng, clip
+
+
+def test_a_mis_split_carrier_is_cut_where_the_sentence_starts(tmp_path, monkeypatch):
+    asr = _FakeAsr(SPLIT_8, [("שמבינים", 0.0), ("שאם", 0.62), ("אנשים", 1.02)])
+    eng, clip = _cut_engine(tmp_path, monkeypatch, asr)
+    assert eng._cut_carrier(clip, "he", SPLIT_8_TEXT) is True
+    assert clip.read_bytes() == b"cut"          # the cut was moved onto the clip
+    assert not clip.with_suffix(".cut.wav").exists()
+
+
+def test_an_unalignable_take_is_discarded_rather_than_cut(tmp_path, monkeypatch):
+    """No carrier could be found, so there is no cut to make and no clip to keep.
+
+    The clip has to come back untouched, because the caller's answer to a False is
+    to re-synthesize it cold and it must not be re-synthesizing over a half-cut file.
+    """
+    nothing = [("זהו", 0.0), ("לוח", 0.62), ("עדות", 1.20), ("שלם", 1.90),
+               ("ומדויק", 2.60), ("מאוד", 3.20), ("היום", 3.80)]
+    asr = _FakeAsr(nothing, nothing)
+    eng, clip = _cut_engine(tmp_path, monkeypatch, asr)
+    assert eng._cut_carrier(clip, "he", SPLIT_7_TEXT) is False
+    assert clip.read_bytes() == b"whole"
+    assert len(asr.seen) == 1                   # it never got as far as cutting
+
+
+def test_a_cut_that_does_not_open_on_the_line_is_discarded(tmp_path, monkeypatch):
+    """The far-side check, driven on its own.
+
+    The alignment is happy here it is the audio that came back wrong, which is the
+    case a boundary named on the right word but a beat early produces. The take is
+    thrown away exactly as if no boundary had been found at all.
+    """
+    asr = _FakeAsr(CLEAN, [("נמשיך", 0.0), ("הלאה", 0.42), ("אני", 0.80)])
+    eng, clip = _cut_engine(tmp_path, monkeypatch, asr)
+    assert eng._cut_carrier(clip, "he", CLEAN_TEXT) is False
+    assert clip.read_bytes() == b"whole"        # left exactly as it was
+    assert not clip.with_suffix(".cut.wav").exists()
+    # ... and it did do the work: it cut, listened, and refused what it heard.
+    assert len(asr.seen) == 2
 
 
 def test_the_carrier_widens_the_token_budget_it_shares():

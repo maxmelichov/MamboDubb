@@ -110,19 +110,41 @@ STRESS = "ˈ"          # U+02C8, the primary-stress marker the adapter was train
 # of 11 lines; +0.302 on the lines that actually had a bad onset). Shorten this text
 # and the fix stops working, so re-measure before touching it.
 CARRIER_TEXT = "רגע אחד בבקשה, ועכשיו נמשיך הלאה."
-# How many words the verification ASR segments the carrier into. The cut is made at
-# the start of the word after these, so this has to match what the ASR actually
-# emits, not what the text looks like it should be. Checked stable across 11 clips.
-CARRIER_WORDS = 6
-# The band the cut is trusted in. The carrier is a fixed prefix, so its spoken length
-# barely moves (measured 3.52-3.70s); a boundary outside this means the ASR did not
-# segment it the usual way, and the clip is re-made without a carrier rather than
-# shipped with part of one still on it.
+# There used to be a CARRIER_WORDS = 6 here, and the cut was made at the start of the
+# ASR's seventh word. It is gone because the count was the bug. The ASR does not
+# segment a fixed phrase into a fixed number of tokens: over 8 clips of one real run
+# it heard the carrier as 6 tokens six times, as 7 once (הלאה split into "על אשצה")
+# and as 8 once (אחד heard as "סאגה הד" plus a spurious "או"). Both odd cases put the
+# seventh word's start inside the carrier's own last words, so the cut left carrier
+# audio on the front of the shipped clip. Nothing may count ASR tokens here again;
+# the carrier is located by matching its CHARACTERS (see `tts.carrier_boundary`).
+#
+# How far the ASR's reading of the carrier may drift from CARRIER_TEXT, as a fraction
+# of the carrier's length in characters, before the match stops being a match. The
+# worst real mis-hearing of the eight above scored 0.269 and a clip with no carrier in
+# front of it at all scores near 1.0, so this sits between them with room on the
+# measured side. Above it there is no proof the carrier is where we think, and the
+# take is discarded and remade cold.
+CARRIER_MATCH_MAX = 0.40
+# The cut is proven from the other side too: the clip is re-transcribed after cutting
+# and its first CARRIER_HEAD_WORDS words have to be the sentence's own first words,
+# within CARRIER_HEAD_MAX of character drift. Two words rather than one because a
+# single mis-heard opening word is ordinary and would reject good takes; 0.34 passes
+# every correct cut measured (worst 0.18, "שמי כריסטינה" heard as "שמי קליסטינה") and
+# rejects both of the bad ones (0.70 and above).
+CARRIER_HEAD_WORDS = 2
+CARRIER_HEAD_MAX = 0.34
+# A coarse bound on where a boundary can possibly be, not the reason it is trusted:
+# see the note above about what happens when a duration band is the only guard. A
+# correct boundary measured between 2.86s and 3.62s over the same 8 clips.
 CARRIER_MIN_SEC = 2.5
 CARRIER_MAX_SEC = 5.0
-# Mixed into every carrier-synthesized clip's cache key. Bump it with CARRIER_TEXT:
-# a different lead-in decodes a different sentence behind it.
-CARRIER_TAG = "he-carrier-v1"
+# Mixed into every carrier-synthesized clip's cache key. Bump it with CARRIER_TEXT,
+# because a different lead-in decodes a different sentence behind it, and with any
+# change to where the carrier is cut, because that changes the audio that ships.
+# v1 clips were cut by counting ASR tokens and some of them still carry the tail of
+# the carrier, so none of them may be replayed.
+CARRIER_TAG = "he-carrier-v2"
 
 _CARRIER_IPA: str | None = None
 

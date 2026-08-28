@@ -90,7 +90,15 @@ STAGE_TAGS = {
     # own voice (a label is not a person), the alternates are held to the same
     # test, and a clip that says the right words in another voice is recorded as
     # "wrong_voice" rather than "ok" different rungs, different verdicts.
-    "tts": "tts/v20",
+    "tts": "tts/v21",
+    # v21: the carrier's cut point is found by matching the carrier's characters
+    # against the verification ASR, and the cut clip is re-transcribed and made to
+    # open on the sentence's own first words before it is kept. v20 counted ASR
+    # tokens, which is not a fixed number for a fixed phrase: on 2 of 8 clips of a
+    # real run the count was short and the cut left the tail of the carrier on the
+    # front of a clip that then passed verification. This tag alone would not have
+    # retired those clips, since a re-run reads them out of the clip cache by key,
+    # so hebrew.CARRIER_TAG goes to v2 with it.
     # v20: a Hebrew line is decoded behind a fixed warm-up carrier that is then cut
     # back off (hebrew.CARRIER_TEXT). The talker starts from the source speaker's
     # x-vector, so the first seconds of a cold decode carry their accent and not the

@@ -266,30 +266,123 @@ def carrier_budget(tokens: int) -> int:
     return min(2048, tokens + int(hebrew_mod.CARRIER_MAX_SEC * CODEC_HZ))
 
 
-def carrier_boundary(starts, n_carrier: int, *, lo: float | None = None,
-                     hi: float | None = None) -> float | None:
+def _letters(text: str, lang: str = "he") -> str:
+    """A text reduced to the letters that carry it: no spaces, no punctuation.
+
+    Word boundaries are exactly what an ASR is unreliable about, so the carrier is
+    matched as one run of characters and the boundaries it is broken at do not
+    enter the comparison at all.
+    """
+    return "".join(_tokens(text, lang))
+
+
+def _prefix_distances(chunks, target: str) -> list[int]:
+    """Edit distance from `target` to each growing prefix of `"".join(chunks)`.
+
+    One Levenshtein row carried across every character, sampled at each chunk
+    boundary, so the whole scan costs one pass rather than one alignment per
+    candidate cut point. Entry *i* is the distance for the first *i+1* chunks.
+    """
+    prev = list(range(len(target) + 1))
+    out: list[int] = []
+    for chunk in chunks:
+        for ch in chunk:
+            cur = [prev[0] + 1]
+            for j, t in enumerate(target, 1):
+                cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ch != t)))
+            prev = cur
+        out.append(prev[len(target)])
+    return out
+
+
+def carrier_boundary(words, carrier_text: str | None = None, *,
+                     lo: float | None = None, hi: float | None = None,
+                     max_ratio: float | None = None) -> float | None:
     """Where the real sentence starts, in a clip the carrier was decoded in front of.
 
-    `starts` are the verification ASR's word start times over the whole generated
-    clip; the sentence begins at the word after the carrier's `n_carrier` of them.
-    Silence-gap detection was tried first and is not good enough here: the carrier
-    holds a comma, so the first long-enough gap is inside it, and the run of pauses
-    around its final word puts the biggest gap in a different place from clip to
-    clip. Word timestamps put the boundary in exactly the same place all 11 times.
+    `words` are the verification ASR's words over the whole generated clip as
+    `(text, start)` pairs. The boundary is found by ALIGNING the carrier's own
+    characters against that transcript: of every prefix of the words, the one whose
+    letters are closest to `CARRIER_TEXT`'s letters is the carrier, and the sentence
+    starts at the word after it. Nothing here counts tokens. The count is what the
+    first version of this did and it is what broke it: the ASR splits a fixed phrase
+    into a different number of words from clip to clip (6, 7 and 8 over eight clips
+    of one run), and a count that is one too low points at the carrier's own last
+    word while still landing well inside any plausible duration band. Matching
+    characters is immune to that: a mis-split costs nothing at all, because the
+    letters are the same either way and only the boundaries between them moved.
 
-    The answer is only returned inside [lo, hi]. The carrier is a fixed prefix, so
-    what it takes to say barely moves, and a boundary outside that band means the
-    ASR did not segment it the way it always does. `None` is not a fallback cut, it
-    is a refusal: the caller re-makes the clip with no carrier at all rather than
-    ship one with a syllable of it still attached.
+    Silence-gap detection was tried before either of those and is worse than both:
+    the carrier holds a comma, so the first long-enough gap is inside it.
+
+    Three things have to hold or `None` comes back. The match has to be a match, i.e.
+    within `max_ratio` of the carrier's length in characters; there has to be a word
+    after it, or the ASR heard no sentence; and the time has to be inside [lo, hi],
+    which is a sanity bound on the answer and NOT the thing that makes it trustworthy
+    (see hebrew.CARRIER_MIN_SEC). `None` is not a fallback cut, it is a refusal: the
+    caller re-makes the clip with no carrier at all rather than ship one with a
+    syllable of it still attached. And it is not the last guard either. The cut is
+    proven from the other side afterwards by `carrier_gone`, which is what catches a
+    boundary that is right about which word and wrong about when it starts.
+
+    Ties go to the LONGER prefix. When the ASR breaks the carrier's last word in two,
+    the second piece is as cheap to keep as to drop and both prefixes score the same;
+    keeping it cuts the carrier off completely, and cutting one word too many is a
+    failure `carrier_gone` sees and refuses, where leaving carrier behind is the one
+    that ships.
     """
     lo = hebrew_mod.CARRIER_MIN_SEC if lo is None else lo
     hi = hebrew_mod.CARRIER_MAX_SEC if hi is None else hi
-    starts = list(starts)
-    if n_carrier < 0 or len(starts) <= n_carrier:
+    max_ratio = hebrew_mod.CARRIER_MATCH_MAX if max_ratio is None else max_ratio
+    target = _letters(carrier_text or hebrew_mod.CARRIER_TEXT)
+    words = [(str(w), float(t)) for w, t in words]
+    if not target or not words:
         return None
-    t = float(starts[n_carrier])
+    dist = _prefix_distances([_letters(w) for w, _ in words], target)
+    best = min(range(len(dist)), key=lambda i: (dist[i], -i))
+    if dist[best] > max_ratio * len(target):
+        return None
+    if best + 1 >= len(words):
+        return None
+    t = words[best + 1][1]
     return t if lo <= t <= hi else None
+
+
+def carrier_gone(heard: str, sentence: str, carrier_text: str | None = None, *,
+                 head: int | None = None, max_ratio: float | None = None) -> bool:
+    """True when a cut clip's transcript really does open on the sentence.
+
+    This is the half of the proof `carrier_boundary` cannot give. That function
+    decides which ASR word the sentence starts at; this one checks the audio that
+    came back after cutting there, so a boundary that named the right word but sat a
+    beat early, or an alignment that was confidently wrong, is caught by hearing the
+    result rather than by trusting the arithmetic that produced it.
+
+    The test is an anchor, not an overlap score: the first `head` words of `heard`,
+    as one run of letters, have to be within `max_ratio` of the first `head` words of
+    `sentence`. Two words rather than one because a single mis-heard opening word is
+    ordinary; anchored at the start rather than counted across the whole line because
+    the failure being looked for is extra material at the front, and a bag-of-words
+    score cannot see that at all (`word_overlap` divides by the target's length, so
+    inserted words cost it exactly nothing).
+
+    On top of that, no word of the carrier that is not also a word of the sentence
+    may appear anywhere in that head. That is redundant with the anchor most of the
+    time and free, and it is the check that names the failure in the log when a
+    whole carrier word survives the cut.
+    """
+    head = hebrew_mod.CARRIER_HEAD_WORDS if head is None else head
+    max_ratio = hebrew_mod.CARRIER_HEAD_MAX if max_ratio is None else max_ratio
+    said = _tokens(sentence, "he")
+    got = _tokens(heard, "he")
+    if not said or not got:
+        return False           # nothing to anchor to, so nothing is proven
+    carrier_only = set(_tokens(carrier_text or hebrew_mod.CARRIER_TEXT, "he")) - set(said)
+    if carrier_only & set(got[:max(head, 4)]):
+        return False
+    want = "".join(said[:head])
+    have = "".join(got[:head])
+    return _prefix_distances([have], want)[0] <= max_ratio * len(want)
 
 
 def source_script_leak(heard: str, src: str, tgt: str) -> bool:
@@ -1176,22 +1269,29 @@ class Engine:
         such warm-up to do. A base-language line inside a Hebrew run gets None here
         exactly as it gets the adapter switched off.
 
-        And only when a verification ASR for the target actually loaded. The cut is
-        made on that ASR's word timestamps, so without one there is no way to prove
-        the shipped clip is free of the carrier, and a carrier that cannot be
-        proven gone must not be prepended in the first place.
+        And only when a verification ASR for the target actually loaded. Both halves
+        of the proof are that ASR's: it locates the carrier and it hears the cut
+        afterwards, so without one there is no way to show the shipped clip is free
+        of the carrier, and a carrier that cannot be proven gone must not be
+        prepended in the first place.
         """
         if not self.hebrew_for(tgt) or self.asr_for(tgt) is None:
             return None
         return hebrew_mod.carrier()
 
-    def _cut_carrier(self, clip: Path, tgt: str) -> bool:
+    def _cut_carrier(self, clip: Path, tgt: str, speak: str) -> bool:
         """Cut the warm-up carrier off the front of a just-generated clip.
 
-        True when the clip now starts at the sentence. False when the boundary
-        could not be established in the band `carrier_boundary` trusts, and the
-        clip has been left exactly as it was: the caller's answer to that is to
-        re-make it with no carrier, never to guess at a cut.
+        True when the clip now starts at the sentence, and that is a fact about the
+        cut audio rather than a hope about it: the boundary is found by matching the
+        carrier's characters against the transcript (`carrier_boundary`) and the
+        result is then re-transcribed and required to open on the sentence's own
+        first words (`carrier_gone`). Either half refusing is a False.
+
+        False also leaves the clip exactly as it was, byte for byte, which is why
+        the cut is written beside it and only moved into place once it is proven.
+        The caller's answer to a False is to re-make the clip with no carrier at
+        all, never to guess at a cut.
 
         The clip is rewritten in place and everything downstream (the length
         guard, the ASR verify, the placement) sees only the sentence, so a
@@ -1200,21 +1300,39 @@ class Engine:
         model = self.asr_for(tgt)
         if model is None:
             return False
+        cut = clip.with_suffix(".cut.wav")
         try:
-            segs, _ = model.transcribe(str(clip), language=tgt, word_timestamps=True,
-                                       condition_on_previous_text=False, vad_filter=False)
-            starts = [float(w.start) for s in segs for w in (s.words or [])]
+            at = carrier_boundary(self._asr_words(model, clip, tgt))
+            if at is None:
+                return False
+            audio.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{at:.3f}", "-i", str(clip),
+                       "-acodec", "pcm_s16le", "-ar", str(audio.SR), "-ac", "1", str(cut)])
+            heard = " ".join(w for w, _ in self._asr_words(model, cut, tgt))
+            if not carrier_gone(heard, speak):
+                print(f"  tts: the cut clip opens on {heard[:60]!r}, not on the line",
+                      file=sys.stderr)
+                return False
+            cut.replace(clip)
+            return True
         except Exception as exc:
             print(f"  tts: carrier boundary unreadable ({exc})", file=sys.stderr)
             return False
-        at = carrier_boundary(starts, hebrew_mod.CARRIER_WORDS)
-        if at is None:
-            return False
-        audio.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{at:.3f}", "-i", str(clip),
-                   "-acodec", "pcm_s16le", "-ar", str(audio.SR), "-ac", "1",
-                   str(clip.with_suffix(".cut.wav"))])
-        clip.with_suffix(".cut.wav").replace(clip)
-        return True
+        finally:
+            # A cut that was not proven must not be left lying beside the clip: the
+            # only file that may carry this name is one that has been moved onto it.
+            cut.unlink(missing_ok=True)
+
+    @staticmethod
+    def _asr_words(model, clip: Path, tgt: str) -> list[tuple[str, float]]:
+        """One clip's words as (text, start), with the VAD off.
+
+        The VAD is off because this reads a clip that still has the carrier on it
+        and the boundary is measured in that clip's own time base: a filter that
+        drops audio moves every timestamp after it.
+        """
+        segs, _ = model.transcribe(str(clip), language=tgt, word_timestamps=True,
+                                   condition_on_previous_text=False, vad_filter=False)
+        return [(str(w.word), float(w.start)) for s in segs for w in (s.words or [])]
 
     def _cache_key(self, speak: str, ref_key: str, seed: int, greedy: bool,
                    opts: TtsOpts = ttsopts.DEFAULT, tgt: str | None = None,
@@ -1397,8 +1515,9 @@ class Engine:
             # has one on the front is not this line, so the take is thrown away and
             # remade cold. That is today's audio, i.e. the floor this change sits on:
             # the worst a failed cut can do is give back the clip we already had.
-            if carrier is not None and not self._cut_carrier(clip, tgt or self.tgt_lang):
-                print(f"  tts: seg {seg_id} carrier boundary not found "
+            if carrier is not None and not self._cut_carrier(clip, tgt or self.tgt_lang,
+                                                             speak):
+                print(f"  tts: seg {seg_id} carrier could not be proven cut "
                       "re-synthesising without one", file=sys.stderr)
                 self.synth_for(opts).generate(speak, ref_path, clip, seed=seed,
                                               greedy=greedy, opts=opts, synth=synth,
