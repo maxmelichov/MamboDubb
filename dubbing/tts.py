@@ -121,6 +121,18 @@ REF_MATCH_MIN = 0.25       # segment window vs canonical ref: same-voice accepta
 # same 0.4-0.5 band as its reference. Anything this low is a different person.
 CLONE_VOICE_MIN = 0.25
 
+# Which revision of the *judgement* a stored verdict was made by. The clip cache
+# key covers everything that decides what audio is made; nothing covered whether
+# the answer about that audio would still be the same. So a fix to the judging
+# reached only clips a run happened to remake: after word_overlap learned to
+# forgive the verify ASR its own word boundaries, a re-run still read "All right."
+# against "Alright." as 0.80 out of the cache, and after short clips got a length
+# ceiling back, the 4.61s "Chelsea." that motivated it was replayed unexamined.
+# A verdict stamped with an older tag (or none, which is every verdict written
+# before this existed) is re-verified. Only the verdict: the clip is the same
+# audio and is not remade, so this costs one ASR pass and no GPU time.
+VERDICT_TAG = "verdict/v1"
+
 # What `_verify` reports when there is no verification ASR at all. It is a
 # verdict of its own, not an "ok": the clip passed the length guard and nothing
 # else looked at it. Carried onto the record as verify="unverified" so the run
@@ -819,7 +831,8 @@ def _verdict(clip: Path, ok: bool, ov: float, heard: str) -> dict[str, Any]:
     and in report.json, exactly like a run where every clip passed.
     """
     return {"ok": ok, "overlap": round(ov, 3), "heard": heard,
-            "dur": round(audio.duration(clip), 3), "verified": heard != NO_ASR}
+            "dur": round(audio.duration(clip), 3), "verified": heard != NO_ASR,
+            "vtag": VERDICT_TAG}
 
 
 def clip_is_good(verdict: dict[str, Any]) -> bool:
@@ -1667,7 +1680,12 @@ class Engine:
         clip = self.clips / f"{key}.wav"
         meta = self.clips / f"{key}.json"
         if clip.is_file() and meta.is_file():
-            return clip, meta, json.loads(meta.read_text(encoding="utf-8"))
+            got = json.loads(meta.read_text(encoding="utf-8"))
+            # The audio is cached; the judgement of it is only cached while the
+            # judging has not changed since (see VERDICT_TAG). A stale one returns
+            # None, which is the same answer a freshly made clip gives, so the
+            # caller verifies it and stores the new verdict over the old.
+            return clip, meta, (got if got.get("vtag") == VERDICT_TAG else None)
         try:
             self.synth_for(opts).generate(speak, ref_path, clip, seed=seed, greedy=greedy,
                                           opts=opts, synth=synth, lang=tgt,

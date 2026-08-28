@@ -5,6 +5,8 @@ Pure logic, no models. The regression guard that matters most is
 hash to exactly the keys it did before this feature existed.
 """
 
+import json
+
 import numpy as np
 import pytest
 import soundfile as sf
@@ -398,13 +400,36 @@ def test_attempt_replays_the_cache_only_for_the_same_options(tmp_path):
     eng, fake = _attempt_engine(tmp_path)
     ref = tmp_path / "refs" / "auto.wav"
     clip, meta, _ = eng._attempt(1, "hello.", ref, "r", 100, False, DEFAULT)
-    meta.write_text('{"ok": true, "overlap": 1.0, "heard": "hello", "dur": 1.0}')
+    meta.write_text(json.dumps({"ok": True, "overlap": 1.0, "heard": "hello",
+                                "dur": 1.0, "vtag": tts.VERDICT_TAG}))
     assert eng._attempt(1, "hello.", ref, "r", 100, False, DEFAULT)[2]["ok"] is True
     assert len(fake.calls) == 1                       # second call came from the cache
     # ... but a changed option is a different clip, never a replay of the old one
     other = eng._attempt(1, "hello.", ref, "r", 100, False, ttsopts.parse({"speed": 1.1}))
     assert other[2] is None and other[0] != clip
     assert len(fake.calls) == 2
+
+
+def test_a_verdict_from_older_judging_is_asked_again_not_replayed(tmp_path):
+    """The clip is cached; the opinion of it is cached only while the judging holds.
+
+    The cache key covers what decides the *audio*, and nothing covered whether the
+    answer about that audio would still be the same. So word_overlap learning to
+    forgive the verify ASR its word boundaries reached only clips a run happened
+    to remake: a re-run still read "All right." against "Alright." as 0.80 out of
+    the cache. The clip is not regenerated, only re-verified.
+    """
+    eng, fake = _attempt_engine(tmp_path)
+    ref = tmp_path / "refs" / "auto.wav"
+    _clip, meta, _ = eng._attempt(1, "hello.", ref, "r", 100, False, DEFAULT)
+    meta.write_text(json.dumps({"ok": True, "overlap": 0.80, "heard": "hello",
+                                "dur": 1.0, "vtag": "verdict/v0"}))
+    assert eng._attempt(1, "hello.", ref, "r", 100, False, DEFAULT)[2] is None
+    assert len(fake.calls) == 1                       # re-judged, never re-synthesised
+    # A verdict written before any tag existed is judging of unknown vintage too.
+    meta.write_text('{"ok": true, "overlap": 1.0, "heard": "hello", "dur": 1.0}')
+    assert eng._attempt(1, "hello.", ref, "r", 100, False, DEFAULT)[2] is None
+    assert len(fake.calls) == 1
 
 
 def test_pinned_reference_is_not_escalated_past(tmp_path, monkeypatch):
