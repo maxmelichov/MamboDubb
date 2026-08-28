@@ -82,24 +82,62 @@ pub const PRESERVED: &[&str] = &[
 /// The workspace the runner should use, provisioning it first if this is a fresh
 /// install. The precedence is deliberate:
 ///
-/// 1. a stored workspace (the user chose it, or an earlier launch provisioned it) —
-///    refreshed in place on app upgrade *only* when it is the provisioned copy;
+/// 1. a stored workspace (the user chose it, or an earlier launch provisioned it),
+///    but only while `stored_is_usable` still holds, and refreshed in place on app
+///    upgrade *only* when it is the provisioned copy;
 /// 2. an existing checkout at the default path (the pre-bundling install story);
 /// 3. the bundled payload, copied somewhere writable — the clean-Mac path;
 /// 4. the default path anyway, when there is no payload to copy (a dev build run
 ///    before staging): the setup screen reports it not-ready, same as before.
+///
+/// A stored path that no longer answers falls through to 2 to 4 instead of being
+/// handed back, and whatever wins is stored in its place, so the store cannot stay
+/// pointed at a hole.
 pub fn resolve_workspace(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let version = app.package_info().version.to_string();
 
-    if let Some(stored) = stored_workspace_setting(app)? {
-        if provisioned_root(app).is_ok_and(|root| root == stored) {
+    let stored = stored_workspace_setting(app)?;
+    if let Some(stored) = stored.as_ref().filter(|path| stored_is_usable(path)) {
+        if provisioned_root(app).is_ok_and(|root| &root == stored) {
             if let Ok(source) = payload_source(app) {
-                refresh_if_stale(&source, &stored, &version)?;
+                refresh_if_stale(&source, stored, &version)?;
             }
         }
-        return Ok(stored);
+        return Ok(stored.clone());
     }
 
+    let resolved = resolve_without_store(app, &version)?;
+    // Rewrite the setting whenever it disagrees with what we are about to run. This is
+    // the whole point of the fall-through: leave the dead path in the store and the
+    // next launch walks into the same wall.
+    if stored.as_deref() != Some(resolved.as_path()) {
+        store_workspace(app, &resolved)?;
+    }
+    Ok(resolved)
+}
+
+/// Whether a stored workspace setting still names something the runner can use.
+///
+/// It used to be enough that the setting existed. Then a workspace got moved (or the
+/// user emptied `~/Library/Application Support` to reclaim the disk), and the app was
+/// unrecoverable: `resolve_workspace` handed the dead path straight to the runner, `uv`
+/// died on `failed to refresh <path>/uv.lock`, and because the setting was still there
+/// no launch ever re-provisioned, with a complete payload sitting in the bundle the
+/// whole time. Only deleting settings.json by hand got out of it.
+///
+/// The same predicate `set_workspace` applies, deliberately: a directory the setup
+/// screen would refuse to accept as a workspace is not one we should silently keep
+/// running against. A half-deleted workspace (the directory survives, `pyproject.toml`
+/// does not) fails it too, which is what we want; re-provisioning replaces the source
+/// tree and preserves `.venv`, `models` and the rest per `PRESERVED`.
+fn stored_is_usable(stored: &Path) -> bool {
+    is_project_dir(stored)
+}
+
+/// Steps 2 to 4 of `resolve_workspace`'s order: everything that does not depend on the
+/// stored setting. Split out so the caller can store the result exactly once, whether
+/// it got here from a fresh install or from a stored path that went missing.
+fn resolve_without_store(app: &tauri::AppHandle, version: &str) -> Result<PathBuf, String> {
     let default = default_workspace();
     if is_project_dir(&default) {
         return Ok(default);
@@ -111,13 +149,12 @@ pub fn resolve_workspace(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     };
     let dest = provisioned_root(app).map_err(|err| err.to_string())?;
     if !is_project_dir(&dest) {
-        provision(&source, &dest, &version)?;
+        provision(&source, &dest, version)?;
     } else {
         // A previous install provisioned it but the store was lost (or wiped);
         // adopt it and let the refresh below bring it up to date.
-        refresh_if_stale(&source, &dest, &version)?;
+        refresh_if_stale(&source, &dest, version)?;
     }
-    store_workspace(app, &dest)?;
     Ok(dest)
 }
 
@@ -532,6 +569,52 @@ mod tests {
             payload_stamp(&dest),
             Some(("0.2.0".to_string(), payload_digest(source.path()).unwrap()))
         );
+    }
+
+    /// Issue #17, the dead end. A stored workspace whose directory is gone must stop
+    /// being honoured, or `resolve_workspace` hands the runner a path `uv` cannot open
+    /// and no launch ever re-provisions.
+    #[test]
+    fn a_stored_workspace_that_is_gone_is_not_usable() {
+        let home = TempDir::new("gone");
+        let stored = home.path().join("moved-away/workspace");
+        assert!(!stored.exists());
+        assert!(
+            !stored_is_usable(&stored),
+            "a path that is not there must fall through to provisioning"
+        );
+    }
+
+    /// The half-deleted case: the directory survived, the project did not. Just as dead
+    /// to `uv`, and `set_workspace` would refuse it too.
+    #[test]
+    fn a_stored_directory_that_is_not_a_project_is_not_usable() {
+        let home = TempDir::new("gutted");
+        let stored = home.path().join("workspace");
+        fs::create_dir_all(&stored).unwrap();
+        assert!(!stored_is_usable(&stored), "an empty directory is not one");
+
+        // Everything back except the manifest: still not a project.
+        fs::create_dir_all(stored.join("dubbing_app")).unwrap();
+        assert!(
+            !stored_is_usable(&stored),
+            "dubbing_app without pyproject.toml is a torn workspace, not a workspace"
+        );
+    }
+
+    /// And the case that must not regress: a real provisioned workspace is honoured, so
+    /// the fix costs nobody a re-provision on a working install.
+    #[test]
+    fn a_provisioned_workspace_stays_usable() {
+        let source = TempDir::new("keep-src");
+        make_payload(source.path());
+        let dest = TempDir::new("keep-dst");
+        let dest = dest.path().join("workspace");
+        provision(source.path(), &dest, "0.5.0").unwrap();
+
+        assert!(stored_is_usable(&dest));
+        // A plain checkout the user pointed at by hand qualifies the same way.
+        assert!(stored_is_usable(source.path()));
     }
 
     #[test]

@@ -160,9 +160,9 @@ export function BootPanel({ failed }: { failed: boolean }) {
                   The dubbing engine could not start
                 </p>
                 <p className="mt-1.5 max-w-lg text-[13px] leading-relaxed text-secondary">
-                  The log below usually names the cause. On a first launch the most
-                  common one is the network: setting up needs to download the engine's
-                  components once, so check the connection and try again.
+                  The log below names the cause. Usually it is the one-time component
+                  download stopping part way, or a workspace the app cannot read or
+                  write. Try again resumes rather than restarts.
                 </p>
               </>
             ) : (
