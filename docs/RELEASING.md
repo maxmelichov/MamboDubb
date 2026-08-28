@@ -23,7 +23,12 @@ and users install with
 curl -fsSL https://github.com/maxmelichov/MamboDubb/releases/latest/download/install.sh | sh
 ```
 
-instead of dragging. Attach `install.sh` to the GitHub release as well as the `.dmg`.
+instead of dragging. Attach `install.sh` to the GitHub release as well as the `.dmg`,
+and lead with the one-liner everywhere: it is the only path that raises no dialog,
+because `curl` sets no quarantine bit. The `.command` in the `.dmg` is a convenience
+for people who already have the disk image, not a click-to-install: a downloaded
+volume is quarantined, so double-clicking it is refused exactly like the drag is, and
+it only runs as `sh "/Volumes/MamboDubb/Install MamboDubb.command"` from Terminal.
 
 The one command:
 

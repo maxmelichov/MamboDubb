@@ -9,7 +9,13 @@
 #
 #   curl -fsSL https://github.com/maxmelichov/MamboDubb/releases/latest/download/install.sh | sh
 #   sh install.sh /path/to/MamboDubb_*.dmg
-#   Double-click "Install MamboDubb.command" inside the .dmg (this file, renamed)
+#   sh "/Volumes/MamboDubb/Install MamboDubb.command"   (this file, inside the .dmg)
+#
+# Only the curl line is dialog-free, because curl sets no quarantine bit. A .dmg
+# a browser downloaded mounts quarantined, so double-clicking "Install MamboDubb"
+# inside it is refused outright ("Apple could not verify...", buttons: Move to
+# Trash, Done), and so is dragging MamboDubb.app to /Applications. Running the
+# .command through `sh` from Terminal, as above, is the way past that.
 #
 # Must work when piped to `sh`: do not read stdin.
 
@@ -155,6 +161,7 @@ info "Launching MamboDubb."
 open "$DEST"
 
 info ""
-info "Installed. If macOS still complains, System Settings → Privacy & Security"
-info "and click Open Anyway. Dragging the .app out of a downloaded .dmg will hit"
-info "the Trash dialog again; rerun this installer instead."
+info "Installed. If macOS still refuses to open it, System Settings → Privacy &"
+info "Security has an Open Anyway button under the refusal it just showed."
+info "Dragging the .app out of a downloaded .dmg, or double-clicking the installer"
+info "inside it, gets refused the same way; rerun this script instead."

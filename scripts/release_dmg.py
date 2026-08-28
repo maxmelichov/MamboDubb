@@ -267,8 +267,10 @@ def main(argv: list[str] | None = None) -> int:
         banner([
             "BUILDING UNSIGNED — Finder-drag of a downloaded .dmg still trips",
             "Gatekeeper (\"damaged\", move to Trash). This build ad-hoc-signs",
-            "the bundle and ships Install MamboDubb.command inside the .dmg.",
-            "Users install with:",
+            "the bundle and ships Install MamboDubb.command inside the .dmg,",
+            "which a downloaded volume's quarantine flag stops anyone from",
+            "double-clicking: it only runs from Terminal via sh. So users",
+            "install with:",
             "    curl -fsSL https://github.com/maxmelichov/MamboDubb/releases/latest/download/install.sh | sh",
             f"A real drag-to-Applications release needs {SIGN_VAR} and",
             f"{', '.join(NOTARY_VARS)} — see docs/RELEASING.md.",

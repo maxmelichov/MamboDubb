@@ -51,21 +51,31 @@ days.
 
 ### macOS
 
-Unsigned builds from CI are quarantined by Gatekeeper and show **"MamboDubb is damaged
-and can't be opened. You should move it to the Trash."** That is not a corrupt
-download. It is the missing Developer ID signature. A real drag-to-Applications
-release goes through `scripts/release_dmg.py` with the Apple signing env vars; see
-[RELEASING.md](RELEASING.md). Until then, do not drag the `.app` out of the `.dmg`.
 Install with:
 
 ```bash
 curl -fsSL https://github.com/maxmelichov/MamboDubb/releases/latest/download/install.sh | sh
 ```
 
-or, for a `.dmg` you already have, `sh install.sh /path/to/MamboDubb_*.dmg`. The
-script copies the app to `/Applications`, clears quarantine, and ad-hoc-signs the
-bundle so it launches. Unsigned `.dmg`s also contain **Install MamboDubb.command**,
-which is the same script.
+That is the only path with no Gatekeeper dialogs, because `curl` sets no quarantine
+bit. Everything a browser downloads is quarantined, and the bundle is ad-hoc-signed
+rather than notarized, so on a downloaded `.dmg` **both** of the obvious moves are
+refused: dragging `MamboDubb.app` to Applications, and double-clicking **Install
+MamboDubb** inside the volume. macOS 26 shows "Apple could not verify..." with only
+**Move to Trash** and **Done**, no Open Anyway button in the dialog itself.
+
+Two ways past it, for a `.dmg` already on disk:
+
+```bash
+sh install.sh /path/to/MamboDubb_*.dmg          # from the attached install.sh
+sh "/Volumes/MamboDubb/Install MamboDubb.command"   # the same script, inside the .dmg
+```
+
+or take the refusal once and then press **Open Anyway** in System Settings >
+Privacy & Security. The script copies the app to `/Applications`, clears quarantine,
+and ad-hoc-signs the bundle so it launches. A release where dragging to Applications
+just works needs Developer ID signing and notarization through
+`scripts/release_dmg.py`; see [RELEASING.md](RELEASING.md).
 
 ### Windows
 
