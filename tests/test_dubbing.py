@@ -2846,3 +2846,43 @@ def test_a_translate_re_entry_reopens_the_stages_built_on_it(tmp_path, monkeypat
     assert cli.main(argv) == 0
     assert ran == ["translate", "tts", "timeline", "mix", "report"]
     assert manifest.load(workdir)["segments"][0]["text_en"] == "a line at last"
+
+
+def test_keep_tail_stops_at_a_word_that_belongs_to_another_segment():
+    # `merge_stranded_fragments` moves an orphaned word's TEXT into a later
+    # segment and leaves the seconds it was spoken in claimed by no span. Before
+    # the fix the keep walked over them and the line was heard twice: original
+    # under the keep, then again in the dub that had absorbed its words.
+    levels = [0.05] * 30                        # continuous speech throughout
+    segs = [{"id": 0, "start": 0.0, "end": 0.5, "speaker": "A", "keep": True},
+            {"id": 1, "start": 2.0, "end": 3.0, "speaker": "B", "keep": False}]
+    words = [{"t": 0.2, "text": "hi"}, {"t": 1.2, "text": "stranded"}]
+    segments.extend_keeps_to_speech_end(segs, levels, 0.1, 3.0, words)
+    assert segs[0]["end"] == pytest.approx(1.2)   # stops at the stranded word
+    # ...and with no word after it, the old reach (the next segment) still holds.
+    segs2 = [{"id": 0, "start": 0.0, "end": 0.5, "speaker": "A", "keep": True},
+             {"id": 1, "start": 2.0, "end": 3.0, "speaker": "B", "keep": False}]
+    segments.extend_keeps_to_speech_end(segs2, levels, 0.1, 3.0, [{"t": 0.2, "text": "hi"}])
+    assert segs2[0]["end"] == pytest.approx(2.0)
+
+
+def test_und_span_is_refuted_by_a_confident_source_read():
+    # An unnamed foreign verdict stands on "no ASR here reads this". The main
+    # source pass's own words are the check that premise never got.
+    words = [{"t": 21.0, "text": "להיות", "p": 0.44},
+             {"t": 21.5, "text": "חזן", "p": 0.99},
+             {"t": 22.8, "text": "בסדר", "p": 0.97},
+             {"t": 24.0, "text": "בסדר", "p": 0.99},
+             {"t": 25.3, "text": "רק", "p": 0.97}]
+    assert transcript.reads_as_source(words, 20.6, 26.8, "he")
+    # A passage the source model only guessed at does not refute anything.
+    unsure = [dict(w, p=0.2) for w in words]
+    assert not transcript.reads_as_source(unsure, 20.6, 26.8, "he")
+    # Nor does one it barely wrote in at all (below UND_SRC_WORDS).
+    assert not transcript.reads_as_source(words[:2], 20.6, 26.8, "he")
+    # Words in another script are not the source ASR reading the source language.
+    latin = [dict(w, text="besedro") for w in words]
+    assert not transcript.reads_as_source(latin, 20.6, 26.8, "he")
+    # No words at all — the case the unnamed keep exists for — changes nothing.
+    assert not transcript.reads_as_source([], 20.6, 26.8, "he")
+    assert not transcript.reads_as_source(None, 20.6, 26.8, "he")

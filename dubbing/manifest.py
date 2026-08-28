@@ -25,7 +25,12 @@ STAGE_TAGS = {
     # reruns vs the news register at translate/v31; segments carried both
     # alignment+passthrough and the spoken_target/veto work), so the merged tag
     # moves past every claim rather than picking a side.
-    "transcript": "transcript/v44",
+    "transcript": "transcript/v45",
+    # v45: an unnamed ("und") foreign span no longer overrides a passage the main
+    # source pass read confidently. The unnamed keep's whole premise is "no ASR
+    # here reads this"; where the source ASR's own words say otherwise, six
+    # seconds of correctly transcribed dialogue were being aired undubbed with a
+    # "…" subtitle. Named verdicts are unchanged.
     # v44: a gap window is nominated by the mix and confirmed by the vocals. A
     # music-only sting is loud in the mix but digitally silent once separated,
     # and near-silence is what Whisper answers with "thank you very much"; the
@@ -54,7 +59,12 @@ STAGE_TAGS = {
     # torn off by a buried middle folds into its continuation instead of being
     # voiced as a stranded beat — and it refuses spliced foreign-language spans,
     # so an English orphan never rides into a `lang`-tagged neighbour's voice.
-    "segments": "segments/v41",
+    "segments": "segments/v42",
+    # v42: a keep no longer walks its end over a word that belongs to another
+    # segment. `merge_stranded_fragments` moves an orphaned word's TEXT into a
+    # later segment but leaves the seconds it was spoken in claimed by nobody, and
+    # the keep-tail walk marched straight through them so the line played twice,
+    # once in the original voice and once dubbed.
     # v34: a same-language pair (he→he, en→en) translates by identity the target
     # line is the source line and no translator loads.
     # v35: a segment translates from its OWN language (`translate.segment_langs`),
