@@ -123,6 +123,55 @@ def trim_leading_silence(
     return float(trimmed)
 
 
+def trim_trailing_silence(
+    src: Path,
+    dst: Path,
+    *,
+    sample_rate: int = SR,
+    rms_thresh: float = 0.012,
+    pad_sec: float = 0.06,
+    max_trim_sec: float = 0.85,
+) -> float:
+    """Drop the hush Qwen emits after the sentence. Returns seconds removed.
+
+    The mirror of `trim_leading_silence`, and it exists for the same reason: the
+    clip that leaves TTS should hold the line and nothing else. A trailing hush
+    is not free, because the timeline measures the *file*, and a clip whose last
+    quarter-second is silence is compressed as though those were words, so the
+    audible speech is squeezed harder than it needs to be and the sentence
+    finishes early inside its own slot. Measured on the demo runs the tail
+    averaged 0.12–0.22 s, i.e. ~5% of clip length, which is ~5% of speed the
+    speech was paying for nothing.
+
+    The pad is a touch wider than the leading one: a final consonant or a vowel
+    decay trails off gradually, and clipping the release is audible in a way
+    that clipping a silent lead-in is not.
+    """
+    a, sr = sf.read(str(src), dtype="float32", always_2d=False)
+    if getattr(a, "ndim", 1) > 1:
+        a = np.mean(a, axis=-1).astype(np.float32)
+    if sr != sample_rate:
+        raise RuntimeError(f"unexpected sample rate {sr} (want {sample_rate})")
+    hop = max(1, sample_rate // 50)
+    limit = min(len(a) - hop, int(max_trim_sec * sample_rate))
+    end = len(a)
+    for i in range(0, max(1, limit), hop):
+        j = len(a) - i - hop
+        if j < 0:
+            break
+        if float(np.sqrt(np.mean(a[j : j + hop] ** 2) + 1e-12)) >= rms_thresh:
+            end = min(len(a), j + hop + int(pad_sec * sample_rate))
+            break
+    trimmed = (len(a) - end) / sample_rate
+    if trimmed < 0.04:
+        if Path(src) != Path(dst):
+            sf.write(str(dst), a, sample_rate)
+        return 0.0
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(str(dst), a[:end].astype(np.float32), sample_rate)
+    return float(trimmed)
+
+
 def frame_rms(audio: np.ndarray, sr: int, hop_sec: float = 0.1) -> np.ndarray:
     hop = max(1, int(hop_sec * sr))
     n = len(audio) // hop
@@ -130,6 +179,26 @@ def frame_rms(audio: np.ndarray, sr: int, hop_sec: float = 0.1) -> np.ndarray:
         return np.zeros(0, dtype=np.float32)
     frames = audio[: n * hop].reshape(n, hop)
     return np.sqrt(np.mean(frames.astype(np.float32) ** 2, axis=1) + 1e-12)
+
+
+def speech_bounds(audio: np.ndarray, sr: int, *, hop_sec: float = 0.02,
+                  rel: float = 0.10, floor: float = 0.004
+                  ) -> tuple[float, float] | None:
+    """First and last speech instant in `audio`, in seconds, or None if silent.
+
+    The threshold is relative to the window's own loud end (the 97th percentile
+    of frame RMS, so one click cannot set it) with an absolute floor underneath,
+    which is what lets one function read both a quiet interview and a shouted
+    line without a per-run gain constant.
+    """
+    e = frame_rms(audio, sr, hop_sec)
+    if e.size == 0:
+        return None
+    thresh = max(floor, rel * float(np.percentile(e, 97)))
+    idx = np.flatnonzero(e >= thresh)
+    if idx.size == 0:
+        return None
+    return float(idx[0] * hop_sec), float((idx[-1] + 1) * hop_sec)
 
 
 def hf_noise_ratio(audio: np.ndarray, sr: int) -> float:

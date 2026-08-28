@@ -405,6 +405,7 @@ def test_the_synth_is_told_which_language_to_speak(tmp_path, monkeypatch):
 
     eng.synth_for = lambda opts=None: FakeSynth()
     monkeypatch.setattr(tts_mod.audio, "trim_leading_silence", lambda a, b: None)
+    monkeypatch.setattr(tts_mod.audio, "trim_trailing_silence", lambda a, b: None)
     eng._attempt(1, "bonjour.", tmp_path / "refs/a.wav", "ref:1.00-4.00", 7, 0,
                  tts_mod.ttsopts.DEFAULT, "fr")
     assert calls == ["fr"]

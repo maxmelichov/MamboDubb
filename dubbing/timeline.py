@@ -2,12 +2,22 @@
 cut-off speech structurally impossible.
 
 One forward pass places each clip at its source onset, or as soon after as the
-previous clip allows. Nothing is ever trimmed to fit: a clip that is too long
-for its slot is gently time-compressed, one much shorter than its slot is gently
-time-stretched (so it does not finish early and drift out of sync), and whatever
-compression still does not fit becomes *drift* on the following segment. Drift is
-bounded, and it disappears on its own at the next real pause, because a start is
-`max(source_start, prev_end + gap)`.
+previous clip allows. "Source onset" means the moment the speaker is measured to
+start talking in the vocals stem, not the ASR segment boundary: the two differ by
+a median 0.13-0.22s on the demo runs, always in the same direction for a given
+source, so placing against the boundary starts every dub in the run consistently
+early (or fits it to a span the speaker did not use). See `speech_anchors`; a run
+whose vocals cannot be read falls back to the boundaries, which is what every run
+did before. The anchor is a preference and not a floor: a clip that cannot fit
+between it and the next speaker's onset gives the wait back, down to the boundary
+it would have started on, before it pays for the wait in compression and drift.
+
+Nothing is ever trimmed to fit: a clip that is too long for its slot is gently
+time-compressed, one much shorter than its slot is gently time-stretched (so it
+does not finish early and drift out of sync), and whatever compression still does
+not fit becomes *drift* on the following segment. Drift is bounded, and it
+disappears on its own at the next real pause, because a start is
+`max(onset, prev_end + gap)`.
 
 Each clip is anchored to its *own* segment's end, not to the next segment's
 start: stretching never pushes a clip past the moment its original speaker
@@ -30,8 +40,9 @@ inserting silence at each seam would both sound wrong and push the run late.
 Invariants asserted at the end of the stage:
   * placements are strictly ordered and never overlap
   * no clip is shorter than the audio it holds (nothing is cut)
-  * no clip starts more than LEAD_MAX before its source onset (and only ever
-    early to duck under a cross-speaker wall)
+  * no clip starts more than LEAD_MAX before its source onset, counting the
+    earlier of the anchor and the ASR boundary (and only ever early to duck
+    under a cross-speaker wall)
   * every segment is placed exactly once
 """
 
@@ -64,6 +75,11 @@ LEAD_MAX = 0.60       # how far a clip squeezed against a cross-speaker wall may
                       # start before its own source onset, into free timeline —
                       # a moment of early speech beats talking over the next
                       # speaker's opening
+ANCHOR_MAX = 0.35     # how far the measured speech onset/offset of a segment may
+                      # move its anchor away from the ASR boundary. Bounds the
+                      # damage a mis-detection can do to a single placement; the
+                      # measured drift between boundary and speech is well inside
+                      # it (median 0.22s on the he-source demo, 0.14s on the en one)
 
 
 @dataclass(frozen=True)
@@ -111,7 +127,8 @@ def rate_for(dur: float, slot: float, drift_in: float, stretchable: bool,
              rates: Rates | None = None) -> float:
     """How much to speed a clip up so it fits `slot`, within policy limits.
 
-    `own` is the segment's own span (source_end - source_start): stretching a
+    `own` is the segment's own span, meaning the measured speech span where the
+    run has one and the ASR boundaries where it does not: stretching a
     short clip fills at most that far, never the whole slot the dub should
     stop when the original speaker stopped, not when the next one starts. A
     clip longer than its own span is compressed toward `own + tail`, where
@@ -156,28 +173,49 @@ def rate_for(dur: float, slot: float, drift_in: float, stretchable: bool,
     return rate
 
 
+def anchors(items: list[dict[str, Any]]) -> list[tuple[float, float]]:
+    """The (onset, offset) each item is placed against.
+
+    A segment's ASR boundaries are not the moment its speaker starts and stops:
+    measured on the demo runs the Hebrew source begins talking a median 0.22s
+    *after* the boundary and the English source keeps talking a median 0.13s
+    *past* it. Placing a dub against the boundary therefore starts it a fifth of
+    a second before the mouth moves, and fits it to a span that is not the one
+    the speaker used. When the run has measured the vocals (`speech_anchors`)
+    every item carries `speech_start`/`speech_end` and those are what placement
+    means by "its source onset"; without them this is the ASR boundary, i.e.
+    exactly the previous behaviour.
+    """
+    return [(float(it.get("speech_start", it["source_start"])),
+             float(it.get("speech_end", it["source_end"]))) for it in items]
+
+
 def place(items: list[dict[str, Any]],
           rates: Rates | None = None,
           media_end: float = math.inf) -> list[dict[str, Any]]:
-    """Pure forward placement. `items` must be sorted by source_start."""
+    """Pure forward placement. `items` must be sorted by anchor onset, which is
+    `speech_start` where an item has one and `source_start` where it does not
+    (`build_items` sorts them that way)."""
     r = rates or _DEFAULT_RATES
+    spans = anchors(items)
     out: list[dict[str, Any]] = []
     prev_end = -math.inf
     prev_source_end = -math.inf
     for i, it in enumerate(items):
+        onset, offset = spans[i]
         # Never insert more silence than the source had. Segments that run
         # straight into each other a passage of original audio split into
         # parts, say must stay joined, or every boundary would add a gap and
         # the whole run would slide late.
-        need = min(MIN_GAP, max(MIN_SEAM, it["source_start"] - prev_source_end))
-        start = max(it["source_start"], prev_end + need)
+        need = min(MIN_GAP, max(MIN_SEAM, onset - prev_source_end))
+        start = max(onset, prev_end + need)
         # The end of the media is the last clip's wall: past it the mux has no
         # video left, so audio there is not merely late, it is gone.
-        nxt = items[i + 1]["source_start"] if i + 1 < len(items) else media_end
-        next_need = (min(MIN_GAP, max(MIN_SEAM, nxt - it["source_end"]))
+        nxt = spans[i + 1][0] if i + 1 < len(items) else media_end
+        next_need = (min(MIN_GAP, max(MIN_SEAM, nxt - offset))
                      if i + 1 < len(items) else 0.0)
         slot = nxt - next_need - start
-        drift = start - it["source_start"]
+        drift = start - onset
         # A too-long clip may run TAIL_MAX past its own end into a following
         # gap when the next segment is the same speaker; a speaker change (or
         # the end of the video) gets no deliberate tail compress harder, and
@@ -186,10 +224,26 @@ def place(items: list[dict[str, Any]],
         same_speaker = (i + 1 < len(items)
                         and items[i + 1].get("speaker") == it.get("speaker"))
         tail = r.tail_max if same_speaker else 0.0
-        own = it["source_end"] - it["source_start"]
+        own = offset - onset
         rate = rate_for(it["dur"], slot, drift, it.get("stretchable", False),
                         own=own, tail=tail, rates=r)
         end = start + it["dur"] / rate
+        # The anchor is a preference, not a floor. Waiting for the measured onset
+        # spends slot on silence, and on a run whose lines are already too long
+        # for their slots that is the difference between a clip that fits and one
+        # that overruns and pushes the rest of the scene late. So a clip that
+        # still does not fit gives the wait back first, down to the boundary it
+        # would have started on before anchoring (never earlier, never into the
+        # previous clip) and only as far as it needs. Cheaper than compressing
+        # harder, and much cheaper than the drift.
+        boundary = max(float(it["source_start"]), prev_end + need)
+        if end > nxt - next_need + 1e-6 and start > boundary + 1e-6:
+            start -= min(start - boundary, end - (nxt - next_need))
+            slot = nxt - next_need - start
+            drift = start - onset
+            rate = rate_for(it["dur"], slot, drift, it.get("stretchable", False),
+                            own=own, tail=tail, rates=r)
+            end = start + it["dur"] / rate
         # A speaker change makes the next segment's original onset a hard wall:
         # the dub must not still be talking in voice A when character B visibly
         # starts. First pull the clip earlier into free timeline before it
@@ -217,10 +271,10 @@ def place(items: list[dict[str, Any]],
             overrun = max(0.0, end - nxt)
         out.append({"id": it["id"], "start": round(start, 3), "end": round(end, 3),
                     "rate": round(rate, 4),
-                    "drift": round(start - it["source_start"], 3),
+                    "drift": round(start - onset, 3),
                     "overrun": round(overrun, 3)})
         prev_end = end
-        prev_source_end = it["source_end"]
+        prev_source_end = offset
     return out
 
 
@@ -247,6 +301,7 @@ def smooth_rates(items: list[dict[str, Any]], places: list[dict[str, Any]], *,
     Cross-speaker pairs are untouched. Returns a new list; `items` read only.
     """
     out = [dict(p) for p in places]
+    spans = anchors(items)
 
     def lengthen(j: int, target: float) -> None:
         """Slow clip j toward `target` (>= 1.0), spending only free slack."""
@@ -257,7 +312,7 @@ def smooth_rates(items: list[dict[str, Any]], places: list[dict[str, Any]], *,
         if j + 1 < len(out):
             limit = out[j + 1]["start"]
             if items[j + 1].get("speaker") != it.get("speaker"):
-                limit = min(limit, items[j + 1]["source_start"])   # the wall
+                limit = min(limit, spans[j + 1][0])                # the wall
         avail = limit - out[j]["start"]
         floor_rate = it["dur"] / avail if avail > 0.05 else math.inf
         new_rate = max(target, floor_rate, 1.0)
@@ -283,7 +338,7 @@ def smooth_rates(items: list[dict[str, Any]], places: list[dict[str, Any]], *,
             a, b = items[i], items[i + 1]
             if a.get("speaker") != b.get("speaker"):
                 continue
-            if b["source_start"] - a["source_end"] >= scene_gap:
+            if spans[i + 1][0] - spans[i][1] >= scene_gap:
                 continue
             if abs(out[i]["rate"] - out[i + 1]["rate"]) <= max_step + 1e-9:
                 continue
@@ -303,8 +358,13 @@ def assert_invariants(places: list[dict], items: list[dict]) -> None:
             f"placements overlap: seg {a['id']} ends {a['end']:.3f}, "
             f"seg {b['id']} starts {b['start']:.3f}"
         )
-    for p, it in zip(places, items):
-        assert p["start"] >= it["source_start"] - LEAD_MAX - 1e-3, (
+    for p, it, (onset, _) in zip(places, items, anchors(items)):
+        # Against the earlier of the two starts placement is allowed to consider:
+        # the anchor, and the ASR boundary it may give the anchor's wait back to.
+        # Both are "where the source starts" as far as this stage is concerned,
+        # and they sit within ANCHOR_MAX of each other.
+        floor = min(onset, float(it["source_start"]))
+        assert p["start"] >= floor - LEAD_MAX - 1e-3, (
             f"seg {p['id']} starts more than LEAD_MAX before source"
         )
         held = it["dur"] / p["rate"]
@@ -317,9 +377,10 @@ def assert_invariants(places: list[dict], items: list[dict]) -> None:
 def _worst_overrunner(items: list[dict], places: list[dict], idx: int) -> int | None:
     """The segment in this run that is pushing segment `idx` late."""
     best, best_overrun = None, 0.0
+    spans = anchors(items)
     i = idx - 1
     while i >= 0:
-        overrun = places[i]["end"] - items[i + 1]["source_start"]
+        overrun = places[i]["end"] - spans[i + 1][0]
         if items[i].get("stretchable") and not items[i].get("shortened") and overrun > best_overrun:
             best, best_overrun = i, overrun
         if places[i]["drift"] <= 1e-6:
@@ -328,7 +389,65 @@ def _worst_overrunner(items: list[dict], places: list[dict], idx: int) -> int | 
     return best
 
 
-def build_items(m: dict[str, Any]) -> list[dict[str, Any]]:
+ANCHOR_SR = 16000     # plenty for an energy envelope, and a quick decode
+
+
+def speech_anchors(m: dict[str, Any], workdir: Path) -> dict[int, tuple[float, float]]:
+    """Where each segment's speaker actually starts and stops, from the vocals.
+
+    Returns {segment id: (onset, offset)} in absolute seconds, only for segments
+    where a reading was possible; the caller falls back to the ASR boundary for
+    the rest, which is what the pipeline did for every segment before this.
+
+    `stems` warns, correctly, that the vocals stem is not an oracle for "is
+    someone speaking here": Demucs routes speech into the music stem often
+    enough that trusting it that way is what once produced dead-air holes. This
+    is a much weaker question. The segment is already known to contain speech;
+    all that is asked is *where inside it* the energy begins and ends, the answer
+    is clamped to ANCHOR_MAX of the boundary we would otherwise have used, and a
+    window that reads as silent yields nothing rather than a guess. Nothing is
+    ever dropped on the strength of it, so the worst a bad reading can do is the
+    third of a second of misplacement the boundaries already cost us.
+
+    The search window is clipped to the neighbours: with segments as little as
+    0.08s apart, a fixed pad reads the previous line's tail as this line's onset.
+    """
+    voc = workdir / (m.get("files") or {}).get("vocals", "stems/vocals.wav")
+    if not voc.is_file():
+        return {}
+    segs = sorted(m["segments"], key=lambda s: s["start"])
+    out: dict[int, tuple[float, float]] = {}
+    for k, seg in enumerate(segs):
+        s0, s1 = float(seg["start"]), float(seg["end"])
+        lo = max(0.0, s0 - ANCHOR_MAX)
+        if k:
+            lo = max(lo, float(segs[k - 1]["end"]))
+        hi = s1 + ANCHOR_MAX
+        if k + 1 < len(segs):
+            hi = min(hi, float(segs[k + 1]["start"]))
+        if hi - lo < 0.2:
+            continue
+        try:
+            found = audio.speech_bounds(audio.decode_mono(voc, ANCHOR_SR, start=lo, end=hi),
+                                        ANCHOR_SR)
+        except Exception as exc:                     # a stem we cannot read is not fatal
+            print(f"  timeline: seg {seg['id']} anchor read failed ({exc})", file=sys.stderr)
+            continue
+        if found is None:
+            continue
+        onset = min(max(lo + found[0], s0 - ANCHOR_MAX), s0 + ANCHOR_MAX)
+        offset = min(max(lo + found[1], s1 - ANCHOR_MAX), s1 + ANCHOR_MAX)
+        # A span the reading turned inside out (or shrank to nothing) is not a
+        # span to place against; the boundaries stand.
+        if offset - onset < 0.2:
+            continue
+        out[seg["id"]] = (round(onset, 3), round(offset, 3))
+    return out
+
+
+def build_items(m: dict[str, Any],
+                spans: dict[int, tuple[float, float]] | None = None
+                ) -> list[dict[str, Any]]:
     # Placement is all-or-nothing: every segment is laid out in one forward pass,
     # so one without a clip is not something to skip over. Skipping is exactly
     # what the old failure did by accident — the bare `seg["tts"]["dur"]` below
@@ -370,6 +489,16 @@ def build_items(m: dict[str, Any]) -> list[dict[str, Any]]:
             "stretchable": not seg["keep"]
                            and not Path(seg["tts"]["clip"]).name.startswith("keep_"),
         })
+        # The measured speech span, when the run read one. Kept beside the ASR
+        # boundaries rather than replacing them: `build_items`'s kept-clip check
+        # and everything downstream still mean the segment's span by "span".
+        if spans and seg["id"] in spans:
+            items[-1]["speech_start"], items[-1]["speech_end"] = spans[seg["id"]]
+    # `place` walks forward and needs its input in anchor order. Two boundaries a
+    # tenth of a second apart can swap once each moves up to ANCHOR_MAX, so sort
+    # on the anchor rather than assuming the boundary order survived.
+    items.sort(key=lambda it: (it.get("speech_start", it["source_start"]),
+                               it["source_start"]))
     return items
 
 
@@ -379,7 +508,14 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
     media_end = float(m["source"].get("duration") or math.inf)
     run_tgt = (m.get("source") or {}).get("tgt_lang") or "en"
     by_id = {s["id"]: s for s in m["segments"]}
-    items = build_items(m)
+    spans = speech_anchors(m, workdir)
+    if spans:
+        moved = [abs(spans[s["id"]][0] - float(s["start"]))
+                 for s in m["segments"] if s["id"] in spans]
+        print(f"  timeline: anchored {len(spans)}/{len(m['segments'])} segments on "
+              f"measured speech, median onset shift "
+              f"{sorted(moved)[len(moved) // 2]:.2f}s", file=sys.stderr)
+    items = build_items(m, spans)
     by_index = {it["id"]: i for i, it in enumerate(items)}
     spoken: dict[int, str] = {}   # segment id -> shortened line actually voiced
     refused: dict[int, str] = {}  # segment id -> why its rescue was abandoned
@@ -403,7 +539,7 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
                 # instead, which `place` still keeps non-overlapping.
                 items[j]["shortened"] = True
                 continue
-            slot = items[j + 1]["source_start"] - places[j]["start"]
+            slot = anchors(items)[j + 1][0] - places[j]["start"]
             budget = max(0.5, slot) * rates.rate_pref
             ratio = max(0.5, min(0.95, budget / max(items[j]["dur"], 0.1)))
             # Speech units, not `.split()` words: a Japanese line is one "word",

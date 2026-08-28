@@ -90,7 +90,12 @@ STAGE_TAGS = {
     # own voice (a label is not a person), the alternates are held to the same
     # test, and a clip that says the right words in another voice is recorded as
     # "wrong_voice" rather than "ok" different rungs, different verdicts.
-    "tts": "tts/v21",
+    "tts": "tts/v22",
+    # v22: a generated clip is trimmed at BOTH ends, not only the front. The
+    # trailing hush averaged 0.12-0.22s across the demo runs, ~5% of clip length,
+    # and the timeline measures the file: that silence was being time-compressed
+    # as though it were words, so the speech was squeezed ~5% harder than it
+    # needed to be and then finished early inside its own slot.
     # v21: the carrier's cut point is found by matching the carrier's characters
     # against the verification ASR, and the cut clip is re-transcribed and made to
     # open on the sentence's own first words before it is kept. v20 counted ASR
@@ -116,7 +121,12 @@ STAGE_TAGS = {
     # so a CJK line is measured in characters. As words it was always 1, the budget
     # floored at 3, and `shorten` refused every rewrite — this stage's only rescue
     # for a late line was dead for zh/ja/ko.
-    "timeline": "timeline/v16",
+    # v17: placement is anchored on the speech measured in the vocals stem rather
+    # than on the ASR segment boundary, and a clip is fitted to the span the
+    # speaker actually used. The two disagree systematically and in one direction
+    # per source (a median 0.22s late on the he-source demo, 0.13s long on the
+    # en-source one), so every dub in a run started early by about that much.
+    "timeline": "timeline/v17",
     "mix": "mix/v9",
     # v3: honest failure accounting verify.unverified, degraded, overrun,
     # shorten_abandoned, subtitles_failed, stale_locked_clips alongside the

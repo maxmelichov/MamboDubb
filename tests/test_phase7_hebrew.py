@@ -331,7 +331,7 @@ def test_the_stage_tags_moved():
     # escalate to another speaker's window now stays on its own audio.
     # v20: a Hebrew line is decoded behind a warm-up carrier that is cut back off,
     # so every Hebrew clip is different audio from the one v19 would have made.
-    assert manifest.STAGE_TAGS["tts"] == "tts/v21"
+    assert manifest.STAGE_TAGS["tts"] == "tts/v22"
     # v36: script-derived gloss floors, negations and shorten budgets (CJK/hangul).
     # v37: "%" survives into every TTS target's own vocabulary.
     assert manifest.STAGE_TAGS["translate"] == "translate/v38"

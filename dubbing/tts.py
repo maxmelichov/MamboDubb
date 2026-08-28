@@ -1525,7 +1525,12 @@ class Engine:
         except Exception as exc:
             print(f"  tts: seg {seg_id} generate failed ({exc})", file=sys.stderr)
             return clip, meta, {"failed": True}
+        # Both ends, for the same reason: the file that leaves here is the line
+        # and nothing else. The timeline measures the *file*, so a trailing hush
+        # is compressed as if it were words: the speech pays the speed for
+        # silence and then finishes early inside its own slot.
         audio.trim_leading_silence(clip, clip)
+        audio.trim_trailing_silence(clip, clip)
         return clip, meta, None
 
     def _verify_and_store(self, clip: Path, meta: Path, speak: str,

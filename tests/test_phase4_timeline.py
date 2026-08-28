@@ -362,3 +362,134 @@ def test_a_segments_own_target_language_decides_its_budget(monkeypatch, tmp_path
 
     timeline.run(m, tmp_path, shorten_many=shorten_many, resynth_many=lambda x: {})
     assert asked and asked[0] > 3            # measured as Japanese, not as one word
+
+
+# ------------------------- (g) placement is anchored on measured speech, not the
+#                               ASR boundary
+
+def spoken(i, start, dur, *, end=None, speech=None, speaker="S0", stretchable=True):
+    """An item that also carries the speech bounds `speech_anchors` would find."""
+    it = item(i, start, dur, end=end, speaker=speaker, stretchable=stretchable)
+    if speech is not None:
+        it["speech_start"], it["speech_end"] = speech
+    return it
+
+
+def test_a_clip_waits_for_the_speaker_not_for_the_segment_boundary():
+    # The boundary says 10.0 and the speaker is measured to start at 10.25. Placing
+    # on the boundary starts the dub a quarter of a second before the mouth moves,
+    # which is the systematic error the demo runs showed on every segment of a run.
+    items = [spoken(0, 10.0, 2.0, end=13.0, speech=(10.25, 13.0))]
+    p = timeline.place(items)[0]
+    assert p["start"] == pytest.approx(10.25)
+    assert p["drift"] == pytest.approx(0.0)     # on time, against the speaker
+
+
+def test_without_measured_speech_nothing_moves():
+    # Every run made before this, and any run whose vocals cannot be read, must
+    # place exactly where it placed before.
+    items = [item(0, 10.0, 2.0, end=13.0)]
+    assert timeline.place(items) == timeline.place([spoken(0, 10.0, 2.0, end=13.0)])
+
+
+def test_a_clip_is_fitted_to_the_span_the_speaker_used():
+    # 3.0s of dub over a boundary span of 3.0s is a fit; over the 2.0s the speaker
+    # actually spent talking it is not, and pretending otherwise is how a dub keeps
+    # going after the shot has moved on.
+    boundary = timeline.place([item(0, 10.0, 3.0, end=13.0),
+                               item(1, 20.0, 1.0, speaker="S1")])[0]
+    measured = timeline.place([spoken(0, 10.0, 3.0, end=13.0, speech=(10.0, 12.0)),
+                               spoken(1, 20.0, 1.0, speech=(20.0, 21.0), speaker="S1")])[0]
+    assert boundary["rate"] == pytest.approx(1.0)
+    assert measured["rate"] > 1.0
+    assert measured["end"] <= 12.0 + timeline.TAIL_MAX + 1e-6
+
+
+def test_the_anchors_wait_is_given_back_before_the_clip_overruns():
+    # Waiting for the onset costs slot. When a line is already too long for its
+    # slot that wait is the difference between fitting and pushing the whole scene
+    # late, so it is the first thing given up — down to the boundary, no further.
+    items = [spoken(0, 10.0, 3.4, end=12.6, speech=(10.4, 12.6)),
+             spoken(1, 13.0, 1.0, speech=(13.0, 14.0), speaker="S1")]
+    p = timeline.place(items)[0]
+    assert 10.0 - 1e-6 <= p["start"] < 10.4
+    assert p["overrun"] == pytest.approx(0.0)
+    timeline.assert_invariants(timeline.place(items), items)
+
+
+def test_anchored_placements_keep_every_invariant():
+    rnd = random.Random(11)
+    items, t = [], 0.0
+    for i in range(40):
+        span = rnd.uniform(0.8, 4.0)
+        lead = rnd.uniform(0.0, timeline.ANCHOR_MAX)
+        items.append(spoken(i, t, rnd.uniform(0.3, 6.0), end=t + span,
+                            speech=(t + lead, t + span),
+                            speaker=f"S{rnd.randint(0, 2)}"))
+        t += span + rnd.uniform(0.0, 2.5)
+    places = timeline.place(items)
+    timeline.assert_invariants(places, items)
+
+
+# ------------------------- (h) reading the anchors off the vocals stem
+
+def write_tone(path, spans, *, dur, sr=44100):
+    import numpy as np
+    import soundfile as sf
+    a = np.zeros(int(dur * sr), dtype="float32")
+    for s, e in spans:
+        n = int((e - s) * sr)
+        a[int(s * sr):int(s * sr) + n] = 0.4 * np.sin(
+            2 * np.pi * 220 * np.arange(n) / sr).astype("float32")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(str(path), a, sr)
+
+
+def anchored_manifest(tmp_path, spans, segments):
+    from dubbing import manifest
+    write_tone(tmp_path / "stems/vocals.wav", spans, dur=30.0)
+    m = manifest.new({"input": "x", "src_lang": "he", "tgt_lang": "en"})
+    m["files"]["vocals"] = "stems/vocals.wav"
+    m["segments"] = segments
+    manifest.ensure_uids(m["segments"])
+    return m
+
+
+def seg(i, start, end, speaker="S0"):
+    return {"id": i, "start": start, "end": end, "speaker": speaker, "keep": False,
+            "keep_reason": None, "text": "x", "text_en": "x",
+            "tts": {"clip": f"clips/{i}.wav", "dur": 1.0}}
+
+
+def test_speech_anchors_find_the_onset_inside_a_padded_segment(tmp_path):
+    m = anchored_manifest(tmp_path, [(5.3, 7.0)], [seg(0, 5.0, 7.2)])
+    assert timeline.speech_anchors(m, tmp_path)[0][0] == pytest.approx(5.3, abs=0.05)
+
+
+def test_speech_anchors_never_move_further_than_anchor_max(tmp_path):
+    # A reading that disagrees with the boundary by more than ANCHOR_MAX is more
+    # likely a bad reading than a bad boundary, and either way one clip is not
+    # allowed to move that far on the strength of an energy envelope.
+    m = anchored_manifest(tmp_path, [(9.0, 11.0)], [seg(0, 6.0, 11.0)])
+    onset, _ = timeline.speech_anchors(m, tmp_path)[0]
+    assert onset == pytest.approx(6.0 + timeline.ANCHOR_MAX, abs=0.02)
+
+
+def test_speech_anchors_do_not_read_the_previous_line_as_this_ones_onset(tmp_path):
+    # Segments 0.08s apart are ordinary; a fixed pad would hear the tail of
+    # segment 0 and report segment 1 as starting before it does.
+    m = anchored_manifest(tmp_path, [(3.0, 6.0), (6.4, 9.0)],
+                          [seg(0, 3.0, 6.08), seg(1, 6.16, 9.0)])
+    assert timeline.speech_anchors(m, tmp_path)[1][0] >= 6.08 - 1e-6
+
+
+def test_a_silent_window_yields_no_anchor_and_the_boundary_stands(tmp_path):
+    m = anchored_manifest(tmp_path, [], [seg(0, 3.0, 6.0)])
+    assert timeline.speech_anchors(m, tmp_path) == {}
+
+
+def test_no_vocals_stem_is_not_an_error(tmp_path):
+    from dubbing import manifest
+    m = manifest.new({"input": "x", "src_lang": "he", "tgt_lang": "en"})
+    m["segments"] = [seg(0, 3.0, 6.0)]
+    assert timeline.speech_anchors(m, tmp_path) == {}
