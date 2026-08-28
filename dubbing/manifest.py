@@ -196,7 +196,10 @@ STAGE_TAGS = {
     # fell back to source audio is a stage that never ran, not a per-segment
     # fallback. It now names itself in `degraded` and exits the CLI nonzero
     # instead of reporting a clean run over an untranslated preview.
-    "report": "report/v5",
+    # v6: an abandoned shorten reports whether the line actually ended up late.
+    # Every one of them used to print "still late" under the overrun count, so a
+    # run with one overrun listed four late segments, three of which were on time.
+    "report": "report/v6",
 }
 
 # Anything not listed here is dropped on save. This is what stops the segment

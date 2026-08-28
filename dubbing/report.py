@@ -173,9 +173,13 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
     overruns = [s["place"]["overrun"] for s in segments
                 if (s.get("place") or {}).get("overrun")]
     # A rescue that was attempted and abandoned the missing half of the
-    # shortened/drift story: this line is late because nothing could fix it.
+    # shortened/drift story. Not the same thing as a late line: a refused shorten
+    # means the clip kept every word and the slot had to absorb it in speed, and
+    # the speed-up usually gets there. Its own `overrun` says which happened, so
+    # the record carries it and nothing has to guess.
     abandoned = [{"id": s["id"], "start": s["start"],
-                  "reason": s["place"]["shorten"]}
+                  "reason": s["place"]["shorten"],
+                  "overrun": s["place"].get("overrun") or 0.0}
                  for s in segments if (s.get("place") or {}).get("shorten")]
     # A kept span whose subtitle is the translate stage's "…" placeholder: the
     # translator refused and the viewer gets an ellipsis where a line should be.
@@ -291,9 +295,17 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
     if overruns:
         print(f"  overrun: {len(overruns)} clip(s) still talking past the next "
               f"speaker's onset, worst {report['overrun']['max']}s", file=sys.stderr)
+    if abandoned:
+        # Its own heading, and its own truth. These lines used to print under the
+        # overrun count and each claimed to be "still late", so a run with one
+        # overrun listed four late segments and three of them were on time.
+        print(f"  shorten refused: {len(abandoned)} segment(s) kept every word and "
+              "paid for it in speed", file=sys.stderr)
     for item in abandoned:
-        print(f"    seg {item['id']} @{item['start']:.1f}s shorten attempted, "
-              f"{item['reason']} original kept, still late", file=sys.stderr)
+        late = (f", still {item['overrun']:.2f}s late" if item["overrun"]
+                else ", absorbed by the speed-up")
+        print(f"    seg {item['id']} @{item['start']:.1f}s {item['reason']}{late}",
+              file=sys.stderr)
     if subtitles_failed:
         print(f"  subtitles: {len(subtitles_failed)} kept segment(s) show the "
               f"\"…\" placeholder instead of a line: {subtitles_failed[:10]}",

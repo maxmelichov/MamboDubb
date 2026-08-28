@@ -278,6 +278,23 @@ def test_report_counts_what_the_run_could_not_do(tmp_path, monkeypatch):
     assert "segments.diarization" in rep["degraded"]
 
 
+def test_an_abandoned_shorten_says_whether_the_line_is_actually_late(
+        tmp_path, monkeypatch, capsys):
+    """A refused shorten is not the same event as a late line.
+
+    Every abandoned shorten used to print under the overrun count claiming to be
+    "still late". On a five-minute drama that listed four late segments where
+    exactly one clip overran: the other three kept every word and the speed-up
+    got them there on time.
+    """
+    m = report_segments()
+    rep = fake_report_run(m, tmp_path, monkeypatch)
+    assert rep["shorten_abandoned"][0]["overrun"] == 0.0
+    out = capsys.readouterr().err
+    assert "absorbed by the speed-up" in out
+    assert "still" not in out.split("shorten refused:")[1]
+
+
 def test_a_clip_in_the_wrong_voice_is_counted_and_named(tmp_path, monkeypatch, capsys):
     # The right words in another person's voice. Word overlap scores it as a pass
     # (0.889 on the line that started this), so the only place a reviewer could
