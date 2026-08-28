@@ -2886,3 +2886,22 @@ def test_und_span_is_refuted_by_a_confident_source_read():
     # No words at all — the case the unnamed keep exists for — changes nothing.
     assert not transcript.reads_as_source([], 20.6, 26.8, "he")
     assert not transcript.reads_as_source(None, 20.6, 26.8, "he")
+
+
+def test_vocals_fill_skips_a_span_another_segment_absorbed():
+    # merge_stranded_fragments moves an opener's TEXT into a later segment, which
+    # dubs it, and leaves the opener's seconds with no placement of their own.
+    # Filling them with the original vocals says the line twice, once in each
+    # language, so an absorbed span counts as claimed.
+    placed = [(0.0, 1.0), (5.0, 6.0)]
+    assert (2.0, 3.0) not in mix.unclaimed_spans(placed, 6.0)   # sanity: it is a hole
+    assert any(a <= 2.0 and b >= 3.0 for a, b in mix.unclaimed_spans(placed, 6.0))
+    with_absorbed = mix.unclaimed_spans(placed + [(2.0, 3.0)], 6.0)
+    assert not any(a < 3.0 and 2.0 < b for a, b in with_absorbed)
+    # The rest of the hole is still filled: only the absorbed seconds are spared.
+    assert any(a >= 3.0 and b <= 5.0 for a, b in with_absorbed)
+
+
+def test_merged_from_survives_the_manifest_whitelist():
+    # mix reads it, so it has to outlive the save that strips unknown keys.
+    assert "merged_from" in manifest.SEGMENT_KEYS

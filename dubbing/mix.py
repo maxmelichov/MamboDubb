@@ -175,8 +175,18 @@ def assemble(m: dict[str, Any], workdir: Path, raw: Path) -> float:
     # Spans the placements left empty: they carry the original vocals. The
     # timeline asserts each clip's length matches its place span within 20ms,
     # so the complement of the place intervals cannot collide with a clip.
+    # A fragment whose words moved is not unaccounted speech. `merge_stranded
+    # _fragments` folds a torn-off opener's TEXT into a later segment, which dubs
+    # it; the opener's own seconds keep no placement, so the fill below would air
+    # the original recording of a line the dub is about to speak the same words
+    # twice, once in each language. Counting those spans as claimed is what makes
+    # the fill mean "speech nothing accounted for" again, which is the only reason
+    # it exists.
+    absorbed = [(float(f["start"]), float(f["end"]))
+                for s in segments for f in (s.get("merged_from") or [])]
     fill = unclaimed_spans(
-        [(s["place"]["start"], s["place"]["end"]) for s in segments], media_end)
+        [(s["place"]["start"], s["place"]["end"]) for s in segments] + absorbed,
+        media_end)
     voc_path = workdir / m["files"]["vocals"]
     voiced: list[tuple[float, float]] = []
     with sf.SoundFile(str(voc_path)) as vf:

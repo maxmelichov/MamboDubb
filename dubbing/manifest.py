@@ -160,7 +160,11 @@ STAGE_TAGS = {
     # than into the next speaker, so the lateness trigger could not see it: it
     # fired on none of the four demo runs while 9 to 14 lines a run sat pinned.
     "timeline": "timeline/v18",
-    "mix": "mix/v9",
+    "mix": "mix/v10",
+    # v10: the vocals fill skips a span another segment absorbed. A stranded
+    # opener's words are dubbed inside the segment that took them, and filling
+    # its seconds with the original recording played the line twice, once in
+    # each language.
     # v3: honest failure accounting verify.unverified, degraded, overrun,
     # shorten_abandoned, subtitles_failed, stale_locked_clips alongside the
     # transcript-origin stamping. (v2 was claimed for the first half alone.)
@@ -194,6 +198,11 @@ SEGMENT_KEYS = {
                       # False = dub it, absent = decide automatically. The pipeline
                       # honours it in segments.apply_passthrough; both front ends
                       # write THIS key (one concept, one manifest key).
+    "merged_from",  # spans whose words this segment absorbed (segments.merge_stranded
+                    # _fragments). Their seconds carry no placement of their own, so
+                    # mix must not fill them with the original vocals: the words are
+                    # dubbed here, and airing the recording too says the line twice,
+                    # once in each language.
     "text_en",
     "text_mid",   # pivot runs only: the English intermediate text_en was made from
     "tts_opts",   # per-segment synthesis overrides (dubbing/ttsopts.py); user-set only
