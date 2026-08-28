@@ -341,7 +341,10 @@ def test_the_stage_tags_moved():
     # stalled short take is retried instead of placed.
     # v26: a line with under a second and a half of audio clones from its
     # speaker's canonical reference, so its clip is cloned from other seconds.
-    assert manifest.STAGE_TAGS["tts"] == "tts/v26"
+    # v27: the verifier no longer throws a correct take away three of the ways it
+    # used to the fast length bound, an empty VAD read, and a small model's
+    # reading of a transliterated name so takes that were lost are now kept.
+    assert manifest.STAGE_TAGS["tts"] == "tts/v27"
     # v36: script-derived gloss floors, negations and shorten budgets (CJK/hangul).
     # v37: "%" survives into every TTS target's own vocabulary.
     # v39: a repetition the speaker actually made survives the "X, X" repair.

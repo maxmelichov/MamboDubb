@@ -290,3 +290,54 @@ def test_canonical_ref_key_tracks_content(tmp_path):
     (tmp_path / "refs" / "S1.wav").write_bytes(b"new-longer-voice")
     key_new = tts.Engine(m, tmp_path)._canonical_ref({"speaker": "S1"})[1]
     assert key_old != key_new
+
+
+def test_a_verifier_relaxes_the_fast_bound_but_not_the_slow_one():
+    """A quick take is the ASR's question to answer, a stalled one is not.
+
+    Every line here is a take a Hebrew drama's run threw away unheard and the
+    large ASR read back word for word: the fast bound assumes about 1.7 syllables
+    a word, and a short line made of one-syllable function words beats it while
+    saying every word. The slow bound does not move — a stall costs the timeline
+    real seconds, and no reading of the words makes those back.
+    """
+    assert not tts.clone_length_ok(0.52, "I have it.")
+    assert tts.clone_length_ok(0.52, "I have it.", verified=True)
+    assert not tts.clone_length_ok(1.01, "They said they're on their way.")
+    assert tts.clone_length_ok(1.01, "They said they're on their way.", verified=True)
+    # Still garble at a rate no read reaches, verifier or not.
+    assert not tts.clone_length_ok(0.12, "I have it.", verified=True)
+    # And the stall bound is the same number under both.
+    assert not tts.clone_length_ok(9.0, "this line has six words total", verified=True)
+    assert not tts.clone_length_ok(4.61, "Chelsea.", verified=True)
+
+
+def test_an_empty_read_is_retried_without_the_vad(tmp_path):
+    """The VAD calling a whole clip silence is not the clip failing to say the line."""
+    clip = tmp_path / "c.wav"
+    clip.write_bytes(b"")
+    asked = []
+
+    class Model:
+        def transcribe(self, path, **kw):
+            asked.append(kw["vad_filter"])
+            if kw["vad_filter"]:
+                return [], None
+            return [type("S", (), {"text": " We'll learn it by hand."})()], None
+
+    assert tts._read(Model(), clip, "en") == "We'll learn it by hand."
+    assert asked == [True, False]
+
+
+def test_a_clip_the_vad_read_is_not_read_twice(tmp_path):
+    clip = tmp_path / "c.wav"
+    clip.write_bytes(b"")
+    asked = []
+
+    class Model:
+        def transcribe(self, path, **kw):
+            asked.append(kw["vad_filter"])
+            return [type("S", (), {"text": "hello"})()], None
+
+    assert tts._read(Model(), clip, "en") == "hello"
+    assert asked == [True]

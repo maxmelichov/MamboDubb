@@ -116,7 +116,15 @@ STAGE_TAGS = {
     # own voice (a label is not a person), the alternates are held to the same
     # test, and a clip that says the right words in another voice is recorded as
     # "wrong_voice" rather than "ok" different rungs, different verdicts.
-    "tts": "tts/v26",
+    "tts": "tts/v27",
+    # v27: three ways a correct take was thrown away for the original audio, all
+    # of them the verifier's fault rather than the clip's. The fast length bound
+    # rejected takes unheard that the strong ASR reads back word for word, so
+    # under a verifier it drops to a rate no human read reaches and the words
+    # decide. An empty read is retried once with the VAD off: two 1.4s takes of
+    # "We'll learn it by hand." read as "" with it on. And a take about to be lost
+    # altogether is re-read by the source stage's large ASR, which hears "Yitzhak"
+    # where the base model wrote "It's hot." Changes which takes are kept.
     # v26: a line under ECAPA_MIN_SEC of audio clones from its speaker's canonical
     # reference instead of its own second-long window. At that length the
     # same-voice gate has no evidence and rejects everything, and the fallback is

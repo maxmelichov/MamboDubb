@@ -9,6 +9,8 @@ which lock protects the same undo.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from dubbing import PASSTHROUGH_REASON
@@ -682,3 +684,69 @@ def test_render_fails_loudly_when_a_segment_ends_up_with_no_audio(tmp_path, monk
     with pytest.raises(edit.RebuildIncomplete) as exc:
         edit.rebuild(m, tmp_path, from_stage="report")
     assert "no audio in the mix" in str(exc.value)
+
+
+# ---------------------------- the verifier's own weakness (10-minute movie cycle)
+
+def en_engine(tmp_path):
+    m = {"source": {"src_lang": "he", "tgt_lang": "en"},
+         "files": {"source_wav": "source.wav", "vocals": "stems/vocals.wav"},
+         "speakers": {}, "segments": []}
+    return tts_mod.Engine(m, tmp_path)
+
+
+class Reader:
+    """An ASR that always hears one thing."""
+
+    def __init__(self, heard):
+        self.heard = heard
+
+    def transcribe(self, path, **kw):
+        return [type("S", (), {"text": self.heard})()], None
+
+
+def _take(tmp_path, overlap=0.0, heard="It's hot."):
+    clip, meta = tmp_path / "a.wav", tmp_path / "a.json"
+    clip.write_bytes(b"")
+    meta.write_text(json.dumps({"ok": False, "overlap": overlap, "heard": heard,
+                                "dur": 0.61, "verified": True}), encoding="utf-8")
+    return clip, meta, json.loads(meta.read_text(encoding="utf-8"))
+
+
+def test_a_take_about_to_be_lost_is_re_read_by_the_strong_asr(tmp_path, monkeypatch):
+    """The base model wrote "It's hot." for a correct one-word "Yitzhak."
+
+    Word overlap came out 0.0, the take fell through the soft floor, and the
+    segment aired undubbed Hebrew under an English subtitle the loudest mistake
+    this pipeline can make, made on the word of the smallest model in the run.
+    """
+    eng = en_engine(tmp_path)
+    monkeypatch.setattr(eng, "strong_asr_for", lambda tgt=None: Reader("Yitzhak."))
+    clip, meta, verdict = _take(tmp_path)
+    better = eng._second_opinion({"id": 84}, clip, meta, verdict, "Yitzhak.", "en", "he")
+    assert better is not None and better["overlap"] == 1.0 and better["ok"]
+    # Written back, so a re-run does not spend the pass again.
+    assert json.loads(meta.read_text(encoding="utf-8"))["overlap"] == 1.0
+
+
+def test_a_second_opinion_that_agrees_changes_nothing(tmp_path, monkeypatch):
+    eng = en_engine(tmp_path)
+    monkeypatch.setattr(eng, "strong_asr_for", lambda tgt=None: Reader("something else"))
+    clip, meta, verdict = _take(tmp_path)
+    assert eng._second_opinion({"id": 1}, clip, meta, verdict, "Yitzhak.", "en", "he") is None
+    assert json.loads(meta.read_text(encoding="utf-8"))["overlap"] == 0.0
+
+
+def test_a_second_opinion_never_lowers_a_verdict(tmp_path, monkeypatch):
+    eng = en_engine(tmp_path)
+    monkeypatch.setattr(eng, "strong_asr_for", lambda tgt=None: Reader("hold on"))
+    clip, meta, verdict = _take(tmp_path, overlap=0.5, heard="hold on a second")
+    assert eng._second_opinion({"id": 2}, clip, meta, verdict, "hold on a second",
+                               "en", "he") is None
+
+
+def test_without_a_second_reader_nothing_changes(tmp_path, monkeypatch):
+    eng = en_engine(tmp_path)
+    monkeypatch.setattr(eng, "strong_asr_for", lambda tgt=None: None)
+    clip, meta, verdict = _take(tmp_path)
+    assert eng._second_opinion({"id": 3}, clip, meta, verdict, "Yitzhak.", "en", "he") is None

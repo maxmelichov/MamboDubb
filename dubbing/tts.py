@@ -135,10 +135,12 @@ CLONE_VOICE_MIN = 0.25
 # forgive the verify ASR its own word boundaries, a re-run still read "All right."
 # against "Alright." as 0.80 out of the cache, and after short clips got a length
 # ceiling back, the 4.61s "Chelsea." that motivated it was replayed unexamined.
+# v2: the fast length bound yields to the verifier, an empty read is retried with
+# the VAD off, and a take about to be thrown away is re-read by the strong ASR.
 # A verdict stamped with an older tag (or none, which is every verdict written
 # before this existed) is re-verified. Only the verdict: the clip is the same
 # audio and is not remade, so this costs one ASR pass and no GPU time.
-VERDICT_TAG = "verdict/v1"
+VERDICT_TAG = "verdict/v2"
 
 # What `_verify` reports when there is no verification ASR at all. It is a
 # verdict of its own, not an "ok": the clip passed the length guard and nothing
@@ -152,6 +154,19 @@ HEALTH_KEYS = ("tts.verify_asr", "tts.speaker_embeddings")
 
 CLONE_MIN_SEC_PER_WORD = 0.18   # faster than this is chipmunk garble
 CLONE_MAX_SEC_PER_WORD = 0.95   # slower than this is a stall/drawl
+# ...except that the fast bound is a guess about audio nobody has listened to yet,
+# and when there IS a verifier the words are a better witness than the clock. The
+# floor threw away takes that say the line perfectly: measured on a Hebrew drama,
+# "I have it." at 0.49s and 0.52s, "We need help at the posts." at 0.99s and 1.05s
+# and "They said they're on their way." at 1.01s were all rejected unheard, and the
+# strong ASR reads every one of them back word for word. Short lines are where it
+# bites, because they are the ones made of one-syllable function words: 0.18s/word
+# assumes about 1.7 syllables a word, and "I have it" has three syllables in three
+# words. Under a verifier the bound drops to this factor of itself the rate no
+# human read reaches, so anything below it really is garble and between the two the
+# ASR decides. The slow bound is untouched: a stall costs the timeline real seconds
+# and no reading of the words makes those back.
+CLONE_FAST_FACTOR = 0.70        # ...unless an ASR is going to listen to it
 # CJK/hangul speech runs ~5 characters/s; the word constants assume ~3 words/s.
 CLONE_MIN_SEC_PER_CHAR = 0.08   # faster than this is chipmunk garble
 CLONE_MAX_SEC_PER_CHAR = 0.60   # slower than this is a stall/drawl
@@ -344,7 +359,15 @@ def clip_exceeds_slot(clip_sec: float, slot_sec: float) -> bool:
     return clip_sec > slot_sec * 3.0 + 8.0
 
 
-def clone_length_ok(sec: float, text: str, lang: str = "en") -> bool:
+def clone_length_ok(sec: float, text: str, lang: str = "en", *,
+                    verified: bool = False) -> bool:
+    """Is this clip a plausible length for this line?
+
+    `verified` says an ASR is about to read the clip. It relaxes the FAST bound
+    only (see CLONE_FAST_FACTOR): under a verifier the words settle whether a
+    quick take is a quick read or garble, and the bound's job there is only to
+    reject a rate no human read reaches. The slow bound is unchanged either way.
+    """
     char_based = script_for(lang) in ("cjk", "hangul")
     units = speech_units(text, lang)
     if sec <= 0.05:
@@ -352,12 +375,13 @@ def clone_length_ok(sec: float, text: str, lang: str = "en") -> bool:
     spu = sec / units
     lo, hi = ((CLONE_MIN_SEC_PER_CHAR, CLONE_MAX_SEC_PER_CHAR) if char_based
               else (CLONE_MIN_SEC_PER_WORD, CLONE_MAX_SEC_PER_WORD))
-    if spu < lo:
+    fast = CLONE_FAST_FACTOR if verified else 1.0
+    if spu < lo * fast:
         return False
     if spu > hi and (units >= 3 or sec > hi * units + CLONE_SHORT_GRACE_SEC):
         return False
     expected = (units / 5.0 if char_based else units / 3.0) + 0.25
-    return sec >= expected * 0.40
+    return sec >= expected * 0.40 * fast
 
 
 def max_new_tokens(text: str, lang: str = "en") -> int:
@@ -828,6 +852,29 @@ def seed_for(seg: dict[str, Any], speak: str, opts: TtsOpts = ttsopts.DEFAULT) -
     return int(hashlib.sha1(f"{seed_id(seg)}|{speak}".encode()).hexdigest()[:8], 16)
 
 
+def _read(model, clip: Path, tgt: str) -> str:
+    """What an ASR hears in one clip, with the VAD's silence taken as a question.
+
+    The verifier runs with `vad_filter=True`, which is right for a clip that may
+    have a stretch of hush on either end and wrong exactly once: when the VAD
+    decides the whole clip is hush and hands the decoder nothing. The transcript
+    then comes back empty, word overlap is 0.0, and a take that says the line
+    perfectly fails on the strength of a voice-activity heuristic. Measured on a
+    Hebrew drama: two 1.4s takes of "We'll learn it by hand." read as "" under the
+    VAD and word for word without it, and the segment aired undubbed Hebrew.
+
+    So an empty read is retried once with the VAD off. Nothing else is: a clip the
+    decoder actually read is judged on what it said, and an empty read costs one
+    extra pass over one short clip.
+    """
+    def once(vad: bool) -> str:
+        segs, _ = model.transcribe(str(clip), language=tgt, word_timestamps=False,
+                                   condition_on_previous_text=False, vad_filter=vad)
+        return " ".join((s.text or "").strip() for s in segs).strip()
+
+    return once(True) or once(False)
+
+
 def _verdict(clip: Path, ok: bool, ov: float, heard: str) -> dict[str, Any]:
     """One attempt's verification result, as stored in `clips/<key>.json`.
 
@@ -995,6 +1042,8 @@ class Engine:
         self._synth = None
         self._synth_model: str | None = None
         self._asr: dict[str, Any] = {}        # target language → verify ASR (or None)
+        self._asr_name: dict[str, str] = {}   # ...and which model that turned out to be
+        self._strong_asr: dict[str, Any] = {}  # ...→ the larger ASR that gets the last word
         self._voc: np.ndarray | None = None
         self._ref_hash: dict[str, str] = {}          # canonical ref path → content hash
         self._match_cache: dict[tuple, bool] = {}    # (span, reference path) → same voice?
@@ -1062,13 +1111,38 @@ class Engine:
         """
         tgt = (tgt or self.tgt_lang or "en").lower()
         if tgt not in self._asr:
-            self._asr[tgt] = _load_asr(tgt)
+            self._asr[tgt], self._asr_name[tgt] = _load_asr(tgt)
             if self._asr[tgt] is None:
                 self.note_degraded(
                     "tts.verify_asr",
                     f"unavailable: no faster-whisper model for {tgt!r} "
                     "clips accepted on length alone")
         return self._asr[tgt]
+
+    def strong_asr_for(self, tgt: str | None = None):
+        """The larger ASR that gets the last word on a take (see `_second_opinion`).
+
+        The source stage's model, which the run has already downloaded and knows
+        how to load. None when the verifier for this language IS that model (a
+        Hebrew target verifies with the large ivrit-ai fine-tune, so there is no
+        second reader to ask) or when it cannot be loaded at all a missing model
+        here is not an error, it only means a segment falls back as it did before.
+        """
+        from . import transcript
+
+        tgt = (tgt or self.tgt_lang or "en").lower()
+        if tgt in self._strong_asr:
+            return self._strong_asr[tgt]
+        want = str(transcript.SRC_ASR_MODEL)
+        model = None
+        if self._asr_name.get(tgt) != want and transcript.SRC_ASR_MODEL.is_dir():
+            try:
+                model = transcript.load_whisper(want, label="tts: second opinion",
+                                                cpu_threads=_verify_cpu_threads())
+            except Exception as exc:
+                print(f"  tts: no second-opinion ASR ({exc})", file=sys.stderr)
+        self._strong_asr[tgt] = model
+        return model
 
     # -- degraded operation ------------------------------------------------
     def note_degraded(self, component: str, reason: str) -> None:
@@ -1589,18 +1663,15 @@ class Engine:
             sec = audio.duration(clip)
         except Exception:
             return False, 0.0, "unreadable"
-        if not clone_length_ok(sec, speak, tgt):
-            return False, 0.0, f"len={sec:.2f}s"
         model = self.asr_for(tgt)
+        if not clone_length_ok(sec, speak, tgt, verified=model is not None):
+            return False, 0.0, f"len={sec:.2f}s"
         if model is None:
             # Accepted, but not verified and `_verdict` turns that into a
             # verdict of its own rather than letting it read as a pass.
             return True, 1.0, NO_ASR
         try:
-            segs, _ = model.transcribe(str(clip), language=tgt,
-                                       word_timestamps=False,
-                                       condition_on_previous_text=False, vad_filter=True)
-            heard = " ".join((s.text or "").strip() for s in segs).strip()
+            heard = _read(model, clip, tgt)
         except Exception as exc:
             return False, 0.0, f"asr-error {exc}"
         if source_script_leak(heard, src, tgt):
@@ -1822,6 +1893,7 @@ class Engine:
         slot = float(seg["end"]) - float(seg["start"])
         best: dict[str, Any] | None = None
         best_rank = (False, -1.0)
+        best_take: tuple[int, Path, Path, dict[str, Any]] | None = None
 
         for attempt, (a_path, a_key, a_greedy) in enumerate(self.rungs(seg, plan)):
             clip, meta, verdict = self._attempt(seg["id"], speak, a_path, a_key,
@@ -1856,6 +1928,7 @@ class Engine:
                 if verdict.get("voice_ok") is False:
                     verify = "wrong_voice"
                 best = dict(record, verify=verify)
+                best_take = (attempt, clip, meta, verdict)
 
         if (best and best["verify"] == "wrong_voice"
                 and best["overlap"] >= CLONE_SOFT_OVERLAP):
@@ -1875,7 +1948,57 @@ class Engine:
             print(f"  tts: seg {seg['id']} soft-accept (overlap {best['overlap']:.2f})",
                   file=sys.stderr)
             return best
+        if best_take is not None:
+            # Everything this segment has is about to be thrown away for the
+            # original audio, on the word of a small ASR. That is the loudest
+            # mistake this pipeline can make, so the verdict gets a second reader
+            # first (see `_second_opinion`).
+            attempt, clip, meta, verdict = best_take
+            better = self._second_opinion(seg, clip, meta, verdict, speak, tgt, src)
+            if better is not None:
+                return dict(self._record(clip, better, attempt, opts, text_en),
+                            verify="accepted")
         return None
+
+    def _second_opinion(self, seg: dict[str, Any], clip: Path, meta: Path,
+                        verdict: dict[str, Any], speak: str, tgt: str,
+                        src: str) -> dict[str, Any] | None:
+        """A stronger ASR's reading of the last take, or None if it agrees.
+
+        The verifier is a small model chosen for speed it runs on a worker thread
+        while the GPU makes the next clip and most of the time its reading is all
+        the evidence a clip needs. Where it is weakest is a transliterated proper
+        noun, which is exactly what a dubbed drama is full of: handed a correct
+        one-word take of "Yitzhak." the base model wrote "It's hot.", word overlap
+        came out 0.0, and the segment aired undubbed Hebrew under an English
+        subtitle. The run already has a large multilingual ASR loaded for the
+        source pass, and it reads that same clip back as "Yitzhak".
+
+        Asked once, and only at the point where the alternative is losing the line
+        altogether, so it costs one pass over a handful of clips a run and can only
+        move a verdict upward: a reading no better than the one already recorded
+        changes nothing.
+        """
+        model = self.strong_asr_for(tgt)
+        if model is None:
+            return None
+        try:
+            heard = _read(model, clip, tgt)
+        except Exception as exc:
+            print(f"  tts: seg {seg['id']} second opinion failed ({exc})", file=sys.stderr)
+            return None
+        if source_script_leak(heard, src, tgt):
+            return None
+        ov = word_overlap(speak, heard, tgt)
+        if ov < CLONE_MIN_OVERLAP or ov <= float(verdict.get("overlap") or 0.0):
+            return None
+        better = dict(verdict, ok=True, overlap=round(ov, 3), heard=heard[:120],
+                      reread=True)
+        meta.write_text(json.dumps(better, ensure_ascii=False), encoding="utf-8")
+        print(f"  tts: seg {seg['id']} re-read by the strong ASR "
+              f"(overlap {float(verdict.get('overlap') or 0.0):.2f} → {ov:.2f})",
+              file=sys.stderr)
+        return better
 
     def keep_clip(self, seg: dict[str, Any]) -> dict[str, Any]:
         """Original audio for this span the universal fallback.
@@ -2174,11 +2297,11 @@ def _load_asr(tgt: str = "en"):
             model = load_whisper(target, label="tts: verify ASR",
                                  cpu_threads=_verify_cpu_threads())
             print(f"  tts: verifying with {target}", file=sys.stderr)
-            return model
+            return model, target
         except Exception:
             continue
     print("  tts: no verification ASR accepting on length only", file=sys.stderr)
-    return None
+    return None, ""
 
 
 def clear_failed_keeps(segments: list[dict[str, Any]]) -> list[int]:
