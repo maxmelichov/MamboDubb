@@ -852,6 +852,24 @@ def seed_for(seg: dict[str, Any], speak: str, opts: TtsOpts = ttsopts.DEFAULT) -
     return int(hashlib.sha1(f"{seed_id(seg)}|{speak}".encode()).hexdigest()[:8], 16)
 
 
+# A decode that RAISES is one roll of the dice, not a line the voice cannot say.
+# Measured on a Hebrew drama: "Let's see, give me a punch like this, can you?"
+# threw IndexError("index out of range in self") out of the checkpoint's embedding
+# lookup under one seed and came back clean under three others. Left as a failure
+# it costs a whole segment, because that rung is the one the caller was on.
+# A re-roll is a different seed under a sampled decode, and under a greedy one it
+# is the sampled decode itself: the seed is inert when nothing samples, so the
+# only new take a greedy plan has is the one `rungs` already ends on.
+GENERATE_TRIES = 2
+GENERATE_RESEED = 0x9E3779B9
+
+
+def reseeds(seed: int, greedy: bool) -> list[tuple[int, bool]]:
+    """The (seed, greedy) pairs one generation call may be attempted under."""
+    return [(seed, greedy),
+            ((int(seed) + GENERATE_RESEED) % (1 << 32), False)][:GENERATE_TRIES]
+
+
 # Saying a line one sentence at a time (see `Engine._in_sentences`).
 SENTENCE_MIN_UNITS = 2      # ...below which a "sentence" is an abbreviation's dot
 SENTENCE_PAUSE_SEC = 0.18   # the pause a full stop buys, put back at the join
@@ -1841,24 +1859,32 @@ class Engine:
             # None, which is the same answer a freshly made clip gives, so the
             # caller verifies it and stores the new verdict over the old.
             return clip, meta, (got if got.get("vtag") == VERDICT_TAG else None)
-        try:
-            self.synth_for(opts).generate(speak, ref_path, clip, seed=seed, greedy=greedy,
-                                          opts=opts, synth=synth, lang=tgt,
-                                          carrier=carrier)
-            # A carrier that cannot be located cannot be cut, and a clip that still
-            # has one on the front is not this line, so the take is thrown away and
-            # remade cold. That is today's audio, i.e. the floor this change sits on:
-            # the worst a failed cut can do is give back the clip we already had.
-            if carrier is not None and not self._cut_carrier(clip, tgt or self.tgt_lang,
-                                                             speak):
-                print(f"  tts: seg {seg_id} carrier could not be proven cut "
-                      "re-synthesising without one", file=sys.stderr)
-                self.synth_for(opts).generate(speak, ref_path, clip, seed=seed,
-                                              greedy=greedy, opts=opts, synth=synth,
-                                              lang=tgt, carrier=None)
-        except Exception as exc:
-            print(f"  tts: seg {seg_id} generate failed ({exc})", file=sys.stderr)
-            return clip, meta, {"failed": True}
+        for attempt, (a_seed, a_greedy) in enumerate(reseeds(seed, greedy)):
+            try:
+                self.synth_for(opts).generate(speak, ref_path, clip, seed=a_seed,
+                                              greedy=a_greedy, opts=opts, synth=synth,
+                                              lang=tgt, carrier=carrier)
+                # A carrier that cannot be located cannot be cut, and a clip that
+                # still has one on the front is not this line, so the take is thrown
+                # away and remade cold. That is today's audio, i.e. the floor this
+                # change sits on: the worst a failed cut can do is give back the
+                # clip we already had.
+                if carrier is not None and not self._cut_carrier(clip,
+                                                                 tgt or self.tgt_lang,
+                                                                 speak):
+                    print(f"  tts: seg {seg_id} carrier could not be proven cut "
+                          "re-synthesising without one", file=sys.stderr)
+                    self.synth_for(opts).generate(speak, ref_path, clip, seed=a_seed,
+                                                  greedy=a_greedy, opts=opts,
+                                                  synth=synth, lang=tgt, carrier=None)
+                break
+            except Exception as exc:
+                if attempt + 1 >= GENERATE_TRIES:
+                    print(f"  tts: seg {seg_id} generate failed ({exc})",
+                          file=sys.stderr)
+                    return clip, meta, {"failed": True}
+                print(f"  tts: seg {seg_id} decode crashed ({exc}) re-rolling",
+                      file=sys.stderr)
         # Both ends, for the same reason: the file that leaves here is the line
         # and nothing else. The timeline measures the *file*, so a trailing hush
         # is compressed as if it were words: the speech pays the speed for

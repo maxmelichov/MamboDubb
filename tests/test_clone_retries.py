@@ -406,3 +406,41 @@ def test_a_split_that_reads_no_better_is_not_used(tmp_path, monkeypatch):
                         [0.5, 0.5, 0.5, 0.5, 1.0, 1.0, 0.4], dur=4.0)
     got = eng.clip_for(seg(), "First sentence here. Second sentence here.")
     assert got["overlap"] == 0.5 and not got["clip"].startswith("clips/parts_")
+
+
+# ------------------------------------------- a crashed decode is one roll of dice
+
+def test_a_decode_that_raises_is_re_rolled_before_it_is_a_failure(tmp_path,
+                                                                  monkeypatch):
+    """One seed threw IndexError out of the checkpoint's embedding lookup and
+    three others voiced the same sentence cleanly. Left as a failure it cost the
+    whole segment, because the crashed rung is the one the caller was on."""
+    eng, fake = engine(tmp_path, monkeypatch, [0.9], dur=4.0)
+    real = fake.generate
+    seen: list[int] = []
+
+    def flaky(speak, ref, out, *, seed, greedy, **kw):
+        seen.append(seed)
+        if len(seen) == 1:
+            raise IndexError("index out of range in self")
+        return real(speak, ref, out, seed=seed, greedy=greedy, **kw)
+
+    fake.generate = flaky
+    assert eng.clip_for(seg(), "hello world")["verify"] == "ok"
+    assert len(seen) == 2 and seen[0] != seen[1]
+
+
+def test_a_decode_that_keeps_crashing_is_still_a_failure(tmp_path, monkeypatch):
+    eng, fake = engine(tmp_path, monkeypatch, [], dur=4.0)
+
+    def always(speak, ref, out, *, seed, greedy, **kw):
+        raise IndexError("index out of range in self")
+
+    fake.generate = always
+    assert eng.clip_for(seg(), "hello world") is None
+
+
+def test_a_greedy_re_roll_samples_because_the_seed_is_inert():
+    assert tts.reseeds(7, greedy=True)[1][1] is False
+    assert tts.reseeds(7, greedy=False)[1][0] != 7
+    assert tts.reseeds(7, greedy=False)[0] == (7, False)

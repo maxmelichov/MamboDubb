@@ -116,7 +116,11 @@ STAGE_TAGS = {
     # own voice (a label is not a person), the alternates are held to the same
     # test, and a clip that says the right words in another voice is recorded as
     # "wrong_voice" rather than "ok" different rungs, different verdicts.
-    "tts": "tts/v28",
+    "tts": "tts/v29",
+    # v29: a generation that RAISES is re-rolled once before it counts as a
+    # failure. One seed threw IndexError out of the checkpoint's own embedding
+    # lookup on a sentence three other seeds voiced cleanly, and the rung it
+    # crashed on was the one the caller was standing on.
     # v28: a line the voice will not say in one breath is said in one sentence at
     # a time and joined. The retry ladder varies the reference, which is no answer
     # to a truncated take: every take of two long lines on a Hebrew drama stopped
