@@ -591,10 +591,17 @@ dies halfway and an absent model directory silently becomes a multi-gigabyte dow
   "directory is not empty" test called READY: `hf download` writes `config.json`,
   `tokenizer.json` and `model.safetensors.index.json` in its first second or two and the
   shards over the next several minutes, so a **blocking** row went green at 1% of a 6.4 GB
-  fetch and stayed green through an interrupted one forever. Completeness is now the shard
-  index where there is one (`weight_map` names every file the loader opens, so all of them
-  must exist) and `0.9 * download_bytes` where there is not, a floor rather than an
-  equality because the table's sizes are measured and rounded. An incomplete row carries
+  fetch and stayed green through an interrupted one forever. Completeness is now asked of
+  the things that know before the thing that guesses: the shard index where there is one
+  (`weight_map` names every file the loader opens, so all of them must exist), then the
+  receipt the installer drops when its own `snapshot_download` returns, and only then
+  `0.75 * download_bytes`. That order is the fix for the inverse bug the first version
+  shipped, where a complete 86.4 MB language-ID snapshot lost an argument with a 100 MB
+  guess and a 0.9 floor and went red on a working model. The table's sizes are now measured
+  from real installs and rounded **down**, the floor is loose because its only remaining job
+  is to catch a download this app never ran (a torn-off fetch is short by whole files, not
+  by 15%), and `dir_size` follows symlinks with `(dev, inode)` de-duplication so a snapshot
+  deduplicated into the shared HF cache measures true rather than zero. An incomplete row carries
   **`downloading`** when a lock or partial file under the download cache was touched in the
   last two minutes: a live fetch means "wait", a stale one means "press Download, it
   resumes", and they are different instructions. A client should keep polling while any row

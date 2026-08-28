@@ -2396,6 +2396,15 @@ def a_sharded_model(root: Path, *, shards=("model-00001-of-00002.safetensors",
     return root
 
 
+def a_file_of_size(path: Path, n: int) -> Path:
+    """A file `n` bytes long that costs no disk. The readiness check reads
+    `st_size` and nothing else, so a sparse file is the same evidence as a real
+    one and a 749 MB fixture takes no longer than an empty directory."""
+    with open(path, "wb") as fh:
+        fh.truncate(n)
+    return path
+
+
 def test_a_model_missing_the_shards_its_index_names_is_not_ready(tmp_path):
     """The bug a fresh-install tester found at 1% downloaded: `hf download`
     writes the config, the tokenizer and the index in the first second or two,
@@ -2441,6 +2450,113 @@ def test_a_model_with_no_index_falls_back_to_the_size_floor(tmp_path):
     # And a model nobody measured is taken at its word: a check that cannot pass
     # is the thing this module's second rule exists to prevent.
     assert setup_mod.model("model.x", "X", d)["ok"] is True
+
+
+def test_a_complete_model_survives_a_declared_size_that_overshoots(tmp_path):
+    """The regression the floor shipped with, minutes after the floor shipped.
+
+    `model.lid` was written into the table as a round 100 MB; the complete
+    snapshot is 86.4 MB, so 0.9 demanded 90 MB and a language-ID model the
+    pipeline loads without complaint was reported as a partial download. That is
+    the same lie as calling a 1%-downloaded model READY, told backwards, and the
+    docstring of the thing that told it had promised not to.
+
+    Two independent guards, and this asserts both, because either alone would
+    leave the user somewhere they could not get out of. The floor is loose
+    enough that a hand-entered size being 16% over does not fail a whole model,
+    and a download this app ran to completion is believed outright whatever the
+    table says.
+    """
+    from dubbing_app import setup as setup_mod
+
+    d = tmp_path / "lang-id"
+    d.mkdir()
+    a_file_of_size(d / "embedding_model.ckpt", 86_400_000)
+
+    assert setup_mod.model_ready(d, 86_400_000, 100_000_000) is True
+    row = setup_mod.model("model.lid", "Language ID", d, hub="speechbrain/lid",
+                          hub_bytes=100_000_000)
+    assert row["ok"] is True and row["state"] == setup_mod.READY
+
+    # And with the table wrong by more than the floor forgives, the receipt the
+    # installer leaves still carries it: the process that ran the download is a
+    # better witness than an estimate it never saw.
+    assert setup_mod.model_ready(d, 86_400_000, 400_000_000) is False
+    setup_mod.record_install(d)
+    assert setup_mod.install_recorded(d) is True
+    assert setup_mod.model_ready(d, 86_400_000, 400_000_000) is True
+    assert setup_mod.model("model.lid", "L", d, hub_bytes=400_000_000)["ok"] is True
+
+
+def test_a_receipt_never_certifies_a_download_that_is_genuinely_half_there(tmp_path):
+    """Loosening the floor and trusting the installer must not walk back #17.
+    A fetch that stopped part way is still incomplete on every route in."""
+    from dubbing_app import setup as setup_mod
+
+    d = tmp_path / "whisper"
+    d.mkdir()
+    a_file_of_size(d / "model.bin", 400_000_000)               # 40% of a 1 GB model
+    row = setup_mod.model("model.asr.src", "ASR", d, hub="org/w", hub_bytes=1_000_000_000)
+    assert row["ok"] is False and row["state"] == setup_mod.INCOMPLETE
+    assert "partial download" in row["detail"]
+    # Just under the new floor is still short, so 0.75 is a real bar and not a
+    # polite way of saying "anything".
+    a_file_of_size(d / "model.bin", 749_000_000)
+    assert setup_mod.model_ready(d, setup_mod.dir_size(d), 1_000_000_000) is False
+
+    # A shard index outranks the receipt, and has to: the receipt is a claim
+    # about a download that happened, the index is a claim about the disk now.
+    g = a_sharded_model(tmp_path / "gemma")
+    setup_mod.record_install(g)
+    assert setup_mod.model_ready(g, setup_mod.dir_size(g), 6_400_000_000) is False
+
+
+def test_a_snapshot_deduplicated_into_the_shared_cache_measures_true(tmp_path):
+    """`dir_size` used to skip symlinks, and a speechbrain `savedir` is symlinks
+    all the way down: four links into `~/.cache/huggingface/hub` and no regular
+    file at all. That measured a complete model at zero bytes, which the floor
+    read as a download that had never started. The bytes are on the disk."""
+    from dubbing_app import setup as setup_mod
+
+    blobs = tmp_path / "blobs"
+    blobs.mkdir()
+    (blobs / "weights").write_bytes(b"x" * 4096)
+    d = tmp_path / "lang-id"
+    d.mkdir()
+    (d / "embedding_model.ckpt").symlink_to(blobs / "weights")
+    assert setup_mod.dir_size(d) == 4096
+    assert setup_mod.model("model.lid", "L", d, hub_bytes=4096)["ok"] is True
+
+    # Counted once, though. A Hugging Face cache repo is `blobs/` with
+    # `snapshots/` symlinked at it, and summing both would report every cached
+    # model at twice its size: a free pass through the floor, the same lie the
+    # other way up.
+    snap = tmp_path / "repo" / "snapshots" / "rev"
+    snap.mkdir(parents=True)
+    (tmp_path / "repo" / "blobs").mkdir()
+    (tmp_path / "repo" / "blobs" / "sha").write_bytes(b"y" * 4096)
+    (snap / "weights").symlink_to(tmp_path / "repo" / "blobs" / "sha")
+    assert setup_mod.dir_size(tmp_path / "repo") == 4096
+
+    # A broken link is no bytes and no exception.
+    (d / "gone.ckpt").symlink_to(tmp_path / "nowhere")
+    assert setup_mod.dir_size(d) == 4096
+
+
+def test_every_declared_download_size_is_a_number_the_floor_can_pass(client):
+    """The table serves two masters now: a button label, which wants a round
+    number, and the size floor, which is arithmetic against a real directory.
+    The regression was the first quietly breaking the second. Sizes are measured
+    and rounded down, so every row that is READY on this machine is READY by a
+    margin rather than by luck."""
+    from dubbing_app import setup as setup_mod
+
+    for id_, spec in setup_mod.model_downloads().items():
+        assert int(spec["bytes"]) > 0, id_
+    for row in client.get("/api/setup").json()["checks"]:
+        if row.get("state") != setup_mod.READY or not row.get("download_bytes"):
+            continue
+        assert row["bytes"] >= setup_mod.SIZE_FLOOR * row["download_bytes"], row["id"]
 
 
 def test_an_incomplete_row_says_which_of_wait_and_resume_it_means(tmp_path, monkeypatch):
@@ -3330,7 +3446,10 @@ def test_download_reports_progress_and_reprobes_the_row(client, hub_stub):
     assert client.app.state.installer.wait(10.0)
     body = client.get("/api/setup/install").json()
     assert body["running"] is False and body["ok"] is True and body["error"] is None
-    assert body["bytes_done"] == 1000
+    # 1000 of payload plus the install receipt `record_install` drops beside it;
+    # `bytes_done` is a stat of the directory, and the receipt is in it.
+    assert body["bytes_done"] >= 1000
+    assert (hub_stub["local"] / setup_mod.INSTALL_RECEIPT).is_file()
     # The row the UI redraws is a fresh stat of the directory, not the fetch's
     # word for it — same rule as the tools.
     assert body["check"]["id"] == "model.translate" and body["check"]["ok"] is True
@@ -3390,7 +3509,42 @@ def test_download_that_completes_but_fails_its_probe_is_not_success(monkeypatch,
     inst.start("model.x")
     assert inst.wait(10.0)
     status = inst.status()
-    assert status["ok"] is False and "still fails" in status["error"]
+    assert status["ok"] is False and "still says it is not there" in status["error"]
+
+
+def test_a_completed_download_that_fails_its_check_never_asks_for_a_retry(monkeypatch,
+                                                                          tmp_path):
+    """The loop the user was put in, and the reason it cannot come back.
+
+    A complete `model.lid` snapshot measured 86.4 MB against a table that had
+    been rounded to 100 MB, so the 0.9 floor failed a working model. The user
+    pressed Download, the download said "download complete", the row stayed
+    amber, and the slot answered "start the install again and it resumes what is
+    missing", so they pressed Download, which succeeded, and were told to press
+    Download. There is no exit from that, because the thing being asked for
+    already happened.
+
+    The slot may still say a completed download failed its check; that is the
+    honest half and this test keeps it. What it may never do again is name a
+    gesture that would repeat work that just succeeded. It says the check is
+    wrong, quotes it so the bug can be reported, and stops.
+    """
+    monkeypatch.setattr(install_mod, "snapshot_download", lambda **kw: None)
+    inst = install_mod.Installer(
+        lambda id_: {"id": id_, "ok": False, "label": "Language ID",
+                     "state": "incomplete",
+                     "detail": "incomplete: 82.4 MB in /models/lang-id: partial download"},
+        downloads={"model.lid": {"hub": "org/lid", "path": tmp_path / "lid",
+                                 "bytes": 100_000_000}})
+    inst.start("model.lid")
+    assert inst.wait(10.0)
+    error = inst.status()["error"]
+    assert inst.status()["ok"] is False              # still not certified: that part stands
+    assert "bug in the check" in error and "already succeeded" in error
+    assert "incomplete: 82.4 MB" in error            # quoted, so it is reportable
+    for loop in ("start the install again", "install again and it resumes",
+                 "try again", "press Download"):
+        assert loop not in error, loop
 
 
 # ---------------------------------------------------------------------------

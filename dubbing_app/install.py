@@ -728,11 +728,26 @@ class Installer:
         home DSL is slower than any brew, there is no child process to kill,
         and an abandoned attempt costs nothing because the next one resumes
         from the partial files.
+
+        The one line that is not the download is the receipt. This function is
+        the only place in the app that knows, as a fact rather than an estimate,
+        that a model's fetch finished: `snapshot_download` returned instead of
+        throwing, which means every file in the repo is on disk. That knowledge
+        used to die here, and `setup.model_ready` was left to re-derive it by
+        weighing the directory against a hand-typed size, which is how a
+        complete language-ID model came to be reported as a partial download
+        moments after the app itself finished downloading it. Writing it down
+        costs one small file and ends the argument.
         """
+        from . import setup
+
         ok, error = False, None
         try:
             # Looked up as a module global so a test's monkeypatch is what runs.
             snapshot_download(repo_id=hub, local_dir=str(local_dir))
+            # Before `_finish`, because `_finish` re-probes and the whole point
+            # is that the re-probe sees what this worker knows.
+            setup.record_install(local_dir)
             ok = True
             self._line("download complete")
         except Exception as exc:                       # network, auth, disk — all of it
@@ -797,7 +812,27 @@ class Installer:
 
     def _finish(self, id_: str, ok: bool, error: str | None) -> None:
         """Record the verdict and re-probe, because the exit code is a claim
-        about the package manager, not about this machine's PATH."""
+        about the package manager, not about this machine's PATH.
+
+        Both branches below have one shape between them, a worker that said yes
+        and a check that says no, and they part company on whether repeating the work could
+        possibly help. For a tool it can: `brew install` puts a binary somewhere
+        the app's own PATH will only pick up on the next launch, so "restart"
+        is a real instruction with a real outcome.
+
+        For a download it cannot, and this used to say otherwise. "Start the
+        install again and it resumes what is missing" was written for a torn-off
+        fetch, but the fetch is not torn off: it is the one that just reported
+        `download complete`, which is the only way to reach this line. Told to
+        try again, the user got another successful download, another red row and
+        the same sentence, forever. That is not an install failure being
+        reported, it is the check disagreeing with the installer, and the two
+        cannot both be right about a directory they are both looking at. So the
+        message names the disagreement, quotes what the check said so the bug is
+        reportable, and stops: no gesture is offered, because there is no gesture
+        that would change the answer. An app that asks a user to repeat something
+        that already worked has stopped telling them the truth.
+        """
         check = None
         try:
             check = self._probe(id_)
@@ -810,9 +845,13 @@ class Installer:
                                   f"{id_} is still not there. Restart the app so it picks "
                                   "up the new PATH.")
             else:
-                error = error or (f"the download finished but {id_} still fails its "
-                                  "check: the files may be incomplete; start the "
-                                  "install again and it resumes what is missing.")
+                said = str(check.get("detail") or "").strip()
+                error = error or (
+                    f"the download of {id_} finished, and its check still says it is "
+                    "not there. That is a bug in the check, not an unfinished "
+                    "download: running the install again would repeat a download "
+                    "that already succeeded, and get the same answer. Please report "
+                    "it" + (f". The check says: {said}" if said else "."))
         with self._lock:
             self._running = False
             self._ok = ok

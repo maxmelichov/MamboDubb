@@ -551,16 +551,21 @@ const MODEL_ROWS: Record<
     stage: "tts",
     hub: "Systran/faster-whisper-base.en",
     dir: "faster-whisper-base.en",
-    bytes: 150_000_000,
-    here: "145 MB in models/faster-whisper-base.en",
+    bytes: 147_000_000,
+    here: "141 MB in models/faster-whisper-base.en",
   },
+  // The sizes on these two are the server's own, measured off a complete
+  // install rather than rounded to something memorable. The rounded ones used
+  // to live here too, and a rounded one is what failed a working model: the
+  // server's size floor compared a real 82.4 MB directory against a written
+  // down 100 MB and called it a partial download.
   "model.lid": {
     label: "Language ID (VoxLingua107)",
     severity: "degrades",
     hub: "speechbrain/lang-id-voxlingua107-ecapa",
     dir: "lang-id-voxlingua107-ecapa",
-    bytes: 100_000_000,
-    here: "95 MB in models/lang-id-voxlingua107-ecapa",
+    bytes: 86_400_000,
+    here: "82.4 MB in models/lang-id-voxlingua107-ecapa",
     missing: "without it foreign-speech detection is skipped",
   },
 };

@@ -120,11 +120,32 @@ STATES = (MISSING, INCOMPLETE, READY)
 SHARD_INDEX = "model.safetensors.index.json"
 
 # The fraction of the expected download that has to be on disk before a model
-# with no shard index is called whole. Not 1.0: `model_downloads()` sizes are
-# measured from real installs and rounded, so a correct download can land a
-# little under the estimate, and a row that went red on a working model would
-# be the same lie in the other direction.
-SIZE_FLOOR = 0.9
+# with no shard index and no install receipt is called whole.
+#
+# It was 0.9 for one day, and 0.9 produced the exact lie the paragraph it was
+# written under promised it would not: `model.lid` was declared at a rounded
+# 100 MB, the real complete snapshot is 86.4 MB, the floor demanded 90 MB, and a
+# working language-ID model went red minutes after the check shipped. Two things
+# came out of that. The declared sizes below are now measured rather than
+# guessed, and, more to the point, a floor is no longer the *first* answer to
+# "did this download finish". A shard index answers it exactly, and a download
+# this app ran itself answers it from the installer's own return value
+# (`record_install`). What is left for the floor is the case where neither
+# exists: a model somebody else's `hf download` or the first-run auto-fetch put
+# on disk, which this app never watched and cannot ask.
+#
+# For that case 0.75 is both looser and still meaningful. What the floor has to
+# catch is a torn-off download, and a torn-off download is not 15% short. The
+# bug in #17 was a 6.4 GB model certified at 1%, and an interrupted fetch stops
+# with whole shards missing, which is gigabytes, not a rounding error. What 0.9
+# was catching instead was disagreement between a hand-entered number and a
+# disk, which is not a fact about the model at all. A quarter of a download
+# missing is still a gap no estimate explains.
+SIZE_FLOOR = 0.75
+
+# The file `record_install` leaves beside a model whose download this app ran to
+# completion, and the reason the retry loop below cannot come back. See it.
+INSTALL_RECEIPT = ".mambodubb-download-complete"
 
 # How recently a download's lock or partial file must have been touched for the
 # fetch to count as live. Long enough that a slow shard between two writes is
@@ -215,16 +236,46 @@ def human_bytes(n: float) -> str:
 
 
 def dir_size(path: Path) -> int:
-    """Bytes on disk under `path`. Symlinks are not followed and unreadable
-    entries are skipped a size is a nicety, never a reason to 500."""
+    """Bytes this model actually occupies under `path`, counting each file once.
+
+    Symlinks are followed, and that is a correction rather than a nicety. A
+    snapshot can arrive deduplicated: `huggingface_hub` links a file it already
+    holds in the shared cache instead of copying it, and speechbrain's
+    `from_hparams` fills its `savedir` with symlinks outright: the language-ID
+    directory in the development checkout is four symlinks into
+    `~/.cache/huggingface/hub` and no regular files at all. Not following them
+    measured that complete model at zero bytes, which the size floor then read
+    as a download that had not started. The bytes are on the disk; whose tree
+    they happen to be counted under is an accident of deduplication, and a
+    readiness check that turns that accident into a red row is measuring the
+    wrong thing.
+
+    Followed, but never counted twice. The Hugging Face cache is `blobs/` with
+    `snapshots/<rev>/` symlinked at it, so every file in a cached repo is
+    reachable by two paths and a naive sum reports a cached model at double its
+    size, which would hand the floor a free pass instead of a false red: the
+    same lie the other way round. Identity is `(st_dev, st_ino)`, which is what
+    "the same file" means to the filesystem.
+
+    Directories are still not recursed *through* a symlink; that is where the
+    cycles are, and `rglob` declines to by default. Unreadable entries and
+    broken links are skipped: a size is a nicety, never a reason to 500.
+    """
     total = 0
+    seen: set[tuple[int, int]] = set()
     try:
         for entry in path.rglob("*"):
             try:
-                if entry.is_file() and not entry.is_symlink():
-                    total += entry.stat().st_size
+                if not entry.is_file():          # follows the link; a broken one is not
+                    continue
+                st = entry.stat()
             except OSError:
                 continue
+            key = (st.st_dev, st.st_ino)
+            if key in seen:
+                continue
+            seen.add(key)
+            total += st.st_size
     except OSError:
         return total
     return total
@@ -378,20 +429,79 @@ def index_shards(root: Path) -> list[Path] | None:
     return [index.parent / name for name in names]
 
 
+def record_install(root: Path) -> None:
+    """Write the receipt that says "this app downloaded this model, and the
+    download returned rather than raised".
+
+    The size floor is a heuristic standing in for a question the installer never
+    had to guess at. `snapshot_download` either returns or throws, and when it
+    returns every file in the repo is on disk by definition, with no estimate, no
+    rounding and no argument with a hand-entered table. Leaving that fact
+    unrecorded is what built the loop this exists to end: the installer finished
+    a download, `model_ready` disagreed with a number somebody typed into
+    `model_downloads()` months earlier, and the slot told the user to press
+    Download again, which succeeded again, and was disagreed with again. A
+    receipt turns "how many bytes does the table think this should be" into "did
+    the thing that actually knows say yes", and a completed download can no
+    longer be re-flagged by an arithmetic it was never party to.
+
+    The measured size and the timestamp go in the file for a human reading it,
+    and deliberately not into the check. Turning the recorded size into a second
+    floor would rebuild the trap out of better numbers: `.cache/huggingface`
+    metadata gets cleaned, a shared blob gets relinked, and the model would go
+    red for having become tidier. The receipt is a yes or it is absent.
+
+    Best effort. A read-only tree or a full disk must not turn a finished
+    download into a failed one; without the receipt the floor still answers,
+    which is exactly where this was before.
+    """
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        (root / INSTALL_RECEIPT).write_text(
+            f"{stamp}\n{dir_size(root)}\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def install_recorded(root: Path) -> bool:
+    """Did a download this app ran to completion leave its receipt in `root`?"""
+    try:
+        return (root / INSTALL_RECEIPT).is_file()
+    except OSError:
+        return False
+
+
 def model_ready(root: Path, size: int, hub_bytes: int = 0) -> bool:
     """Is everything the loader opens actually in `root`?
 
-    Two answers, strongest first. With a shard index, every file it names has to
-    be there and that is exact. Without one, the only evidence on hand is how
-    much arrived against how much was expected, so `SIZE_FLOOR` of the download
-    size is the bar and a model with no expected size at all is taken at its
-    word there is nothing left to compare it to, and calling every
-    unmeasured model incomplete would be the "check that cannot pass" this
-    module's second rule forbids.
+    Three answers, strongest first, and the order is the whole design.
+
+    A shard index is exact: its `weight_map` names every file the loader opens,
+    they either exist or they do not, and nothing may overrule it: a receipt
+    for a download that has since had a shard deleted is a claim about the past,
+    while the index is a claim about the disk.
+
+    An install receipt is testimony from the one party that knows.
+    `record_install` writes it when `snapshot_download` returns, so for a model
+    this app fetched, "is the download finished" is answered by the process that
+    finished it instead of by measuring bytes against a guess. This is the rung
+    that was missing, and its absence is the whole of #17's regression: a
+    complete 86.4 MB language-ID snapshot, a table that said 100 MB, a floor at
+    0.9, and a red row on a model the pipeline loads happily.
+
+    A size floor is last because it is the only one that is a guess, and it is
+    all that is left for a model this app did not download: the first-run
+    auto-fetch, or a user's own `hf download`. A model with no expected size at
+    all is still taken at its word, because there is nothing to compare it to, and
+    calling every unmeasured model incomplete would be the "check that cannot
+    pass" this module's second rule forbids.
     """
     shards = index_shards(root)
     if shards is not None:
         return all(shard.is_file() for shard in shards)
+    if install_recorded(root):
+        return True
     if hub_bytes:
         return size >= SIZE_FLOOR * hub_bytes
     return True
@@ -475,10 +585,23 @@ def model(id_: str, label: str, path: Path, *, severity: str = BLOCKING,
     the whole fetch and forever after an interrupted one. A user who opened Setup
     during the first-run download saw every blocking row certified, started a dub
     and got a load failure from a model this screen had just passed. So presence
-    is now `model_ready` an exact shard list where there is one, the size floor
-    where there is not and the middle state has a name (`INCOMPLETE`) and a
-    sentence saying which of "wait" and "press Download" it means
-    (`fetch_in_flight`).
+    is now `model_ready` an exact shard list where there is one, the installer's
+    own receipt where there is one, the size floor where there is neither and
+    the middle state has a name (`INCOMPLETE`) and a sentence saying which of
+    "wait" and "press Download" it means (`fetch_in_flight`).
+
+    **And a model that is whole is not a partial download.** The paragraph above
+    warned that a red row on a working model would be the same lie backwards,
+    and then shipped one within the hour: `model.lid`, complete at 86.4 MB,
+    against a table that said 100 MB and a floor that wanted 90. The user pressed
+    Download, the download reported success, the row stayed amber, and the
+    install slot told them to press Download again, a loop with no exit that
+    this check built by treating a rounded guess as evidence. What came out of
+    it is the ordering in `model_ready`: measurement is the last resort, not the
+    first, and the two things that actually know (the shard index, and the
+    installer that ran the fetch) are asked before it. `install.Installer._finish`
+    holds the other half of that promise, and will never again answer a finished
+    download with "start it again".
     """
     present = path.is_dir() and any(path.iterdir()) if path.is_dir() else False
     where = path
@@ -722,9 +845,21 @@ def model_downloads() -> dict[str, dict[str, Any]]:
     (`translate.HUB_ID`, `tts.TTS_MODELS[...]["hub"]`, `transcript.*_HUB`,
     `hebrew.ADAPTER_HUB`); the ASR fallbacks mirror `tts._ASR_CANDIDATES` and
     the LID id is the documented source of `models/lang-id-voxlingua107-ecapa`
-    (docs/MULTILANG_PLAN.md). `bytes` is the download size measured from real
-    installs approximate on purpose, good enough for a button label and a
-    progress denominator, never for accounting.
+    (docs/MULTILANG_PLAN.md).
+
+    `bytes` is the download size, and it has two jobs that want different
+    things. A button label and a progress denominator want a round number and do
+    not care about a few megabytes; `model_ready`'s size floor is arithmetic
+    against a disk and cares a great deal. For one day these numbers were
+    hand-rounded guesses serving both, and the second job caught the first
+    lying: `model.lid` was written down as 100 MB, the real snapshot is 86.4 MB,
+    and a working model went red. So every figure here is now `dir_size` of a
+    complete install on a real machine, rounded **down** to three significant
+    figures. Down, always: rounding down costs a button label under a percent of
+    accuracy, and it guarantees the declared size can never be the reason a
+    finished download reads as unfinished. The hub's own "~95.4 MB" for the LID
+    repo disagrees with all of this, which is the last word on why the estimate
+    to trust is the one taken from the disk the check will read.
 
     `cached` says whether a copy in the Hugging Face cache is as good as one in
     `models/`, and it is a per-model fact because the loaders differ. The
@@ -744,9 +879,10 @@ def model_downloads() -> dict[str, dict[str, Any]]:
     # 9.7 GB the run then ignores before quietly fetching 6.4 GB more.
     tr_path, tr_hub, _ = translate.mlx_model_for(low_vram_state()[0])
     out: dict[str, dict[str, Any]] = {
+        # Measured: mxfp4 6,399,849,874 and 6-bit 9,760,955,850 bytes on disk.
         "model.translate": {"hub": tr_hub, "path": tr_path,
-                            "bytes": 6_400_000_000 if tr_hub == translate.LOW_VRAM_HUB_ID
-                            else 9_700_000_000, "cached": True},
+                            "bytes": 6_390_000_000 if tr_hub == translate.LOW_VRAM_HUB_ID
+                            else 9_760_000_000, "cached": True},
     }
     # Only the default checkpoint is offered. 0.6b exists in tts.TTS_MODELS
     # solely so old manifests that recorded it can re-run; a download button
@@ -755,21 +891,24 @@ def model_downloads() -> dict[str, dict[str, Any]]:
     out[f"model.tts.{tts.DEFAULT_TTS_MODEL}"] = {
         "hub": tts_default["hub"],
         "path": tts.REPO_ROOT / "models" / tts_default["dir"],
-        "bytes": 4_500_000_000, "cached": True,
+        "bytes": 4_540_000_000, "cached": True,          # measured 4,544,231,055
     }
     out.update({
         "model.asr.he": {"hub": transcript.WHISPER_HUB, "path": transcript.WHISPER_MODEL,
-                         "bytes": 1_600_000_000, "cached": True},
+                         "bytes": 1_620_000_000, "cached": True},   # 1,621,668,269
         "model.asr.src": {"hub": transcript.SRC_ASR_HUB, "path": transcript.SRC_ASR_MODEL,
-                          "bytes": 1_600_000_000, "cached": True},
+                          "bytes": 1_620_000_000, "cached": True},  # 1,621,670,683
         "model.asr.en": {"hub": "Systran/faster-whisper-base.en",  # tts._ASR_CANDIDATES
-                         "path": transcript.EN_ASR_MODEL, "bytes": 150_000_000},
+                         "path": transcript.EN_ASR_MODEL, "bytes": 147_000_000},  # 147,772,938
         "model.asr.tgt": {"hub": "Systran/faster-whisper-base",    # tts._ASR_CANDIDATES_MULTI
-                          "path": transcript.TARGET_ASR_MODEL, "bytes": 150_000_000},
+                          "path": transcript.TARGET_ASR_MODEL,
+                          "bytes": 147_000_000},                    # 147,887,035
+        # 86,400,192 measured, against the 100 MB somebody rounded to and the
+        # ~95.4 MB the hub quotes. This row is why the rest of them were checked.
         "model.lid": {"hub": "speechbrain/lang-id-voxlingua107-ecapa",
-                      "path": transcript.LID_MODEL, "bytes": 100_000_000},
+                      "path": transcript.LID_MODEL, "bytes": 86_400_000},
         "model.tts.he": {"hub": hebrew.ADAPTER_HUB, "path": hebrew.ADAPTER_DIR,
-                         "bytes": 250_000_000},
+                         "bytes": 247_000_000},                     # 247,523,723
     })
     return out
 
@@ -1112,7 +1251,7 @@ def install_plan(report_: dict[str, Any]) -> list[dict[str, Any]]:
 __all__ = ["report", "probe", "install_plan", "git_commit", "human_bytes", "dir_size", "env_path",
            "env_file_value", "find_uv", "gpu_memory_bytes", "hf_hub_cache",
            "hf_cache_repo", "diarization_repair", "index_shards", "model_ready",
-           "fetch_in_flight",
+           "fetch_in_flight", "record_install", "install_recorded", "INSTALL_RECEIPT",
            "low_vram_check", "low_vram_env_key", "low_vram_state", "model_downloads",
            "blocking_stage", "TOOLS", "BLOCKING", "DEGRADES", "OPTIONAL", "SEVERITIES",
            "MISSING", "INCOMPLETE", "READY", "STATES"]
