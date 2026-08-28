@@ -193,31 +193,16 @@ def test_ref_for_long_segment_uses_own_window(tmp_path, monkeypatch):
     assert path.is_file()
 
 
-def test_ref_for_short_segment_no_embeddings_keeps_own_window(tmp_path, monkeypatch):
-    monkeypatch.setattr(tts, "_embed_windows", lambda *a, **k: None)
-    monkeypatch.setattr(tts, "_embed_wavfile", lambda *a, **k: None)
-    voc = _vocals([(10.0, 11.0, 220)])
-    eng = _engine(tmp_path, voc, [])
-    eng.m["speakers"]["S0"] = {"ref": "refs/S0.wav"}
-    (tmp_path / "refs").mkdir(parents=True, exist_ok=True)
-    sf.write(str(tmp_path / "refs" / "S0.wav"), _tone(220, 3.0), REF_SR)
-    path, key = eng.ref_for(_seg(0, 10.0, 11.0))
-    assert key.startswith("ref:")                  # current behaviour unchanged
+def test_ref_for_a_one_second_line_takes_the_canonical_unasked(tmp_path, monkeypatch):
+    """A second of speech carries no usable speaker embedding, so nothing is asked.
 
-
-def test_ref_for_short_segment_matching_voice_uses_canonical(tmp_path, monkeypatch):
-    monkeypatch.setattr(tts, "_embed_windows", lambda *a, **k: np.stack([_unit(1, 0)]))
-    monkeypatch.setattr(tts, "_embed_wavfile", lambda *a, **k: _unit(1, 0.1))
-    voc = _vocals([(10.0, 11.0, 220)])
-    eng = _engine(tmp_path, voc, [])
-    eng.m["speakers"]["S0"] = {"ref": "refs/S0.wav"}
-    (tmp_path / "refs").mkdir(parents=True, exist_ok=True)
-    sf.write(str(tmp_path / "refs" / "S0.wav"), _tone(220, 3.0), REF_SR)
-    path, key = eng.ref_for(_seg(0, 10.0, 11.0))
-    assert key.startswith("S0:canonical:")
-
-
-def test_ref_for_short_segment_mismatched_voice_keeps_own_window(tmp_path, monkeypatch):
+    The gate answers "not the same voice" to every candidate at that length, its
+    own speaker's canonical included, and the fallback is the sub-MIN_REF_SEC
+    window this branch exists to avoid. On a Hebrew drama that cost two lines
+    outright: every take cloned from about a second of audio came back truncated
+    and was rejected on length, and the original Hebrew aired instead.
+    """
+    # Embeddings that would say "different voice" if anyone asked them.
     monkeypatch.setattr(tts, "_embed_windows", lambda *a, **k: np.stack([_unit(1, 0)]))
     monkeypatch.setattr(tts, "_embed_wavfile", lambda *a, **k: _unit(0, 1))
     voc = _vocals([(10.0, 11.0, 220)])
@@ -225,5 +210,52 @@ def test_ref_for_short_segment_mismatched_voice_keeps_own_window(tmp_path, monke
     eng.m["speakers"]["S0"] = {"ref": "refs/S0.wav"}
     (tmp_path / "refs").mkdir(parents=True, exist_ok=True)
     sf.write(str(tmp_path / "refs" / "S0.wav"), _tone(220, 3.0), REF_SR)
-    path, key = eng.ref_for(_seg(0, 10.0, 11.0))
+    _path, key = eng.ref_for(_seg(0, 10.0, 11.0))
+    assert key.startswith("S0:canonical:")
+
+
+def test_ref_for_a_one_second_line_with_no_canonical_uses_its_own_window(
+        tmp_path, monkeypatch):
+    """Nothing to swap to is still nothing to swap to: the short window stands."""
+    monkeypatch.setattr(tts, "_embed_windows", lambda *a, **k: None)
+    monkeypatch.setattr(tts, "_embed_wavfile", lambda *a, **k: None)
+    voc = _vocals([(10.0, 11.0, 220)])
+    eng = _engine(tmp_path, voc, [])
+    _path, key = eng.ref_for(_seg(0, 10.0, 11.0))
+    assert key.startswith("ref:")
+
+
+def test_ref_for_short_segment_no_embeddings_keeps_own_window(tmp_path, monkeypatch):
+    monkeypatch.setattr(tts, "_embed_windows", lambda *a, **k: None)
+    monkeypatch.setattr(tts, "_embed_wavfile", lambda *a, **k: None)
+    voc = _vocals([(10.0, 12.0, 220)])
+    eng = _engine(tmp_path, voc, [])
+    eng.m["speakers"]["S0"] = {"ref": "refs/S0.wav"}
+    (tmp_path / "refs").mkdir(parents=True, exist_ok=True)
+    sf.write(str(tmp_path / "refs" / "S0.wav"), _tone(220, 3.0), REF_SR)
+    path, key = eng.ref_for(_seg(0, 10.0, 12.0))
+    assert key.startswith("ref:")                  # current behaviour unchanged
+
+
+def test_ref_for_short_segment_matching_voice_uses_canonical(tmp_path, monkeypatch):
+    monkeypatch.setattr(tts, "_embed_windows", lambda *a, **k: np.stack([_unit(1, 0)]))
+    monkeypatch.setattr(tts, "_embed_wavfile", lambda *a, **k: _unit(1, 0.1))
+    voc = _vocals([(10.0, 12.0, 220)])
+    eng = _engine(tmp_path, voc, [])
+    eng.m["speakers"]["S0"] = {"ref": "refs/S0.wav"}
+    (tmp_path / "refs").mkdir(parents=True, exist_ok=True)
+    sf.write(str(tmp_path / "refs" / "S0.wav"), _tone(220, 3.0), REF_SR)
+    path, key = eng.ref_for(_seg(0, 10.0, 12.0))
+    assert key.startswith("S0:canonical:")
+
+
+def test_ref_for_short_segment_mismatched_voice_keeps_own_window(tmp_path, monkeypatch):
+    monkeypatch.setattr(tts, "_embed_windows", lambda *a, **k: np.stack([_unit(1, 0)]))
+    monkeypatch.setattr(tts, "_embed_wavfile", lambda *a, **k: _unit(0, 1))
+    voc = _vocals([(10.0, 12.0, 220)])
+    eng = _engine(tmp_path, voc, [])
+    eng.m["speakers"]["S0"] = {"ref": "refs/S0.wav"}
+    (tmp_path / "refs").mkdir(parents=True, exist_ok=True)
+    sf.write(str(tmp_path / "refs" / "S0.wav"), _tone(220, 3.0), REF_SR)
+    path, key = eng.ref_for(_seg(0, 10.0, 12.0))
     assert key.startswith("ref:")                  # this line's own voice wins

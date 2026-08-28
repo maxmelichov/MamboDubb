@@ -100,6 +100,13 @@ REPETITION_PENALTY = 1.08
 REF_SR = 24000
 REF_TARGET_SEC = 4.5
 MIN_REF_SEC = 2.5    # a clone reference shorter than this yields truncated/garbled clones
+# Below this much audio an ECAPA cosine is not evidence about who is speaking.
+# The embedding is a fixed-size summary of whatever it is given, and on a second
+# of speech it is dominated by the phonemes in it rather than the voice saying
+# them: on a Hebrew drama every one-second beat scored below REF_MATCH_MIN
+# against its own speaker's canonical reference, including one built from that
+# same character's other lines.
+ECAPA_MIN_SEC = 1.5
 REF_MIN_RMS = 0.018
 REF_JOIN_FADE_SEC = 0.02   # fade at the joins of a concatenated reference
 
@@ -1238,11 +1245,25 @@ class Engine:
         wrong-speaker/voice-switch around 1:11).
 
         A short line is the one exception: a sub-MIN_REF_SEC reference reliably
-        clones truncated, so when the aligned window is that short AND an ECAPA
-        embedding confirms it is the same voice as the speaker's canonical
-        reference, the canonical (longer, validated) reference is used instead.
-        Without embeddings there is no confirmation, and the short aligned window
-        stands the old behaviour, never a blind widen-by-label.
+        clones truncated, so when the aligned window is that short the speaker's
+        canonical (longer, outlier-validated) reference is used instead.
+
+        Between ECAPA_MIN_SEC and MIN_REF_SEC that swap is gated on an embedding
+        confirming the two are one voice, and without embeddings there is no
+        confirmation and the short window stands, never a blind widen-by-label.
+
+        Below ECAPA_MIN_SEC there is no confirmation to be had from anyone: a
+        second of speech carries no usable speaker embedding, so the gate answers
+        "not the same voice" to every candidate, the speaker's own canonical
+        included. Answering "cannot tell" with the option this docstring calls
+        reliably broken is not a neutral default. It cost two lines of a Hebrew
+        drama outright: a 1.12s "צ'לסי." and a 0.94s "הוא אמור שהם בדרך.", each
+        cloned from about a second of audio, every take rejected on length, both
+        aired in Hebrew under an English subtitle. So below that length the
+        canonical is taken unasked. The risk is one short line in a mislabelled
+        neighbour's voice; the alternative is the line not being dubbed at all,
+        and this module already prefers a clip in the wrong voice to the original
+        audio for that reason (the wrong_voice accept in `clip_for`).
         """
         pinned = self.pinned_ref(opts)
         if pinned is not None:
@@ -1253,7 +1274,11 @@ class Engine:
             start, end, _score, _rms = got
             if end - start < MIN_REF_SEC:
                 canon = self._canonical_ref(seg)
-                if canon is not None and self._same_voice((start, end), canon[0]):
+                # Sub-ECAPA_MIN_SEC the confirmation cannot be had from anyone,
+                # and "cannot tell" is not a reason to pick the option this same
+                # branch calls reliably broken (see the docstring).
+                if canon is not None and (end - start < ECAPA_MIN_SEC
+                                          or self._same_voice((start, end), canon[0])):
                     return canon
             return self.window_ref(start, end)
         # Only if the aligned window is too short or essentially silent: the

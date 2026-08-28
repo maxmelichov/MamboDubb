@@ -116,7 +116,13 @@ STAGE_TAGS = {
     # own voice (a label is not a person), the alternates are held to the same
     # test, and a clip that says the right words in another voice is recorded as
     # "wrong_voice" rather than "ok" different rungs, different verdicts.
-    "tts": "tts/v25",
+    "tts": "tts/v26",
+    # v26: a line under ECAPA_MIN_SEC of audio clones from its speaker's canonical
+    # reference instead of its own second-long window. At that length the
+    # same-voice gate has no evidence and rejects everything, and the fallback is
+    # the sub-MIN_REF_SEC reference the branch exists to avoid; two lines of a
+    # Hebrew drama came back truncated on every take and aired in Hebrew. This
+    # changes which audio a short line is cloned from, so every clip of one is new.
     # v25: a one- or two-word clip has an absolute length ceiling again. Below
     # three units the per-unit rate was simply switched off, so a 4.61s "Chelsea."
     # passed every check and its 4.6s of audio in a 1.1s slot pushed the next line
