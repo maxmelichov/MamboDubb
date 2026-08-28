@@ -85,15 +85,23 @@ the toolbar is a census of *this run*, which does.
 
 `/setup` renders `GET /api/setup` the server's fast filesystem checks (ffmpeg, sox, the
 HF token, each model directory with its size, free disk). Every row states its verdict as a
-glyph, a word (*Ready*, *Missing*, *Not installed*), and a hue, in that order: the screen
-reads the same in monochrome. The detail sentence is the server's, and it is the point of the
-row it says what to install, not merely that something is absent.
+glyph, a word (*Ready*, *Missing*, *Not installed*, *Incomplete*), and a hue, in that order:
+the screen reads the same in monochrome. The detail sentence is the server's, and it is the
+point of the row it says what to install, not merely that something is absent.
 
-A provisioned machine reads **all green**, and nothing on the list is amber by design. The
-one grade that survives being absent with nothing to do about it is `optional` sox, whose
-only caller is a tokenizer this pipeline never loads and it is drawn as a grey dash and the
-words *Not installed*: no wash, no red, not counted in the "N of M need attention" headline,
-and unable to hold `ok` back (the server conjoins the required rows only).
+A provisioned machine reads **all green**, and the one grade that survives being absent with
+nothing to do about it is `optional` sox, whose only caller is a tokenizer this pipeline
+never loads and it is drawn as a grey dash and the words *Not installed*: no wash, no red,
+not counted in the "N of M need attention" headline, and unable to hold `ok` back (the server
+conjoins the required rows only).
+
+The one amber thing on the list is not a grade at all. `state: "incomplete"` is a model
+directory that is part way downloaded the first-run fetch writes the config and the shard
+index in a second and the weights over the next several minutes and the row draws it with a
+bar (`bytes` against `download_bytes`), a *Resume* button, and *Downloading* or *Incomplete*
+depending on whether the server can still see a live fetch (`downloading`). While one says it
+is live the screen re-runs the checklist on its own clock, so the row turns green without
+anyone pressing Re-check.
 
 On boot the app asks once. It routes to `/setup` **only** when the server answers `ok:
 false`; an error, a missing endpoint or a server still starting says nothing, and nothing is

@@ -482,11 +482,36 @@ export type Health = { status: "ok"; version: string };
  */
 export type SetupSeverity = "blocking" | "degrades" | "optional";
 
+/**
+ * What state the thing is in, as opposed to what its absence costs.
+ *
+ * `ok` has two values and a model directory has three. `hf download` writes the
+ * config and the shard index in the first second and the weights over the next
+ * several minutes, so "the directory is not empty" reported a 6.4 GB model as
+ * ready at 1% and never took it back after an interrupted fetch. `incomplete` is
+ * that middle state, and it is a different instruction from either neighbour:
+ * wait, or press Download to resume, and never "start a run".
+ */
+export type SetupState = "missing" | "incomplete" | "ready";
+
 export type SetupCheck = {
   id: string;
   label: string;
   ok: boolean;
   detail: string;
+  /**
+   * `missing` / `incomplete` / `ready`. Optional on the type because a server
+   * older than the field sends rows without it; `stateOf` derives it from `ok`
+   * there, which is the old two-value contract exactly.
+   */
+  state?: SetupState;
+  /**
+   * An incomplete row whose bytes are still arriving: a lock or a partial file
+   * in the download cache was touched seconds ago. It is the difference between
+   * "wait" and "press Download", and it is what tells the screen to keep polling
+   * rather than leaving a stale row under a Re-check button.
+   */
+  downloading?: boolean;
   /**
    * What a failure of this check actually costs `blocking` (the run fails),
    * `degrades` (the run works and is worse), `optional` (irrelevant until you

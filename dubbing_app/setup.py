@@ -20,8 +20,9 @@ Report shape::
 
     {"ok": bool, "checks": [{"id", "label", "ok", "detail", "required": bool,
                              "severity": "blocking"|"degrades"|"optional",
+                             "state": "missing"|"incomplete"|"ready",
                              "installable": bool, "path"?, "found_at"?, "bytes"?,
-                             "hub"?, "download_bytes"?, "fix"?}, ...]}
+                             "hub"?, "download_bytes"?, "downloading"?, "fix"?}, ...]}
 
 `installable` is the server's answer to "can the app fix this for me?" true for
 exactly the ids `dubbing_app.install` can install (`install.installable`: an argv
@@ -59,6 +60,26 @@ what makes the first two mean anything:
 * ``optional`` irrelevant until you ask for it: the per-language-pair models,
   the self-downloading caches, and free disk.
 
+`state` is to `ok` what `severity` is to `required`: the boolean has two values
+and a model directory has three. A first-run fetch writes `config.json`,
+`tokenizer.json` and `model.safetensors.index.json` in the first second or two
+and then spends minutes on the shards, so "the directory exists and is not
+empty" called a 6.4 GB model READY at 1% downloaded, for the whole download and
+forever after an interrupted one. Three states, and the third is the one that
+was missing:
+
+* ``missing`` nothing is there. Press Download.
+* ``incomplete`` some of it is there and it cannot be loaded. Either a fetch is
+  running right now (wait) or one stopped (press Download; `hf download` resumes
+  from the partial files). Which of the two is on the row, because they are
+  different instructions.
+* ``ready`` every file the loader opens is on disk.
+
+`ok` is `state == "ready"` and nothing else, so no client has to learn the new
+field to stop believing a half-downloaded model. `downloading` is on an
+incomplete row when a fetch is live, which is what lets a screen keep polling
+until it turns green instead of asking the user to press Re-check.
+
 There is no credential row of any kind, and that is deliberate rather than an
 oversight. A Hugging Face token once sat here, first as ``degrades`` and then as
 ``optional``, because diarization loaded a gated repo. Since v0.4.0 the
@@ -71,10 +92,12 @@ instead; that is a setting in ``.env``, not a checklist item.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +108,29 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # blocking and not required (or the reverse) by hand.
 BLOCKING, DEGRADES, OPTIONAL = "blocking", "degrades", "optional"
 SEVERITIES = (BLOCKING, DEGRADES, OPTIONAL)
+
+# The three states a check can be *in*, as opposed to what it costs. Same
+# discipline as the grades: `ok` is derived from this and never passed beside
+# it, so nothing can be READY and not ok, or the reverse.
+MISSING, INCOMPLETE, READY = "missing", "incomplete", "ready"
+STATES = (MISSING, INCOMPLETE, READY)
+
+# The file a sharded checkpoint carries, and what makes "is this whole?" exact
+# rather than probable: its `weight_map` names every shard the loader opens.
+SHARD_INDEX = "model.safetensors.index.json"
+
+# The fraction of the expected download that has to be on disk before a model
+# with no shard index is called whole. Not 1.0: `model_downloads()` sizes are
+# measured from real installs and rounded, so a correct download can land a
+# little under the estimate, and a row that went red on a working model would
+# be the same lie in the other direction.
+SIZE_FLOOR = 0.9
+
+# How recently a download's lock or partial file must have been touched for the
+# fetch to count as live. Long enough that a slow shard between two writes is
+# not read as abandoned, short enough that a fetch killed with the app is not
+# still "downloading" the next morning.
+FETCH_FRESH_SECONDS = 120.0
 
 # A run needs headroom for the source media, the stems, every clip and the
 # re-encoded preview. Well under a real feature film; enough to catch "this disk
@@ -134,13 +180,30 @@ def git_commit(*, refresh: bool = False) -> str | None:
 # ---------------------------------------------------------------------------
 
 def check(id_: str, label: str, ok: bool, detail: str, *, severity: str = BLOCKING,
-          **extra: Any) -> dict[str, Any]:
+          state: str | None = None, **extra: Any) -> dict[str, Any]:
     """One row. `required` is `severity == "blocking"`, computed here and nowhere
-    else the old contract, still on the wire, now with one source of truth."""
+    else the old contract, still on the wire, now with one source of truth.
+
+    `state` is the same arrangement for the other axis. Most checks have nothing
+    to say beyond yes or no a binary is on PATH or it is not so they pass
+    nothing and get `ready`/`missing` derived from `ok`. Only a model directory
+    has a third answer, and it passes `state=INCOMPLETE` with `ok=False`: a
+    partial download is not ready, and any client that has never heard of this
+    field still reads it as not ready, which is the whole point of deriving one
+    from the other in one place.
+    """
     if severity not in SEVERITIES:
         raise ValueError(f"unknown severity {severity!r}")
-    return {"id": id_, "label": label, "ok": bool(ok), "detail": detail,
-            "severity": severity, "required": severity == BLOCKING, **extra}
+    ok = bool(ok)
+    if state is None:
+        state = READY if ok else MISSING
+    if state not in STATES:
+        raise ValueError(f"unknown state {state!r}")
+    if ok is not (state == READY):
+        raise ValueError(f"{id_}: ok={ok} disagrees with state={state!r}")
+    return {"id": id_, "label": label, "ok": ok, "detail": detail,
+            "severity": severity, "required": severity == BLOCKING,
+            "state": state, **extra}
 
 
 def human_bytes(n: float) -> str:
@@ -285,6 +348,88 @@ def probe(id_: str) -> dict[str, Any] | None:
             **({"stage": blocking_stage(id_)} if row["severity"] == BLOCKING else {})}
 
 
+def index_shards(root: Path) -> list[Path] | None:
+    """Every weight file `root`'s shard index names, or None when it has no index.
+
+    One JSON parse for an exact answer. A sharded checkpoint ships
+    `model.safetensors.index.json`, whose `weight_map` maps each tensor to the
+    file holding it, so the set of files the loader will open is written down
+    beside them: "is this download finished?" stops being a guess about bytes
+    and becomes a list of paths to `stat`.
+
+    Looked for by walk rather than at a fixed name, because the two places a
+    model lives put it in two places: `models/<dir>/model.safetensors.index.json`
+    for a `--local-dir` fetch, and `snapshots/<rev>/…` inside the Hugging Face
+    cache. None means "this model does not answer that way" a single-file
+    checkpoint, a faster-whisper directory, a speechbrain one and the caller
+    falls back to the size floor rather than treating the absence as a failure.
+    """
+    index = next(iter(sorted(root.rglob(SHARD_INDEX))), None)
+    if index is None:
+        return None
+    try:
+        data = json.loads(index.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None                      # a half-written index is not a manifest
+    weight_map = data.get("weight_map") if isinstance(data, dict) else None
+    if not isinstance(weight_map, dict) or not weight_map:
+        return None
+    names = dict.fromkeys(v for v in weight_map.values() if isinstance(v, str))
+    return [index.parent / name for name in names]
+
+
+def model_ready(root: Path, size: int, hub_bytes: int = 0) -> bool:
+    """Is everything the loader opens actually in `root`?
+
+    Two answers, strongest first. With a shard index, every file it names has to
+    be there and that is exact. Without one, the only evidence on hand is how
+    much arrived against how much was expected, so `SIZE_FLOOR` of the download
+    size is the bar and a model with no expected size at all is taken at its
+    word there is nothing left to compare it to, and calling every
+    unmeasured model incomplete would be the "check that cannot pass" this
+    module's second rule forbids.
+    """
+    shards = index_shards(root)
+    if shards is not None:
+        return all(shard.is_file() for shard in shards)
+    if hub_bytes:
+        return size >= SIZE_FLOOR * hub_bytes
+    return True
+
+
+def fetch_in_flight(root: Path) -> bool:
+    """Is something writing this model right now, or did it stop?
+
+    The difference between "wait" and "press Download", and it is readable
+    without asking any process anything: `huggingface_hub` keeps a `.lock` and a
+    `.incomplete` beside every file it is fetching `<local_dir>/.cache/
+    huggingface/download/` for a `--local-dir` download, `blobs/` inside the
+    cache and touches them as the bytes land. Fresh means a fetch is live;
+    stale means one died and the partial files are waiting for the next attempt
+    to resume them.
+
+    Only those two directories are walked, never the model tree: the shards are
+    the big part of a `stat` sweep and this runs on every poll.
+    """
+    cutoff = time.time() - FETCH_FRESH_SECONDS
+    for marks in (root / ".cache" / "huggingface" / "download", root / "blobs"):
+        if not marks.is_dir():
+            continue
+        try:
+            entries = list(marks.rglob("*"))
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.suffix not in (".lock", ".incomplete"):
+                continue
+            try:
+                if entry.stat().st_mtime >= cutoff:
+                    return True
+            except OSError:
+                continue
+    return False
+
+
 def model(id_: str, label: str, path: Path, *, severity: str = BLOCKING,
           note: str = "", hub: str = "", hub_bytes: int = 0,
           hub_cached: bool = False, fix: str = "") -> dict[str, Any]:
@@ -320,6 +465,20 @@ def model(id_: str, label: str, path: Path, *, severity: str = BLOCKING,
     "Download". "Missing" without the command or the size is a scavenger hunt.
     `fix` is the same promise for a model with no hub to fetch from: the command
     that repairs it, backticked, and on the row as data so a UI can copy it.
+
+    **A directory with something in it is not a model.** This used to be the
+    whole test (`path.is_dir() and any(path.iterdir())`), and the auto-fetch on
+    first launch turned that into the exact failure the paragraph above is about,
+    pointed the other way: `hf download` writes the config, the tokenizer and the
+    shard index within a second or two and then spends minutes on the weights, so
+    a *blocking* row went green at 1% of a 6.4 GB download and stayed green for
+    the whole fetch and forever after an interrupted one. A user who opened Setup
+    during the first-run download saw every blocking row certified, started a dub
+    and got a load failure from a model this screen had just passed. So presence
+    is now `model_ready` an exact shard list where there is one, the size floor
+    where there is not and the middle state has a name (`INCOMPLETE`) and a
+    sentence saying which of "wait" and "press Download" it means
+    (`fetch_in_flight`).
     """
     present = path.is_dir() and any(path.iterdir()) if path.is_dir() else False
     where = path
@@ -328,9 +487,26 @@ def model(id_: str, label: str, path: Path, *, severity: str = BLOCKING,
         if cached is not None:
             present, where = True, cached
     size = dir_size(where) if present else 0
+    state = MISSING
     if present:
+        state = READY if model_ready(where, size, hub_bytes) else INCOMPLETE
+    downloading = fetch_in_flight(where) if state == INCOMPLETE else False
+    if state == READY:
         origin = f"{path}" if where == path else f"the Hugging Face cache ({where})"
         detail = f"{human_bytes(size)} in {origin}"
+    elif state == INCOMPLETE:
+        # The two halves a user needs in this state and in no other: how far in
+        # it is, and whether anything is still working on it. "Incomplete" alone
+        # would leave them staring at a screen with nothing to decide.
+        progress = (f"{int(100 * size / hub_bytes)}% of {human_bytes(hub_bytes)}"
+                    if hub_bytes else f"{human_bytes(size)} so far")
+        detail = (f"incomplete: {human_bytes(size)} in {where}: "
+                  + (f"downloading, {progress}" if downloading
+                     else "partial download, press Download to finish"))
+        if hub:
+            detail += f". It resumes: `uv run hf download {hub} --local-dir {path}`"
+        elif fix:
+            detail += f". Restore it: `{fix}`"
     else:
         detail = f"missing: {path}" + (f" ({note})" if note else "")
         if hub:
@@ -350,7 +526,13 @@ def model(id_: str, label: str, path: Path, *, severity: str = BLOCKING,
         extra["download_bytes"] = hub_bytes
     if fix:
         extra["fix"] = fix
-    return check(id_, label, present, detail, severity=severity, **extra)
+    # Only where it is true, and only where it can be: a live fetch is the one
+    # state on this screen that resolves itself, and it is what tells a client
+    # to keep polling instead of leaving a stale row under a Re-check button.
+    if downloading:
+        extra["downloading"] = True
+    return check(id_, label, state == READY, detail, severity=severity,
+                 state=state, **extra)
 
 
 # ---------------------------------------------------------------------------
@@ -888,6 +1070,8 @@ def install_plan(report_: dict[str, Any]) -> list[dict[str, Any]]:
 
 __all__ = ["report", "probe", "install_plan", "git_commit", "human_bytes", "dir_size", "env_path",
            "env_file_value", "find_uv", "gpu_memory_bytes", "hf_hub_cache",
-           "hf_cache_repo", "diarization_repair",
+           "hf_cache_repo", "diarization_repair", "index_shards", "model_ready",
+           "fetch_in_flight",
            "low_vram_check", "low_vram_env_key", "low_vram_state", "model_downloads",
-           "blocking_stage", "TOOLS", "BLOCKING", "DEGRADES", "OPTIONAL", "SEVERITIES"]
+           "blocking_stage", "TOOLS", "BLOCKING", "DEGRADES", "OPTIONAL", "SEVERITIES",
+           "MISSING", "INCOMPLETE", "READY", "STATES"]

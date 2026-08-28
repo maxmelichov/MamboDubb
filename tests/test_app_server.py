@@ -2379,6 +2379,130 @@ def test_setup_model_check_reports_size(tmp_path):
     assert "downloads on use" in missing["detail"]
 
 
+def a_sharded_model(root: Path, *, shards=("model-00001-of-00002.safetensors",
+                                           "model-00002-of-00002.safetensors"),
+                    present=()) -> Path:
+    """The directory `hf download` leaves within its first two seconds: the
+    config, the tokenizer and the shard index, and only the shards named in
+    `present` actually on disk."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "config.json").write_text('{"model_type": "gemma3"}')
+    (root / "tokenizer.json").write_text("{}")
+    weight_map = {f"layer.{i}.weight": name for i, name in enumerate(shards)}
+    (root / "model.safetensors.index.json").write_text(
+        json.dumps({"metadata": {"total_size": 6_400_000_000}, "weight_map": weight_map}))
+    for name in present:
+        (root / name).write_bytes(b"w" * 4096)
+    return root
+
+
+def test_a_model_missing_the_shards_its_index_names_is_not_ready(tmp_path):
+    """The bug a fresh-install tester found at 1% downloaded: `hf download`
+    writes the config, the tokenizer and the index in the first second or two,
+    so "the directory is not empty" called a 6.4 GB blocking model READY for the
+    whole fetch, and forever if the fetch died. The index names every shard the
+    loader opens, so the answer is exact and costs one JSON parse."""
+    from dubbing_app import setup as setup_mod
+
+    d = tmp_path / "gemma"
+    a_sharded_model(d)
+    row = setup_mod.model("model.translate", "Translation", d, hub="org/gemma",
+                          hub_bytes=6_400_000_000)
+    assert row["ok"] is False and row["state"] == setup_mod.INCOMPLETE
+    assert row["bytes"] > 0                       # something IS there: that is the point
+    assert setup_mod.model_ready(d, row["bytes"], 6_400_000_000) is False
+
+    # One shard of two is still not a model that loads.
+    a_sharded_model(d, present=("model-00001-of-00002.safetensors",))
+    assert setup_mod.model("model.translate", "T", d)["state"] == setup_mod.INCOMPLETE
+
+    # Both, and the size floor is not consulted at all: the index is exact, and
+    # a rounded estimate must not be able to overrule it.
+    a_sharded_model(d, present=("model-00001-of-00002.safetensors",
+                                "model-00002-of-00002.safetensors"))
+    whole = setup_mod.model("model.translate", "T", d, hub="org/gemma",
+                            hub_bytes=6_400_000_000)
+    assert whole["ok"] is True and whole["state"] == setup_mod.READY
+
+
+def test_a_model_with_no_index_falls_back_to_the_size_floor(tmp_path):
+    """faster-whisper and speechbrain directories carry no shard index, so the
+    only evidence is how much arrived against how much was expected. Not an
+    equality: the table's sizes are measured from real installs and rounded, and
+    a row that went red on a working model would be the same lie backwards."""
+    from dubbing_app import setup as setup_mod
+
+    d = tmp_path / "whisper"
+    d.mkdir()
+    (d / "model.bin").write_bytes(b"x" * 100)
+    assert setup_mod.model("model.asr.en", "ASR", d, hub_bytes=1000)["state"] == "incomplete"
+    (d / "model.bin").write_bytes(b"x" * 900)     # exactly the floor
+    assert setup_mod.model("model.asr.en", "ASR", d, hub_bytes=1000)["ok"] is True
+    # And a model nobody measured is taken at its word: a check that cannot pass
+    # is the thing this module's second rule exists to prevent.
+    assert setup_mod.model("model.x", "X", d)["ok"] is True
+
+
+def test_an_incomplete_row_says_which_of_wait_and_resume_it_means(tmp_path, monkeypatch):
+    """"Incomplete" alone leaves the user with nothing to decide. A live fetch is
+    "wait" and an abandoned one is "press Download", and the difference is
+    readable off the lock files huggingface_hub keeps beside the bytes."""
+    from dubbing_app import setup as setup_mod
+
+    d = tmp_path / "gemma"
+    a_sharded_model(d)
+    marks = d / ".cache" / "huggingface" / "download"
+    marks.mkdir(parents=True)
+    lock = marks / "model-00001-of-00002.safetensors.lock"
+    lock.write_text("")
+
+    live = setup_mod.model("model.translate", "T", d, hub="org/gemma",
+                           hub_bytes=1_000_000_000)
+    assert live["state"] == "incomplete" and live["downloading"] is True
+    assert "downloading, 0% of 953.7 MB" in live["detail"]
+
+    # Nothing has touched it for an hour: the fetch is gone and the partial
+    # files are waiting for the next attempt to resume them.
+    old = time.time() - 3600
+    os.utime(lock, (old, old))
+    stalled = setup_mod.model("model.translate", "T", d, hub="org/gemma",
+                              hub_bytes=1_000_000_000)
+    assert stalled["state"] == "incomplete" and "downloading" not in stalled
+    assert "partial download, press Download to finish" in stalled["detail"]
+    # Either way the row carries the line that finishes it, and it is a resume:
+    # `hf download` keeps what is on disk.
+    assert "`uv run hf download org/gemma --local-dir " in stalled["detail"]
+
+
+def test_an_incomplete_row_is_installable_and_the_plan_queues_it(client, tmp_path,
+                                                                 monkeypatch):
+    """A half-downloaded blocking model has to be fixable from the screen it is
+    red on. `snapshot_download` resumes from the partial files, so the row's
+    button and the queue both cost only the half that is not there."""
+    from dubbing import translate
+    from dubbing_app import setup as setup_mod
+
+    monkeypatch.setattr(translate, "MODEL_PATH", a_sharded_model(tmp_path / "gemma"))
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "empty-cache"))
+    report = client.get("/api/setup").json()
+    row = {c["id"]: c for c in report["checks"]}["model.translate"]
+    assert row["state"] == "incomplete" and row["installable"] is True
+    assert report["ok"] is False                  # and it does not certify the run
+    assert "model.translate" in {i["id"] for i in setup_mod.install_plan(report)}
+
+
+def test_every_row_carries_a_state_and_ok_is_derived_from_it(client):
+    """`state` is to `ok` what `severity` is to `required`: one source of truth,
+    so no client can be shown a row that is READY and not ok, or the reverse."""
+    from dubbing_app import setup as setup_mod
+
+    for c in client.get("/api/setup").json()["checks"]:
+        assert c["state"] in setup_mod.STATES, c["id"]
+        assert c["ok"] is (c["state"] == setup_mod.READY), c["id"]
+    with pytest.raises(ValueError, match="disagrees"):
+        setup_mod.check("x", "X", True, "", state=setup_mod.INCOMPLETE)
+
+
 def test_setup_uv_probe_mirrors_the_shells_fallback_chain(tmp_path, monkeypatch):
     """The shell's `find_uv()` found uv and started this server with it, and the
     server's bare `shutil.which` then reported the tool missing and required.
@@ -3119,12 +3243,27 @@ def hub_stub(monkeypatch, tmp_path):
     """The translate model, made tiny: its path points into tmp, and the fetch
     is a fake that writes 400 bytes, waits on `gate`, then writes 600 more.
     `step` fires once the first bytes are on disk, so a test can assert on
-    mid-download progress without sleeping."""
+    mid-download progress without sleeping.
+
+    The expected size shrinks with it, and has to: `setup.model_ready` now
+    measures what arrived against what the table said to expect, so a 1 KB stand
+    in for a 9.7 GB model would re-probe as `incomplete` and this fixture would
+    be testing the size floor instead of the download plumbing.
+    """
     from dubbing import translate
+    from dubbing_app import setup as setup_mod
 
     local = tmp_path / "hub-model"
     gate = threading.Event()
     step = threading.Event()
+    real_downloads = setup_mod.model_downloads
+
+    def small_downloads():
+        table = real_downloads()
+        table["model.translate"] = {**table["model.translate"], "bytes": 1000}
+        return table
+
+    monkeypatch.setattr(setup_mod, "model_downloads", small_downloads)
 
     def fake_download(repo_id, local_dir, **kwargs):
         assert repo_id == translate.HUB_ID           # the table's id, never the client's

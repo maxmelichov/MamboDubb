@@ -538,7 +538,7 @@ dies halfway and an absent model directory silently becomes a multi-gigabyte dow
 {"ok": true,
  "checks": [{"id": "model.translate", "label": "Translation model (Gemma 4 12B)",
              "ok": true, "detail": "9.7 GB in /…/models/gemma-4-12B-it-6bit",
-             "severity": "blocking", "stage": "translate",
+             "severity": "blocking", "stage": "translate", "state": "ready",
              "required": true, "installable": false,
              "path": "/…", "bytes": 10424182784}]}
 ```
@@ -579,6 +579,22 @@ dies halfway and an absent model directory silently becomes a multi-gigabyte dow
   it" is advertising a problem no user has, and the paragraph it grew explaining why the
   badge did not matter was the proof. **Readiness may never again depend on a credential**,
   and neither may the screen's attention.
+* **`state` is the verdict, and `ok` is derived from it.** `missing` /
+  `incomplete` / `ready`, and `ok` is `state == "ready"` exactly, so a client that has
+  never heard of the field cannot be told a half-downloaded model is there. The middle
+  state is a model directory that exists and cannot be loaded, which the old
+  "directory is not empty" test called READY: `hf download` writes `config.json`,
+  `tokenizer.json` and `model.safetensors.index.json` in its first second or two and the
+  shards over the next several minutes, so a **blocking** row went green at 1% of a 6.4 GB
+  fetch and stayed green through an interrupted one forever. Completeness is now the shard
+  index where there is one (`weight_map` names every file the loader opens, so all of them
+  must exist) and `0.9 * download_bytes` where there is not, a floor rather than an
+  equality because the table's sizes are measured and rounded. An incomplete row carries
+  **`downloading`** when a lock or partial file under the download cache was touched in the
+  last two minutes: a live fetch means "wait", a stale one means "press Download, it
+  resumes", and they are different instructions. A client should keep polling while any row
+  says `downloading`, because the first-run fetch is another process and no install slot
+  reports it.
 * **`ok` is the conjunction of the `required` checks only** unchanged, and now equal to
   "no blocking check fails". A client must not compute readiness as "every row passes":
   that is stricter than the server and makes the "ready, with things missing" state

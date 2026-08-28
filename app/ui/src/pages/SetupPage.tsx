@@ -9,14 +9,25 @@
  * - **Never colour alone.** Every row carries a glyph, a word ("Ready",
  *   "Missing", "Not installed"), and a hue in that order of importance. A
  *   monochrome screen reads exactly the same.
- * - **A provisioned machine is all green, and nothing is amber by design.**
- *   The only rows that are not green on a machine with everything installed are
- *   the ones where something genuinely is not there and the only *grade* that
- *   survives that with nothing to do about it is `optional`, which is drawn as
- *   a grey dash, the words "Not installed", and no wash. It is not counted in
- *   the "N of M need attention" headline and it cannot hold `ok` back (the
- *   server's `report` conjoins the required rows only). SoX is the row this
- *   exists for: the shipped pipeline never calls it.
+ * - **A provisioned machine is all green.** The only rows that are not green on
+ *   a machine with everything installed are the ones where something genuinely
+ *   is not there and the only *grade* that survives that with nothing to do
+ *   about it is `optional`, which is drawn as a grey dash, the words "Not
+ *   installed", and no wash. It is not counted in the "N of M need attention"
+ *   headline and it cannot hold `ok` back (the server's `report` conjoins the
+ *   required rows only). SoX is the row this exists for: the shipped pipeline
+ *   never calls it.
+ * - **Amber is for a download in progress, and nothing else.** This rule used to
+ *   read "nothing is amber by design", and it was right about grades: a hue
+ *   between green and red, hung on how much a missing thing costs, is a third
+ *   thing to decode where two would do. `state === "incomplete"` is not a grade.
+ *   It is a fact about files on disk that is neither ready nor absent (half a
+ *   6.4 GB model, arriving or stalled), and it is the one row on this screen
+ *   that may change while the user watches it. Green would be the lie the state
+ *   was added to stop; red "Missing" would tell them to restart a download the
+ *   server is keeping. So: amber, a bar, and the word that says which of "wait"
+ *   and "resume" applies. A machine with nothing downloading still has no amber
+ *   on it.
  * - **A failure says what it costs.** Every missing row used to be the same red
  *   X, so absent diarization weights (the run works, everyone in the video
  *   becomes one speaker) looked exactly like a missing ffmpeg (nothing runs at
@@ -65,7 +76,13 @@ import { USE_FIXTURES, api } from "../lib/api";
 import type { SetupInstallState } from "../lib/api";
 import { cn } from "../lib/classNames";
 import { STAGES } from "../lib/types";
-import type { SetupCheck, SetupInstall, SetupSeverity, SetupStatus } from "../lib/types";
+import type {
+  SetupCheck,
+  SetupInstall,
+  SetupSeverity,
+  SetupState,
+  SetupStatus,
+} from "../lib/types";
 
 /**
  * What a failing row actually costs, with a fallback for a server that predates
@@ -79,6 +96,29 @@ import type { SetupCheck, SetupInstall, SetupSeverity, SetupStatus } from "../li
 function severityOf(check: SetupCheck): SetupSeverity {
   return check.severity ?? (check.required === false ? "optional" : "blocking");
 }
+
+/**
+ * What state the row is in, with the same fallback discipline as `severityOf`:
+ * a server that predates the field has only `ok`, and the two-value reading of
+ * it is exactly ready-or-missing. Never "incomplete" by guess, because that state is a
+ * claim about files on disk, and only the server can see them.
+ */
+function stateOf(check: SetupCheck): SetupState {
+  if (check.state === "incomplete") return check.ok ? "ready" : "incomplete";
+  return check.ok ? "ready" : "missing";
+}
+
+/**
+ * Amber, and neither of the other two, for a model that is part way there.
+ *
+ * Green would be the bug this state exists to fix, a blocking row certifying a
+ * 6.4 GB model at 1% downloaded, and red-Missing would be the other half of it:
+ * "Missing" beside a directory holding four gigabytes tells the user to start
+ * over, when what is there is kept and resumed. So the row wears the hue that
+ * means neither done nor broken, says which of "wait" and "resume" applies, and
+ * draws the bytes it has against the bytes it needs.
+ */
+const INCOMPLETE_TOKEN = "var(--color-warning)";
 
 const SEVERITY_META: Record<
   SetupSeverity,
@@ -266,6 +306,33 @@ export function SetupPage() {
       clearInterval(timer);
     };
   }, [polling, recheck]);
+
+  /*
+   * The other thing that moves without anyone pressing anything.
+   *
+   * The first launch fetches the models by itself, and that fetch is not in the
+   * install slot at all: it is a different process, so the poll above never
+   * sees it and the screen would sit on "incomplete, 12%" until the user thought
+   * to press Re-check. A row that says bytes are arriving right now is a row
+   * that has to redraw itself, so the checklist re-runs on the same clock for
+   * exactly as long as one of them says so. When the install poll is already
+   * running it re-checks on its own and a second timer would only double the
+   * work.
+   */
+  const liveFetch = (status?.checks ?? []).some(
+    (check) => stateOf(check) === "incomplete" && check.downloading === true,
+  );
+  useEffect(() => {
+    if (!liveFetch || polling) return;
+    const timer = setInterval(() => {
+      if (rechecking.current) return;
+      rechecking.current = true;
+      void recheck().finally(() => {
+        rechecking.current = false;
+      });
+    }, POLL_MS);
+    return () => clearInterval(timer);
+  }, [liveFetch, polling, recheck]);
 
   const startInstall = useCallback(async (id: string) => {
     setInstallError(null);
@@ -673,6 +740,50 @@ function InstallProgress({ install }: { install: SetupInstall }) {
 }
 
 /**
+ * A model that is part way there, drawn from the row rather than from an
+ * install.
+ *
+ * `InstallProgress` above is the bar for a download *this app started*, and it
+ * reads the install slot. This is the same picture for the download it did not:
+ * the first launch fetches the models in another process entirely, so there is
+ * no slot to read and the only two numbers are the ones already on the row:
+ * bytes on disk against the size the download is expected to be. Same clamp,
+ * same reasoning: the estimate can undershoot, and a bar at 103% reads as a bug
+ * in the one minute the fetch is finishing.
+ *
+ * Amber in both of its states, and the label is the only difference, because
+ * they are the same fact with different verbs: bytes are arriving, or bytes
+ * stopped arriving and are waiting to be resumed.
+ */
+function PartialProgress({ check, fetching }: { check: SetupCheck; fetching: boolean }) {
+  const done = check.bytes ?? 0;
+  const total = check.download_bytes ?? 0;
+  return (
+    <div className="mt-2 max-w-md" data-partial-progress>
+      <div className="flex items-baseline justify-between gap-3 text-[12px]">
+        <span className="flex items-center gap-2 font-semibold" style={{ color: INCOMPLETE_TOKEN }}>
+          {fetching ? (
+            <Loader2 aria-hidden className="h-3 w-3 shrink-0 animate-spin" />
+          ) : null}
+          {fetching ? "Downloading…" : "Partly downloaded"}
+        </span>
+        <span className="font-mono text-[11.5px] tabular-nums text-muted">
+          {humanBytes(done)}
+          {total
+            ? ` of ~${humanBytes(total)} · ${Math.min(100, Math.floor((done / total) * 100))}%`
+            : ""}
+        </span>
+      </div>
+      <Progress
+        className="mt-1.5"
+        value={total ? Math.min(1, done / total) : null}
+        tone={INCOMPLETE_TOKEN}
+      />
+    </div>
+  );
+}
+
+/**
  * One check. The state is spelled three ways glyph, word, hue because the
  * palette's "kept"/"failed" pair is below the contrast gate for colour-vision
  * deficiency in light mode, and because a screenshot of a checklist gets read
@@ -696,18 +807,40 @@ function CheckRow({
 }) {
   const severity = severityOf(check);
   const meta = SEVERITY_META[severity];
+  const state = stateOf(check);
+  const fetching = state === "incomplete" && check.downloading === true;
   // A cross is "this is wrong". An optional row that is simply not here is not
   // wrong, so it gets a dash the glyph a checklist uses for "not applicable".
-  const Glyph = check.ok ? Check : severity === "optional" ? Minus : X;
+  // A part-finished download is neither: it is a thing in motion, or a thing
+  // waiting to be resumed, and the two glyphs say which.
+  const Glyph = check.ok
+    ? Check
+    : state === "incomplete"
+      ? fetching
+        ? Loader2
+        : Download
+      : severity === "optional"
+        ? Minus
+        : X;
   const installing = install?.running === true;
   const failed = install !== null && !install.running && install.ok === false;
   // The button is offered for exactly one state: a row the server says it can
   // fix, that is currently broken. A passing row needs nothing and a model row
-  // has no argv behind it its detail line is the answer.
-  const offerInstall = check.installable === true && !check.ok;
+  // has no argv behind it its detail line is the answer. A row whose bytes
+  // are arriving right now is the one exclusion: it is being fixed, and a
+  // Download button beside a live fetch invites a second one into the same
+  // directory. An *abandoned* partial keeps its button, because that is the gesture
+  // that resumes it.
+  const offerInstall = check.installable === true && !check.ok && !fetching;
   // A passing row is green whatever it would have cost; a failing one wears the
-  // hue of what it costs. `--color-good` is the one case that is not a grade.
-  const token = check.ok ? "var(--color-good)" : meta.token;
+  // hue of what it costs. `--color-good` is the one case that is not a grade,
+  // and a part-downloaded one is the other: amber says neither done nor broken,
+  // whatever the row would cost if it stayed that way.
+  const token = check.ok
+    ? "var(--color-good)"
+    : state === "incomplete"
+      ? INCOMPLETE_TOKEN
+      : meta.token;
   return (
     <li
       className={cn(
@@ -718,16 +851,20 @@ function CheckRow({
         // that already say it, never replacing them. An *optional* failure gets
         // neither: it is the row the list is allowed to be quiet about, and
         // shouting it in red is what taught users to skim past the red.
-        !check.ok && meta.wash && "shadow-[inset_3px_0_0_var(--wash)]",
+        // An incomplete row always gets the wash, whatever its grade: it is the
+        // one failing state the screen is asking the reader to watch.
+        !check.ok && (meta.wash || state === "incomplete") &&
+          "shadow-[inset_3px_0_0_var(--wash)]",
       )}
-      style={!check.ok && meta.wash
+      style={!check.ok && (meta.wash || state === "incomplete")
         ? ({
-            "--wash": meta.token,
-            backgroundColor: `color-mix(in srgb, ${meta.token} 4%, transparent)`,
+            "--wash": token,
+            backgroundColor: `color-mix(in srgb, ${token} 4%, transparent)`,
           } as CSSProperties)
         : undefined}
       data-check={check.id}
       data-severity={severity}
+      data-state={state}
     >
       <span
         aria-hidden
@@ -738,13 +875,22 @@ function CheckRow({
           backgroundColor: `color-mix(in srgb, ${token} 10%, transparent)`,
         }}
       >
-        <Glyph className="h-3.5 w-3.5" strokeWidth={3} />
+        <Glyph className={cn("h-3.5 w-3.5", fetching && "animate-spin")} strokeWidth={3} />
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
           <span className="text-[13px] font-semibold text-primary">{check.label}</span>
-          <Badge tone={check.ok ? "good" : meta.tone}>
-            {check.ok ? "Ready" : meta.state}
+          {/* The state in a word, and "Missing" is not that word for a
+              directory holding four of the six gigabytes: it would send the
+              user back to the start of a download the server is keeping. */}
+          <Badge tone={check.ok ? "good" : state === "incomplete" ? "warn" : meta.tone}>
+            {check.ok
+              ? "Ready"
+              : state === "incomplete"
+                ? fetching
+                  ? "Downloading"
+                  : "Incomplete"
+                : meta.state}
           </Badge>
           {/* The consequence, spelled as a word beside the state. "Missing" is
               what is true; this is what it costs, and the two are different
@@ -768,6 +914,12 @@ function CheckRow({
           <p className="mt-1 max-w-2xl text-[12px] leading-relaxed text-secondary">
             <Detail text={check.detail} />
           </p>
+        ) : null}
+        {/* What is already on disk, when some of it is. Drawn from the row
+            itself rather than from the install slot, because the fetch this
+            usually belongs to is the first-run one and no slot ever held it. */}
+        {state === "incomplete" && !installing ? (
+          <PartialProgress check={check} fetching={fetching} />
         ) : null}
         {/* The one row that is a choice rather than a finding. An escape
             hatch, same contract: the control changes a file on the server and
@@ -826,11 +978,16 @@ function CheckRow({
               `download_bytes` the server puts in the detail sentence. After a
               failure it says "Retry" the resume note beside the error is
               what makes that word safe to press. */}
+          {/* …and a part-finished download says "Resume", because the fear the
+              button has to answer there is "do I pay the gigabytes again?" and
+              the answer is no: the server keeps the partial files. */}
           {failed
             ? "Retry"
-            : check.hub
-              ? `Download${check.download_bytes ? ` · ~${humanBytes(check.download_bytes)}` : ""}`
-              : "Install"}
+            : state === "incomplete"
+              ? "Resume"
+              : check.hub
+                ? `Download${check.download_bytes ? ` · ~${humanBytes(check.download_bytes)}` : ""}`
+                : "Install"}
         </Button>
       ) : null}
     </li>

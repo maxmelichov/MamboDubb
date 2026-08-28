@@ -565,12 +565,57 @@ const MODEL_ROWS: Record<
   },
 };
 
+/**
+ * The row that is neither there nor absent, and the state the fixture board was
+ * missing entirely.
+ *
+ * A first-run fetch writes the config and the shard index in the first second
+ * and the weights over the next several minutes, and the server used to call
+ * that directory READY at 1%, certifying a model that cannot
+ * load. It reports `incomplete` now, and the demo needs one so the amber row,
+ * the bar drawn off `bytes`/`download_bytes` and the Resume button are on screen
+ * without anyone having to interrupt a download to see them. The translator is
+ * the row for it: the biggest download on the board, so it is the one where
+ * "start over" versus "resume" is worth gigabytes.
+ */
+const PARTIAL_ID = "model.translate";
+const PARTIAL_SHARE = 0.32;
+
+/** How much of `id` is already on disk before anything in this session ran. */
+function partialBytes(id: string): number {
+  return id === PARTIAL_ID ? Math.round(MODEL_ROWS[id].bytes * PARTIAL_SHARE) : 0;
+}
+
 /** One downloadable model row, in whichever state this fake session has it. */
 function modelRow(id: string, ready = false): SetupCheck {
   const row = MODEL_ROWS[id];
   const ok = ready || installed.has(id);
   const approx = fixtureBytes(row.bytes);
   const severity = row.severity ?? "blocking";
+  const partial = !ok && partialBytes(id) > 0;
+  if (partial) {
+    const done = partialBytes(id);
+    return {
+      id,
+      label: row.label,
+      ok: false,
+      state: "incomplete",
+      installable: true,
+      severity,
+      required: severity === "blocking",
+      ...(severity === "blocking" && row.stage ? { stage: row.stage } : {}),
+      hub: row.hub,
+      download_bytes: row.bytes,
+      bytes: done,
+      // Stalled rather than live: a demo board that polled itself forever would
+      // never sit still, and "press Download to finish" is the half of this
+      // state that has a gesture attached to it.
+      detail:
+        `incomplete: ${fixtureBytes(done)} in models/${row.dir}: partial download, ` +
+        `press Download to finish. It resumes: ` +
+        `\`uv run hf download ${row.hub} --local-dir models/${row.dir}\``,
+    };
+  }
   return {
     id,
     label: row.label,
@@ -826,7 +871,7 @@ function installBody(): SetupInstallState {
  * row. Compressed to a few seconds so the smoke test and the demo can watch
  * the bar actually move and then the row turn Ready.
  */
-function startDownload(id: string, from = 0): Promise<void> {
+function startDownload(id: string, from = partialBytes(id)): Promise<void> {
   const row = MODEL_ROWS[id];
   installState = {
     running: true,

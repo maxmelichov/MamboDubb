@@ -642,7 +642,7 @@ check("setup lists every check", document.querySelectorAll("[data-check]").lengt
 check("passing checks say Ready", /Ready/.test(setup));
 check("failing checks say Missing", /Missing/.test(setup));
 check("state is never colour alone", [...document.querySelectorAll("[data-check]")].every((row) =>
-  /Ready|Missing|Not installed/.test(row.textContent),
+  /Ready|Missing|Not installed|Incomplete|Downloading/.test(row.textContent),
 ));
 check("failing checks explain themselves",
   /foreign-speech detection is skipped/.test(setup) && /htdemucs|Demucs/.test(setup));
@@ -827,7 +827,30 @@ check("a row nothing can install offers no button",
 // A hub-snapshot model is the one kind of gigabyte the app now fetches itself,
 // and the button must say the price before the click.
 check("a downloadable model row offers a sized Download button",
-  Boolean(downloadButton("model.translate")) && /GB/.test(downloadButton("model.translate").textContent));
+  Boolean(downloadButton("model.asr.en")) && /MB|GB/.test(downloadButton("model.asr.en").textContent));
+
+/*
+ * The third state, which used to be drawn as the first one.
+ *
+ * `hf download` writes the config and the shard index in its first two seconds
+ * and the weights over the next several minutes, and the server called that
+ * directory READY: a blocking row certifying a model that cannot load, for the
+ * whole fetch and forever after an interrupted one. It reports `incomplete` now,
+ * and the screen has to draw it as neither of its neighbours: not green, and not
+ * the red "Missing" that would tell the user to start nine gigabytes over when
+ * three of them are already on disk.
+ */
+const resumeButton = (id) =>
+  [...(rowOf(id)?.querySelectorAll("button") ?? [])].find((b) => /Resume/.test(b.textContent));
+check("a part-downloaded model is neither Ready nor Missing",
+  rowOf("model.translate").getAttribute("data-state") === "incomplete" &&
+    /Incomplete/.test(rowOf("model.translate").textContent) &&
+    !/Ready|Missing/.test(rowOf("model.translate").textContent));
+check("…and says how far in it is, in bytes and as a bar",
+  rowOf("model.translate").querySelector("[data-partial-progress]") != null &&
+    /%/.test(rowOf("model.translate").querySelector("[data-partial-progress]").textContent));
+check("…and its button offers to resume rather than to start over",
+  Boolean(resumeButton("model.translate")) && !downloadButton("model.translate"));
 check("a passing row offers no button", !installButton("disk"));
 
 const fixtureCalls = globalThis.__DUBBING_FIXTURE_CALLS__;
