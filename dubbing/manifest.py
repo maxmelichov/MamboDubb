@@ -116,7 +116,11 @@ STAGE_TAGS = {
     # own voice (a label is not a person), the alternates are held to the same
     # test, and a clip that says the right words in another voice is recorded as
     # "wrong_voice" rather than "ok" different rungs, different verdicts.
-    "tts": "tts/v29",
+    "tts": "tts/v30",
+    # v30: word_overlap spells the heard text's digits before comparing. The
+    # spoken line is digit-free by construction and the ASR is under no such rule,
+    # so two correct radio calls scored 0.56 and 0.82, walked the whole ladder and
+    # were filed as second-class dubs.
     # v29: a generation that RAISES is re-rolled once before it counts as a
     # failure. One seed threw IndexError out of the checkpoint's own embedding
     # lookup on a sentence three other seeds voiced cleanly, and the rung it

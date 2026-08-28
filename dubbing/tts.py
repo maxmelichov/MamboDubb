@@ -135,12 +135,14 @@ CLONE_VOICE_MIN = 0.25
 # forgive the verify ASR its own word boundaries, a re-run still read "All right."
 # against "Alright." as 0.80 out of the cache, and after short clips got a length
 # ceiling back, the 4.61s "Chelsea." that motivated it was replayed unexamined.
+# v3: word_overlap spells the heard text's digits, so an ASR writing "28" for a
+# clip that says "twenty-eight" no longer costs the take its score.
 # v2: the fast length bound yields to the verifier, an empty read is retried with
 # the VAD off, and a take about to be thrown away is re-read by the strong ASR.
 # A verdict stamped with an older tag (or none, which is every verdict written
 # before this existed) is re-verified. Only the verdict: the clip is the same
 # audio and is not remade, so this costs one ASR pass and no GPU time.
-VERDICT_TAG = "verdict/v2"
+VERDICT_TAG = "verdict/v3"
 
 # What `_verify` reports when there is no verification ASR at all. It is a
 # verdict of its own, not an "ok": the clip passed the length guard and nothing
@@ -339,6 +341,18 @@ def _boundary_credit(a: list[str], b: list[str]) -> int:
 
 
 def word_overlap(target: str, heard: str, lang: str = "en") -> float:
+    """How much of `target` the verify ASR heard, as a fraction of `target`.
+
+    Both sides have their digits spelled first. The line the clip says is
+    digit-free by construction the translator spells every number through
+    `numwords` precisely so the voice has words to say and the ASR is under no
+    such rule: handed a clip that says "twenty-eight, this is eighteen" it wrote
+    "28, this is 18", and two correct radio calls scored 0.56 and 0.82 for it, walked
+    the whole retry ladder and were recorded as second-class dubs. Spelling the
+    heard text with the same function that wrote the target settles it in the one
+    place where both are already known.
+    """
+    heard = _spell(heard, lang)
     a, b = _tokens(target, lang), _tokens(heard, lang)
     if not a:
         return 0.0
@@ -346,6 +360,16 @@ def word_overlap(target: str, heard: str, lang: str = "en") -> float:
     if common < len(a):
         common += _boundary_credit(*_leftovers(a, b))
     return min(common, len(a)) / len(a)
+
+
+def _spell(text: str, lang: str) -> str:
+    """`text` with its digits written out, or unchanged when that cannot be done."""
+    from . import numwords
+
+    try:
+        return numwords.spell_numbers(text or "", lang)
+    except Exception:
+        return text or ""
 
 
 def clip_exceeds_slot(clip_sec: float, slot_sec: float) -> bool:

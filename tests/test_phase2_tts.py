@@ -385,3 +385,19 @@ def test_a_short_take_that_says_half_the_line_is_truncation_not_speed():
     # other half: a short take below the good bar is dropped by `clip_for`.
     assert not tts.clip_is_good({"ok": True, "overlap": 0.43, "dur": 1.79})
     assert tts.clip_is_good({"ok": True, "overlap": 1.0, "dur": 1.79})
+
+
+def test_the_asr_writing_a_number_as_digits_does_not_fail_a_take():
+    """The spoken line is digit-free by construction; the ASR is under no such rule.
+
+    Two correct radio calls on a Hebrew drama scored 0.56 and 0.82 because the
+    verifier wrote "28, this is 18" for a clip that says "twenty-eight, this is
+    eighteen", walked the whole retry ladder and were filed as second-class dubs.
+    """
+    assert tts.word_overlap("This is twenty-eight, I understand, over.",
+                            "This is 28. I understand. Over.") == 1.0
+    assert tts.word_overlap("Twenty-eight, this is eighteen.",
+                            "28, this is 18.") == 1.0
+    # A take that says a different number is still wrong.
+    assert tts.word_overlap("Twenty-eight, this is eighteen.",
+                            "31, this is 12.") < 0.5

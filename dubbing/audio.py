@@ -91,6 +91,39 @@ def atempo(src: Path, dst: Path, rate: float, *, sample_rate: int = SR) -> Path:
     return dst
 
 
+# An unvoiced fricative is quiet and high. /s/ at the end of a word carries a
+# fraction of the power of the vowel before it — measured across the demo runs a
+# sentence-final /s/ sits 12 to 30 dB under the line's own speech level — but
+# nearly all of what it does carry is above 4 kHz, where a vowel has almost
+# nothing. So "is this frame silence?" cannot be answered by loudness alone: the
+# RMS gate that correctly calls Qwen's trailing hush silence also calls the /s/
+# of "us" silence, and trims it off. These two numbers are the second question,
+# asked only of frames the loudness gate already rejected.
+FRICATIVE_FLOOR = 0.0025   # ~-52 dBFS; Qwen's hush measures -70 dBFS and below
+FRICATIVE_TILT = 1.0       # summed 4-9 kHz magnitude over summed sub-1 kHz
+
+
+def is_fricative(frame: np.ndarray, sample_rate: int) -> bool:
+    """True when a frame is quiet-but-high, the signature of an unvoiced fricative.
+
+    The test is a spectral tilt: sum the FFT magnitude in 4-9 kHz and divide by
+    the sum below 1 kHz. A vowel is bottom-heavy and lands far below 1; an /s/ or
+    /f/ or /sh/ is top-heavy and lands above it, often by an order of magnitude.
+    Digital hush has no reliable tilt either way, so `FRICATIVE_FLOOR` keeps a
+    noise floor from reading as speech and stopping a trim that should happen.
+    """
+    if len(frame) < 32:
+        return False
+    if float(np.sqrt(np.mean(frame ** 2) + 1e-12)) < FRICATIVE_FLOOR:
+        return False
+    mag = np.abs(np.fft.rfft(frame * np.hanning(len(frame))))
+    freq = np.fft.rfftfreq(len(frame), 1.0 / sample_rate)
+    low = float(mag[freq < 1000].sum())
+    if low <= 0:
+        return False
+    return float(mag[(freq >= 4000) & (freq <= 9000)].sum()) / low > FRICATIVE_TILT
+
+
 def trim_leading_silence(
     src: Path,
     dst: Path,
@@ -146,6 +179,16 @@ def trim_trailing_silence(
     The pad is a touch wider than the leading one: a final consonant or a vowel
     decay trails off gradually, and clipping the release is audible in a way
     that clipping a silent lead-in is not.
+
+    The pad alone is not enough, though, and widening it is not the fix. A frame
+    is kept when it clears `rms_thresh` *or* when `is_fricative` says it is
+    quiet-but-high, because a sentence-final /s/ is both: it lives 12 to 30 dB
+    under the line it ends, which is under this gate, so on loudness alone the
+    scan walks straight past it and stops at the vowel before it. The pad then
+    measures from the wrong place and the file ends mid-fricative. That is the
+    "and not the hedgehogs to us" report: the /s/ was generated, and the trim
+    was what removed it. Widening the pad only buys a fixed number of
+    milliseconds and pays for it on every clip that really did end in hush.
     """
     a, sr = sf.read(str(src), dtype="float32", always_2d=False)
     if getattr(a, "ndim", 1) > 1:
@@ -159,7 +202,9 @@ def trim_trailing_silence(
         j = len(a) - i - hop
         if j < 0:
             break
-        if float(np.sqrt(np.mean(a[j : j + hop] ** 2) + 1e-12)) >= rms_thresh:
+        frame = a[j : j + hop]
+        loud = float(np.sqrt(np.mean(frame ** 2) + 1e-12)) >= rms_thresh
+        if loud or is_fricative(frame, sample_rate):
             end = min(len(a), j + hop + int(pad_sec * sample_rate))
             break
     trimmed = (len(a) - end) / sample_rate
@@ -170,6 +215,54 @@ def trim_trailing_silence(
     dst.parent.mkdir(parents=True, exist_ok=True)
     sf.write(str(dst), a[:end].astype(np.float32), sample_rate)
     return float(trimmed)
+
+
+def final_fricative_db(samples: np.ndarray, sample_rate: int,
+                       *, win_sec: float = 0.030, tail_sec: float = 0.60,
+                       ) -> float | None:
+    """How far a line's closing fricative sits under the line's own level, in dB.
+
+    Returns a negative number, or None when the tail holds no fricative at all
+    (which for a line that should end in one is itself the failure, and the
+    caller is the one that knows whether to expect it). The reference is the
+    median of the frames within 25 dB of the loudest, i.e. the line's own working
+    level, so the answer does not move with how loudly this take was generated.
+
+    Why a fricative and not just "the last phoneme": the failure this was written
+    for is a line that ends on a perfectly audible sound which is *not the one
+    the words call for*. In "and not the hedgehogs to us" the /s/ came out 21 dB
+    under the line, and 30 ms behind it the model left a voiced murmur 14 dB
+    *louder* than the /s/. Measuring "the last thing with energy in it" finds the
+    murmur, calls the ending healthy and misses the bug entirely; measuring the
+    tilted frames specifically finds the /s/ and reports how far down it is.
+
+    Why any of this exists: word overlap against an ASR transcript passed this
+    line three times while a native listener heard the last word go missing each
+    time. ASR reads "us" off the vowel alone and is perfectly content with an
+    /s/ nobody can hear, so it is the wrong witness. Energy is the right one.
+    """
+    n = int(win_sec * sample_rate)
+    hop = max(1, n // 3)
+    if len(samples) < n:
+        return None
+    levels, tilted = [], []
+    for i in range(0, len(samples) - n, hop):
+        seg = samples[i : i + n]
+        levels.append(20.0 * np.log10(float(np.sqrt(np.mean(seg ** 2))) + 1e-12))
+        tilted.append(is_fricative(seg, sample_rate))
+    if not levels:
+        return None
+    peak = max(levels)
+    if peak < -70.0:
+        return None
+    ref = float(np.median([v for v in levels if v > peak - 25.0]))
+    # Only the closing stretch: an /s/ in the middle of the line says nothing
+    # about whether the line finished.
+    first = max(0, len(levels) - int(tail_sec * sample_rate / hop))
+    tail = [levels[i] for i in range(first, len(levels)) if tilted[i]]
+    if not tail:
+        return None
+    return float(max(tail) - ref)
 
 
 def frame_rms(audio: np.ndarray, sr: int, hop_sec: float = 0.1) -> np.ndarray:

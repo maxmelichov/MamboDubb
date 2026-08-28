@@ -348,7 +348,9 @@ def test_the_stage_tags_moved():
     # that used to air missing half of itself now has a different clip.
     # v29: a crashed decode is re-rolled, so a segment that used to lose a rung
     # (or the whole line) to one unlucky seed now has a take.
-    assert manifest.STAGE_TAGS["tts"] == "tts/v29"
+    # v30: the verifier's digits are spelled before comparison, so a take that
+    # used to be retried and filed as "accepted" now stops the ladder.
+    assert manifest.STAGE_TAGS["tts"] == "tts/v30"
     # v36: script-derived gloss floors, negations and shorten budgets (CJK/hangul).
     # v37: "%" survives into every TTS target's own vocabulary.
     # v39: a repetition the speaker actually made survives the "X, X" repair.
