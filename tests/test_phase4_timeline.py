@@ -77,13 +77,25 @@ def test_long_clip_spills_at_most_tail_max_into_same_speaker_gap():
     assert places[0]["end"] <= own_end(items[0]) + timeline.TAIL_MAX + 1e-3
     assert places[0]["rate"] <= timeline.RATE_MAX + 1e-9
 
-    # A mild overrun that already lands inside the tail allowance is neither
-    # squeezed nor filled out.
+    # A mild overrun the preferred rate can absorb is compressed onto the
+    # speaker's own end rather than left to sit in the tail. The tail is where a
+    # clip that does not fit goes, not what a clip is aimed at: aiming at it put
+    # every dub's end a measurable fraction of a second after its speaker's.
     items = [item(0, 0.0, 3.4, end=3.0, speaker="A"),
              item(1, 10.0, 1.0, speaker="A")]
     places = timeline.place(items)
+    assert places[0]["rate"] == pytest.approx(3.4 / 3.0, abs=1e-3)  # 1.133 < RATE_PREF
+    assert places[0]["end"] == pytest.approx(3.0, abs=1e-3)
+
+    # ...but only when it is affordable. 3.5s on a 3s span needs 1.167x, past
+    # RATE_PREF, and 3.5s still lands inside own + TAIL_MAX, so the clip keeps
+    # rate 1.0 and spends the tail rather than being squeezed that hard.
+    items = [item(0, 0.0, 3.5, end=3.0, speaker="A"),
+             item(1, 10.0, 1.0, speaker="A")]
+    places = timeline.place(items)
+    assert 3.5 / 3.0 > timeline.RATE_PREF and 3.5 < 3.0 + timeline.TAIL_MAX
     assert places[0]["rate"] == pytest.approx(1.0)
-    assert places[0]["end"] == pytest.approx(3.4, abs=1e-3)
+    assert places[0]["end"] == pytest.approx(3.5, abs=1e-3)
 
 
 # --------------------------------------------------------------- (d) speaker change
@@ -493,3 +505,116 @@ def test_no_vocals_stem_is_not_an_error(tmp_path):
     m = manifest.new({"input": "x", "src_lang": "he", "tgt_lang": "en"})
     m["segments"] = [seg(0, 3.0, 6.0)]
     assert timeline.speech_anchors(m, tmp_path) == {}
+
+
+# ------------------------------- (i) the tail is a fallback, not a target
+
+def test_rate_aims_at_the_speakers_own_end_when_that_is_affordable():
+    # A clip 10% longer than its speaker's span, with a whole TAIL_MAX of slack
+    # available: it is compressed onto the speaker's end, because the 1.1x that
+    # costs is under RATE_PREF. It used to be left alone to sit in the tail.
+    assert timeline.rate_for(3.3, 10.0, 0.0, True, own=3.0,
+                             tail=timeline.TAIL_MAX) == pytest.approx(1.1)
+
+
+def test_a_clip_the_preferred_rate_cannot_reach_still_spends_the_tail():
+    # 3.5s on a 3s span needs 1.167x, past RATE_PREF, and it lands inside
+    # own + TAIL_MAX. Squeezing that hard to save half a second of overhang is a
+    # worse trade than the overhang, so the clip keeps rate 1.0.
+    assert 3.5 / 3.0 > timeline.RATE_PREF and 3.5 < 3.0 + timeline.TAIL_MAX
+    assert timeline.rate_for(3.5, 10.0, 0.0, True, own=3.0,
+                             tail=timeline.TAIL_MAX) == pytest.approx(1.0)
+
+
+def test_the_tail_is_still_the_ceiling_for_a_clip_that_cannot_be_fitted():
+    # Nothing above may let a clip past `own + tail`: too long for the preferred
+    # rate AND too long for the tail is still compressed toward own + tail.
+    rate = timeline.rate_for(6.0, 10.0, 0.0, True, own=3.0, tail=timeline.TAIL_MAX)
+    assert rate == pytest.approx(min(timeline.RATE_MAX, 6.0 / 3.6))
+
+
+def test_no_tail_across_a_speaker_change_is_unchanged():
+    # tail=0 makes "affordable" and "the old behaviour" the same target, so a
+    # speaker change is untouched by any of this.
+    assert timeline.rate_for(3.3, 10.0, 0.0, True, own=3.0,
+                             tail=0.0) == pytest.approx(1.1)
+
+
+# ------------------- (j) a line pinned at the ceiling asks to be shortened
+
+def pinned_manifest():
+    """One line far too long for its own speaker, with a long pause after it.
+
+    Nothing is waiting on it, so it never drifts however badly it fits: this is
+    the shape the DRIFT_MAX trigger cannot see.
+    """
+    from dubbing import manifest
+
+    m = manifest.new({"input": "x", "src_lang": "en", "tgt_lang": "ru"})
+    m["source"]["duration"] = 60.0
+    m["segments"] = [
+        {"id": 0, "start": 0.0, "end": 3.0, "speaker": "S0", "keep": False,
+         "keep_reason": None, "text": "a", "text_en": " ".join(["word"] * 12),
+         "tts": {"clip": "clips/a.wav", "dur": 6.0}},
+        {"id": 1, "start": 30.0, "end": 32.0, "speaker": "S0", "keep": False,
+         "keep_reason": None, "text": "b", "text_en": "short", 
+         "tts": {"clip": "clips/b.wav", "dur": 1.0}},
+    ]
+    manifest.ensure_uids(m["segments"])
+    return m
+
+
+def test_a_line_pinned_at_the_ceiling_asks_to_be_shortened_without_drifting(
+        monkeypatch, tmp_path):
+    monkeypatch.setattr(timeline.audio, "atempo", lambda *a, **k: None)
+    monkeypatch.setattr(timeline.audio, "duration", lambda p: 4.6)
+    m = pinned_manifest()
+    asked = {}
+
+    places = timeline.place(timeline.build_items(m), media_end=60.0)
+    # The premise: it is pinned, it overhangs, and it is not late.
+    assert places[0]["rate"] == pytest.approx(timeline.RATE_MAX)
+    assert places[0]["end"] - 3.0 > timeline.OVERHANG_MAX
+    assert places[0]["drift"] <= timeline.DRIFT_MAX
+
+    def shorten_many(reqs):
+        asked.update({s["id"]: n for s, n in reqs})
+        return {}
+
+    timeline.run(m, tmp_path, shorten_many=shorten_many, resynth_many=lambda x: {})
+    assert list(asked) == [0]           # the pinned line, and only it
+
+
+def test_a_line_that_fits_its_speaker_is_never_asked_to_shorten(monkeypatch,
+                                                                tmp_path):
+    monkeypatch.setattr(timeline.audio, "atempo", lambda *a, **k: None)
+    monkeypatch.setattr(timeline.audio, "duration", lambda p: 3.0)
+    m = pinned_manifest()
+    m["segments"][0]["tts"]["dur"] = 3.0          # exactly its speaker's span
+    asked = {}
+
+    def shorten_many(reqs):
+        asked.update({s["id"]: n for s, n in reqs})
+        return {}
+
+    timeline.run(m, tmp_path, shorten_many=shorten_many, resynth_many=lambda x: {})
+    assert asked == {}
+
+
+def test_the_shorten_budget_for_a_pinned_line_is_its_own_span_not_the_gap(
+        monkeypatch, tmp_path):
+    # The lateness trigger budgets against the next speaker's onset, which here
+    # is 30s away and would ask for no shortening at all. A pinned line is
+    # budgeted against its own 3s span instead.
+    monkeypatch.setattr(timeline.audio, "atempo", lambda *a, **k: None)
+    monkeypatch.setattr(timeline.audio, "duration", lambda p: 4.6)
+    m = pinned_manifest()
+    asked = {}
+
+    def shorten_many(reqs):
+        asked.update({s["id"]: n for s, n in reqs})
+        return {}
+
+    timeline.run(m, tmp_path, shorten_many=shorten_many, resynth_many=lambda x: {})
+    # 12 words, and a 3s span at RATE_PREF holds about 3.45/6.0 of a 6s clip.
+    assert asked[0] < 12

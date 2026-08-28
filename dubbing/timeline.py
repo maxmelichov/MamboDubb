@@ -22,9 +22,14 @@ disappears on its own at the next real pause, because a start is
 Each clip is anchored to its *own* segment's end, not to the next segment's
 start: stretching never pushes a clip past the moment its original speaker
 stopped just because the timeline has room, and a clip that is genuinely too
-long is compressed toward its own end, allowed to spill at most TAIL_MAX into
-a following gap when the next segment is the same speaker and not at all when
-the speaker changes (or there is no next segment). A speaker change makes the
+long is compressed toward that same end whenever the compression that lands on
+it costs no more than RATE_PREF. Only a clip that cannot be fitted that cheaply
+spills, and then at most TAIL_MAX into a following gap when the next segment is
+the same speaker and not at all when the speaker changes (or there is no next
+segment): the tail is where a clip that does not fit goes, not what a clip is
+aimed at. A line still ending more than OVERHANG_MAX past its own speaker after
+being compressed all the way to RATE_MAX does not fit at all, and asks for a
+shorter translation of itself. A speaker change makes the
 next segment's original onset a hard wall: a clip that would still be talking
 when the other character visibly starts is first pulled earlier into free
 timeline before it (at most LEAD_MAX, never overlapping the previous clip),
@@ -66,6 +71,11 @@ RATE_MIN = 0.82       # slowest we stretch a short dub to fill its slot (below t
                       # early and leaving a silent tail
 DRIFT_SOFT = 0.50     # lateness that justifies escalating to RATE_MAX
 DRIFT_MAX = 1.50      # lateness that justifies asking for a shorter translation
+OVERHANG_MAX = 0.25   # ...and how far a line already pinned at RATE_MAX may still
+                      # end past its own speaker before it justifies the same ask.
+                      # A line nothing is waiting on never trips DRIFT_MAX however
+                      # badly it fits, because its overhang goes into the pause the
+                      # source left rather than into the next speaker.
 SHORTEN_ROUNDS = 2
 TAIL_MAX = 0.60       # how far a too-long clip may run past its own segment's end
                       # into a following gap only when the next segment is the
@@ -131,11 +141,15 @@ def rate_for(dur: float, slot: float, drift_in: float, stretchable: bool,
     run has one and the ASR boundaries where it does not: stretching a
     short clip fills at most that far, never the whole slot the dub should
     stop when the original speaker stopped, not when the next one starts. A
-    clip longer than its own span is compressed toward `own + tail`, where
-    `tail` is the deliberate overhang allowed past the segment's end (TAIL_MAX
-    into a same-speaker gap, 0.0 across a speaker change). `own=None` keeps
-    the pure fit-to-slot behaviour. `rates` is the genre's tempo policy
-    (None = the documentary module constants).
+    clip longer than its own span is compressed toward `own` when that is
+    affordable and toward `own + tail` when it is not, where `tail` is the
+    deliberate overhang allowed past the segment's end (TAIL_MAX into a
+    same-speaker gap, 0.0 across a speaker change). "Affordable" means the
+    compression that lands on the speaker's own end costs no more than
+    `rate_pref`: the tail is slack to fall back on, not a target to aim at, and
+    aiming at it was making every dub finish measurably after its speaker did.
+    `own=None` keeps the pure fit-to-slot behaviour. `rates` is the genre's
+    tempo policy (None = the documentary module constants).
     """
     r = rates or _DEFAULT_RATES
     if not stretchable or dur <= 0.05:
@@ -155,8 +169,18 @@ def rate_for(dur: float, slot: float, drift_in: float, stretchable: bool,
         # little silence) and never past the segment's own end just because
         # the timeline has room before the next segment.
         return max(r.rate_min, dur / stretch_to)
+    if own is not None and dur / stretch_to <= r.rate_pref + 1e-9:
+        # Long for the speaker's own span, but only by an amount the preferred
+        # rate absorbs. Land on the speaker's end rather than spending the tail:
+        # the tail exists so a clip that cannot fit still has somewhere to go,
+        # and treating it as the target is what put the mean offset error a
+        # third of a second late on the Russian runs, where a line is reliably
+        # a little longer than the one it dubs and so reliably landed in the
+        # slack instead of on the end it was aimed at.
+        return dur / stretch_to
     if dur <= fit_to:
-        # Ends within the allowed tail: neither filled out nor squeezed.
+        # Cannot reach the speaker's own end for less than `rate_pref`, but it
+        # does end within the allowed tail: neither filled out nor squeezed.
         return 1.0
     need = dur / fit_to
     rate = min(r.rate_pref, need)
@@ -522,15 +546,41 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
     places = place(items, rates, media_end)
 
     for _round in range(SHORTEN_ROUNDS):
-        late = [i for i, p in enumerate(places) if p["drift"] > DRIFT_MAX]
-        if not late or shorten_many is None or resynth_many is None:
+        now = anchors(items)
+        # Two different things justify asking the translator for a shorter line,
+        # and each names a different segment to shorten.
+        #
+        # Lateness: a segment pushed more than DRIFT_MAX past its own onset. The
+        # line to shorten is not that one, it is whichever earlier clip is
+        # overrunning into it (`_worst_overrunner`), and the span to fit it into
+        # reaches to the next speaker's onset.
+        #
+        # Not fitting its own speaker: a line already compressed to the hard
+        # ceiling that *still* ends well past the moment its own speaker stopped.
+        # Nothing is late — the source left a pause after it and the overhang
+        # goes there — so the lateness trigger never sees it, and it is exactly
+        # the shape a Russian line takes, being reliably longer than the English
+        # or Hebrew it dubs. Measured on the four demo runs the lateness trigger
+        # fired on none of them while 9 to 14 lines a run sat pinned at RATE_MAX,
+        # and those pinned lines carried roughly three times the end-alignment
+        # error of the rest. Here the line to shorten is the pinned one itself,
+        # and the span to fit it into is its speaker's own.
+        want: list[tuple[float, int, float]] = []   # (how bad, item index, span)
+        for i, p in enumerate(places):
+            if p["drift"] > DRIFT_MAX:
+                j = _worst_overrunner(items, places, i)
+                if j is not None:
+                    want.append((p["drift"], j, now[j + 1][0] - places[j]["start"]))
+            over = p["end"] - now[i][1]
+            if p["rate"] >= rates.rate_max - 1e-6 and over > OVERHANG_MAX:
+                want.append((over, i, now[i][1] - now[i][0]))
+        if not want or shorten_many is None or resynth_many is None:
             break
         # Collect the whole round's requests before calling out, so the translator
         # and the synthesiser are each loaded once rather than swapped per segment.
         requests: dict[int, int] = {}
-        for idx in sorted(late, key=lambda i: -places[i]["drift"]):
-            j = _worst_overrunner(items, places, idx)
-            if j is None or items[j]["id"] in requests:
+        for _bad, j, fit_span in sorted(want, key=lambda t: -t[0]):
+            if items[j].get("shortened") or items[j]["id"] in requests:
                 continue
             seg_j = by_id[items[j]["id"]]
             if manifest.is_locked(seg_j, "text_en") or manifest.is_locked(seg_j, "tts"):
@@ -539,8 +589,7 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
                 # instead, which `place` still keeps non-overlapping.
                 items[j]["shortened"] = True
                 continue
-            slot = anchors(items)[j + 1][0] - places[j]["start"]
-            budget = max(0.5, slot) * rates.rate_pref
+            budget = max(0.5, fit_span) * rates.rate_pref
             ratio = max(0.5, min(0.95, budget / max(items[j]["dur"], 0.1)))
             # Speech units, not `.split()` words: a Japanese line is one "word",
             # so the budget came out 3 for every CJK segment and `shorten` — which

@@ -137,7 +137,19 @@ STAGE_TAGS = {
     # speaker actually used. The two disagree systematically and in one direction
     # per source (a median 0.22s late on the he-source demo, 0.13s long on the
     # en-source one), so every dub in a run started early by about that much.
-    "timeline": "timeline/v17",
+    # v18: the same-speaker tail is a fallback rather than a target. A clip
+    # longer than its speaker's own span is now compressed onto that end whenever
+    # the compression costs no more than RATE_PREF, and only one that cannot be
+    # fitted that cheaply spends the tail. Aiming at own + TAIL_MAX put the mean
+    # end-alignment error at 0.32s (he-ru) and 0.49s (en-ru), where a Russian
+    # line is reliably a little longer than the one it dubs and so reliably
+    # landed in the slack. Second half: a line still ending more than
+    # OVERHANG_MAX past its own speaker after being compressed all the way to
+    # RATE_MAX asks for a shorter translation of itself. That line never trips
+    # DRIFT_MAX, because its overhang goes into the pause the source left rather
+    # than into the next speaker, so the lateness trigger could not see it: it
+    # fired on none of the four demo runs while 9 to 14 lines a run sat pinned.
+    "timeline": "timeline/v18",
     "mix": "mix/v9",
     # v3: honest failure accounting verify.unverified, degraded, overrun,
     # shorten_abandoned, subtitles_failed, stale_locked_clips alongside the
