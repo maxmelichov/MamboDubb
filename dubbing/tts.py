@@ -889,6 +889,18 @@ def _verdict(clip: Path, ok: bool, ov: float, heard: str) -> dict[str, Any]:
             "vtag": VERDICT_TAG}
 
 
+# How good each verdict is, as one number, so a stage that replaces a clip can ask
+# whether the replacement is an improvement. "unverified" sits between the two
+# accepts: nothing read it, so it is neither a clean pass nor a known-poor one.
+VERIFY_RANK = {"wrong_voice": 0, "soft": 1, "keep": 1, "unverified": 2,
+               "accepted": 3, "ok": 4}
+
+
+def verify_rank(record: dict[str, Any] | None) -> int:
+    """A tts record's verdict as an order. Unknown verdicts read as "unverified"."""
+    return VERIFY_RANK.get((record or {}).get("verify") or "", 2)
+
+
 def clip_is_good(verdict: dict[str, Any]) -> bool:
     """True when a take is good enough to stop the retry ladder.
 

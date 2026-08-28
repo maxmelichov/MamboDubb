@@ -59,7 +59,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import audio, manifest, script
+from . import audio, manifest, script, tts
 
 MIN_GAP = 0.10        # silence between two placed clips that the source separated
 MIN_SEAM = 0.005      # …and between two that ran together: inaudible, but enough
@@ -550,6 +550,7 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
     items = build_items(m, spans)
     by_index = {it["id"]: i for i, it in enumerate(items)}
     spoken: dict[int, str] = {}   # segment id -> shortened line actually voiced
+    voiced: dict[int, str] = {}   # segment id -> that clip's own verify verdict
     refused: dict[int, str] = {}  # segment id -> why its rescue was abandoned
     places = place(items, rates, media_end)
 
@@ -633,11 +634,28 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
             if not record:
                 continue
             seg, it = by_id[seg_id], items[by_index[seg_id]]
+            if tts.verify_rank(record) < tts.verify_rank(seg.get("tts")):
+                # The rescue may cost the line words; it may not cost it its
+                # intelligibility. On a Hebrew drama the shortened take of
+                # "Chaim, Chaim, come on, come on." came back soft-accepted at
+                # 0.33 overlap where the full line verified clean, and it was
+                # aired anyway, under a manifest that still recorded the full
+                # line's "ok". A shorter clip that verifies worse than the one it
+                # replaces is not a rescue; the full line stands and stays late.
+                refused[seg_id] = "resynth-verified-worse"
+                print(f"  timeline: seg {seg_id} shortened take verifies worse "
+                      f"({record.get('verify')} vs {(seg.get('tts') or {}).get('verify')}) "
+                      "original line kept, still drifted", file=sys.stderr)
+                continue
             tgt = seg.get("tgt_lang") or run_tgt
             before = script.speech_units(seg["text_en"], tgt)
             # Kept local to this stage: `text_en` belongs to the translator, and
             # rewriting it would make the next run shorten an already-short line.
             spoken[seg_id] = texts[seg_id]
+            # The clip that will be heard is this one, not the one `seg["tts"]`
+            # records, so its verdict travels with it. Without this the report
+            # counted the replaced take's verdict for a line it no longer airs.
+            voiced[seg_id] = record.get("verify") or "unverified"
             it["dur"], it["clip"] = float(record["dur"]), record["clip"]
             changed = True
             print(f"  timeline: shortened seg {seg_id} {before}→"
@@ -686,6 +704,7 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
                         "overrun": p["overrun"]}
         if it["id"] in spoken:
             seg["place"]["spoken"] = spoken[it["id"]]
+            seg["place"]["verify"] = voiced[it["id"]]
         if it["id"] in refused:
             # "shorten attempted, and abandoned" the missing half of the
             # shortened/drift story in report.json.

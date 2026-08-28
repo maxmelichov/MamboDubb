@@ -201,7 +201,12 @@ STAGE_TAGS = {
     # DRIFT_MAX, because its overhang goes into the pause the source left rather
     # than into the next speaker, so the lateness trigger could not see it: it
     # fired on none of the four demo runs while 9 to 14 lines a run sat pinned.
-    "timeline": "timeline/v18",
+    # v19: a shortened take that verifies worse than the take it replaces is
+    # refused, and one that is accepted carries its own verdict onto `place`. The
+    # rescue may cost a line words; it may not cost it its intelligibility, and a
+    # shortened clip soft-accepted at 0.33 overlap was aired under a manifest that
+    # still recorded the full line's "ok".
+    "timeline": "timeline/v19",
     # v11: the vocals fill treats a segment's own source span as claimed, not
     # just the interval its clip happens to occupy. A slowed or early-anchored
     # clip left seconds of its own window unclaimed and the fill aired the actor
@@ -223,7 +228,10 @@ STAGE_TAGS = {
     # v6: an abandoned shorten reports whether the line actually ended up late.
     # Every one of them used to print "still late" under the overrun count, so a
     # run with one overrun listed four late segments, three of which were on time.
-    "report": "report/v6",
+    # v7: the verify counts read the verdict of the clip that is HEARD. A
+    # shortened line is voiced by a second clip and `seg["tts"]` still holds the
+    # take it replaced, so a soft-accepted rescue was counted as an "ok".
+    "report": "report/v7",
 }
 
 # Anything not listed here is dropped on save. This is what stops the segment

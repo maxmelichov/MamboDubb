@@ -159,7 +159,13 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
               "wrong_voice": 0}
     wrong_voice = []
     for s in segments:
-        got = (s.get("tts") or {}).get("verify")
+        # The verdict of the clip that will be HEARD. A line the timeline
+        # shortened is voiced by a second clip made from the shorter text, and
+        # `seg["tts"]` still records the take that one replaced: a shortened
+        # segment aired soft-accepted at 0.33 overlap while this count read it as
+        # one of the run's "ok"s. `place.verify` is written whenever the aired
+        # clip is not the recorded one.
+        got = (s.get("place") or {}).get("verify") or (s.get("tts") or {}).get("verify")
         if got is None:
             continue          # no clip at all it is counted in `unaccounted`
         verify[got] = verify.get(got, 0) + 1

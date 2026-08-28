@@ -750,3 +750,15 @@ def test_without_a_second_reader_nothing_changes(tmp_path, monkeypatch):
     monkeypatch.setattr(eng, "strong_asr_for", lambda tgt=None: None)
     clip, meta, verdict = _take(tmp_path)
     assert eng._second_opinion({"id": 3}, clip, meta, verdict, "Yitzhak.", "en", "he") is None
+
+
+def test_the_verify_count_reads_the_clip_that_is_heard(tmp_path, monkeypatch):
+    """A shortened line is voiced by a second clip, and `seg["tts"]` still holds
+    the take that one replaced. Counting the record's verdict made a rescue that
+    came back soft-accepted at 0.33 overlap read as one of the run's clean ones."""
+    m = report_segments()
+    m["segments"][0]["place"]["spoken"] = "Hi"
+    m["segments"][0]["place"]["verify"] = "soft"
+    m["segments"][0]["tts"]["verify"] = "ok"
+    rep = fake_report_run(m, tmp_path, monkeypatch)
+    assert rep["verify"]["soft"] == 1 and rep["verify"]["ok"] == 0

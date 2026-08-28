@@ -618,3 +618,45 @@ def test_the_shorten_budget_for_a_pinned_line_is_its_own_span_not_the_gap(
     timeline.run(m, tmp_path, shorten_many=shorten_many, resynth_many=lambda x: {})
     # 12 words, and a 3s span at RATE_PREF holds about 3.45/6.0 of a 6s clip.
     assert asked[0] < 12
+
+
+# ------------------------- a rescue may cost words, not intelligibility
+
+def _shortenable(tmp_path, verify="ok"):
+    """A manifest with one line far too long for its slot, ready to be shortened."""
+    m = cjk_overrunning_manifest(tgt="en")
+    m["segments"][0]["text_en"] = "one two three four five six seven eight nine ten"
+    m["segments"][0]["tts"] = {"clip": "clips/a.wav", "dur": 9.0, "verify": verify}
+    return m
+
+
+def test_a_shortened_take_that_verifies_worse_is_refused(monkeypatch, tmp_path):
+    """The shortened "Chaim, Chaim, come." came back soft-accepted at 0.33 overlap
+    where the full line verified clean, and it was aired anyway."""
+    monkeypatch.setattr(timeline.audio, "atempo", lambda *a, **k: None)
+    monkeypatch.setattr(timeline.audio, "duration", lambda p: 7.0)
+    m = _shortenable(tmp_path)
+    timeline.run(m, tmp_path,
+                 shorten_many=lambda reqs: {s["id"]: "one two three" for s, _n in reqs},
+                 resynth_many=lambda items: {s["id"]: {"clip": "clips/short.wav",
+                                                       "dur": 3.0, "verify": "soft"}
+                                             for s, _t in items})
+    place = m["segments"][0]["place"]
+    assert "spoken" not in place                     # the full line still stands
+    assert place["shorten"] == "resynth-verified-worse"
+    assert place["clip"].startswith("clips/fit_a")   # ...and its own clip is aired
+
+
+def test_an_accepted_shortening_carries_its_own_verdict(monkeypatch, tmp_path):
+    monkeypatch.setattr(timeline.audio, "atempo", lambda *a, **k: None)
+    monkeypatch.setattr(timeline.audio, "duration", lambda p: 3.0)
+    m = _shortenable(tmp_path, verify="accepted")
+    timeline.run(m, tmp_path,
+                 shorten_many=lambda reqs: {s["id"]: "one two three" for s, _n in reqs},
+                 resynth_many=lambda items: {s["id"]: {"clip": "clips/short.wav",
+                                                       "dur": 3.0, "verify": "ok"}
+                                             for s, _t in items})
+    place = m["segments"][0]["place"]
+    assert place["spoken"] == "one two three"
+    # The report must count the clip that is heard, not the take it replaced.
+    assert place["verify"] == "ok"
