@@ -852,6 +852,53 @@ def seed_for(seg: dict[str, Any], speak: str, opts: TtsOpts = ttsopts.DEFAULT) -
     return int(hashlib.sha1(f"{seed_id(seg)}|{speak}".encode()).hexdigest()[:8], 16)
 
 
+# Saying a line one sentence at a time (see `Engine._in_sentences`).
+SENTENCE_MIN_UNITS = 2      # ...below which a "sentence" is an abbreviation's dot
+SENTENCE_PAUSE_SEC = 0.18   # the pause a full stop buys, put back at the join
+
+
+def _sentence_parts(text: str, lang: str = "en") -> list[str]:
+    """`text` as sentences, with the pieces too short to be one folded forward.
+
+    `script.split_sentences` reads punctuation, and "Dr." is punctuation: a piece
+    of one unit is an abbreviation far more often than a sentence, and voicing it
+    alone would put a pause inside a name. It joins the piece after it instead,
+    and a trailing runt joins the piece before.
+    """
+    parts = script_mod.split_sentences(text)
+    out: list[str] = []
+    for part in parts:
+        if out and speech_units(out[-1], lang) < SENTENCE_MIN_UNITS:
+            out[-1] = f"{out[-1]} {part}"
+        else:
+            out.append(part)
+    if len(out) > 1 and speech_units(out[-1], lang) < SENTENCE_MIN_UNITS:
+        runt = out.pop()
+        out[-1] = f"{out[-1]} {runt}"
+    return out
+
+
+def _join_clips(clips: list[Path], dst: Path, pause: float = SENTENCE_PAUSE_SEC) -> Path:
+    """The clips end to end, separated by `pause` of silence, at their own rate."""
+    pieces, rate = [], None
+    for clip in clips:
+        wav, sr = sf.read(str(clip), dtype="float32", always_2d=False)
+        if wav.ndim > 1:
+            wav = wav.mean(axis=1)
+        if rate is None:
+            rate = sr
+        elif sr != rate:
+            raise ValueError(f"{clip.name} is {sr} Hz, not {rate} Hz")
+        if pieces:
+            pieces.append(np.zeros(int(pause * rate), dtype=np.float32))
+        pieces.append(wav.astype(np.float32))
+    if not pieces or rate is None:
+        raise ValueError("nothing to join")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(str(dst), np.concatenate(pieces), rate)
+    return dst
+
+
 def _read(model, clip: Path, tgt: str) -> str:
     """What an ASR hears in one clip, with the VAD's silence taken as a question.
 
@@ -1927,6 +1974,15 @@ class Engine:
                 print(f"  tts: seg {seg['id']} clip {verdict['dur']:.1f}s vs "
                       f"{slot:.1f}s slot rejected", file=sys.stderr)
                 continue
+            if not clip_is_good(verdict) and not clone_length_ok(verdict["dur"],
+                                                                 speak, tgt):
+                # Short for its word count AND not saying all of it: that is the
+                # synthesis stopping early, not a quick read. The fast bound
+                # yields to the verifier (see `clone_length_ok`) so a correct
+                # 0.52s "I have it." is kept; it must not also let a 1.79s take of
+                # a thirteen-word line that says its first sentence out-rank the
+                # complete take of the same line, which is what it did.
+                continue
             record = self._record(clip, verdict, attempt, opts, text_en)
             if clip_is_good(verdict):
                 return record
@@ -1941,6 +1997,13 @@ class Engine:
                     verify = "wrong_voice"
                 best = dict(record, verify=verify)
                 best_take = (attempt, clip, meta, verdict)
+
+        # Nothing on the ladder said the whole line. One shape of failure is left
+        # that varying the reference cannot touch, and it is the shape a long line
+        # fails in: the voice stops early. Say it in two breaths instead.
+        parted = self._in_sentences(seg, plan, text_en, best, opts)
+        if parted is not None:
+            return parted
 
         if (best and best["verify"] == "wrong_voice"
                 and best["overlap"] >= CLONE_SOFT_OVERLAP):
@@ -1971,6 +2034,69 @@ class Engine:
                 return dict(self._record(clip, better, attempt, opts, text_en),
                             verify="accepted")
         return None
+
+    def _in_sentences(self, seg: dict[str, Any], plan: Plan, text_en: str,
+                      best: dict[str, Any] | None,
+                      opts: TtsOpts) -> dict[str, Any] | None:
+        """The line said one sentence at a time, when it will not come out in one.
+
+        The retry ladder varies the reference and the decode, which is the right
+        answer to a garbled take and no answer at all to a truncated one: the
+        voice simply stops, and it stops in the same place from every reference.
+        Measured on a Hebrew drama, every take of "Let's see, give me a punch like
+        this, can you? Stronger, a bit more. Excellent." ended after the question,
+        and every take of "What's going on with the evacuation? Schultz says he'll
+        be here in another hour." ended after the first sentence. Both aired
+        missing half of what the character said, and nothing in the run said so
+        beyond an overlap the accept floor tolerated.
+
+        So each sentence is synthesised on its own, from the same reference and
+        under the same plan, and the pieces are joined with the pause a full stop
+        buys. Every piece has to verify clean on its own it is a short line and
+        the voice manages those and the joined clip has to read better than the
+        best single take, or nothing changes. A one-sentence line never comes here.
+
+        A piece too short to be a sentence is folded into the next one:
+        `split_sentences` reads punctuation, and "Dr." is punctuation.
+        """
+        parts = _sentence_parts(plan.speak, plan.tgt)
+        if len(parts) < 2:
+            return None
+        floor = float((best or {}).get("overlap") or 0.0)
+        clips: list[Path] = []
+        for part in parts:
+            synth = (synthesis_text(part, plan.tgt) if self.hebrew_for(plan.tgt)
+                     else part)
+            if not synth.strip():
+                return None
+            clip, meta, verdict = self._attempt(
+                seg["id"], part, plan.ref_path, plan.ref_key,
+                seed_for(seg, part, opts), plan.greedy, opts, plan.tgt, synth)
+            if verdict is not None and verdict.get("failed"):
+                return None
+            if verdict is None:
+                verdict = self._verify_and_store(clip, meta, part, plan.tgt, plan.src)
+            if not clip_is_good(verdict):
+                return None
+            clips.append(clip)
+        key = self._cache_key(plan.speak, plan.ref_key, plan.base_seed, plan.greedy,
+                              opts, plan.tgt, plan.synth,
+                              self._carrier_for(plan.tgt) is not None)
+        joined = self.clips / f"parts_{key}.wav"
+        try:
+            _join_clips(clips, joined)
+        except Exception as exc:
+            print(f"  tts: seg {seg['id']} could not join its sentences ({exc})",
+                  file=sys.stderr)
+            return None
+        verdict = self._verify_and_store(joined, joined.with_suffix(".json"),
+                                         plan.speak, plan.tgt, plan.src)
+        if verdict["overlap"] <= floor:
+            return None
+        print(f"  tts: seg {seg['id']} said in {len(parts)} sentences "
+              f"(overlap {floor:.2f} → {verdict['overlap']:.2f})", file=sys.stderr)
+        record = self._record(joined, verdict, len(parts) - 1, opts, text_en)
+        return record if clip_is_good(verdict) else dict(record, verify="accepted")
 
     def _second_opinion(self, seg: dict[str, Any], clip: Path, meta: Path,
                         verdict: dict[str, Any], speak: str, tgt: str,

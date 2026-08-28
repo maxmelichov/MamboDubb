@@ -21,6 +21,8 @@ segmenter, the translator, the timeline and TTS cannot each guess differently.
 
 from __future__ import annotations
 
+import re
+
 # Unicode block ranges per script bucket. Deliberately coarse: whole blocks,
 # base + extensions that actually occur in modern text.
 _RANGES: dict[str, tuple[tuple[int, int], ...]] = {
@@ -151,6 +153,26 @@ def speech_units(text: str, lang: str) -> int:
     if script_for(lang) in ("cjk", "hangul"):
         return max(1, sum(1 for ch in text or "" if ch.isalnum()))
     return max(1, len((text or "").split()))
+
+
+# Where one sentence ends and the next begins: a terminator, its optional closing
+# quote, and the whitespace after it. Spaceless scripts end a sentence on the mark
+# alone, so the whitespace is optional there. Used by TTS to say a line the voice
+# will not manage in one breath one sentence at a time; the segmenter's
+# SENTENCE_END answers the neighbouring question ("does this word end a sentence?")
+# and the two read the same punctuation, from here.
+_SENTENCE_SPLIT = re.compile(
+    f"(?<=[.!?\u2026{CJK_SENTENCE_END}])['\"\u00bb\u05f3\u05f4\u300d\u300f]?\\s+")
+
+
+def split_sentences(text: str) -> list[str]:
+    """`text` broken at its sentence ends. One sentence in, one item out.
+
+    Never returns an empty piece and never loses a character but the whitespace
+    it split on, so a caller may join the pieces back and get the line it gave.
+    """
+    parts = [p.strip() for p in _SENTENCE_SPLIT.split(text or "")]
+    return [p for p in parts if p]
 
 
 def scripts_used(text: str) -> set[str]:

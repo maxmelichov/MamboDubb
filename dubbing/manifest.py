@@ -116,7 +116,12 @@ STAGE_TAGS = {
     # own voice (a label is not a person), the alternates are held to the same
     # test, and a clip that says the right words in another voice is recorded as
     # "wrong_voice" rather than "ok" different rungs, different verdicts.
-    "tts": "tts/v27",
+    "tts": "tts/v28",
+    # v28: a line the voice will not say in one breath is said in one sentence at
+    # a time and joined. The retry ladder varies the reference, which is no answer
+    # to a truncated take: every take of two long lines on a Hebrew drama stopped
+    # after the first sentence and aired missing half of what was said. And the
+    # relaxed fast bound no longer lets a truncated take out-rank a complete one.
     # v27: three ways a correct take was thrown away for the original audio, all
     # of them the verifier's fault rather than the clip's. The fast length bound
     # rejected takes unheard that the strong ASR reads back word for word, so

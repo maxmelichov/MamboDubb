@@ -341,3 +341,47 @@ def test_a_clip_the_vad_read_is_not_read_twice(tmp_path):
 
     assert tts._read(Model(), clip, "en") == "hello"
     assert asked == [True]
+
+
+def test_a_sentence_split_folds_an_abbreviation_forward():
+    """`split_sentences` reads punctuation, and "Dr." is punctuation."""
+    assert tts._sentence_parts("Dr. Smith went home. He slept.") == [
+        "Dr. Smith went home.", "He slept."]
+    assert tts._sentence_parts("One line only") == ["One line only"]
+    # ...and a one-word sentence is not worth a breath of its own either.
+    assert tts._sentence_parts(
+        "Let's see, can you? Stronger, a bit more. Excellent.") == [
+        "Let's see, can you?", "Stronger, a bit more. Excellent."]
+    # A trailing runt joins the piece before it, not a pause of its own.
+    assert tts._sentence_parts("She left. Ok.") == ["She left. Ok."]
+
+
+def test_joining_sentences_puts_the_pause_back(tmp_path):
+    import numpy as np
+    import soundfile as sf
+
+    sr = 16000
+    for name in ("a.wav", "b.wav"):
+        sf.write(str(tmp_path / name), np.ones(sr, dtype="float32") * 0.1, sr)
+    out = tts._join_clips([tmp_path / "a.wav", tmp_path / "b.wav"],
+                          tmp_path / "j.wav", pause=0.2)
+    wav, got = sf.read(str(out), dtype="float32")
+    assert got == sr
+    assert abs(len(wav) / sr - 2.2) < 1e-6
+
+
+def test_a_short_take_that_says_half_the_line_is_truncation_not_speed():
+    """The fast bound yields to the verifier; it may not excuse a stopped decode.
+
+    A 1.79s take of a thirteen-word line that says only its first sentence is the
+    synthesis stopping early. Under the relaxed bound it reached the ranking and
+    out-scored the complete take of the same line, which the base ASR had read
+    less generously.
+    """
+    line = "What's going on with the evacuation? Schultz says he'll be here soon."
+    # Says everything, at a quick clip: exactly what the relaxation is for.
+    assert tts.clone_length_ok(1.79, line, verified=True)
+    # ...so the decision cannot rest on length alone, and `clip_is_good` is the
+    # other half: a short take below the good bar is dropped by `clip_for`.
+    assert not tts.clip_is_good({"ok": True, "overlap": 0.43, "dur": 1.79})
+    assert tts.clip_is_good({"ok": True, "overlap": 1.0, "dur": 1.79})

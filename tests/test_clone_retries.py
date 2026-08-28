@@ -46,7 +46,7 @@ def voice(tag: str) -> np.ndarray:
 
 
 def engine(tmp_path, monkeypatch, overlaps, *, tgt="en", voices=None,
-           embeddings=True):
+           embeddings=True, dur=1.0):
     """An Engine whose verifier hands back `overlaps`, one per attempt.
 
     `voices` maps a reference or clip file name to a speaker tag; everything
@@ -78,7 +78,7 @@ def engine(tmp_path, monkeypatch, overlaps, *, tgt="en", voices=None,
     def verify(clip, meta, speak, *lang):
         ov = next(seen)
         return {"ok": ov >= tts.CLONE_MIN_OVERLAP, "overlap": ov, "heard": "x",
-                "dur": 1.0, "verified": True}
+                "dur": dur, "verified": True}
 
     monkeypatch.setattr(eng, "_verify_and_store", verify)
     return eng, fake
@@ -362,3 +362,47 @@ def test_a_wrong_voice_clip_is_recorded_and_reported_as_such(tmp_path, monkeypat
     # A dub, kept (never-silent), and named for what is wrong with it.
     assert got["verify"] == "wrong_voice" and got["voice"] == 0.0
     assert got["overlap"] == 0.9
+
+
+# ------------------------------------------- a truncated take is not a quick one
+
+LONG = "a long line of thirteen words the voice will not finish saying here"
+
+
+def test_a_take_too_short_for_its_words_never_reaches_the_ranking(tmp_path,
+                                                                  monkeypatch):
+    """The fast bound yields to the verifier so a correct quick read survives; a
+    take that is quick AND says half the line is the decode stopping early."""
+    eng, _fake = engine(tmp_path, monkeypatch, [0.5, 0.5, 0.5, 0.5], dur=1.0)
+    assert eng.clip_for(seg(), LONG) is None
+    # The same overlaps at a plausible length are accepted exactly as before.
+    eng, _fake = engine(tmp_path, monkeypatch, [0.5, 0.5, 0.5, 0.5], dur=4.0)
+    assert eng.clip_for(seg(), LONG)["verify"] == "accepted"
+
+
+def test_a_line_the_voice_truncates_is_said_one_sentence_at_a_time(tmp_path,
+                                                                   monkeypatch):
+    """Varying the reference is no answer to a stopped decode: it stops in the
+    same place from every reference. Saying the line in two breaths is."""
+    # Four rungs that all fall short, then a clean take of each sentence, then
+    # the joined clip read whole.
+    eng, fake = engine(tmp_path, monkeypatch,
+                       [0.5, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0], dur=4.0)
+    got = eng.clip_for(seg(), "First sentence here. Second sentence here.")
+    assert got["verify"] == "ok" and got["overlap"] == 1.0
+    assert got["clip"].startswith("clips/parts_")
+    # Each sentence was synthesised on its own, from the same reference as rung 0.
+    assert [c["ref"] for c in fake.calls][-2:] == ["auto.wav", "auto.wav"]
+
+
+def test_a_one_sentence_line_is_never_split(tmp_path, monkeypatch):
+    eng, fake = engine(tmp_path, monkeypatch, [0.5, 0.5, 0.5, 0.5], dur=4.0)
+    got = eng.clip_for(seg(), LONG)
+    assert got["verify"] == "accepted" and len(fake.calls) == 4
+
+
+def test_a_split_that_reads_no_better_is_not_used(tmp_path, monkeypatch):
+    eng, _fake = engine(tmp_path, monkeypatch,
+                        [0.5, 0.5, 0.5, 0.5, 1.0, 1.0, 0.4], dur=4.0)
+    got = eng.clip_for(seg(), "First sentence here. Second sentence here.")
+    assert got["overlap"] == 0.5 and not got["clip"].startswith("clips/parts_")

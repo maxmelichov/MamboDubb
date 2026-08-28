@@ -344,7 +344,9 @@ def test_the_stage_tags_moved():
     # v27: the verifier no longer throws a correct take away three of the ways it
     # used to the fast length bound, an empty VAD read, and a small model's
     # reading of a transliterated name so takes that were lost are now kept.
-    assert manifest.STAGE_TAGS["tts"] == "tts/v27"
+    # v28: a truncated take is said one sentence at a time instead, so a line
+    # that used to air missing half of itself now has a different clip.
+    assert manifest.STAGE_TAGS["tts"] == "tts/v28"
     # v36: script-derived gloss floors, negations and shorten budgets (CJK/hangul).
     # v37: "%" survives into every TTS target's own vocabulary.
     # v39: a repetition the speaker actually made survives the "X, X" repair.
