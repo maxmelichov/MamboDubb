@@ -337,7 +337,9 @@ def test_the_stage_tags_moved():
     # was written to produce in the first place.
     # v24: the verify ASR's own word boundaries no longer fail a take, so a line
     # that used to keep its original audio now keeps a clip.
-    assert manifest.STAGE_TAGS["tts"] == "tts/v24"
+    # v25: a one- or two-word clip has an absolute length ceiling again, so a
+    # stalled short take is retried instead of placed.
+    assert manifest.STAGE_TAGS["tts"] == "tts/v25"
     # v36: script-derived gloss floors, negations and shorten budgets (CJK/hangul).
     # v37: "%" survives into every TTS target's own vocabulary.
     # v39: a repetition the speaker actually made survives the "X, X" repair.

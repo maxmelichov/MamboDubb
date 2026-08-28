@@ -110,7 +110,11 @@ STAGE_TAGS = {
     # own voice (a label is not a person), the alternates are held to the same
     # test, and a clip that says the right words in another voice is recorded as
     # "wrong_voice" rather than "ok" different rungs, different verdicts.
-    "tts": "tts/v24",
+    "tts": "tts/v25",
+    # v25: a one- or two-word clip has an absolute length ceiling again. Below
+    # three units the per-unit rate was simply switched off, so a 4.61s "Chelsea."
+    # passed every check and its 4.6s of audio in a 1.1s slot pushed the next line
+    # 2.13s late. Changes which takes are kept, and the placements after them.
     # v24: word_overlap forgives the verify ASR its own word boundaries and
     # spelling. The ASR wrote "All right." for a clip that says "Alright."; on a
     # one-word line there are no other words to carry the score, so the take read
