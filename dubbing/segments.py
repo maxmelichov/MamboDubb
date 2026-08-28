@@ -12,6 +12,7 @@ and `dubbing.interjections` (the lexicon the movie-mode keep rule consults).
 
 from __future__ import annotations
 
+import bisect
 import os
 import re
 import sys
@@ -1191,7 +1192,8 @@ def refine_turns(turns: list[dict[str, Any]], vocals: Path, *,
 
 
 def extend_keeps_to_speech_end(segs: list[dict[str, Any]], levels, hop: float,
-                               total: float) -> None:
+                               total: float,
+                               words: list[dict[str, Any]] | None = None) -> None:
     """Grow each keep segment's end through trailing speech, up to the next segment.
 
     Keep segments play original audio. The source-language ASR stops transcribing
@@ -1202,13 +1204,27 @@ def extend_keeps_to_speech_end(segs: list[dict[str, Any]], levels, hop: float,
     English/Hebrew boundary itself is handled precisely upstream by the language
     detector (transcript.detect_spoken_target_spans), so this never eats into a
     neighbour: it only recovers a VAD trim within a keep's own trailing silence.
+
+    "Its own trailing silence" is the promise, and the next segment's *start* is
+    not enough to enforce it. `merge_stranded_fragments` folds an orphaned opening
+    word into a later segment's text, which leaves the seconds that word was spoken
+    in claimed by no segment's span at all. A keep then walked straight over them
+    and the line was heard twice: once in the original voice under the keep, once
+    again in the dub of the segment that had absorbed its words. So the walk also
+    stops at the first transcribed word that starts after this segment ends
+    trailing silence has no words in it, and a word after the boundary belongs to
+    somebody else.
     """
     n = len(levels)
+    starts = sorted(float(w["t"]) for w in (words or []) if w.get("t") is not None)
     for i, s in enumerate(segs):
         if not s.get("keep"):
             continue
         nxt_start = segs[i + 1]["start"] if i + 1 < len(segs) else total
         limit = min(nxt_start, s["end"] + KEEP_TAIL_MAX)
+        nxt_word = bisect.bisect_right(starts, s["end"] + 1e-6)
+        if nxt_word < len(starts):
+            limit = min(limit, starts[nxt_word])
         end, silence, t = s["end"], 0.0, s["end"]
         while t < limit - 1e-9:
             j = int(t / hop)
@@ -1429,7 +1445,7 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
     total = float(m["source"].get("duration") or 0.0)
     levels = audio.frame_rms(audio.decode_mono(workdir / m["files"]["vocals"], 16000),
                              16000, 0.1)
-    extend_keeps_to_speech_end(segs, levels, 0.1, total or len(levels) * 0.1)
+    extend_keeps_to_speech_end(segs, levels, 0.1, total or len(levels) * 0.1, words)
     # Audible stretches no segment covers: keep the original audio only where it is
     # the target language (VoxLingua confirms), so a missed English line is heard
     # again without a mislabelled Hebrew region airing its source voice. Audibility
