@@ -59,7 +59,13 @@ STAGE_TAGS = {
     # torn off by a buried middle folds into its continuation instead of being
     # voiced as a stranded beat — and it refuses spliced foreign-language spans,
     # so an English orphan never rides into a `lang`-tagged neighbour's voice.
-    "segments": "segments/v42",
+    "segments": "segments/v43",
+    # v43: a diarization handover that lands inside one punctuated sentence moves
+    # to the nearest sentence end the ASR drew, or is dropped when there is none
+    # inside the sentence. A handover is a time with a few hundred milliseconds of
+    # error; spent inside a clause it made two fragments, each translated alone
+    # ("יש לך חברה?" → "Are you..." and "Are you a friend?"). SENTENCE_MAX already
+    # refuses this to the length splitter; the speaker splitter now refuses it too.
     # v42: a keep no longer walks its end over a word that belongs to another
     # segment. `merge_stranded_fragments` moves an orphaned word's TEXT into a
     # later segment but leaves the seconds it was spoken in claimed by nobody, and
