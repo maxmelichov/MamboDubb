@@ -86,6 +86,19 @@ FOREIGN_SRC_LOGPROB = -0.5  # ...and the source ASR must FAIL to read it this we
                        # Arabic at -0.64 as garbled non-words, but read the stretches
                        # the classifier mislabelled `mi` and `nl` at -0.38/-0.34 as
                        # clean Hebrew. Without this the label alone airs the narrator.
+# An UNNAMED foreign verdict ("und") rests on a single negative witness: the source
+# ASR could not read this passage. That premise is checkable, and it was never
+# checked. The main source-language pass — a whole-file decode, far better
+# conditioned than the isolated re-decode `_judge_span` scores — writes its own
+# words over the same seconds, with a per-word probability. When it read the passage
+# confidently, "no ASR here reads this" is simply false, and keeping the span throws
+# a correct transcript away and airs the source language undubbed. A NAMED verdict is
+# untouched: the classifier saying "Arabic, p=0.96" is a second witness, and the
+# Hebrew model transliterating that Arabic into Hebrew script is the documented
+# reason the name outranks the read.
+UND_SRC_WORDS = 3      # source-script words the main pass must have put in the span...
+UND_SRC_PROB = 0.8     # ...at this median word probability, to refute an "und" verdict
+
 VAD_MIN_SEC = 0.6      # ignore speech blips shorter than this (a short English tail
                        # like "just want to help" must still be kept, not clipped)
 SPAN_TAIL_LOGPROB = -0.5  # while the English model reads this confidently past the LID
@@ -1112,10 +1125,35 @@ def _judge_span(lid, src_model, source_wav: Path, a: float, b: float,
     return lang if named else "und"
 
 
+def reads_as_source(words: list[dict[str, Any]] | None, a: float, b: float,
+                    source: str) -> bool:
+    """Did the main source-language pass already read [a, b] as confident source speech?
+
+    Pure the witness against an unnamed ("und") foreign verdict, whose whole
+    premise is that no ASR here can read the passage. `words` is the main pass's
+    output (`t`, `text`, and the per-word probability `p`); a span it filled with
+    real source-script words at a high median probability is a span it read, and an
+    isolated re-decode scoring a little under the failure bar does not overrule that.
+
+    Deliberately blind to a named verdict: this only ever answers about "und".
+    """
+    if not words or not source:
+        return False
+    inside = [w for w in words if a - 0.05 <= float(w.get("t", 0.0)) <= b + 0.05]
+    real = [w for w in inside if script.is_script(w.get("text") or "", source)]
+    if len(real) < UND_SRC_WORDS:
+        return False
+    probs = sorted(float(w.get("p", 0.0)) for w in real)
+    mid = len(probs) // 2
+    median = probs[mid] if len(probs) % 2 else (probs[mid - 1] + probs[mid]) / 2
+    return median >= UND_SRC_PROB
+
+
 def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: float,
                                target: str, *, source: str = "", src_model=None,
                                known: list[tuple[float, float]] | None = None,
-                               lsegs: list[tuple[float, float, str | None]] | None = None
+                               lsegs: list[tuple[float, float, str | None]] | None = None,
+                               src_words: list[dict[str, Any]] | None = None
                                ) -> list[dict[str, Any]]:
     """Speech regions not spoken in the source language, as original-audio spans.
 
@@ -1154,6 +1192,14 @@ def detect_spoken_target_spans(en_model, vad, lid, source_wav: Path, total: floa
             confirmed = _sounds_foreign(lid, src_model, source_wav, a, b, source,
                                         tgt_model=en_model, target=target)
             if confirmed is None:
+                continue
+            if confirmed == "und" and reads_as_source(src_words, a, b, source):
+                # Nobody named a language, and the source pass read these seconds
+                # confidently in the source script: the "no ASR reads this" premise
+                # the unnamed keep stands on is false. Dub it, and let the words the
+                # main pass already wrote be the transcript (see `reads_as_source`).
+                print(f"  transcript: {a:.2f}-{b:.2f}s unnamed, but the source ASR "
+                      "read it confidently dubbing it", file=sys.stderr)
                 continue
         if lang != target and confirmed != target:
             # A passage that ends where nobody paused ended at a window edge, not at a
@@ -1512,7 +1558,7 @@ def run(m: dict[str, Any], workdir: Path, *, src_lang: str, tgt_lang: str = "en"
                 en_spans = detect_spoken_target_spans(
                     en_model, vad, lid, lid_wav,
                     float(limit or m["source"]["duration"]), tgt_lang,
-                    source=src_lang, src_model=model, lsegs=runs)
+                    source=src_lang, src_model=model, lsegs=runs, src_words=words)
             origin = "asr"
         except Exception as exc:
             if prefer == "asr" or not caption_words:
