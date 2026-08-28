@@ -136,6 +136,16 @@ CLONE_MAX_SEC_PER_WORD = 0.95   # slower than this is a stall/drawl
 # CJK/hangul speech runs ~5 characters/s; the word constants assume ~3 words/s.
 CLONE_MIN_SEC_PER_CHAR = 0.08   # faster than this is chipmunk garble
 CLONE_MAX_SEC_PER_CHAR = 0.60   # slower than this is a stall/drawl
+# The absolute overrun a one- or two-unit line may add on top of that rate. Below
+# three units a per-unit rate says little the onset, the breath and the pause a
+# full stop buys are all charged to the only word there is so the upper bar was
+# simply switched off there. Off is not the same as loose: a one-word "Chelsea."
+# came back 4.61s, cleared every check (the verify ASR heard "Chelsea", which is
+# all word_overlap asks), and its 4.6s of audio in a 1.1s slot pushed the next
+# line 2.13s late. Measured against the short lines that are right, which land at
+# 0.55-0.85s, this leaves a one-word line 2.2s and a two-word line 3.15s: room for
+# any delivery an actor could give them, and none for a stall.
+CLONE_SHORT_GRACE_SEC = 1.25
 # Two bars, not one. `CLONE_MIN_OVERLAP` is the floor: below it a line is not a
 # dub at all and falls back to the original audio. `CLONE_GOOD_OVERLAP` is what
 # stops the retry ladder. They used to be the same number, which is why a garbled
@@ -325,7 +335,7 @@ def clone_length_ok(sec: float, text: str, lang: str = "en") -> bool:
               else (CLONE_MIN_SEC_PER_WORD, CLONE_MAX_SEC_PER_WORD))
     if spu < lo:
         return False
-    if spu > hi and units >= 3:
+    if spu > hi and (units >= 3 or sec > hi * units + CLONE_SHORT_GRACE_SEC):
         return False
     expected = (units / 5.0 if char_based else units / 3.0) + 0.25
     return sec >= expected * 0.40

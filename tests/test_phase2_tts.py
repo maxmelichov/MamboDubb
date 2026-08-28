@@ -120,6 +120,23 @@ def test_clone_length_ok_english_unchanged():
     assert not tts.clone_length_ok(9.0, text)
 
 
+def test_a_short_line_still_has_a_ceiling():
+    """Below three units the per-unit rate is off, but not the absolute bound.
+
+    A one-word "Chelsea." came back 4.61s. The verify ASR heard "Chelsea", which
+    is all word_overlap asks, and the length guard did not look at short lines at
+    all, so 4.6s of audio went into a 1.1s slot and pushed the next line 2.13s
+    late. The short-line allowance is generous and finite.
+    """
+    assert tts.clone_length_ok(0.69, "Chelsea.")      # what a right one measures
+    assert tts.clone_length_ok(2.10, "Chelsea.")      # a slow, emphatic delivery
+    assert not tts.clone_length_ok(4.61, "Chelsea.")  # the stall that started this
+    assert tts.clone_length_ok(3.00, "My dear.")      # two words get twice the rate
+    assert not tts.clone_length_ok(3.30, "My dear.")
+    # A chipmunk short line is refused exactly as before.
+    assert not tts.clone_length_ok(0.06, "Chelsea.")
+
+
 def test_max_new_tokens_chinese_not_word_counted():
     zh = "这是一个很长的句子" * 5              # 45 chars, one "word" by .split()
     # Word-based budget for 1 "word" is the 96 floor; char-based must exceed it.
