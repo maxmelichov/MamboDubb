@@ -1304,6 +1304,36 @@ def test_adjacent_repeat_detects_only_the_collapse():
     assert rep("the the report") is None
 
 
+def test_repair_repeat_leaves_a_repetition_the_speaker_actually_made(monkeypatch):
+    """A character who says it twice is not a decode that flattened two words.
+
+    The repair's premise is "the source said two things and the output says one
+    twice". On a Hebrew drama the source itself was "בסדר. בסדר?" and the repair
+    deleted the second beat, shortening the line and losing the performance. The
+    source is now consulted, and when it repeats the word the output keeps it
+    without a retry.
+    """
+    called = []
+    monkeypatch.setattr(translate, "_run",
+                        lambda *a, **k: called.append(a) or "")
+    out = "It was very beautiful. Being a cantor? Okay. Okay?"
+    assert translate._repair_repeat(None, None,
+                                    "זה היה יפה מאוד. להיות חזן? בסדר. בסדר?",
+                                    out, "he", "en", "", 128) == out
+    assert called == []          # not even re-asked
+
+
+def test_repair_repeat_still_fixes_a_collapse_the_source_did_not_make(monkeypatch):
+    """The source lists two distinct words; one word said twice is the defect."""
+    called = []
+    monkeypatch.setattr(translate, "_run",
+                        lambda *a, **k: called.append(a) or "education and learning")
+    assert translate._repair_repeat(None, None, "השכלה וחינוך",
+                                    "education and education", "he", "en", "",
+                                    128) == "education and learning"
+    assert len(called) == 1
+
+
 def test_strip_adjacent_repeat_removes_the_duplicate():
     assert (translate._strip_adjacent_repeat("education, education and human rights")
             == "education and human rights")

@@ -1634,10 +1634,21 @@ def _repair_repeat(tokenizer, model, src: str, out: str, source: str, target: st
     words for distinct items; if the model still repeats, strip the duplicate so the
     listener never hears the same word twice. Both steps are no-ops on clean output,
     so the common case pays only the cheap `_adjacent_repeat` scan.
+
+    That premise is "the source said two things and the output says one twice", and
+    the source is right there to be asked. A speaker who repeats themselves is not a
+    collapse: on a Hebrew drama the line was "בסדר. בסדר?", the model wrote the
+    "Okay. Okay?" it was given, and the repair deleted the character's second beat.
+    So a source that repeats a word adjacently keeps its repetition, on the same
+    detector applied to its own script. `_strip_trailing_clause_repeat` already
+    draws this line for long clauses ("deliberate spoken repetition is short"); this
+    is the short half, which had no such check.
     """
     dup = _adjacent_repeat(out, target)
     if not dup:
         return out
+    if _adjacent_repeat(src, source):
+        return out              # the speaker said it twice the dub says it twice
     tgt = _lang(target)
     extra = (f"If the source lists several items, give each a distinct {tgt} word "
              f"do not write the same word twice in a row or in a list.")
