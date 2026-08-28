@@ -22,7 +22,7 @@ Give it a video file or a YouTube link. It transcribes, translates, speaks every
 curl -fsSL https://github.com/maxmelichov/MamboDubb/releases/latest/download/install.sh | sh
 ```
 
-Then open **Setup** in the app and press **Install everything**. It downloads all the models (about 16 GB, sizes shown before you click) and every row goes green.
+Then open **Setup** in the app and press **Install everything**. It downloads every model the app can fetch, the optional extras included, and every row goes green. The button carries the total in GB before you press it, and each row keeps its own button if you would rather take one thing at a time.
 
 **Windows / Linux:** run from source for now ([Windows notes](docs/WINDOWS.md), [status](docs/CROSS_PLATFORM.md)):
 

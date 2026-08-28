@@ -42,14 +42,21 @@ Four rules shape this module, each of them a refusal:
   executed or interpolated the request body is a strict model with one field,
   and that field is looked up in `INSTALLERS` (tools → argv) or in
   `setup.model_downloads()` (models → hub repo + local dir). An id in neither
-  table is a 400 that says how to install it by hand — which still covers the
-  models no snapshot can satisfy: Demucs and the Hebrew G2P (they fetch their
-  own caches on first use). Diarization is the one id that is in neither table
-  and still has a button, because its fix is not a download at all: the weights
-  shipped with the app, so the button copies them back from the payload (or
-  restores them from the checkout) and verifies the copy against SHA256SUMS.
-  The gated upstream repo is never reached for, and no route here can ask the
-  user for a Hugging Face account.
+  table is a 400 that says how to install it by hand, which is still where the
+  Hebrew G2P ends up: it fetches its own weights from inside a package this
+  environment either has or does not, and `uv sync` is the fix.
+
+  Two ids are in neither table and have a button anyway, because their fix is
+  not a snapshot. Diarization's weights shipped with the app, so the button
+  copies them back from the payload (or restores them from the checkout) and
+  verifies the copy against SHA256SUMS; the gated upstream repo is never reached
+  for, and no route here can ask the user for a Hugging Face account. Demucs
+  fetches `htdemucs_ft` itself the first time a stems run asks for it, so the
+  button runs that same fetch early (`demucs_argv`) rather than leaving the one
+  row on the screen with no gesture at all, which is what it used to be: the
+  only way to install it was to start a dub and sit through a silent mid-run
+  download. Both are still hardcoded actions chosen by id; neither takes
+  anything from the request.
 * **At most one install at a time, process-wide.** Not for memory (a `brew` runs
   nothing of ours) but because two package managers writing the same prefix is a
   broken prefix, and because the screen can only honestly show one spinner.
@@ -136,6 +143,11 @@ STATIC_FFMPEG_SPEC = "static-ffmpeg==3.0"
 # into the repo and staged into the desktop payload. It verifies that copy against the
 # SHA256SUMS that travels beside it.
 DIARIZATION_ID = "model.diarization"
+# The stem-separation weights, which are the one install here that is neither a
+# package manager nor a snapshot: demucs fetches them itself the first time a
+# `stems` run asks for the model, so the button just asks first. See
+# `demucs_argv` and `setup.demucs_check`.
+DEMUCS_ID = "model.demucs"
 # An explicit source directory, for a machine that has neither a checkout nor an
 # .app to read from: point it at an unpacked copy and the button works again.
 DIARIZATION_SOURCE_ENV = "DUB_DIARIZATION_SOURCE"
@@ -149,6 +161,28 @@ DIARIZATION_BUNDLE_ROOTS = (Path("/Applications"), Path.home() / "Applications")
 # The file every candidate source has to carry: it is both the proof that the
 # directory is the weights and the manifest the copy is checked against.
 DIARIZATION_SUMS = "SHA256SUMS"
+
+
+def demucs_argv() -> tuple[str, ...]:
+    """The argv that fetches the Demucs weights, and nothing else.
+
+    `dubbing/stems.py` shells out to `python -m demucs` and demucs pulls
+    `htdemucs_ft` down on that first call, so the honest way to "install" it is
+    to make that call happen early: `get_model(stems.MODEL)` loads the bag of
+    models by name, which is the download, and then drops it. Same interpreter as
+    the server (`sys.executable`, the one `runner.SubprocessRunner` also spawns
+    jobs with), same cache, same weights, so the row is green afterwards because
+    the thing the run needs is genuinely there, not because a button said so.
+
+    The model name comes from the pipeline constant rather than being spelled
+    here, so this cannot fetch a different bag than the stems stage opens. It is
+    a hardcoded argv like every other row's: nothing from a request reaches it.
+    """
+    from dubbing import stems
+
+    return (sys.executable, "-c",
+            "from demucs.pretrained import get_model; "
+            f"get_model({stems.MODEL!r}); print('demucs weights ready')")
 
 
 def static_route(id_: str) -> bool:
@@ -264,13 +298,17 @@ def diarization_route() -> str | None:
 
 def installable(id_: str) -> bool:
     """Can the app install `id_` by itself? The tools it has an argv for, the
-    ones it can fetch a static build of, and the diarization weights when this
-    machine still carries the copy they shipped in. Read by `setup.report` and
+    ones it can fetch a static build of, the diarization weights when this
+    machine still carries the copy they shipped in, and the Demucs cache, which
+    is always yes: the fetch is demucs's own and needs nothing from this machine
+    but a network. Read by `setup.report` and
     `setup.probe` so the flag that puts a button on a row and the code behind
     the button are the same answer — a row whose POST is a 400 is worse than no
     button, and so is a missing button for an install that would have worked."""
     if id_ == DIARIZATION_ID:
         return diarization_source() is not None
+    if id_ == DEMUCS_ID:
+        return True
     return id_ in INSTALLERS or static_route(id_)
 
 
@@ -281,6 +319,11 @@ def route(id_: str) -> str | None:
     what pressing the button does *before* pressing it."""
     if id_ == DIARIZATION_ID:
         return diarization_route()
+    if id_ == DEMUCS_ID:
+        from dubbing import stems
+
+        return (f"by fetching the {stems.MODEL} weights now, into the same cache "
+                "the first stems run would fill anyway")
     if static_route(id_):
         return "as a static build into the workspace (tools/bin), with no package manager needed"
     argv = INSTALLERS.get(id_)
@@ -498,6 +541,16 @@ class Installer:
                           f"so installing a static ffmpeg/ffprobe build into "
                           f"{tools.tools_bin()}"],
                     target=self._run_static, args=(id_,))
+            if id_ == DEMUCS_ID:
+                # A subprocess like the package managers, and for the same
+                # reason: it imports torch and demucs, which the server process
+                # spends its life not importing (`setup.py` rule one).
+                demucs = demucs_argv()
+                return self._begin(
+                    id_, ["$ " + " ".join(demucs),
+                          "fetching the stem-separation weights into the cache the "
+                          "first stems run would fill anyway"],
+                    target=self._run, args=(id_, demucs))
             if id_ == DIARIZATION_ID and installable(id_):
                 source = diarization_source()
                 assert source is not None            # installable() just said so
@@ -580,6 +633,32 @@ class Installer:
             body["bytes_done"] = setup.dir_size(dl_dir)
             body["bytes_total"] = dl_total
         return body
+
+    def reset(self) -> None:
+        """Forget a finished install, so the next answer is about the next
+        gesture and not the last one.
+
+        The mirror of `InstallQueue.clear`, and it exists for the bug that one
+        did not cover. `POST /api/setup/install_all` answers the slot's status
+        with a queue block beside it, so a queue that ran nothing answered with
+        whatever the last single install left in the slot: `id: "model.lid"`,
+        `ok: true`, "download complete". The most likely presentation of "nothing
+        happened" was then "something succeeded", for a model nobody had just
+        asked for. A running install is never touched, because that one is still
+        the truth about right now.
+        """
+        with self._lock:
+            if self._running:
+                return
+            self._id = None
+            self._ok = None
+            self._error = None
+            self._check = None
+            self._started = None
+            self._finished = None
+            self._dl_dir = None
+            self._dl_total = None
+            self._tail.clear()
 
     def wait(self, timeout: float = 5.0) -> bool:
         """Join the install thread. For tests and shutdown, never for a request."""
@@ -756,9 +835,9 @@ class InstallQueue:
     Four decisions, all of them consequences of that:
 
     * **The list is computed on the server, from the report.** `setup.install_plan`
-      reads a fresh `report()` and returns the missing rows the app can actually
-      fix, blocking first. Nothing in the request chooses what runs; the button
-      sends no body at all.
+      reads a fresh `report()` and returns every missing row the app can actually
+      fix, in grade order: blocking, then degrades, then optional. Nothing in the
+      request chooses what runs; the button sends no body at all.
     * **The progress shape is the one that already exists.** A poll of
       `GET /api/setup/install` still answers the single slot's status — the id in
       flight, its tail, its bytes — with one extra `queue` block saying which
@@ -806,6 +885,10 @@ class InstallQueue:
                 raise busy("an install is already running; wait for it to finish, "
                            "then install the rest in one go")
             if not self._running:
+                # The slot's leftovers are the previous gesture's story, and
+                # this is a new one. Without this the answer to an empty plan
+                # was the last single install's success, for an unrelated id.
+                self._installer.reset()
                 self._items = [dict(item) for item in items]
                 self._pos = 0
                 self._cancelled = False
@@ -814,6 +897,9 @@ class InstallQueue:
                 # An empty plan is the honest answer to "install everything" on
                 # a machine with nothing missing: a queue that ran nothing, not
                 # a 400 — and `finished` says so without a thread ever starting.
+                # `status` still emits the block for it (`_started`, not
+                # `_items`), because "a queue that ran nothing" needs somewhere
+                # to be said.
                 self._running = bool(self._items)
                 self._finished = None if self._running else self._started
                 if self._running:
@@ -841,6 +927,11 @@ class InstallQueue:
                 self._items = []
                 self._failed = []
                 self._pos = 0
+                # And the block goes with it: `status` emits one for as long as
+                # a queue has been started, so forgetting the queue has to be
+                # forgetting that too.
+                self._started = None
+                self._finished = None
 
     def status(self) -> dict[str, Any]:
         """The single slot's status, plus a `queue` block while one exists.
@@ -850,10 +941,18 @@ class InstallQueue:
         *where in the list* it is (here). `remaining_bytes` counts the items not
         yet finished and subtracts what the current download already has on
         disk, so the header's "~14 GB to go" falls as the bar fills.
+
+        "While one exists" is a queue that has been *started*, not a queue with
+        items in it. The empty plan is the case that distinction is for: pressing
+        "install all" with nothing missing used to answer with no block at all,
+        which is indistinguishable on the wire from never having pressed it, and
+        left the screen rendering whatever the slot happened to hold. An empty
+        `items` with `running: false` and a `finished` on it is the shape that
+        says "this ran, and there was nothing to run".
         """
         body = self._installer.status()
         with self._lock:
-            if not self._items:
+            if self._started is None:
                 return body
             items = [dict(item) for item in self._items]
             pos, running, cancelled = self._pos, self._running, self._cancelled
@@ -913,7 +1012,8 @@ class InstallQueue:
                 self._failed.append(id_)
 
 
-__all__ = ["DIARIZATION_ID", "INSTALLERS", "Installer", "InstallQueue",
+__all__ = ["DEMUCS_ID", "DIARIZATION_ID", "INSTALLERS", "Installer", "InstallQueue",
+           "demucs_argv",
            "diarization_command", "diarization_route", "diarization_source",
            "diarization_target", "fetch_static_ffmpeg", "installable",
            "manual_command", "restore_diarization", "route", "snapshot_download",

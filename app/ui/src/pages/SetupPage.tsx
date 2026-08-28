@@ -49,8 +49,11 @@
  *   path. The button carries the price ("Download · ~9.7 GB"), the poll draws
  *   a real bar (bytes on disk against the estimate), and a torn-off attempt
  *   resumes the server keeps the partial files, and the Retry says so.
- *   Where no snapshot can help the self-fetching caches, Demucs and the Hebrew
- *   G2P the detail line stays the whole answer.
+ *   Demucs is on that list too, through a route that is not a snapshot: it
+ *   fetches its own weights on the first stems run, and the button asks for them
+ *   now instead of leaving the row with no gesture and a mid-run wait. The
+ *   Hebrew G2P is the one row where the detail line is still the whole answer:
+ *   its weights ride inside a package, so `uv sync` is the fix.
  * - **Do not nag.** The gate in App.tsx routes here only when the server says
  *   `ok: false`. Otherwise this screen exists but is never in the way.
  *
@@ -398,17 +401,21 @@ export function SetupPage() {
   /*
    * What one button would install, and what it would cost.
    *
-   * The same rule the server applies in `setup.install_plan` — missing, fixable
-   * from here, and not graded `optional` — computed again on this side for one
-   * reason only: to *price the button before it is pressed*. The list that
-   * actually runs is the server's, from a fresh report at the moment of the
-   * click, so the two cannot drift into a button that installs something the
-   * screen did not name; the worst a stale count here can do is a label that is
-   * one row out of date, which the first poll corrects.
+   * The same rule the server applies in `setup.install_plan`, which is now
+   * "missing and fixable from here" with nothing else attached, computed again
+   * on this side for one reason only: to *price the button before it is
+   * pressed*. The list that actually runs is the server's, from a fresh report
+   * at the moment of the click, so the two cannot drift into a button that
+   * installs something the screen did not name; the worst a stale count here can
+   * do is a label that is one row out of date, which the first poll corrects.
+   *
+   * The optional rows are in it now, on both sides. Leaving them out was how a
+   * machine whose only red rows were optional met a button that did nothing and
+   * said nothing, and the grade it was filtering on does not mean "you will
+   * never want this": it means "a run technically finishes without it", which is
+   * as true of the Hebrew ASR on a Hebrew machine as of a language nobody opens.
    */
-  const plan = failing.filter(
-    (check) => check.installable === true && severityOf(check) !== "optional",
-  );
+  const plan = failing.filter((check) => check.installable === true);
   const planBytes = plan.reduce((sum, check) => sum + (check.download_bytes ?? 0), 0);
 
   return (
@@ -589,10 +596,21 @@ export function SetupPage() {
  *   already carry (`download_bytes`), added up. A button that said only
  *   "Install everything" would be the blindness the model downloads were
  *   refused over in the first place.
- * - **It never installs what nothing needs.** Blocking and degraded rows only —
- *   the ones the headline counts. A Korean checkpoint is not part of
- *   "everything" for a Hebrew→English run, and quietly fetching 40 GB of it
- *   would make the price tag a lie.
+ * - **It installs everything, because that is what it says.** This rule used to
+ *   be its opposite: blocking and degraded rows only, on the argument that a
+ *   Korean checkpoint is not part of "everything" for a Hebrew→English run and
+ *   that quietly fetching 40 GB of it would make the price tag a lie. The price
+ *   tag is the answer to that, not the filter, and the filter cost more than it
+ *   saved: `optional` grades "the run finishes without it", so it covered the
+ *   Hebrew ASR and the Hebrew adapter on a Hebrew machine as well as the
+ *   language nobody opens, and a board whose only red rows were optional got a
+ *   button that did nothing at all and said nothing about it. The button now
+ *   means all of it, priced, in grade order, with Cancel and each row's own
+ *   button still there for anyone who wants less.
+ * - **A press that finds nothing to do says so.** The server answers an empty
+ *   plan with an empty queue, and the button goes disabled and reads "Everything
+ *   is installed". It used to answer with the install slot's leftovers, so
+ *   "nothing happened" rendered as the last install's success.
  * - **In flight it is one item, named, with the row's own progress.** "n of m",
  *   the label, and the same bar the row draws, because there is exactly one
  *   install running and two different-looking progress bars for it would be two
@@ -625,9 +643,22 @@ function InstallAll({
   onCancel: () => void;
 }) {
   const running = queue?.running === true;
-  // Nothing missing that this can fix: no button, no line, no leftovers from a
-  // queue that already finished. An all-green screen says nothing about installs.
-  if (!running && plan.length === 0) return null;
+  /*
+   * A queue that has been pressed and found nothing to do.
+   *
+   * This is the state the whole panel used to have no way to describe. The
+   * server's answer to an empty plan carried no `queue` key at all, so the
+   * screen rendered whatever the install slot still held, the previous single
+   * install, green and finished, and a press that did nothing looked like a
+   * success for a model nobody had asked for. An empty `items` with the queue
+   * stopped is the server saying "this ran, and there was nothing to run", and
+   * the button says exactly that back.
+   */
+  const ranNothing = queue != null && !queue.running && queue.total === 0;
+  // Nothing missing that this can fix, and nothing pressed: no button, no line,
+  // no leftovers from a queue that already finished. An all-green screen that
+  // nobody has asked anything of says nothing about installs.
+  if (!running && plan.length === 0 && !ranNothing) return null;
 
   if (running && queue) {
     const current = queue.items[Math.min(queue.pos, queue.items.length - 1)];
@@ -658,6 +689,23 @@ function InstallAll({
     );
   }
 
+  // Pressed, with nothing to do. Disabled, because a live-looking button over an
+  // empty plan is the thing that taught the user it was broken.
+  if (plan.length === 0) {
+    return (
+      <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2">
+        <Button variant="primary" disabled data-install-all>
+          <Check className="h-3.5 w-3.5" />
+          Everything is installed
+        </Button>
+        <span className="text-[12px] leading-relaxed text-muted" data-install-all-note>
+          Nothing left for the app to fetch. Any row still red is one it cannot
+          install for you, and that row says what it needs.
+        </span>
+      </div>
+    );
+  }
+
   // Idle, with things to install. The count and the price are the whole label.
   const failed = queue && !queue.running ? queue.failed.length : 0;
   return (
@@ -678,7 +726,7 @@ function InstallAll({
           : `${plan.length} things, one at a time, required first.`}{" "}
         {failed > 0
           ? `${failed} did not finish last time. Starting again resumes what is there.`
-          : "Nothing optional is included."}
+          : "Optional extras included, which is what the word everything means."}
       </span>
     </div>
   );

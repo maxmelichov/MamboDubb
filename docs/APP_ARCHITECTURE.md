@@ -292,7 +292,9 @@ JSON in, JSON out. Errors are uniform, after MamboRambo's `write_error`:
 | GET | `/health` | `{"status":"ok","version":...,"commit":"a1b2c3d"|null,"outputs":...,"busy":...,"queued":...}` |
 | GET | `/api/setup` | first-run environment report (see **Desktop packaging**) |
 | POST | `/api/setup/install` | `{id}` → run the hardcoded argv for that check (`ffmpeg`, `sox`); 400 otherwise, 409 while one runs |
-| GET | `/api/setup/install` | `{running, id, ok, error, tail:[…], check}` poll it; `check` is a fresh probe once the process exits |
+| GET | `/api/setup/install` | `{running, id, ok, error, tail:[…], check}` poll it; `check` is a fresh probe once the process exits; plus `queue` while an "install everything" run exists |
+| POST | `/api/setup/install_all` | no body → queue every missing installable row, grade order; the same shape with a `queue` block, empty `items` when nothing was missing |
+| DELETE | `/api/setup/install_all` | stop the queue after the item in flight, never during it |
 | GET | `/api/projects` | list run dirs: name, title, langs, duration, stage state, mtime |
 | POST | `/api/projects` | `{source, src_lang, tgt_lang, duration?, name?, context?, genre?, register?, transcript?, tts_model?, dub_foreign?, captions?}` → create dir, enqueue a full run |
 | GET | `/api/projects/{name}` | manifest + report (+`stale`) + `render` (+`stale`/`changed`) + stage status + jobs |
@@ -568,7 +570,10 @@ dies halfway and an absent model directory silently becomes a multi-gigabyte dow
     verifies it against `SHA256SUMS` (`install.restore_diarization`): no network, no
     account, and never the gated upstream repo.
   * `optional` irrelevant until asked for: the per-language-pair models, the
-    self-downloading Demucs cache and free disk.
+    self-downloading Demucs cache and free disk. The grade says "a run finishes without
+    it", which is *not* the same claim as "you will never want it" the Hebrew ASR on a
+    Hebrew machine carries it too so it decides how loudly a row is drawn and nothing
+    else. It does not keep a row out of "install everything" any more.
 * **There is no credential row, in any grade.** An `hf_token` row lived here, `degrades`
   for as long as diarization loaded the gated `pyannote/speaker-diarization-community-1`
   and then `optional` once it did not. Since v0.4.0 the same CC-BY-4.0 weights are checked
@@ -613,15 +618,25 @@ dies halfway and an absent model directory silently becomes a multi-gigabyte dow
   three sets: the keys of `install.INSTALLERS` (`ffmpeg`, `sox` → `brew install …`, plus
   the static ffmpeg build where no package manager can run unattended), the keys of
   `setup.model_downloads()` (public hub snapshots, fetched with `snapshot_download` into
-  the directory the pipeline reads), and `model.diarization` when this machine still
-  carries a copy of the bundled weights to restore from. The UI puts a button on a failing
+  the directory the pipeline reads), `model.diarization` when this machine still
+  carries a copy of the bundled weights to restore from, and `model.demucs`, which is
+  always installable: demucs fetches `htdemucs_ft` itself on the first stems run, so the
+  button runs that same fetch early (`install.demucs_argv`, a `get_model` in a subprocess)
+  rather than leaving the one row on the screen with no gesture at all and a silent
+  mid-run download as the only way to get it. The UI puts a button on a failing
   row from that flag alone, without keeping its own copy of the whitelist. The id maps to a
   **hardcoded action**; nothing from the request body is ever executed or interpolated, and
   an id in none of the three is a 400 that points at the command already in its `detail`.
   Nothing installable needs a credential: every hub in the table is public, and the one
   gated repo in the tree is never fetched at all. One install at a time, tracked in-process
   not in `JobQueue`, which is for work that loads models and would make a `brew` wait behind
-  a render. `POST /api/setup/install_all` runs the whole missing set through that same slot.
+  a render. `POST /api/setup/install_all` runs the whole missing set through that same
+  slot, and *whole* now means every installable row including the optional ones: the
+  filter that dropped them made a board whose only red rows were optional meet a button
+  that installed nothing, and the response then carried the previous single install's
+  status, so "nothing happened" rendered as "something succeeded". The queue block is
+  always there once the button has been pressed, empty `items` and all, and starting a
+  queue clears the slot's leftovers so no answer describes an earlier gesture.
 * **Paths come from the pipeline's own constants** (`translate.MODEL_PATH`,
   `tts.TTS_MODELS`, `transcript.WHISPER_MODEL` / `SRC_ASR_MODEL` / `EN_ASR_MODEL` /
   `TARGET_ASR_MODEL` / `LID_MODEL`), never restated. A hardcoded copy would drift and then

@@ -460,17 +460,21 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
     def start_install_all() -> dict[str, Any]:
         """Install everything missing, in one gesture.
 
-        No body: the list is computed here from a fresh `report()` the missing
-        rows the app can actually fix, blocking first (`setup.install_plan`) —
-        and run through the same one-at-a-time slot as the row buttons. Nothing
-        the client sends chooses what installs, because nothing is sent.
+        Everything, and the word is meant: every missing row the app can fix, in
+        grade order (`setup.install_plan`), optional extras included. The list is
+        computed here from a fresh `report()` and run through the same
+        one-at-a-time slot as the row buttons. Nothing the client sends chooses
+        what installs, because nothing is sent.
 
         Answers the same shape as `GET /api/setup/install`, with the `queue`
         block that says which item is in flight and what is left. Pressing it
         again while it runs is that same answer, not a 409: one gesture repeated
         is not an error. A machine with nothing missing gets a queue that ran
-        nothing. A *single* install already holding the slot is the one refusal
-        half a queue that dies on its first item is worse than being told to wait.
+        nothing, and it gets it *as a queue block with no items* rather than as
+        the slot's leftovers from some earlier install, which is what "nothing
+        happened" looked like before and read as "something succeeded". A
+        *single* install already holding the slot is the one refusal half a
+        queue that dies on its first item is worse than being told to wait.
         """
         return install_all.start(setup.install_plan(setup.report(projects.root)))
 

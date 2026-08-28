@@ -809,21 +809,39 @@ check(
 );
 check(
   "…and says how many things that is, required first",
-  /4 things, one at a time, required first/.test(
+  /6 things, one at a time, required first/.test(
     document.querySelector("[data-install-all-note]").textContent,
   ),
 );
+/*
+ * …and it means everything.
+ *
+ * The button used to exclude every `optional` row, which sounds like restraint
+ * and was not: that grade means "a run finishes without it", so it covered the
+ * Hebrew ASR on a Hebrew machine as well as a language nobody opens, and a board
+ * whose only red rows were optional got a button that installed nothing and said
+ * nothing about it. The price tag is the honest answer to "do not fetch 40 GB
+ * behind my back", and the price tag is on the button.
+ */
 check(
-  "…and does not quietly include the optional row nothing needs",
-  /Nothing optional is included/.test(
+  "…and says that the optional extras are in it",
+  /Optional extras included/.test(
     document.querySelector("[data-install-all-note]").textContent,
   ),
 );
 
 check("a missing installable row offers to install itself",
   Boolean(installButton("ffmpeg")) && Boolean(installButton("sox")));
-check("a row nothing can install offers no button",
-  !installButton("model.demucs") && !downloadButton("model.demucs"));
+/*
+ * The row that had no gesture at all.
+ *
+ * Demucs downloads itself on the first stems run, which was read as "there is
+ * nothing to do here": no button, no place in the queue, and the only way to
+ * install it was to start a dub and sit through a silent mid-run fetch. It has
+ * a button now, and no price tag, because the bytes are demucs's own business.
+ */
+check("the self-fetching cache has a button now, not a shrug",
+  Boolean(installButton("model.demucs")) && !downloadButton("model.demucs"));
 // A hub-snapshot model is the one kind of gigabyte the app now fetches itself,
 // and the button must say the price before the click.
 check("a downloadable model row offers a sized Download button",
@@ -859,6 +877,12 @@ installButton("ffmpeg").dispatchEvent(new dom.window.MouseEvent("click", { bubbl
 await new Promise((resolve) => setTimeout(resolve, 150));
 check("clicking starts exactly one install", fixtureCalls.install === before + 1);
 check("the row it started says so", /Installing/.test(rowOf("ffmpeg").textContent));
+// …and no other row does. The status carries the id it belongs to and every row
+// checks it before drawing anything: one shared slot, nine rows, and a spinner
+// or a green tick on the wrong one is a claim about a model nobody touched.
+check("…and only that row", ![...document.querySelectorAll("[data-check]")]
+  .filter((row) => row.getAttribute("data-check") !== "ffmpeg")
+  .some((row) => /Installing|Downloading…/.test(row.textContent)));
 // The button is replaced by the progress line, not doubled up beside it, and
 // the line carries the installer's own last words the only honest progress a
 // poll can show for something that takes minutes.
@@ -901,7 +925,7 @@ await new Promise((resolve) => setTimeout(resolve, 250));
 check("the one button queues exactly one queue", fixtureCalls.installAll === beforeAll + 1);
 check(
   "…and says which item of how many is in flight",
-  /Installing 1 of 3/.test(document.querySelector("[data-queue-position]").textContent),
+  /Installing 1 of 5/.test(document.querySelector("[data-queue-position]").textContent),
 );
 check(
   "…and names it",
@@ -937,7 +961,7 @@ check("…and the queue panel is gone", installQueuePanel() == null);
 check(
   "…leaving the button offering exactly what is left",
   installAllButton() != null &&
-    /2 things, one at a time, required first/.test(
+    /4 things, one at a time, required first/.test(
       document.querySelector("[data-install-all-note]").textContent,
     ),
 );
@@ -987,9 +1011,11 @@ check(
   ),
 );
 check(
-  "…while the offer that remains is exactly that one row",
+  "…while the offer that remains is that row and the cache beside it",
   installAllButton() != null &&
-    /The one thing missing/.test(document.querySelector("[data-install-all-note]").textContent) &&
+    /2 things, one at a time, required first/.test(
+      document.querySelector("[data-install-all-note]").textContent,
+    ) &&
     rowSeverity("model.lid") === "degrades",
 );
 downloadButton("model.lid").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
@@ -999,12 +1025,14 @@ for (let waited = 0; waited < 10000; waited += 250) {
 }
 check("the last thing the app can fetch lands too", /Ready/.test(rowOf("model.lid").textContent));
 /*
- * Nothing left that the app can install, so the one button is not there. The
- * row still red is a cache that fetches itself, and offering to "install
- * everything" over that would be a button that installs nothing.
+ * One thing left that the app can install, and it is the cache that fetches
+ * itself. That used to be the argument for leaving it out of "everything"; it is
+ * the argument for putting it in, because the alternative is a silent download
+ * in the middle of somebody's first dub.
  */
-check("…and the one-button offer is gone when nothing is left to install",
-  installAllButton() == null && installQueuePanel() == null);
+check("…leaving exactly the row that used to have no button at all",
+  installAllButton() != null &&
+    /The one thing missing/.test(document.querySelector("[data-install-all-note]").textContent));
 check(
   "…so the way forward appears",
   [...document.querySelectorAll("button")].some((b) =>
@@ -1117,6 +1145,22 @@ check(
   /Not installed/.test(root.textContent) &&
     document.querySelector("[data-readiness]").textContent !== "All checks pass",
 );
+
+/*
+ * And that difference is a row, not a fact of life: the last red thing on this
+ * board is the Demucs cache, and it installs from the screen instead of from
+ * the middle of somebody's first dub. Its detail line used to end at "fetched on
+ * the first stems run", which is not an instruction, it is a warning nobody
+ * could act on.
+ */
+installButton("model.demucs").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+await new Promise((resolve) => setTimeout(resolve, 1400));
+check("the self-fetching cache installs from its own row",
+  /Ready/.test(rowOf("model.demucs").textContent));
+check("…and with nothing left to fetch, the one-button offer is gone",
+  installAllButton() == null && installQueuePanel() == null);
+check("…and the headline stops qualifying itself",
+  document.querySelector("[data-readiness]").textContent === "All checks pass");
 await go("/", 200);
 
 const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

@@ -21,7 +21,8 @@ Open **Setup** on first run and press **Install everything**. The button shows t
 - Diarization needs no download at all: the pyannote community-1 weights (CC-BY-4.0) ship inside the app in `third_party/`, and Setup restores them from that copy, checksum verified, with no network.
 - A model that already sits in your Hugging Face cache counts as installed, but only where the loader actually reads the cache. No row goes green on a file the run cannot open.
 - For the terminal, every missing row carries the exact command that fixes it, ready to copy, with absolute paths, so it works from any directory.
-- Optional extras are not in "everything". Blocking checks are installed first, then the ones that only degrade quality, so the shortest usable install comes first on a slow connection.
+- "Everything" means everything: the optional extras are in it too, including the Demucs stem-separation cache, which otherwise downloads itself in the middle of your first dub. The order is what protects a slow connection blocking checks first, then the ones that only degrade quality, then the extras so the machine is usable long before the queue ends, and Cancel stops it after whatever is in flight.
+- Press it on a machine with nothing missing and it says so: the button goes quiet and reads "Everything is installed". It used to show you the last install's success instead.
 
 ## Same-language dubbing
 

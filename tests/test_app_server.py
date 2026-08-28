@@ -2695,20 +2695,27 @@ def test_setup_marks_the_rows_the_app_can_install(client):
     # same reason it is a separate route: it fetches nothing.
     restore = ({install_mod.DIARIZATION_ID}
                if install_mod.diarization_source() is not None else set())
+    # Plus the Demucs cache, which is in no table either and is always fixable:
+    # the fetch is demucs's own, the button just asks for it before a run does.
+    # It was the one row on the whole screen with no gesture at all.
     assert installable == (set(install_mod.INSTALLERS)
-                           | set(setup_mod.model_downloads()) | static | restore)
+                           | set(setup_mod.model_downloads()) | static | restore
+                           | {install_mod.DEMUCS_ID})
     assert installable & set(tools.recipes()) == set(tools.auto_installers()) | static
-    # And never the rows no table and no route covers: self-fetching caches.
-    assert {"model.demucs", "model.g2p.he", "disk"}.isdisjoint(installable)
+    # And never the rows nothing here can fix: the G2P weights ride inside a
+    # package (`uv sync`, not a download), and free disk is not a thing to fetch.
+    assert {"model.g2p.he", "disk"}.isdisjoint(installable)
     assert all(isinstance(c["installable"], bool) for c in checks)
 
 
 def test_install_refuses_an_id_it_has_no_recipe_for(client):
-    """A model no snapshot satisfies (gated pyannote, self-fetching Demucs and
-    G2P) still gets no button; the refusal hands the user what to do instead."""
+    """A model no snapshot satisfies and no route reaches (the G2P weights, which
+    arrive with a package) still gets no button; the refusal hands the user what
+    to do instead. Demucs used to be in this list and is now the opposite case:
+    no snapshot satisfies it either, but a route does."""
     from dubbing import tools
 
-    for bad in ("model.demucs", "model.g2p.he", "hf_token", "disk", "rm -rf /"):
+    for bad in ("model.g2p.he", "hf_token", "disk", "rm -rf /"):
         # `hf_token` is in this list precisely because it is no longer a row: an
         # id the report never mentions must still be refused rather than run.
         r = client.post("/api/setup/install", json={"id": bad})
@@ -2948,7 +2955,14 @@ def test_probe_returns_the_same_row_shape_the_report_does(client):
     probed = setup_mod.probe("sox")
     assert set(probed) == set(row)
     assert probed["installable"] is ("sox" in install_module.INSTALLERS)
-    assert setup_mod.probe("model.demucs") is None and setup_mod.probe("nope") is None
+    assert setup_mod.probe("nope") is None
+    # The Demucs cache answers now, because it has a button now: a row the app
+    # can install and cannot re-probe is a button whose result never lands.
+    demucs_row = next(c for c in client.get("/api/setup").json()["checks"]
+                      if c["id"] == install_module.DEMUCS_ID)
+    demucs_probed = setup_mod.probe(install_module.DEMUCS_ID)
+    assert set(demucs_probed) == set(demucs_row)
+    assert demucs_probed["installable"] is True
     # The downloadable models answer too, with the same shape as their report row.
     model_row = next(c for c in client.get("/api/setup").json()["checks"]
                      if c["id"] == "model.translate")
@@ -3289,9 +3303,12 @@ def test_setup_model_rows_carry_hub_and_download_size(client):
     assert row["hub"] == translate.HUB_ID
     assert row["download_bytes"] == setup_mod.model_downloads()["model.translate"]["bytes"]
     assert row["download_bytes"] > 0 and row["installable"] is True
-    # The models no snapshot satisfies carry no hub and no button.
+    # The Demucs cache carries no hub and no size: nothing here downloads it, and
+    # a price tag on a button that hands the job to demucs would be invented. It
+    # has a button all the same, through a route that is not a snapshot.
     assert "hub" not in checks["model.demucs"]
-    assert checks["model.demucs"]["installable"] is False
+    assert "download_bytes" not in checks["model.demucs"]
+    assert checks["model.demucs"]["installable"] is True
 
 
 def test_download_reports_progress_and_reprobes_the_row(client, hub_stub):
@@ -3545,19 +3562,43 @@ def a_report(*rows):
     return {"ok": all(c["ok"] for c in checks if c["required"]), "checks": checks}
 
 
-def test_install_plan_queues_only_the_missing_rows_the_app_can_fix():
+def test_install_plan_queues_every_missing_row_the_app_can_fix():
     plan = setup_mod.install_plan(a_report(
         ("ffmpeg", False, "blocking", True),
         ("uv", True, "blocking", True),               # already there — not re-run
-        ("model.g2p.he", False, "degrades", False),   # nothing to install
-        ("model.demucs", False, "optional", False),   # fetches its own cache
-        ("model.tts.ko", False, "optional", True),    # a language nobody asked for
+        ("model.g2p.he", False, "degrades", False),   # nothing here can install it
+        ("model.asr.he", False, "optional", True, {"download_bytes": 20}),
         ("model.lid", False, "degrades", True, {"download_bytes": 100}),
     ))
-    assert [item["id"] for item in plan] == ["ffmpeg", "model.lid"]
-    # Blocking before degrades: the run has to work before it has to be good.
+    assert [item["id"] for item in plan] == ["ffmpeg", "model.lid", "model.asr.he"]
+    # Blocking, then degrades, then optional: the run has to work before it has
+    # to be good, and be good before it is better at Hebrew.
     assert plan[0]["bytes"] == 0 and plan[1]["bytes"] == 100
     assert plan[1]["label"] == "MODEL.LID"
+
+
+def test_install_plan_includes_the_optional_rows_the_button_says_it_will():
+    """The button says "everything" and now means it.
+
+    It used to drop every `optional` row, on the argument that a Korean
+    checkpoint has nothing to say about a Hebrew→English run. True of the
+    multilingual checkpoints, and false of what the flag actually excluded: the
+    Hebrew ASR and the Hebrew adapter are the two models most specific to the
+    job on a Hebrew machine, and they carry the same grade. What that produced
+    was a machine where only optional rows were missing, a button that installed
+    nothing, and five red rows whose only remaining instruction was a shell
+    command. The size objection is answered by the price on the button, which
+    the plan is what adds up.
+    """
+    plan = setup_mod.install_plan(a_report(
+        ("model.asr.he", False, "optional", True, {"download_bytes": 1_600}),
+        ("model.tts.he", False, "optional", True, {"download_bytes": 250}),
+        ("model.demucs", False, "optional", True),
+        ("model.g2p.he", False, "optional", False),   # still nothing to install
+    ))
+    assert [item["id"] for item in plan] == ["model.asr.he", "model.tts.he",
+                                             "model.demucs"]
+    assert sum(item["bytes"] for item in plan) == 1_850
 
 
 def test_install_plan_orders_required_first_and_keeps_the_screens_order():
@@ -3580,7 +3621,11 @@ def test_install_plan_never_queues_anything_that_needs_a_credential(client):
     ids = {item["id"] for item in plan}
     assert not any("token" in id_ for id_ in ids)
     downloads = setup_mod.model_downloads()
-    assert ids <= set(install_mod.INSTALLERS) | set(downloads)
+    # The two ids that are in no download table and still have a route: a local
+    # copy to restore, and a cache demucs fetches for itself. Neither is a repo
+    # this app signs in to.
+    assert ids <= (set(install_mod.INSTALLERS) | set(downloads)
+                   | {install_mod.DIARIZATION_ID, install_mod.DEMUCS_ID})
     gated = segments.DIARIZATION_MODEL
     assert not any(spec["hub"] == gated for spec in downloads.values())
     # Diarization is not downloadable at all, and that is the whole point: the
@@ -3593,6 +3638,52 @@ def test_install_plan_never_queues_anything_that_needs_a_credential(client):
     row = {c["id"]: c for c in client.get("/api/setup").json()["checks"]}["model.diarization"]
     assert "hub" not in row and "download_bytes" not in row
     assert row["installable"] is (install_mod.diarization_source() is not None)
+
+
+def test_demucs_has_a_button_that_runs_the_fetch_a_stems_run_would(client, monkeypatch,
+                                                                   tmp_path):
+    """The one row on the screen with no gesture at all, until now.
+
+    `installable: false` meant no button and no place in the queue, so the only
+    way to install the stem-separation weights was to start a dub and sit through
+    a silent mid-run download. The route is not a snapshot and never can be
+    (demucs resolves and fetches its own bag of models), so the button asks
+    demucs to do it now, into the cache the run would fill anyway, with the
+    progress on screen and the row re-probed after.
+    """
+    from dubbing import stems
+
+    argv = install_mod.demucs_argv()
+    assert argv[0] == sys.executable                  # this venv, not a guess
+    assert "get_model" in argv[-1] and repr(stems.MODEL) in argv[-1]
+
+    # A machine with neither cache: the row is red, has a button, and says what
+    # pressing it does before it is pressed.
+    torch_hub = tmp_path / "torch" / "hub"
+    torch_hub.mkdir(parents=True)
+    monkeypatch.setenv("TORCH_HOME", str(tmp_path / "torch"))
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hf"))
+    row = {c["id"]: c for c in client.get("/api/setup").json()["checks"]}[
+        install_mod.DEMUCS_ID]
+    assert row["ok"] is False and row["severity"] == "optional"
+    assert row["installable"] is True
+    assert "The Install button installs it" in row["detail"]
+    assert stems.MODEL in row["detail"]
+
+    # And it goes through the one slot like every other install. The argv is
+    # swapped for a stub that writes the weights the probe looks for, because
+    # the real one downloads 300 MB from the internet.
+    monkeypatch.setattr(install_mod, "demucs_argv",
+                        lambda: ("/bin/sh", "-c",
+                                 f"echo fetching; printf x > {torch_hub / 'htdemucs_ft.th'}"))
+    assert client.post("/api/setup/install",
+                       json={"id": install_mod.DEMUCS_ID}).status_code == 202
+    assert client.app.state.installer.wait(30.0)
+    status = client.get("/api/setup/install").json()
+    assert status["id"] == install_mod.DEMUCS_ID and status["ok"] is True
+    # The verdict is the re-probe's, not the subprocess's word for itself.
+    assert status["check"]["id"] == install_mod.DEMUCS_ID
+    assert status["check"]["ok"] is True and status["check"]["installable"] is True
 
 
 @pytest.fixture()
@@ -3630,14 +3721,32 @@ def test_install_all_runs_the_whole_plan_through_the_one_slot(client, stub_plan,
     assert (tmp_path / "order").read_text().split() == ["a", "b"]
 
 
-def test_install_all_is_a_no_op_answer_when_nothing_is_missing(client, monkeypatch):
+def test_install_all_says_out_loud_that_it_ran_nothing(client, monkeypatch,
+                                                       stub_installers):
+    """The empty plan had no way to say so, and said something else instead.
+
+    "Install everything" on a machine with nothing missing is a queue that ran
+    nothing, which is right. But the response carried no `queue` key at all, so
+    what came back was the slot's leftovers: the *previous* single install, with
+    its id, its `ok: true` and its "download complete" tail. The most likely
+    rendering of "nothing happened" was therefore "something succeeded", for a
+    model nobody had just asked for.
+    """
+    stub_installers()
+    assert client.post("/api/setup/install", json={"id": "ffmpeg"}).status_code == 202
+    assert client.app.state.installer.wait(30.0)
+    assert client.get("/api/setup/install").json()["ok"] is True     # the leftovers
+
     monkeypatch.setattr(setup_mod, "install_plan", lambda report_: [])
     r = client.post("/api/setup/install_all")
-    assert r.status_code == 202
-    # Not a 400 and not an error: "install everything" on a machine with nothing
-    # missing is a queue that ran nothing, and the screen has no button anyway.
-    assert r.json().get("queue") is None
-    assert r.json()["running"] is False
+    assert r.status_code == 202                    # not a 400, and not an error
+    body = r.json()
+    queue = body["queue"]
+    assert queue is not None and queue["items"] == [] and queue["total"] == 0
+    assert queue["running"] is False and queue["finished"] is not None
+    # And nothing of the earlier install is left to be read as this one's result.
+    assert body["id"] is None and body["ok"] is None and body["tail"] == []
+    assert body["running"] is False
 
 
 def test_a_second_install_all_answers_the_running_queue(client, stub_plan):

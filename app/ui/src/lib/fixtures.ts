@@ -643,6 +643,35 @@ function fixtureBytes(n: number): string {
   return `${n.toFixed(1)} TB`;
 }
 
+/**
+ * The stem-separation cache, and the row that used to have no gesture at all.
+ *
+ * It is `optional` and it downloads itself on the first stems run, and that was
+ * read as "there is nothing to do here": no button, no place in the queue, and a
+ * detail line whose only offer was to start a dub and sit through a silent
+ * mid-run fetch. The server installs it now (`install.DEMUCS_ID`), through a
+ * route that is not a hub snapshot, which is why this row still carries no `hub`
+ * and no size: the button says "Install", not "Download · ~320 MB", because the
+ * bytes are demucs's business and a price tag here would be invented.
+ */
+const DEMUCS_ID = "model.demucs";
+
+function demucsRow(ready = false): SetupCheck {
+  const ok = ready || installed.has(DEMUCS_ID);
+  return {
+    id: DEMUCS_ID,
+    label: "Stem separation: Demucs htdemucs",
+    ok,
+    severity: "optional",
+    installable: true,
+    detail: ok
+      ? "htdemucs_ft cache: 320 MB in ~/.cache/torch/hub"
+      : "htdemucs_ft not downloaded yet: it is fetched on the first stems run. " +
+        "The Install button installs it by fetching the htdemucs_ft weights now, " +
+        "into the same cache the first stems run would fill anyway",
+  };
+}
+
 function setupChecks(ready = false): SetupCheck[] {
   const rows: SetupCheck[] = [
     toolRow("ffmpeg", ready),
@@ -666,16 +695,7 @@ function setupChecks(ready = false): SetupCheck[] {
       severity: "degrades",
       detail: "31 MB in third_party/pyannote-speaker-diarization-community-1 (ships with the app)",
     },
-    {
-      id: "model.demucs",
-      label: "Stem separation: Demucs htdemucs",
-      ok: ready,
-      severity: "optional",
-      detail: ready
-        ? "htdemucs_ft cache: 320 MB in ~/.cache/torch/hub"
-        : "htdemucs_ft not downloaded yet: fetched on the first stems run. " +
-          "Run `uv run python -m dubbing.stems --download` to get it now (320 MB).",
-    },
+    demucsRow(ready),
     {
       id: "disk",
       label: "Free disk space",
@@ -738,6 +758,10 @@ export function startInstall(id: string): Promise<SetupInstallState> {
     void startDownload(id);
     return delay(installBody());
   }
+  if (id === DEMUCS_ID) {
+    void startDemucs();
+    return delay(installBody());
+  }
   if (!(id in TOOL_ROWS)) {
     return Promise.reject(
       new ApiError(
@@ -784,12 +808,19 @@ type FixtureQueue = {
 
 let queueState: FixtureQueue | null = null;
 
-/** The fixture's `setup.install_plan`: what is missing, that the app can fix. */
+/**
+ * The fixture's `setup.install_plan`: everything missing that the app can fix,
+ * in grade order.
+ *
+ * Optional rows are in it, as they are on the server. Filtering them out was how
+ * a machine whose only red rows were optional got a button that installed
+ * nothing and reported the previous install's success.
+ */
 function installPlan(): FixtureQueue["items"] {
-  const rank: Partial<Record<SetupSeverity, number>> = { blocking: 0, degrades: 1 };
+  const rank: Record<SetupSeverity, number> = { blocking: 0, degrades: 1, optional: 2 };
   return setupChecks()
-    .filter((row) => !row.ok && row.installable && rank[row.severity ?? "blocking"] != null)
-    .sort((a, b) => rank[a.severity ?? "blocking"]! - rank[b.severity ?? "blocking"]!)
+    .filter((row) => !row.ok && row.installable)
+    .sort((a, b) => rank[a.severity ?? "blocking"] - rank[b.severity ?? "blocking"])
     .map((row) => ({ id: row.id, label: row.label, bytes: row.download_bytes ?? 0 }));
 }
 
@@ -806,6 +837,11 @@ export function startInstallAll(): Promise<SetupInstallState> {
         "then install the rest in one go", 409),
     );
   }
+  // The slot's leftovers are the last gesture's story, and the server drops them
+  // here too (`Installer.reset`): without that, "install everything" on a board
+  // with nothing missing answered with the previous install's `ok: true`, which
+  // is how "nothing happened" came to look like "something succeeded".
+  installState = { running: false, id: null, ok: null, error: null, tail: [], check: null };
   const items = installPlan();
   queueState = {
     items,
@@ -830,7 +866,11 @@ async function runQueue(): Promise<void> {
     const queue = queueState;
     if (!queue || queue.cancelled || queue.pos >= queue.items.length) break;
     const { id } = queue.items[queue.pos];
-    await (id in MODEL_ROWS ? startDownload(id) : startTool(id));
+    await (id in MODEL_ROWS
+      ? startDownload(id)
+      : id === DEMUCS_ID
+        ? startDemucs()
+        : startTool(id));
     if (queueState === null) return;                 // a row's button took over
     queueState = {
       ...queueState,
@@ -903,7 +943,34 @@ function startTool(id: string): Promise<void> {
     tail: [`$ brew install ${id}`],
     check: null,
   };
-  return runInstall(id);
+  return runInstall(id, [
+    `==> Fetching ${id}`,
+    `==> Downloading https://ghcr.io/v2/homebrew/core/${id}/blobs/sha256:…`,
+    `==> Pouring ${id}.arm64_sequoia.bottle.tar.gz`,
+    `🍺  /opt/homebrew/Cellar/${id}: 1 file`,
+  ], () => toolRow(id));
+}
+
+/**
+ * The Demucs cache, installed on purpose instead of in the middle of a dub.
+ *
+ * Neither a brew nor a snapshot: the server runs demucs's own `get_model` in a
+ * subprocess, so what the screen gets is a spinner and the fetch's last line,
+ * exactly like a tool install and unlike a download with a denominator.
+ */
+function startDemucs(): Promise<void> {
+  installState = {
+    running: true,
+    id: DEMUCS_ID,
+    ok: null,
+    error: null,
+    tail: ["$ python -c \"from demucs.pretrained import get_model; get_model('htdemucs_ft')\""],
+    check: null,
+  };
+  return runInstall(DEMUCS_ID, [
+    'Downloading: "https://dl.fbaipublicfiles.com/demucs/htdemucs_ft.th"',
+    "demucs weights ready",
+  ], () => demucsRow());
 }
 
 async function runDownload(id: string): Promise<void> {
@@ -946,12 +1013,9 @@ function seedDownload(): void {
   void startDownload(id, Math.round(MODEL_ROWS[id].bytes * 0.4));
 }
 
-async function runInstall(id: string): Promise<void> {
-  for (const line of [
-    `==> Fetching ${id}`,
-    `==> Downloading https://ghcr.io/v2/homebrew/core/${id}/blobs/sha256:…`,
-    `==> Pouring ${id}.arm64_sequoia.bottle.tar.gz`,
-  ]) {
+async function runInstall(id: string, lines: string[],
+                          probe: () => SetupCheck): Promise<void> {
+  for (const line of lines) {
     await sleep(INSTALL_TICK_MS);
     installState.tail = [...installState.tail, line];
   }
@@ -960,13 +1024,7 @@ async function runInstall(id: string): Promise<void> {
   // The server re-probes rather than trusting the exit code, and hands the
   // fresh row back with the status; the fixture has to do the same or the
   // page's "redraw this row" path never runs here.
-  installState = {
-    ...installState,
-    running: false,
-    ok: true,
-    tail: [...installState.tail, `🍺  /opt/homebrew/Cellar/${id}: 1 file`],
-    check: toolRow(id),
-  };
+  installState = { ...installState, running: false, ok: true, check: probe() };
 }
 
 /**

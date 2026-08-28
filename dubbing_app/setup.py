@@ -701,9 +701,11 @@ def model_downloads() -> dict[str, dict[str, Any]]:
 
     Exactly the models a plain `snapshot_download(repo_id, local_dir=path)`
     satisfies: public repos whose on-disk layout IS the repo layout, into the
-    same path the pipeline constant names. Not Demucs or the Hebrew G2P (they
-    fetch their own caches on first use) those stay 400 at
-    `POST /api/setup/install`.
+    same path the pipeline constant names. Not the Hebrew G2P, which fetches its
+    own cache on first use and stays a 400 at `POST /api/setup/install`. Not
+    Demucs either, and for a while that meant the same thing; it has a button now
+    (`install.DEMUCS_ID`), but through a route that is not a snapshot at all,
+    which is why it is still not in this table.
 
     Diarization is deliberately **not** here, and for the opposite of the old
     reason. It used to be the one *gated* model in the tree, kept out because a
@@ -773,7 +775,9 @@ def model_downloads() -> dict[str, dict[str, Any]]:
 
 
 def model_checks() -> list[dict[str, Any]]:
-    """Every model directory the pipeline opens, read from its own constants.
+    """Every model the pipeline opens, read from its own constants: each
+    directory, and last the one that is a cache rather than a directory
+    (`demucs_check`).
 
     Blocking means "the default run cannot work without it": the translator, the
     default TTS checkpoint and the English ASR that verifies each clip (without
@@ -854,6 +858,11 @@ def model_checks() -> list[dict[str, Any]]:
           severity=OPTIONAL,
           note=f"only for Hebrew targets: {hebrew.ADAPTER_DOWNLOAD}"),
         g2p_check(),
+        # Last, and in this list rather than appended by `report` alone, because
+        # it has a button now (`install.DEMUCS_ID`) and `probe` re-checks a row
+        # by looking for it here. A row the app can install and cannot re-probe
+        # would be a button whose result never reaches the screen.
+        demucs_check(),
     ]
     return out
 
@@ -942,6 +951,16 @@ def demucs_check() -> dict[str, Any]:
     runs, so absence is a slow first run, not a broken install and not a worse
     dub.
 
+    Optional, and installable all the same, which is not the contradiction it
+    reads as. "It downloads itself" was taken to mean "there is nothing to do
+    here", and what that produced was the one row on the whole screen with no
+    gesture at all: no button, no place in the queue, and a detail line whose
+    only offer was to start a dub and sit through a silent mid-run download. A
+    fetch the user chose, on the setup screen, with a progress bar, is strictly
+    better than the same fetch in the middle of a job. `install.demucs_argv` runs
+    the same `get_model` the stems stage would, into the same cache, so the
+    button changes when the bytes arrive and not what arrives.
+
     Two caches, because demucs changed homes: 3.x keeps `.th` weights under the
     torch hub cache, 4.x fetches from the Hugging Face Hub into the HF cache as
     `models--adefossez--*` (with the payload under `blobs/`). Probing only the
@@ -960,10 +979,17 @@ def demucs_check() -> dict[str, Any]:
                 if blobs.is_dir() and any(blobs.iterdir()):
                     found = repo
                     break
+    from .install import DEMUCS_ID, route
+
     present = found is not None
     size = dir_size(found) if found is not None else 0
-    detail = (f"{stems.MODEL} cache: {human_bytes(size)} in {found}" if present
-              else f"{stems.MODEL} not downloaded yet: fetched on the first stems run")
+    if present:
+        detail = f"{stems.MODEL} cache: {human_bytes(size)} in {found}"
+    else:
+        # Both halves, because the row used to offer only the first one and that
+        # is the sentence that ends in "so start a dub and wait".
+        detail = (f"{stems.MODEL} not downloaded yet: it is fetched on the first "
+                  f"stems run. The Install button installs it {route(DEMUCS_ID)}")
     # The missing row points at the HF cache: that is where a 4.x download will
     # actually land, and the torch hub path would send the user somewhere the
     # weights will never appear.
@@ -1009,8 +1035,7 @@ def report(outputs: Path) -> dict[str, Any]:
 
     downloads = model_downloads()
     checks: list[dict[str, Any]] = [tool(id_, *spec) for id_, spec in TOOLS.items()]
-    checks += model_checks()
-    checks.append(demucs_check())
+    checks += model_checks()             # the Demucs cache is the last of those
     checks.append(disk_check(Path(outputs)))
     # Last, beside the other row about this machine rather than about a file:
     # it is the only one that is a choice, and it reads as a footnote to the
@@ -1047,18 +1072,34 @@ def install_plan(report_: dict[str, Any]) -> list[dict[str, Any]]:
       one queued item that is not a repo at all is the diarization restore,
       which reads a copy already on this machine. So the queue never stops half
       way to ask the user for something.
-    * **Nothing graded `optional`.** A Korean checkpoint has nothing to say
-      about a Hebrew→English run, and a button that says "everything" must not
-      quietly mean "and 40 GB you will never open". Blocking first, then
-      `degrades`: the run has to work before it has to be good, and on a slow
-      connection the order is the difference between a usable machine in twenty
+    * **In the order the grades mean.** Blocking first, then `degrades`, then
+      `optional`: the run has to work before it has to be good, and on a slow
+      connection that order is the difference between a usable machine in twenty
       minutes and one in two hours.
 
+    The third filter used to be "nothing graded `optional`", and the argument for
+    it was that a Korean checkpoint has nothing to say about a Hebrew→English run
+    and a button that says "everything" must not quietly mean "and 40 GB you will
+    never open". That is a good rule about the multilingual checkpoints and the
+    wrong one about the list it actually excluded. `optional` grades "does the
+    run technically finish without it", which puts the Hebrew ASR and the Hebrew
+    TTS adapter, the two models most specific to the job on a Hebrew machine, in
+    the same bucket as a language nobody will open, and then one flag dropped
+    both. What that left was a button labelled "install all" that, on a machine
+    where only optional rows were missing, installed nothing and said nothing,
+    and five red rows whose only remaining instruction was a shell command in a
+    desktop app whose whole point is that it does not need one.
+
+    So the button means what it says, and the 40 GB objection is answered where
+    it was always going to have to be answered: the button carries the price. The
+    sizes are on the rows already, the plan adds them up, and a user who does not
+    want the extras still has each row's own button and the queue's Cancel.
+
     Each row carries the label the header says out loud and the download's size
-    (0 for a tool — a `brew` is seconds and has no denominator), which is what
-    lets the button price itself before it is pressed.
+    (0 for a tool, since a `brew` is seconds and has no denominator), which is
+    what lets the button price itself before it is pressed.
     """
-    rank = {BLOCKING: 0, DEGRADES: 1}
+    rank = {BLOCKING: 0, DEGRADES: 1, OPTIONAL: 2}
     rows = [c for c in report_.get("checks", ())
             if not c.get("ok") and c.get("installable") and c.get("severity") in rank]
     # Stable, so within a grade the plan keeps the report's order — which is the

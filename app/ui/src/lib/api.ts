@@ -236,13 +236,15 @@ export const api = {
    * Install everything that is missing, in one gesture.
    *
    * No arguments, deliberately: the list is the *server's* — a fresh report,
-   * filtered to the missing rows it can actually fix, blocking first
+   * filtered to every missing row it can actually fix, in grade order
    * (`setup.install_plan`) — and running it through the same one-at-a-time slot
    * as the row buttons. A UI that sent its own list would be a second copy of
    * that decision, drifting from the first the day a row changes grade.
    *
    * Pressing it again while it runs answers the running queue rather than
-   * refusing: one gesture repeated is not an error.
+   * refusing: one gesture repeated is not an error. Pressing it with nothing
+   * missing answers a `queue` with no items in it, which is the one shape that
+   * distinguishes "there was nothing to do" from the slot's leftovers.
    */
   startInstallAll(): Promise<SetupInstallState> {
     if (USE_FIXTURES) return fixtures.startInstallAll();
