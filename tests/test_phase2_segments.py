@@ -241,6 +241,26 @@ def test_a_handover_inside_a_sentence_moves_to_the_boundary_beside_it():
     assert [s["text"] for s in segs] == ["מה איתך?", "אתה יש לך חברה?"]
 
 
+def test_a_protected_gap_cut_does_not_split_a_sentence_either():
+    """The pause pyannote hears is a claim about timings, not about grammar.
+
+    "מי שיכול לעמוד על הרגליים, שיצא החוצה" is one sentence, and a diarization
+    silence inside it cut after the preposition: the dub said "Whoever can stand
+    up." and "The legs, they will go out.". Protection buys a cut the `brk` that
+    stops two characters being re-merged, and two characters do not split one
+    punctuated sentence between them.
+    """
+    spec = [(276.52, 276.60, "מי", "S0"), (276.60, 276.86, "שיכול", "S0"),
+            (276.86, 277.08, "לעמוד", "S0"), (277.08, 277.16, "על", "S0"),
+            (277.16, 277.46, "הרגליים,", "S0"), (277.54, 277.74, "שיצא", "S0"),
+            (277.74, 278.10, "החוצה.", "S0")]
+    turns = [{"speaker": "S0", "start": 276.52, "end": 276.76},
+             {"speaker": "S0", "start": 277.56, "end": 278.10}]
+    assert segments._turn_boundaries(turns) == [(277.16, True)]   # protected
+    segs = segments.words_to_segments(spkwords(spec), turns=turns)
+    assert [s["text"] for s in segs] == ["מי שיכול לעמוד על הרגליים, שיצא החוצה."]
+
+
 def test_a_handover_already_on_a_sentence_end_is_untouched():
     """Ordinary Q+A: the handover is where the question mark is, and stays."""
     spec = [(0.0, 0.5, "Did", "S0"), (0.5, 0.8, "you?", "S0"),

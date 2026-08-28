@@ -460,11 +460,11 @@ def _sentence_bounds(seg: dict[str, Any], words: list[dict[str, Any]],
     return out
 
 
-def _snap_handoff(seg: dict[str, Any], words: list[dict[str, Any]],
-                  ends: list[float], i: int, b: float) -> int | None:
-    """A handover cut moved onto the nearest sentence boundary, or None to drop it.
+def _snap_cut(seg: dict[str, Any], words: list[dict[str, Any]],
+              ends: list[float], i: int, b: float) -> int | None:
+    """A diarization cut moved onto the nearest sentence boundary, or None to drop it.
 
-    A diarization handover is a *time* with a few hundred milliseconds of error,
+    A diarization cut is a *time* with a few hundred milliseconds of error,
     and the split turns it into a word index by asking which side each word's
     midpoint falls on. Inside a sentence that error costs the whole line. Both
     halves come out grammatical fragments, each is translated on its own, and each
@@ -488,8 +488,15 @@ def _snap_handoff(seg: dict[str, Any], words: list[dict[str, Any]],
     two characters splitting a sentence between them, and the fragments are certain
     damage where the merged line is at worst one clause in the wrong voice.
 
-    Protected cuts never reach here (see `_split_speaker_turns`): those sit in real
-    silence, where there is nothing to snap to and no fragment to make.
+    Both kinds of cut come here, because both do the same damage. A protected gap
+    cut is planted where pyannote reports silence between two turns and Whisper's
+    word timings do not the smear TURN_GAP_SPLIT exists for and that premise is
+    only about *timings*, never about whether one sentence is being torn. The third
+    of the three fragments above was one of these: pyannote heard a pause inside
+    "מי שיכול לעמוד על הרגליים, שיצא החוצה", and the cut landed after the
+    preposition. Protection buys such a cut the `brk` that stops `_merge_stubs`
+    re-fusing two characters, and two characters do not split one punctuated
+    sentence between them, so there is nothing there to protect.
 
     All of it rests on the ASR having drawn sentence boundaries here at all, so
     that is checked first: a stretch whose last word carries no terminator was
@@ -537,10 +544,9 @@ def _split_speaker_turns(segs: list[dict[str, Any]],
             # sides keep a word even when the boundary grazes the segment edge.
             i = sum(1 for w, e in zip(words, ends) if 0.5 * (w["t"] + e) < b)
             i = min(max(i, 1), len(words) - 1)
-            if not protect:
-                i = _snap_handoff(seg, words, ends, i, b)
-                if i is None:
-                    continue
+            i = _snap_cut(seg, words, ends, i, b)
+            if i is None:
+                continue
             cuts[i] = cuts.get(i, False) or protect
         if not cuts:
             out.append(seg)
