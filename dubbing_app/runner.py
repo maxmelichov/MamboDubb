@@ -136,23 +136,7 @@ class SubprocessRunner:
                 "payload": job.payload}
 
     def run(self, job: Job, emit: Emit) -> Any:
-        env = dict(os.environ)
-        env["PYTHONUNBUFFERED"] = "1"
-        env["PYTHONPATH"] = os.pathsep.join(
-            [str(self.cwd)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
-        # The protocol is NDJSON carrying Hebrew, and a Windows child's stdio
-        # defaults to the ANSI code page — which cannot encode it, so the child
-        # would die inside `print` rather than in anything it was asked to do.
-        env["PYTHONIOENCODING"] = "utf-8"
-        proc = subprocess.Popen(
-            [self.python, "-m", self.module],
-            cwd=str(self.cwd), env=env,
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, encoding="utf-8", errors="replace", bufsize=1,
-            # Detached: the pipeline spawns yt-dlp and ffmpeg, and cancelling has
-            # to take those with it rather than orphan a re-encode.
-            **spawn_kwargs(),
-        )
+        proc = self._spawn()
         with self._lock:
             self._procs[job.id] = proc
 
@@ -162,31 +146,71 @@ class SubprocessRunner:
             name=f"job-{job.id}-stderr", daemon=True)
         stderr_thread.start()
 
-        result: dict[str, Any] | None = None
         try:
-            assert proc.stdin is not None and proc.stdout is not None
-            proc.stdin.write(json.dumps(self.spec(job), ensure_ascii=False) + "\n")
-            proc.stdin.flush()
-            proc.stdin.close()
-            for raw in proc.stdout:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    event = json.loads(raw)
-                except Exception:
-                    emit(log_event(raw))
-                    continue
-                if event.get("type") == "result":
-                    result = event
-                    continue
-                emit(event)
-            code = proc.wait()
+            result, code = self._drive(proc, job, emit)
         finally:
             stderr_thread.join(timeout=2.0)
             with self._lock:
                 self._procs.pop(job.id, None)
+        return self._outcome(job, result, code, errors)
 
+    def _spawn(self) -> subprocess.Popen:
+        """The job child, detached and speaking UTF-8 on all three streams."""
+        env = dict(os.environ)
+        env["PYTHONUNBUFFERED"] = "1"
+        env["PYTHONPATH"] = os.pathsep.join(
+            [str(self.cwd)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
+        # The protocol is NDJSON carrying Hebrew, and a Windows child's stdio
+        # defaults to the ANSI code page — which cannot encode it, so the child
+        # would die inside `print` rather than in anything it was asked to do.
+        env["PYTHONIOENCODING"] = "utf-8"
+        return subprocess.Popen(
+            [self.python, "-m", self.module],
+            cwd=str(self.cwd), env=env,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace", bufsize=1,
+            # Detached: the pipeline spawns yt-dlp and ffmpeg, and cancelling has
+            # to take those with it rather than orphan a re-encode.
+            **spawn_kwargs(),
+        )
+
+    def _drive(self, proc: subprocess.Popen, job: Job,
+               emit: Emit) -> tuple[dict[str, Any] | None, int]:
+        """Hand the child its spec, then relay stdout until it exits.
+
+        Returns the child's one `result` frame (or None) and its exit code.
+        Every other frame goes straight to `emit`; anything that is not JSON at
+        all is still forwarded, as a log line, so nothing the child said is lost.
+        """
+        assert proc.stdin is not None and proc.stdout is not None
+        result: dict[str, Any] | None = None
+        proc.stdin.write(json.dumps(self.spec(job), ensure_ascii=False) + "\n")
+        proc.stdin.flush()
+        proc.stdin.close()
+        for raw in proc.stdout:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                event = json.loads(raw)
+            except Exception:
+                emit(log_event(raw))
+                continue
+            if event.get("type") == "result":
+                result = event
+                continue
+            emit(event)
+        return result, proc.wait()
+
+    @staticmethod
+    def _outcome(job: Job, result: dict[str, Any] | None, code: int,
+                 errors: list[str]) -> Any:
+        """What the job returned, or the exception that says why it did not.
+
+        Cancellation is asked about first: a killed child exits non-zero, and
+        reporting that as a failure would put an error bar over a stop the user
+        asked for.
+        """
         if job.cancelling:
             raise JobCancelled(f"job {job.id} cancelled")
         if result is not None and not result.get("ok", True):
