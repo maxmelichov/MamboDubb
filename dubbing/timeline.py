@@ -534,80 +534,101 @@ def build_items(m: dict[str, Any],
     return items
 
 
-def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=None,
-        genre: str = "documentary") -> None:
-    rates = rates_for_genre(genre)
-    media_end = float(m["source"].get("duration") or math.inf)
-    run_tgt = (m.get("source") or {}).get("tgt_lang") or "en"
-    by_id = {s["id"]: s for s in m["segments"]}
-    spans = speech_anchors(m, workdir)
-    if spans:
-        moved = [abs(spans[s["id"]][0] - float(s["start"]))
-                 for s in m["segments"] if s["id"] in spans]
-        print(f"  timeline: anchored {len(spans)}/{len(m['segments'])} segments on "
-              f"measured speech, median onset shift "
-              f"{sorted(moved)[len(moved) // 2]:.2f}s", file=sys.stderr)
-    items = build_items(m, spans)
-    by_index = {it["id"]: i for i, it in enumerate(items)}
+
+def _shorten_targets(items: list[dict[str, Any]], places: list[dict[str, Any]],
+                     now: list[tuple[float, float]],
+                     rates: Rates) -> list[tuple[float, int, float]]:
+    """Which lines to ask the translator to shorten, worst first.
+
+    Two different things justify asking for a shorter line, and each names a
+    different segment to shorten.
+
+    Lateness: a segment pushed more than DRIFT_MAX past its own onset. The
+    line to shorten is not that one, it is whichever earlier clip is
+    overrunning into it (`_worst_overrunner`), and the span to fit it into
+    reaches to the next speaker's onset.
+
+    Not fitting its own speaker: a line already compressed to the hard
+    ceiling that *still* ends well past the moment its own speaker stopped.
+    Nothing is late — the source left a pause after it and the overhang
+    goes there — so the lateness trigger never sees it, and it is exactly
+    the shape a Russian line takes, being reliably longer than the English
+    or Hebrew it dubs. Measured on the four demo runs the lateness trigger
+    fired on none of them while 9 to 14 lines a run sat pinned at RATE_MAX,
+    and those pinned lines carried roughly three times the end-alignment
+    error of the rest. Here the line to shorten is the pinned one itself,
+    and the span to fit it into is its speaker's own.
+
+    Each entry is (how bad, item index, the span to fit into).
+    """
+    want: list[tuple[float, int, float]] = []
+    for i, p in enumerate(places):
+        if p["drift"] > DRIFT_MAX:
+            j = _worst_overrunner(items, places, i)
+            if j is not None:
+                want.append((p["drift"], j, now[j + 1][0] - places[j]["start"]))
+        over = p["end"] - now[i][1]
+        if p["rate"] >= rates.rate_max - 1e-6 and over > OVERHANG_MAX:
+            want.append((over, i, now[i][1] - now[i][0]))
+    return want
+
+
+def _shorten_budgets(items: list[dict[str, Any]], want: list[tuple[float, int, float]],
+                     by_id: dict[int, dict[str, Any]], rates: Rates,
+                     run_tgt: str) -> dict[int, int]:
+    """Segment id -> how many speech units its rewrite may keep.
+
+    Collects the whole round's requests before anything calls out, so the
+    translator and the synthesiser are each loaded once rather than swapped per
+    segment. Marks every segment it considered as attempted, so no line is asked
+    about twice across rounds.
+    """
+    requests: dict[int, int] = {}
+    for _bad, j, fit_span in sorted(want, key=lambda t: -t[0]):
+        if items[j].get("shortened") or items[j]["id"] in requests:
+            continue
+        seg_j = by_id[items[j]["id"]]
+        if manifest.is_locked(seg_j, "text_en") or manifest.is_locked(seg_j, "tts"):
+            # Shortening rewrites the line and re-voices it. A hand-corrected
+            # line or an approved clip is not this stage's to replace; it drifts
+            # instead, which `place` still keeps non-overlapping.
+            items[j]["shortened"] = True
+            continue
+        budget = max(0.5, fit_span) * rates.rate_pref
+        ratio = max(0.5, min(0.95, budget / max(items[j]["dur"], 0.1)))
+        # Speech units, not `.split()` words: a Japanese line is one "word",
+        # so the budget came out 3 for every CJK segment and `shorten` — which
+        # compares against the same count — refused every rewrite. This
+        # stage's only rescue for a late line was dead for zh/ja/ko.
+        units = script.speech_units(seg_j.get("text_en") or "",
+                                    seg_j.get("tgt_lang") or run_tgt)
+        requests[items[j]["id"]] = max(3, int(units * ratio))
+        items[j]["shortened"] = True   # attempted at most once per segment
+    return requests
+
+
+def _shorten_rounds(items: list[dict[str, Any]], places: list[dict[str, Any]],
+                    by_id: dict[int, dict[str, Any]], by_index: dict[int, int],
+                    rates: Rates, media_end: float, run_tgt: str,
+                    shorten_many, resynth_many) -> tuple[
+                        list[dict[str, Any]], dict[int, str], dict[int, str], dict[int, str]]:
+    """Rescue late and overhanging lines by re-translating them shorter.
+
+    Mutates `items` in place (a rescued line gets the shorter clip and its
+    duration) and returns the re-placement plus three per-segment records: what
+    was actually voiced, that clip's own verify verdict, and why a rescue was
+    abandoned. Every exit leaves the original line standing, never nothing.
+    """
     spoken: dict[int, str] = {}   # segment id -> shortened line actually voiced
     voiced: dict[int, str] = {}   # segment id -> that clip's own verify verdict
     refused: dict[int, str] = {}  # segment id -> why its rescue was abandoned
-    places = place(items, rates, media_end)
 
     for _round in range(SHORTEN_ROUNDS):
         now = anchors(items)
-        # Two different things justify asking the translator for a shorter line,
-        # and each names a different segment to shorten.
-        #
-        # Lateness: a segment pushed more than DRIFT_MAX past its own onset. The
-        # line to shorten is not that one, it is whichever earlier clip is
-        # overrunning into it (`_worst_overrunner`), and the span to fit it into
-        # reaches to the next speaker's onset.
-        #
-        # Not fitting its own speaker: a line already compressed to the hard
-        # ceiling that *still* ends well past the moment its own speaker stopped.
-        # Nothing is late — the source left a pause after it and the overhang
-        # goes there — so the lateness trigger never sees it, and it is exactly
-        # the shape a Russian line takes, being reliably longer than the English
-        # or Hebrew it dubs. Measured on the four demo runs the lateness trigger
-        # fired on none of them while 9 to 14 lines a run sat pinned at RATE_MAX,
-        # and those pinned lines carried roughly three times the end-alignment
-        # error of the rest. Here the line to shorten is the pinned one itself,
-        # and the span to fit it into is its speaker's own.
-        want: list[tuple[float, int, float]] = []   # (how bad, item index, span)
-        for i, p in enumerate(places):
-            if p["drift"] > DRIFT_MAX:
-                j = _worst_overrunner(items, places, i)
-                if j is not None:
-                    want.append((p["drift"], j, now[j + 1][0] - places[j]["start"]))
-            over = p["end"] - now[i][1]
-            if p["rate"] >= rates.rate_max - 1e-6 and over > OVERHANG_MAX:
-                want.append((over, i, now[i][1] - now[i][0]))
+        want = _shorten_targets(items, places, now, rates)
         if not want or shorten_many is None or resynth_many is None:
             break
-        # Collect the whole round's requests before calling out, so the translator
-        # and the synthesiser are each loaded once rather than swapped per segment.
-        requests: dict[int, int] = {}
-        for _bad, j, fit_span in sorted(want, key=lambda t: -t[0]):
-            if items[j].get("shortened") or items[j]["id"] in requests:
-                continue
-            seg_j = by_id[items[j]["id"]]
-            if manifest.is_locked(seg_j, "text_en") or manifest.is_locked(seg_j, "tts"):
-                # Shortening rewrites the line and re-voices it. A hand-corrected
-                # line or an approved clip is not this stage's to replace; it drifts
-                # instead, which `place` still keeps non-overlapping.
-                items[j]["shortened"] = True
-                continue
-            budget = max(0.5, fit_span) * rates.rate_pref
-            ratio = max(0.5, min(0.95, budget / max(items[j]["dur"], 0.1)))
-            # Speech units, not `.split()` words: a Japanese line is one "word",
-            # so the budget came out 3 for every CJK segment and `shorten` — which
-            # compares against the same count — refused every rewrite. This
-            # stage's only rescue for a late line was dead for zh/ja/ko.
-            units = script.speech_units(by_id[items[j]["id"]].get("text_en") or "",
-                                        by_id[items[j]["id"]].get("tgt_lang") or run_tgt)
-            requests[items[j]["id"]] = max(3, int(units * ratio))
-            items[j]["shortened"] = True   # attempted at most once per segment
+        requests = _shorten_budgets(items, want, by_id, rates, run_tgt)
         if not requests:
             break
         asked = shorten_many([(by_id[i], n) for i, n in requests.items()]) or {}
@@ -663,35 +684,35 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
         if not changed:
             break
         places = place(items, rates, media_end)
+    return places, spoken, voiced, refused
 
-    if genre == "movie":
-        # Rate continuity: one voice must not alternate between compression and
-        # a drawl across a scene nudge the faster neighbour toward the slower
-        # using available slack (see smooth_rates).
-        places = smooth_rates(items, places)
 
-    # Apply the planned tempo change, then re-place using the *measured* result.
-    # Re-measuring is what keeps planned and real durations from diverging —
-    # that divergence is how the previous pipeline produced overlaps.
+def _bake_rates(items: list[dict[str, Any]], places: list[dict[str, Any]],
+                workdir: Path) -> None:
+    """Write the planned tempo change into each clip, so the re-place measures it.
+
+    Re-measuring is what keeps planned and real durations from diverging — that
+    divergence is how the previous pipeline produced overlaps. Both directions
+    are baked: a speed-up (too long for its slot) and a slow-down (a much-shorter
+    English line stretched toward the source duration so it does not finish early
+    and drift out of sync). Only rate ~1.0 is left untouched. The re-place then
+    runs at rate 1.0 on the fitted clip, so its measured length is what gets placed.
+    """
     for it, p in zip(items, places):
-        raw = workdir / it["clip"]
-        # Bake the tempo change into the clip both a speed-up (too long for its
-        # slot) and a slow-down (a much-shorter English line stretched toward the
-        # source duration so it does not finish early and drift out of sync). Only
-        # rate ~1.0 is left untouched. The re-place below then runs at rate 1.0 on
-        # the fitted clip, so its measured length is what gets placed.
         if abs(p["rate"] - 1.0) > 0.01:
             fitted = workdir / "clips" / f"fit_{Path(it['clip']).stem}_{p['rate']:.3f}.wav"
             if not fitted.is_file():
-                audio.atempo(raw, fitted, p["rate"])
+                audio.atempo(workdir / it["clip"], fitted, p["rate"])
             it["clip"] = f"clips/{fitted.name}"
             it["dur"] = audio.duration(fitted)
             it["applied_rate"] = p["rate"]
         it["stretchable"] = False
 
-    final = place(items, rates, media_end)
-    assert_invariants(final, items)
 
+def _record_places(by_id: dict[int, dict[str, Any]], items: list[dict[str, Any]],
+                   final: list[dict[str, Any]], spoken: dict[int, str],
+                   voiced: dict[int, str], refused: dict[int, str]) -> None:
+    """Write the settled placement back onto each segment. The stage's only output."""
     for it, p in zip(items, final):
         seg = by_id[it["id"]]
         seg["place"] = {"start": p["start"], "end": p["end"],
@@ -709,6 +730,40 @@ def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=Non
             # "shorten attempted, and abandoned" the missing half of the
             # shortened/drift story in report.json.
             seg["place"]["shorten"] = refused[it["id"]]
+
+
+def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=None,
+        genre: str = "documentary") -> None:
+    """Place every clip: plan, rescue what does not fit, bake the tempo, re-place."""
+    rates = rates_for_genre(genre)
+    media_end = float(m["source"].get("duration") or math.inf)
+    run_tgt = (m.get("source") or {}).get("tgt_lang") or "en"
+    by_id = {s["id"]: s for s in m["segments"]}
+    spans = speech_anchors(m, workdir)
+    if spans:
+        moved = [abs(spans[s["id"]][0] - float(s["start"]))
+                 for s in m["segments"] if s["id"] in spans]
+        print(f"  timeline: anchored {len(spans)}/{len(m['segments'])} segments on "
+              f"measured speech, median onset shift "
+              f"{sorted(moved)[len(moved) // 2]:.2f}s", file=sys.stderr)
+    items = build_items(m, spans)
+    by_index = {it["id"]: i for i, it in enumerate(items)}
+
+    places = place(items, rates, media_end)
+    places, spoken, voiced, refused = _shorten_rounds(
+        items, places, by_id, by_index, rates, media_end, run_tgt,
+        shorten_many, resynth_many)
+
+    if genre == "movie":
+        # Rate continuity: one voice must not alternate between compression and
+        # a drawl across a scene nudge the faster neighbour toward the slower
+        # using available slack (see smooth_rates).
+        places = smooth_rates(items, places)
+
+    _bake_rates(items, places, workdir)
+    final = place(items, rates, media_end)
+    assert_invariants(final, items)
+    _record_places(by_id, items, final, spoken, voiced, refused)
 
     drifts = [p["drift"] for p in final]
     print(f"  timeline: {len(final)} placed, max drift {max(drifts):.2f}s, "
