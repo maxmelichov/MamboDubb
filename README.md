@@ -24,8 +24,6 @@ curl -fsSL https://github.com/maxmelichov/MamboDubb/releases/latest/download/ins
 
 That one line is the install. If you downloaded the `.dmg` instead, it still needs the script: macOS refuses both the double-click on **Install MamboDubb** inside it and the drag to Applications, because the app is not notarized. Mount the `.dmg` and run `sh "/Volumes/MamboDubb/Install MamboDubb.command"` in Terminal, or click through the refusal once and press **Open Anyway** in System Settings > Privacy & Security.
 
-Then open **Setup** in the app and press **Install everything**. It downloads every model the app can fetch, the optional extras included, and every row goes green. The button carries the total in GB before you press it, and each row keeps its own button if you would rather take one thing at a time.
-
 **Windows (x64):**
 
 ```powershell
@@ -50,6 +48,8 @@ chmod +x MamboDubb_0.4.0_amd64.AppImage
 ```
 
 Both are unsigned CI builds, and the first run provisions about 10 GB into `%LOCALAPPDATA%\MamboDubb\workspace` or `~/.local/share/MamboDubb/workspace`; an NVIDIA GPU is what you want on either OS. Details: [docs/CROSS_PLATFORM.md](docs/CROSS_PLATFORM.md), [docs/WINDOWS.md](docs/WINDOWS.md).
+
+Then open **Setup** in the app and press **Install everything**. It downloads every model the app can fetch, the optional extras included, and every row goes green. The button carries the total in GB before you press it, and each row keeps its own button if you would rather take one thing at a time.
 
 **Rather run from source?** ([Windows notes](docs/WINDOWS.md))
 
