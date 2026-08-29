@@ -1998,7 +1998,7 @@ class Engine:
         plan = self._plan(seg, text_en)
         if plan is None:
             return None
-        speak, synth, ref_path, ref_key, base_seed, opts, tgt, src, greedy = plan
+        speak, synth, _ref_path, ref_key, base_seed, opts, tgt, src, _greedy = plan
         slot = float(seg["end"]) - float(seg["start"])
         best: dict[str, Any] | None = None
         best_rank = (False, -1.0)
@@ -2555,32 +2555,55 @@ def pending(segments: list[dict[str, Any]], workdir: Path) -> list[dict[str, Any
     return [s for s in segments if not s.get("keep") and needs_synthesis(s, workdir)]
 
 
-def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = None,
-        model: str = DEFAULT_TTS_MODEL) -> Engine:
-    from . import manifest
+def _reset_stage_notes(m: dict[str, Any]) -> None:
+    """Drop the last run's excuses, and name the clips this run may not touch.
 
-    engine = Engine(m, workdir, device=device, model=model)
-    # This run's own excuses only: whatever the last one could not load may well
-    # be there now, and a stale note is a lie of the same family as a missing one.
+    This run's own excuses only: whatever the last one could not load may well
+    be there now, and a stale note is a lie of the same family as a missing one.
+    A clip the user approved for a line that has since changed is not this stage's
+    to replace and not this stage's to pass off as current, so it is named here
+    and counted in report.json (`stale_locked_clips`).
+    """
     for key in HEALTH_KEYS:
         (m.get("health") or {}).pop(key, None)
     clear_failed_keeps(m["segments"])
-    # A clip the user approved for a line that has since changed. It is not this
-    # stage's to replace and not this stage's to pass off as current, so it is
-    # named here and counted in report.json (`stale_locked_clips`).
     for seg in m["segments"]:
         if stale_locked_clip(seg):
             print(f"  tts: seg {seg['id']} locked clip was made for different text "
                   "left alone; it still speaks the old line", file=sys.stderr)
-    engine.build_speaker_refs()
-    todo = pending(m["segments"], workdir)
 
-    # Generation runs on the GPU, verification (Whisper) on the CPU. Generate each
-    # first-attempt clip in order and hand its verify to a single worker thread, so
-    # it overlaps the *next* clip's generation instead of stalling the GPU. One
-    # worker only: faster-whisper is not re-entrant, and this already hides all but
-    # the last clip's verify. Segments whose first attempt fails (rare) fall through
-    # to clip_for, which resumes at attempt 1 straight from the cache.
+
+def _speak_original(engine: Engine, seg: dict[str, Any], workdir: Path) -> None:
+    """A user-locked dub whose translation failed: play its original slice.
+
+    Exactly what the editor promises of a failed translation, and it stays failed
+    until the user re-translates it.
+
+    `keep_needs_slice` alone is the wrong guard here: it answers False for ANY
+    clip on disk with matching opts — including the segment's old *synthesis* of
+    a translation `mark_failed` has since popped. That clip would then stay in
+    place speaking the previous line while this print claims the original plays.
+    The record must already BE a keep slice for the skip to be honest.
+    """
+    rec_clip = str((seg.get("tts") or {}).get("clip") or "")
+    is_slice = rec_clip.rsplit("/", 1)[-1].startswith("keep_")
+    if not is_slice or keep_needs_slice(seg, workdir):
+        seg["tts"] = engine.keep_clip(seg)
+    print(f"  tts: seg {seg['id']} has no translation the original "
+          "plays until it is re-translated", file=sys.stderr)
+
+
+def _first_pass(engine: Engine, todo: list[dict[str, Any]], workdir: Path,
+                save) -> list[dict[str, Any]]:
+    """Synthesize every segment's first take. Returns the ones that need the ladder.
+
+    Generation runs on the GPU, verification (Whisper) on the CPU. Generate each
+    first-attempt clip in order and hand its verify to a single worker thread, so
+    it overlaps the *next* clip's generation instead of stalling the GPU. One
+    worker only: faster-whisper is not re-entrant, and this already hides all but
+    the last clip's verify. Segments whose first attempt fails (rare) fall through
+    to `clip_for`, which resumes at attempt 1 straight from the cache.
+    """
     import concurrent.futures as cf
 
     verifying: dict[int, tuple] = {}
@@ -2590,24 +2613,7 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
         for seg in todo:
             text = speakable(seg)
             if text is None:
-                # mt_failed on a user-locked dub: nothing to speak. The line
-                # plays its original slice exactly what the editor promises
-                # of a failed translation and stays failed until the user
-                # re-translates it.
-                #
-                # `keep_needs_slice` alone is the wrong guard here: it answers
-                # False for ANY clip on disk with matching opts — including
-                # the segment's old *synthesis* of a translation mark_failed
-                # has since popped. That clip would then stay in place
-                # speaking the previous line while this print claims the
-                # original plays. The record must already BE a keep slice for
-                # the skip to be honest.
-                rec_clip = str((seg.get("tts") or {}).get("clip") or "")
-                is_slice = rec_clip.rsplit("/", 1)[-1].startswith("keep_")
-                if not is_slice or keep_needs_slice(seg, workdir):
-                    seg["tts"] = engine.keep_clip(seg)
-                print(f"  tts: seg {seg['id']} has no translation the original "
-                      "plays until it is re-translated", file=sys.stderr)
+                _speak_original(engine, seg, workdir)
                 continue
             plan = engine._plan(seg, text)
             if plan is None:
@@ -2648,9 +2654,15 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
                 print(f"  tts: {done}/{len(todo)}", file=sys.stderr)
                 if save:
                     save()
+    return retry
 
-    # Slow path: attempts 1+ for the few that failed their first try (needs the GPU
-    # again, so it runs after the pipelined pass rather than stalling it).
+
+def _retry_pass(engine: Engine, retry: list[dict[str, Any]]) -> None:
+    """Attempts 1+ for the few that failed their first try.
+
+    Needs the GPU again, so it runs after the pipelined pass rather than stalling
+    it. A segment the ladder cannot voice keeps its original audio never silent.
+    """
     for seg in retry:
         record = engine.clip_for(seg, seg["text_en"])
         if record is None:
@@ -2658,10 +2670,12 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
             print(f"  tts: seg {seg['id']} unusable → keep original", file=sys.stderr)
         else:
             seg["tts"] = record
-    if save:
-        save()
 
-    # Every keep gets its original-audio slice that is the never-silent floor.
+
+def _slice_keeps(engine: Engine, m: dict[str, Any], workdir: Path) -> None:
+    """Every keep gets its original-audio slice that is the never-silent floor."""
+    from . import manifest
+
     for seg in m["segments"]:
         if not seg["keep"]:
             continue
@@ -2669,6 +2683,21 @@ def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = Non
             continue          # the user approved this slice; a rerun does not re-cut it
         if keep_needs_slice(seg, workdir):
             seg["tts"] = engine.keep_clip(seg)
+
+
+def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = None,
+        model: str = DEFAULT_TTS_MODEL) -> Engine:
+    """Stage 6: give every segment audio a clone of its speaker, or its own slice."""
+    engine = Engine(m, workdir, device=device, model=model)
+    _reset_stage_notes(m)
+    engine.build_speaker_refs()
+
+    todo = pending(m["segments"], workdir)
+    _retry_pass(engine, _first_pass(engine, todo, workdir, save))
+    if save:
+        save()
+
+    _slice_keeps(engine, m, workdir)
     missing = [s["id"] for s in m["segments"] if not s.get("tts")]
     assert not missing, f"segments without audio: {missing}"
     return engine
