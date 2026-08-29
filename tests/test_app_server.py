@@ -297,12 +297,16 @@ def test_create_project_options_are_exactly_the_cli_choices(flag, dest, literal,
 
 
 def test_ui_language_lists_match_the_cli():
-    """The UI restates the language lists a third time — ImportPage for the run
-    pair, SelectionPanel for per-segment overrides — with no fixture or build
-    step tying them to `cli.SRC_LANGS`/`cli.TGT_LANGS`. The Literal↔CLI leg is
-    pinned above; this reads the .tsx source so the UI leg cannot drift either
-    (a UI-only code would create projects the pipeline refuses; a missing one
-    hides a language that works)."""
+    """The UI restates the language lists once — `lib/languages.ts`, read by
+    ImportPage for the run pair and by SelectionPanel for the per-segment
+    overrides — with no fixture or build step tying it to `cli.SRC_LANGS` /
+    `cli.TGT_LANGS`. The Literal<->CLI leg is pinned above; this reads the .tsx
+    source so the UI leg cannot drift either (a UI-only code would create
+    projects the pipeline refuses; a missing one hides a language that works).
+
+    It also asserts the two screens still read the shared table rather than
+    growing private copies again, which is the drift this test was written for.
+    """
     import re
 
     from dubbing import cli
@@ -311,20 +315,20 @@ def test_ui_language_lists_match_the_cli():
 
     def codes(path: Path, name: str) -> set[str]:
         src = path.read_text(encoding="utf-8")
-        # The array literal, whether one line of codes (SelectionPanel) or
-        # [code, label] pairs (ImportPage); labels are capitalised, so a bare
-        # two-lowercase-letter string is a code. "" (inherit) never matches.
+        # The array literal of [code, label] pairs; labels are capitalised, so a
+        # bare two-lowercase-letter string is a code.
         block = re.search(rf"const {name}\b[^=]*=\s*\[(.*?)\](?=\s*(?:as const\s*)?;)",
                           src, re.S)
         assert block, f"{name} not found in {path.name}"
         return set(re.findall(r'"([a-z]{2})"', block.group(1)))
 
-    imp = ui / "pages" / "ImportPage.tsx"
-    sel = ui / "components" / "SelectionPanel.tsx"
-    assert codes(imp, "SRC_LANGS") == set(cli.SRC_LANGS)
-    assert codes(imp, "TGT_LANGS") == set(cli.TGT_LANGS)
-    assert codes(sel, "SRC_LANGS") == set(cli.SRC_LANGS)
-    assert codes(sel, "TGT_LANGS") == set(cli.TGT_LANGS)
+    langs = ui / "lib" / "languages.ts"
+    assert codes(langs, "SOURCE_LANGUAGES") == set(cli.SRC_LANGS)
+    assert codes(langs, "TARGET_LANGUAGES") == set(cli.TGT_LANGS)
+
+    for screen in (ui / "pages" / "ImportPage.tsx", ui / "components" / "SelectionPanel.tsx"):
+        src = screen.read_text(encoding="utf-8")
+        assert "from \"../lib/languages\"" in src, f"{screen.name} stopped reading the shared table"
 
 
 def test_get_project(client):

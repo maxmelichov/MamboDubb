@@ -17,6 +17,7 @@ import type { HistoryEntry } from "./useHistory";
 import { isPending } from "./types";
 import type {
   Job,
+  JobEvent,
   LogEvent,
   NewSegment,
   ProjectDetail,
@@ -260,38 +261,7 @@ export function useProject(name: string): [ProjectState, ProjectActions] {
             scheduleRefresh();
             break;
           case "job":
-            setJobs((current) => {
-              const next = current.map((job) =>
-                job.id === event.id
-                  ? {
-                      ...job,
-                      status: event.status,
-                      error: event.error ?? null,
-                      // A frame knows the job's lines and gesture; an entry made
-                      // from an earlier frame may not. Never unlearn them.
-                      uids: event.uids ?? job.uids,
-                      batch: event.batch ?? job.batch,
-                    }
-                  : job,
-              );
-              return next.some((job) => job.id === event.id)
-                ? next
-                : [
-                    ...next,
-                    {
-                      id: event.id,
-                      project: name,
-                      kind: event.kind ?? "run",
-                      status: event.status,
-                      progress: event.progress ?? null,
-                      stage: null,
-                      message: null,
-                      error: event.error ?? null,
-                      uids: event.uids ?? [],
-                      batch: event.batch ?? null,
-                    } satisfies Job,
-                  ];
-            });
+            setJobs((current) => applyJobEvent(current, event, name));
             /*
              * A new job is not the old job's last frame. The stage strip kept
              * whatever the previous job left behind "Running report", 100% —
@@ -679,6 +649,44 @@ function landed(before: Segment[], after: Segment[], survivor?: string): string 
   const minted = after.filter((seg) => !had.has(seg.uid));
   if (minted.length > 0) return minted.reduce((a, b) => (a.start <= b.start ? a : b)).uid;
   return survivor && after.some((seg) => seg.uid === survivor) ? survivor : null;
+}
+
+/**
+ * Fold one `job` frame into the job list.
+ *
+ * A frame about a job already on the list updates it; a frame about one that is
+ * not (a reconnect, a job another tab started) appends it. Neither direction
+ * ever *unlearns* a field: a frame knows the job's lines and its gesture, and an
+ * entry built from an earlier frame may not.
+ */
+function applyJobEvent(jobs: Job[], event: JobEvent, project: string): Job[] {
+  const next = jobs.map((job) =>
+    job.id === event.id
+      ? {
+          ...job,
+          status: event.status,
+          error: event.error ?? null,
+          uids: event.uids ?? job.uids,
+          batch: event.batch ?? job.batch,
+        }
+      : job,
+  );
+  if (next.some((job) => job.id === event.id)) return next;
+  return [
+    ...next,
+    {
+      id: event.id,
+      project,
+      kind: event.kind ?? "run",
+      status: event.status,
+      progress: event.progress ?? null,
+      stage: null,
+      message: null,
+      error: event.error ?? null,
+      uids: event.uids ?? [],
+      batch: event.batch ?? null,
+    } satisfies Job,
+  ];
 }
 
 export function activeJob(jobs: Job[]): Job | null {
