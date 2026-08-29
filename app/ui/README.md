@@ -184,9 +184,12 @@ src/
     useProject.ts   the project store: one state object + actions
     useTransport.ts one clock, whether or not there is a video
     segments.ts     derived state what "dubbed"/"kept"/"failed" mean
+    languages.ts    which languages can be heard, and which can be spoken
     theme.ts        the light/dark choice: one class, one key, no OS preference
-  components/       Timeline, SegmentList, SegmentInspector, ABPlayer, VideoPlayer …
-  pages/            ImportPage, SetupPage, EditorPage
+  components/       ui.tsx, Timeline, ScriptPane/ScriptRow, SelectionPanel,
+                    VideoPlayer, JobBar, and the editor's own pieces
+                    (RunSummary, RunMenu, PreviewPlaceholder, SegmentShelves …)
+  pages/            ImportPage, SetupPage, EditorPage, RunsPage
 ```
 
 ## Keyboard
