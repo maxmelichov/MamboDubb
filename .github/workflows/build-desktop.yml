@@ -22,8 +22,10 @@ concurrency:
   group: build-desktop-${{ github.ref }}
   cancel-in-progress: true
 
+# `contents: write` is for the release-upload step at the end of the job: on a v* tag
+# the bundles are attached to the release, not left in a 30-day artifact.
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -148,3 +150,41 @@ jobs:
             app/desktop/src-tauri/target/release/bundle/msi/*.msi
             app/desktop/src-tauri/target/release/bundle/deb/*.deb
             app/desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+
+      # A tag build's whole point is a release someone can download from. Artifacts
+      # expire after 30 days and need a GitHub login to fetch; release assets do not.
+      # Branch/workflow_dispatch runs skip this and keep the artifact route.
+      - name: Attach the installers to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        # windows-latest defaults to PowerShell, and the globbing below is bash's.
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          bundle=app/desktop/src-tauri/target/release/bundle
+          files=(
+            "$bundle"/dmg/*.dmg
+            "$bundle"/nsis/*.exe
+            "$bundle"/msi/*.msi
+            "$bundle"/deb/*.deb
+            "$bundle"/appimage/*.AppImage
+          )
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No bundles under $bundle to upload." >&2
+            exit 1
+          fi
+          # The Mac one-liner in the README curls install.sh off the release, so the
+          # script rides along with the .dmg it installs.
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            files+=(install.sh)
+          fi
+          # The three jobs race to be first here; whoever loses the create falls back to
+          # the release the winner just made.
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes \
+            || gh release view "$GITHUB_REF_NAME" >/dev/null
+          # --clobber only replaces an asset of the same name, so the other two
+          # platforms' uploads survive this one.
+          gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
