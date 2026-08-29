@@ -81,7 +81,7 @@ import { cn } from "../lib/classNames";
 import { stopClip, toggleClip, useClipPlayback } from "../lib/clipAudio";
 import { isDesktop, revealRunFile } from "../lib/desktop";
 import { FIXTURE_PROJECT } from "../lib/fixtures";
-import { languageName, lines, timecode } from "../lib/format";
+import { languageName, lineCount, timecode } from "../lib/format";
 import {
   STATE_META,
   hasTranscript,
@@ -1032,7 +1032,7 @@ export function EditorPage() {
             >
               <Film className="h-3.5 w-3.5" />
               {stale && changed > 0
-                ? `Update the video · ${lines(changed)} changed`
+                ? `Update the video · ${lineCount(changed)} changed`
                 : stale && render.at
                   ? "Update the video"
                   : "Render preview"}

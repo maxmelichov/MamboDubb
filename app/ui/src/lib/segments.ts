@@ -249,11 +249,6 @@ export const STATE_META: Record<
   },
 };
 
-export const UNCLAIMED_META = {
-  label: "Unclaimed time",
-  token: "var(--color-unclaimed)",
-};
-
 export type Span = { start: number; end: number };
 
 /**

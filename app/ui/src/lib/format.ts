@@ -1,15 +1,3 @@
-/**
- * `1` → `1 line`, `27` → `27 lines`.
- *
- * Small, but it is said in five places about the same number the header
- * button, two tooltips, the stale band and the queue and "1 lines changed",
- * in the one place a run has a single correction, is exactly where the copy
- * would be noticed.
- */
-export function lines(count: number): string {
-  return `${count} ${count === 1 ? "line" : "lines"}`;
-}
-
 /** Timecodes are read against a video, so they are m:ss.d, never seconds. */
 export function timecode(seconds: number, decimals = 1): string {
   if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
@@ -44,10 +32,13 @@ export function languageName(code: string | null | undefined): string {
 }
 
 /**
- * "27 lines" / "1 line". The noun phrase every bulk sentence counts with.
+ * "27 lines" / "1 line". The noun phrase every count in the app is said with:
+ * the header button, the tooltips, the stale band, the queue and every bulk
+ * sentence.
  *
- * A formatter rather than an inline ternary because there are now nine places
- * that say it and the one that got it wrong said "Re-voice these 1".
+ * A formatter rather than an inline ternary because there are a dozen places
+ * that say it, and the ones that got it wrong said "1 lines changed" and
+ * "Re-voice these 1" the singular is exactly where it would be noticed.
  */
 export function lineCount(n: number): string {
   return `${n} line${n === 1 ? "" : "s"}`;

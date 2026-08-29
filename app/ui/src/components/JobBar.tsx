@@ -35,7 +35,7 @@ import { useEffect, useRef, useState } from "react";
 import { Check, ChevronUp, Loader2, WifiOff } from "lucide-react";
 import { Button, Eyebrow, Progress, useDismissable } from "./ui";
 import { cn } from "../lib/classNames";
-import { lines } from "../lib/format";
+import { lineCount } from "../lib/format";
 import { STAGES, isPending, type Job, type LogEvent } from "../lib/types";
 import type { StageProgress } from "../lib/useProject";
 
@@ -73,7 +73,7 @@ const DONE_MS = 6000;
  */
 export function describeJob(job: Job): string {
   const label = KIND_LABEL[job.kind];
-  return job.uids.length > 0 ? `${label} ${lines(job.uids.length)}` : label;
+  return job.uids.length > 0 ? `${label} ${lineCount(job.uids.length)}` : label;
 }
 
 /** How a finished job reads once it has stopped moving. */
@@ -81,7 +81,7 @@ function describeEnd(job: Job): string {
   const verb =
     job.status === "failed" ? "failed" : job.status === "cancelled" ? "cancelled" : "finished";
   return job.uids.length > 0
-    ? `${KIND_LABEL[job.kind]} ${verb}: ${lines(job.uids.length)}`
+    ? `${KIND_LABEL[job.kind]} ${verb}: ${lineCount(job.uids.length)}`
     : `${KIND_LABEL[job.kind]} ${verb}`;
 }
 
@@ -388,7 +388,7 @@ function CancelControl({
           className="absolute right-0 top-full z-50 mt-1.5 w-72 rounded-xl border border-border bg-raised p-3.5 shadow-pop"
         >
           <p className="text-[12.5px] leading-relaxed text-primary">
-            Cancel just this, or the whole batch ({lines(batchLines)})?
+            Cancel just this, or the whole batch ({lineCount(batchLines)})?
           </p>
           <p className="mt-1.5 text-[11px] leading-relaxed text-muted">
             {describeJob(mates[0])} is waiting, from the same request. Stopping only

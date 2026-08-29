@@ -21,7 +21,6 @@
 
 import {
   useEffect,
-  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -38,45 +37,7 @@ import badgeUrl from "../assets/mambodubb-badge.svg";
 /* ------------------------------------------------------------------ brand */
 
 /**
- * The mark: a speech tile with a waveform knocked out of it. One path, drawn
- * in `currentColor`, so it inverts with the theme and needs no asset.
- */
-export function LogoMark({ className }: { className?: string }) {
-  // Rendered more than once per page (header, boot screen), and an SVG <mask>
-  // is referenced by id so the id has to be per-instance.
-  const maskId = useId();
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      aria-hidden
-      focusable="false"
-      className={cn("h-5 w-5 shrink-0", className)}
-    >
-      <mask id={maskId}>
-        <rect width="24" height="24" fill="black" />
-        <path
-          d="M6 2 H18 A4 4 0 0 1 22 6 V15 A4 4 0 0 1 18 19 H12.5 L8.5 22.4 L9 19 H6 A4 4 0 0 1 2 15 V6 A4 4 0 0 1 6 2 Z"
-          fill="white"
-        />
-        <g fill="black">
-          <rect x="6.2" y="8" width="2.4" height="5" rx="1.2" />
-          <rect x="9.4" y="6" width="2.4" height="9" rx="1.2" />
-          <rect x="12.6" y="4" width="2.4" height="13" rx="1.2" />
-          <rect x="15.8" y="7" width="2.4" height="7" rx="1.2" />
-        </g>
-      </mask>
-      <rect width="24" height="24" fill="currentColor" mask={`url(#${maskId})`} />
-    </svg>
-  );
-}
-
-/**
  * The brand chip the painted mark in a pill, top-left of every page shell.
- *
- * `LogoMark` above is the *functional* mark: one path in `currentColor`, drawn
- * at 16px inside a run tile where a five-colour gradient would be mud. This one
- * is the identity: the real artwork, which is a full-colour PNG on white with
- * no alpha channel.
  *
  * The artwork is the MamboDubb badge SVG a self-contained teal tile with its
  * own rounded corners, so it sits on either theme's pill without keying or

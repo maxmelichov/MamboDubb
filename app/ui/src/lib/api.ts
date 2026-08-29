@@ -54,12 +54,18 @@ export async function initApiBase(): Promise<string> {
   return base;
 }
 
-/** The prefix in force, for display ("" means same-origin). */
-export function apiBase(): string {
-  return base;
-}
-
 const url = (path: string): string => base + path;
+
+/**
+ * Every per-project path is built from the run's name, which has to be encoded
+ * because a run directory is named after its source. Done once here so no
+ * caller can forget it, and so the shape of the resource is legible at a glance.
+ */
+const projectPath = (name: string, suffix = ""): string =>
+  `/api/projects/${encodeURIComponent(name)}${suffix}`;
+
+const segmentPath = (name: string, uid: string, suffix = ""): string =>
+  projectPath(name, `/segments/${encodeURIComponent(uid)}${suffix}`);
 
 /**
  * The server's uniform error body, as a throwable. Defined in `./apiError` so
@@ -306,7 +312,7 @@ export const api = {
       jobs?: Job[];
       render?: ProjectDetail["render"];
     };
-    return request<Wire>(`/api/projects/${encodeURIComponent(name)}`).then((r) => ({
+    return request<Wire>(projectPath(name)).then((r) => ({
       name: r.name,
       source: r.manifest.source,
       speakers: r.manifest.speakers ?? {},
@@ -332,7 +338,7 @@ export const api = {
    */
   updateProject(name: string, patch: ProjectOptionsPatch): Promise<ProjectSource> {
     if (USE_FIXTURES) return fixtures.updateProject(name, patch);
-    return request<{ source: ProjectSource }>(`/api/projects/${encodeURIComponent(name)}`, {
+    return request<{ source: ProjectSource }>(projectPath(name), {
       method: "PATCH",
       body: JSON.stringify(patch),
     }).then((r) => r.source);
@@ -347,25 +353,23 @@ export const api = {
    */
   resume(name: string): Promise<Job> {
     if (USE_FIXTURES) return fixtures.resume(name);
-    return request<{ job: Job }>(
-      `/api/projects/${encodeURIComponent(name)}/run`, json({}),
-    ).then((r) => r.job);
+    return request<{ job: Job }>(projectPath(name, "/run"), json({})).then((r) => r.job);
   },
 
   getSegments(name: string): Promise<Segment[]> {
     if (USE_FIXTURES) return fixtures.getSegments(name).then(adoptAll);
-    return request<{ segments: Segment[] }>(
-      `/api/projects/${encodeURIComponent(name)}/segments`,
-    ).then((r) => adoptAll(r.segments));
+    return request<{ segments: Segment[] }>(projectPath(name, "/segments")).then((r) =>
+      adoptAll(r.segments),
+    );
   },
 
   /** Every no-model edit. Must stay responsive while a job runs. */
   patchSegment(name: string, uid: string, patch: SegmentPatch): Promise<Segment> {
     if (USE_FIXTURES) return fixtures.patchSegment(name, uid, patch).then(adopt);
-    return request<{ segment: Segment }>(
-      `/api/projects/${encodeURIComponent(name)}/segments/${encodeURIComponent(uid)}`,
-      { method: "PATCH", body: JSON.stringify(patch) },
-    ).then((r) => adopt(r.segment));
+    return request<{ segment: Segment }>(segmentPath(name, uid), {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }).then((r) => adopt(r.segment));
   },
 
   /**
@@ -375,10 +379,9 @@ export const api = {
    */
   splitSegment(name: string, uid: string, at: number): Promise<Segment[]> {
     if (USE_FIXTURES) return fixtures.splitSegment(name, uid, at).then(adoptAll);
-    return request<unknown>(
-      `/api/projects/${encodeURIComponent(name)}/segments/${encodeURIComponent(uid)}/split`,
-      json({ at }),
-    ).then(() => api.getSegments(name));
+    return request<unknown>(segmentPath(name, uid, "/split"), json({ at })).then(() =>
+      api.getSegments(name),
+    );
   },
 
   /**
@@ -391,9 +394,9 @@ export const api = {
    */
   addSegment(name: string, body: NewSegment): Promise<Segment[]> {
     if (USE_FIXTURES) return fixtures.addSegment(name, body).then(adoptAll);
-    return request<unknown>(
-      `/api/projects/${encodeURIComponent(name)}/segments`, json(body),
-    ).then(() => api.getSegments(name));
+    return request<unknown>(projectPath(name, "/segments"), json(body)).then(() =>
+      api.getSegments(name),
+    );
   },
 
   /**
@@ -406,18 +409,16 @@ export const api = {
    */
   removeSegment(name: string, uid: string): Promise<Segment[]> {
     if (USE_FIXTURES) return fixtures.removeSegment(name, uid).then(adoptAll);
-    return request<unknown>(
-      `/api/projects/${encodeURIComponent(name)}/segments/${encodeURIComponent(uid)}`,
-      { method: "DELETE" },
-    ).then(() => api.getSegments(name));
+    return request<unknown>(segmentPath(name, uid), { method: "DELETE" }).then(() =>
+      api.getSegments(name),
+    );
   },
 
   mergeSegments(name: string, uid: string, uidB: string): Promise<Segment[]> {
     if (USE_FIXTURES) return fixtures.mergeSegments(name, uid, uidB).then(adoptAll);
-    return request<unknown>(
-      `/api/projects/${encodeURIComponent(name)}/segments/${encodeURIComponent(uid)}/merge`,
-      json({ uid: uidB }),
-    ).then(() => api.getSegments(name));
+    return request<unknown>(segmentPath(name, uid, "/merge"), json({ uid: uidB })).then(() =>
+      api.getSegments(name),
+    );
   },
 
   /**
@@ -427,24 +428,22 @@ export const api = {
    */
   retranslate(name: string, uids: string[], batch?: string): Promise<Job> {
     if (USE_FIXTURES) return fixtures.enqueue(name, "retranslate", uids, batch);
-    return request<{ job: Job }>(
-      `/api/projects/${encodeURIComponent(name)}/retranslate`, json({ uids, batch }),
-    ).then((r) => r.job);
+    return request<{ job: Job }>(projectPath(name, "/retranslate"), json({ uids, batch })).then(
+      (r) => r.job,
+    );
   },
 
   resynthesize(name: string, uids: string[], batch?: string): Promise<Job> {
     if (USE_FIXTURES) return fixtures.enqueue(name, "resynthesize", uids, batch);
-    return request<{ job: Job }>(
-      `/api/projects/${encodeURIComponent(name)}/resynthesize`, json({ uids, batch }),
-    ).then((r) => r.job);
+    return request<{ job: Job }>(projectPath(name, "/resynthesize"), json({ uids, batch })).then(
+      (r) => r.job,
+    );
   },
 
   /** timeline → mix → report. A full libx264 re-encode, so never an autosave. */
   render(name: string): Promise<Job> {
     if (USE_FIXTURES) return fixtures.enqueue(name, "render", []);
-    return request<{ job: Job }>(
-      `/api/projects/${encodeURIComponent(name)}/render`, json({}),
-    ).then((r) => r.job);
+    return request<{ job: Job }>(projectPath(name, "/render"), json({})).then((r) => r.job);
   },
 
   /**
@@ -468,7 +467,7 @@ export const api = {
     try {
       if (USE_FIXTURES) return await fixtures.peaks(name, file, n);
       return await request<Peaks>(
-        `/api/projects/${encodeURIComponent(name)}/peaks?file=${file}&n=${Math.round(n)}`,
+        projectPath(name, `/peaks?file=${file}&n=${Math.round(n)}`),
       );
     } catch (error) {
       if (error instanceof ApiError && error.status === 404) return null;
@@ -521,7 +520,7 @@ export const api = {
     onConnectionChange?: (open: boolean) => void,
   ): Promise<void> {
     if (USE_FIXTURES) return fixtures.events(name, signal, onMessage, onConnectionChange);
-    return readNdjson<StudioEvent>(url(`/api/projects/${encodeURIComponent(name)}/events`), signal, {
+    return readNdjson<StudioEvent>(url(projectPath(name, "/events")), signal, {
       onMessage,
       onOpen: () => onConnectionChange?.(true),
       onClose: () => onConnectionChange?.(false),
