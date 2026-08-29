@@ -1,5 +1,7 @@
 """Phase 2 Hebrew → any Qwen3-TTS target. Pure logic, no models."""
 
+import numpy as np
+
 from dubbing import mix, tts
 
 # --------------------------------------------------------------------- prepare_text
@@ -357,7 +359,6 @@ def test_a_sentence_split_folds_an_abbreviation_forward():
 
 
 def test_joining_sentences_puts_the_pause_back(tmp_path):
-    import numpy as np
     import soundfile as sf
 
     sr = 16000
@@ -412,9 +413,8 @@ def test_the_asr_writing_a_number_as_digits_does_not_fail_a_take():
 # word. `audio.is_fricative` is the second question the gate now asks.
 
 
-def _sibilant(seconds: float, dbfs: float, sample_rate: int) -> "np.ndarray":
+def _sibilant(seconds: float, dbfs: float, sample_rate: int) -> np.ndarray:
     """Noise tilted towards the top of the band, at a chosen level: a rough /s/."""
-    import numpy as np
     rng = np.random.default_rng(0)
     # First difference is a crude 6 dB/octave high shelf enough to put the
     # energy where a fricative puts it, which is all `is_fricative` looks at.
@@ -422,8 +422,7 @@ def _sibilant(seconds: float, dbfs: float, sample_rate: int) -> "np.ndarray":
     return (10 ** (dbfs / 20)) * x / float(np.sqrt(np.mean(x ** 2)))
 
 
-def _vowel(seconds: float, sample_rate: int) -> "np.ndarray":
-    import numpy as np
+def _vowel(seconds: float, sample_rate: int) -> np.ndarray:
     t = np.arange(int(seconds * sample_rate)) / sample_rate
     return 0.2 * np.sin(2 * np.pi * 120 * t) + 0.1 * np.sin(2 * np.pi * 360 * t)
 
@@ -446,7 +445,6 @@ def test_is_fricative_ignores_a_noise_floor_so_hush_is_still_trimmed():
 
 
 def test_the_trailing_trim_keeps_a_final_fricative_it_used_to_cut(tmp_path):
-    import numpy as np
     import soundfile as sf
     from dubbing import audio
     sr = audio.SR
@@ -479,7 +477,6 @@ def test_the_trailing_trim_keeps_a_final_fricative_it_used_to_cut(tmp_path):
 
 
 def test_final_fricative_db_measures_the_last_fricative_not_the_loudest(tmp_path):
-    import numpy as np
     from dubbing import audio
     sr = audio.SR
     # Two fricatives inside the tail window, the earlier one 10 dB hotter: the
@@ -499,7 +496,6 @@ def test_final_fricative_db_measures_the_last_fricative_not_the_loudest(tmp_path
 
 
 def test_final_fricative_db_is_none_when_the_line_ends_on_a_vowel():
-    import numpy as np
     from dubbing import audio
     sr = audio.SR
     clip = np.concatenate([_vowel(0.30, sr), _sibilant(0.10, -40.0, sr),

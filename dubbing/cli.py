@@ -13,6 +13,8 @@ import hashlib
 import re
 import sys
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -160,7 +162,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--force", help="stage to re-run, or 'all'")
     p.add_argument("--device", help="torch device override for TTS")
     p.add_argument("--tts-model", choices=("1.7b", "0.6b"), default=None,
-                   help="Qwen3-TTS voice-clone model (default 1.7b; 0.6b accepted only so old runs re-run)")
+                   help="Qwen3-TTS voice-clone model (default 1.7b; 0.6b accepted "
+                        "only so old runs re-run)")
     # Deliberately NOT in RECORDED_DEFAULTS. Every other option here describes
     # the dub; this one describes the machine, and a manifest that remembered it
     # would hand a 12 GB card's setting to the 48 GB card the project was copied
@@ -366,29 +369,18 @@ def report_failed(result: dict[str, Any]) -> bool:
     return bool(result["unaccounted"] or result.get("tts_unavailable"))
 
 
-def main(argv: list[str] | None = None) -> int:
-    tools.utf8_stdio()          # a Windows console is not UTF-8; every stage prints Hebrew
-    args = parse_args(argv)
-    args.src, args.tgt = normalize_lang(args.src), normalize_lang(args.tgt)
-    try:
-        from dotenv import load_dotenv
+def _open_run(args: argparse.Namespace) -> tuple[Path, dict[str, Any]]:
+    """Resolve the work directory, load or create its manifest, settle the options.
 
-        load_dotenv(REPO_ROOT / ".env")
-    except Exception:
-        pass
-
-    # After load_dotenv, so a `--low-vram` on the command line still beats a
-    # DUBBING_LOW_VRAM in the .env the app writes, and before any stage runs, so
-    # the choice is settled the first time anything loads the translator.
-    translate.set_low_vram(args.low_vram)
-
+    `resolve_settings` runs before anything reads a setting and before anything is
+    recorded: an option this command line did not carry is the one this run was made
+    with, not argparse's default. `check_langs` reads `--tts-model`, so it waits for
+    that.
+    """
     workdir = (args.out or default_workdir(args.source)).resolve()
     workdir.mkdir(parents=True, exist_ok=True)
 
     m = manifest.load(workdir)
-    # Before anything reads a setting, and before anything is recorded: an option
-    # this command line did not carry is the one this run was made with, not
-    # argparse's default. `check_langs` reads `--tts-model`, so it waits for this.
     resolve_settings(args, m)
     check_langs(args)
     check_transcript(args)
@@ -397,38 +389,132 @@ def main(argv: list[str] | None = None) -> int:
     m["source"].update(source_record(args))
     if args.context is not None:
         m["source"]["context"] = args.context
+    return workdir, m
 
-    # The editor writes `passthrough` into a finished manifest and re-runs.
-    # Honour it before anything is skipped as up to date: a flip changes what the
-    # translate, tts, timeline and mix stages produced, so their "done" marks come
-    # off and they run again. Their *progress* marks stay, so the stages resume
-    # rather than restart only the flipped segments lost their work (see
-    # segments.apply_passthrough), and every other line keeps its translation and
-    # its clip. Nothing happens at all when no override changed a verdict.
-    overrides = segments.saved_overrides(m.get("segments") or [])
-    flipped = segments.apply_passthrough(m.get("segments") or [])
+
+def _honour_passthrough(m: dict[str, Any]) -> dict[str, Any]:
+    """Apply the editor's per-segment overrides, and reopen what a flip invalidated.
+
+    The editor writes `passthrough` into a finished manifest and re-runs. Honour it
+    before anything is skipped as up to date: a flip changes what the translate, tts,
+    timeline and mix stages produced, so their "done" marks come off and they run
+    again. Their *progress* marks stay, so the stages resume rather than restart —
+    only the flipped segments lost their work (see `segments.apply_passthrough`), and
+    every other line keeps its translation and its clip. Nothing happens at all when
+    no override changed a verdict.
+
+    Returns the saved overrides, which the segments stage re-attaches by time.
+    """
+    saved = m.get("segments") or []
+    overrides = segments.saved_overrides(saved)
+    flipped = segments.apply_passthrough(saved)
     if flipped:
         print(f"passthrough: {len(flipped)} segment(s) re-decided by the user "
               f"({', '.join(str(i) for i in flipped[:8])}"
               f"{'…' if len(flipped) > 8 else ''}) redoing from translate",
               file=sys.stderr)
         manifest.reopen_from(m, "translate")
+    return overrides
 
-    apply_force(m, args.force)
 
+def _selected_stages(args: argparse.Namespace) -> set[str]:
+    """The `--stages` subset, or every stage. Refuses a name that is not one."""
     selected = set(args.stages.split(",")) if args.stages else set(STAGES)
     unknown = selected - set(STAGES)
     if unknown:
         raise SystemExit(f"unknown stage(s): {', '.join(sorted(unknown))}")
+    return selected
+
+
+@dataclass
+class _Run:
+    """What the stage loop carries from one stage to the next.
+
+    `engine` and `words` are the two things a stage hands to a later one in memory
+    rather than through the manifest: the TTS engine so timeline does not reload the
+    synthesiser, and the word stream so segments does not re-read `words.json`.
+    """
+
+    m: dict[str, Any]
+    workdir: Path
+    args: argparse.Namespace
+    overrides: dict[str, Any]
+    save: Callable[[], None]
+    engine: tts_mod.Engine | None = None
+    words: list[dict[str, Any]] | None = None
+
+
+def _run_stage(run: _Run, stage: str) -> dict[str, Any] | None:
+    """Run one stage. Returns the report's result for `report`, else None."""
+    m, workdir, args = run.m, run.workdir, run.args
+    if stage == "fetch":
+        fetch.run(m, workdir, source=args.source, captions_file=args.captions,
+                  duration_limit=args.duration, src_lang=args.src)
+    elif stage == "stems":
+        stems.run(m, workdir)
+    elif stage == "transcript":
+        transcript.run(m, workdir, src_lang=args.src, tgt_lang=args.tgt,
+                       prefer=args.transcript)
+    elif stage == "segments":
+        run.words = run.words or transcript.load_words(workdir, m)
+        segments.run(m, workdir, run.words, transcript.load_foreign_spans(workdir, m),
+                     dub_foreign=args.dub_foreign, genre=args.genre,
+                     overrides=run.overrides,
+                     lang_runs=transcript.load_lang_runs(workdir, m))
+    elif stage == "translate":
+        translate.run(m, workdir, source=args.src, target=args.tgt, save=run.save,
+                      register=args.register, genre=args.genre)
+    elif stage == "tts":
+        run.engine = tts_mod.run(m, workdir, save=run.save, device=args.device,
+                                 model=args.tts_model)
+    elif stage == "timeline":
+        run.engine = run.engine or tts_mod.Engine(m, workdir, device=args.device,
+                                                  model=args.tts_model)
+        shorten_many, resynth_many = _retimers(m, run.engine, args)
+        timeline.run(m, workdir, shorten_many=shorten_many, resynth_many=resynth_many,
+                     genre=args.genre)
+    elif stage == "mix":
+        # The synthesiser is done with; free the device before ffmpeg runs.
+        if run.engine is not None:
+            run.engine.close()
+            run.engine = None
+        mix.run(m, workdir)
+    elif stage == "report":
+        return report.run(m, workdir)
+    return None
+
+
+def _load_dotenv() -> None:
+    """Best effort: `.env` holds HF_TOKEN, and a run without one still works."""
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(REPO_ROOT / ".env")
+    except Exception:
+        pass
+
+
+def main(argv: list[str] | None = None) -> int:
+    tools.utf8_stdio()          # a Windows console is not UTF-8; every stage prints Hebrew
+    args = parse_args(argv)
+    args.src, args.tgt = normalize_lang(args.src), normalize_lang(args.tgt)
+    _load_dotenv()
+
+    # After load_dotenv, so a `--low-vram` on the command line still beats a
+    # DUBBING_LOW_VRAM in the .env the app writes, and before any stage runs, so
+    # the choice is settled the first time anything loads the translator.
+    translate.set_low_vram(args.low_vram)
+
+    workdir, m = _open_run(args)
+    overrides = _honour_passthrough(m)
+    apply_force(m, args.force)
+    selected = _selected_stages(args)
 
     def save() -> None:
         manifest.save(workdir, m)
 
     params = stage_params(args, m)
-    outputs = STAGE_OUTPUTS
-
-    engine: tts_mod.Engine | None = None
-    words: list[dict[str, Any]] | None = None
+    run = _Run(m=m, workdir=workdir, args=args, overrides=overrides, save=save)
 
     for stage in STAGES:
         fp = manifest.stage_fingerprint(m, stage, params[stage])
@@ -438,7 +524,7 @@ def main(argv: list[str] | None = None) -> int:
                 save()
                 return 0
             continue
-        if manifest.stage_done(m, workdir, stage, fp, outputs[stage]):
+        if manifest.stage_done(m, workdir, stage, fp, STAGE_OUTPUTS[stage]):
             # A matching fingerprint is not the whole truth for translate: a
             # user-locked dub whose translation failed is left visibly
             # unfinished (keep=false, no text_en) rather than reverted, and
@@ -468,14 +554,9 @@ def main(argv: list[str] | None = None) -> int:
             m["progress"][stage] = fp
             save()
 
-        if stage == "fetch":
-            fetch.run(m, workdir, source=args.source, captions_file=args.captions,
-                      duration_limit=args.duration, src_lang=args.src)
-        elif stage == "stems":
-            stems.run(m, workdir)
-        elif stage == "transcript":
-            transcript.run(m, workdir, src_lang=args.src, tgt_lang=args.tgt,
-                           prefer=args.transcript)
+        result = _run_stage(run, stage)
+
+        if stage == "transcript":
             # This stage's fingerprint contains its own verdict about where the
             # words came from, so the mark has to describe what it produced, not
             # what was known before it ran otherwise a first run would spend the
@@ -489,44 +570,23 @@ def main(argv: list[str] | None = None) -> int:
                 save()
                 print(f"[{stage}] done in {time.time() - t0:.0f}s", file=sys.stderr)
                 continue
-        elif stage == "segments":
-            words = words or transcript.load_words(workdir, m)
-            segments.run(m, workdir, words, transcript.load_foreign_spans(workdir, m),
-                         dub_foreign=args.dub_foreign, genre=args.genre,
-                         overrides=overrides,
-                         lang_runs=transcript.load_lang_runs(workdir, m))
-        elif stage == "translate":
-            translate.run(m, workdir, source=args.src, target=args.tgt, save=save,
-                          register=args.register, genre=args.genre)
-        elif stage == "tts":
-            engine = tts_mod.run(m, workdir, save=save, device=args.device, model=args.tts_model)
-        elif stage == "timeline":
-            engine = engine or tts_mod.Engine(m, workdir, device=args.device, model=args.tts_model)
-            shorten_many, resynth_many = _retimers(m, workdir, engine, args)
-            timeline.run(m, workdir, shorten_many=shorten_many, resynth_many=resynth_many,
-                         genre=args.genre)
-        elif stage == "mix":
-            if engine is not None:
-                engine.close()
-                engine = None
-            mix.run(m, workdir)
-        elif stage == "report":
-            result = report.run(m, workdir)
-            manifest.mark_stage(m, stage, fp)
-            save()
-            if report_failed(result):
-                return 1
-            continue
 
         manifest.mark_stage(m, stage, fp)
         save()
+        if stage == "report":
+            # The report's own verdict is the exit code, and it gets no "done in"
+            # line: what it took to count is not news.
+            if report_failed(result):
+                return 1
+            continue
         print(f"[{stage}] done in {time.time() - t0:.0f}s", file=sys.stderr)
 
     print(f"\nPreview: {workdir / 'preview.mp4'}", file=sys.stderr)
     return 0
 
 
-def _retimers(m, workdir: Path, engine, args):
+def _retimers(m: dict[str, Any], engine: tts_mod.Engine | None,
+              args: argparse.Namespace) -> tuple[Callable | None, Callable | None]:
     """Callbacks the timeline uses when a line must be shortened to fit.
 
     Batched per round so each model is loaded once. Where translator and TTS
@@ -558,20 +618,18 @@ def _retimers(m, workdir: Path, engine, args):
         out: dict[int, str | None] = {}
         with translate.loaded() as h:
             for seg, max_words in requests:
-                if pivot and (seg.get("text_mid") or "").strip():
-                    out[seg["id"]] = translate.shorten(
-                        h.processor, h.model, seg["text_mid"], seg["text_en"],
-                        max_words, source="en", target=args.tgt,
-                        context=m["source"].get("context") or "",
-                        preceding=before_mid.get(seg["id"], ""), device=h.device,
-                    )
-                else:
-                    out[seg["id"]] = translate.shorten(
-                        h.processor, h.model, seg["text"], seg["text_en"],
-                        max_words, source=args.src, target=args.tgt,
-                        context=m["source"].get("context") or "",
-                        preceding=before.get(seg["id"], ""), device=h.device,
-                    )
+                # A pivot run re-shortens the English intermediate (the line that
+                # was measured), not the source; everything else is the same call.
+                use_mid = pivot and bool((seg.get("text_mid") or "").strip())
+                text = seg["text_mid"] if use_mid else seg["text"]
+                source = "en" if use_mid else args.src
+                preceding = (before_mid if use_mid else before).get(seg["id"], "")
+                out[seg["id"]] = translate.shorten(
+                    h.processor, h.model, text, seg["text_en"], max_words,
+                    source=source, target=args.tgt,
+                    context=m["source"].get("context") or "",
+                    preceding=preceding, device=h.device,
+                )
                 if not out[seg["id"]]:
                     print(f"  timeline: seg {seg['id']} kept full length "
                           "(no safe shorter translation)", file=sys.stderr)

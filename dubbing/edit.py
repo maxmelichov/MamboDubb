@@ -1262,7 +1262,7 @@ def rebuild(m: dict[str, Any], workdir: Path, *, from_stage: str,
                 engine = engine or tts_mod.Engine(m, workdir, device=args.device,
                                                   model=args.tts_model)
                 _voice_stragglers(m, engine, progress=progress)
-                shorten_many, resynth_many = cli._retimers(m, workdir, engine, args)
+                shorten_many, resynth_many = cli._retimers(m, engine, args)
                 timeline_mod.run(m, workdir, shorten_many=shorten_many,
                                  resynth_many=resynth_many, genre=args.genre)
             elif stage == "mix":

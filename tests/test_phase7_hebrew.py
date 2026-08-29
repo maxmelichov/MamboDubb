@@ -307,11 +307,11 @@ def test_a_same_language_run_asks_the_timeline_for_no_rewrites(tmp_path):
     # with speed-up and drift instead (`timeline.run` skips the round on None).
     args = _args(src="he", tgt="he", device=None, register="narration",
                  genre="documentary")
-    assert cli._retimers({"segments": [], "source": {}}, tmp_path, None, args) == (None,
+    assert cli._retimers({"segments": [], "source": {}}, None, args) == (None,
                                                                                    None)
     args = _args(src="he", tgt="en", device=None, register="narration",
                  genre="documentary")
-    shorten, resynth = cli._retimers({"segments": [], "source": {}}, tmp_path, None, args)
+    shorten, resynth = cli._retimers({"segments": [], "source": {}}, None, args)
     assert shorten is not None and resynth is not None
 
 
