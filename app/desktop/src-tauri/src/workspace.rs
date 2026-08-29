@@ -117,7 +117,11 @@ pub fn find_uv() -> Option<PathBuf> {
 
 /// The sidecar/binary file name, which is the only part of the uv lookup that is
 /// spelled differently per platform.
-pub const UV_EXE: &str = if cfg!(target_os = "windows") { "uv.exe" } else { "uv" };
+pub const UV_EXE: &str = if cfg!(target_os = "windows") {
+    "uv.exe"
+} else {
+    "uv"
+};
 
 /// Absolute paths worth probing before `PATH`, per platform. Windows has no
 /// equivalent convention — winget and uv's installer both land on `PATH` or in the
@@ -217,7 +221,6 @@ pub fn stored_workspace_setting(app: &tauri::AppHandle) -> Result<Option<PathBuf
         .filter(|value| !value.trim().is_empty())
         .map(PathBuf::from))
 }
-
 
 pub fn store_workspace(app: &tauri::AppHandle, path: &Path) -> Result<(), String> {
     let store = store(app)?;
@@ -435,20 +438,35 @@ mod tests {
         // Tauri strips the target triple from `uv-<triple>[.exe]` and drops the
         // result next to the app binary, so this is the name the shell must look
         // for — and the one stage_desktop_payload.py must produce.
-        assert_eq!(UV_EXE, if cfg!(target_os = "windows") { "uv.exe" } else { "uv" });
+        assert_eq!(
+            UV_EXE,
+            if cfg!(target_os = "windows") {
+                "uv.exe"
+            } else {
+                "uv"
+            }
+        );
     }
 
     #[test]
     fn a_path_lookup_finds_a_binary_in_a_listed_directory() {
         let dir = TempDir::new("path-lookup");
-        let name = if cfg!(target_os = "windows") { "fakeuv.exe" } else { "fakeuv" };
+        let name = if cfg!(target_os = "windows") {
+            "fakeuv.exe"
+        } else {
+            "fakeuv"
+        };
         let binary = dir.path().join(name);
         fs::write(&binary, "").unwrap();
 
         // SAFETY: single-threaded assertion over process env; restored immediately.
         let previous = env::var_os("PATH");
         env::set_var("PATH", dir.path());
-        let found = find_in_path(if cfg!(target_os = "windows") { "fakeuv.exe" } else { "fakeuv" });
+        let found = find_in_path(if cfg!(target_os = "windows") {
+            "fakeuv.exe"
+        } else {
+            "fakeuv"
+        });
         // The Windows spelling is also reachable from the bare name, which is what
         // makes `find_uv`'s single `UV_EXE` call correct on all three platforms.
         let found_bare = find_in_path("fakeuv");
