@@ -723,7 +723,17 @@ def _translate_instruction(text: str, source: str, target: str, context: str = "
     contractions are welcome rather than forbidden). `names` is the rolling list of
     proper nouns already established in this run's translations (see
     `update_established_names`); when non-empty the model is told to reuse those
-    exact spellings for a recurring person or place.
+    exact spellings for a recurring person or place. That reuse note is paired
+    with a standing rule that a bare honorific is a title and not a name, because
+    the two pull against each other: an established "Sheikha Moza" is precisely
+    what turns a following bare "שייחה" into a first name.
+
+    The fluency license is emitted for any hop with English on one side, into it
+    as well as out of it. It used to be out-of-English only, on the reasoning
+    that it presumed a clean input; the guard against a noisy one is inside the
+    license (prefer a literal rendering over a fluent guess where the source is
+    garbled), so the gate no longer carries it. The military echelon rule keeps
+    the narrower out-of-English gate on purpose see the comment at its site.
 
     `numbers_spelled` marks a hop whose *input* already carries digit-free,
     spelled-out numbers (the pivot's English intermediate after
@@ -791,6 +801,25 @@ def _translate_instruction(text: str, source: str, target: str, context: str = "
         " Names already established in this video's translation use these exact "
         "spellings when the same person or place recurs: " + ", ".join(names) + "."
     ) if names else ""
+    # A title on its own is a title, never a first name. Measured on the Qatar
+    # documentary, where "שייחה היא בראש ובראשונה…" came back as "Sheikha is,
+    # first and foremost, …" reading as though Sheikha were the woman's given
+    # name. The rolling `names` list makes it worse rather than causing it: with
+    # "Sheikha Moza" already established, the note just above tells the model to
+    # reuse that spelling, and the shortest way to obey is to treat the bare word
+    # as the name. So the rule sits next to that note and answers it directly.
+    # Kept as a rule about the *category* rather than a glossary of this video's
+    # words: the handful of examples are there to say what kind of word is meant,
+    # and the instruction is what to do with any of them.
+    honorific = (
+        f" An honorific or title standing alone in the source, with no personal "
+        f"name attached to it (sheikha, sheikh, emir, rabbi, imam, president and "
+        f"the like), is a title and not a name: render it the way {tgt} refers to "
+        f"the holder of a title, which in English means the definite article "
+        f"(\"the Sheikha\", not \"Sheikha\"), and never write it as though it were "
+        f"the person's given name even when the same honorific appears attached "
+        f"to a name elsewhere in this video."
+    )
     military = f" {_HE_MILITARY_NOTE}" if source == "he" else ""
     # Only with background context to match against: the bare instruction was
     # probed and fixed nothing (Gemma cannot do Hebrew phonetics on demand),
@@ -803,11 +832,18 @@ def _translate_instruction(text: str, source: str, target: str, context: str = "
         f"the phonetically-closest plausible reading and match garbled names to the "
         f"background names; never turn a garble into a new name or entity."
     ) if asr_source and hint else ""
-    # The hop from clean English into a non-English target gets the guarded
-    # fluency license (A/B'd twice on 87 he→ru rows: unguarded scored 33 wins but
+    # Every hop with English on one side gets the guarded fluency license. Out of
+    # English it was A/B'd twice on 87 he→ru rows: unguarded scored 33 wins but
     # coined fake proper names; guarded kept 13 wins with zero severe regressions
-    # and repaired one fidelity error). Never applied when translating the noisy
-    # source directly the license presumes a coherent input.
+    # and repaired one fidelity error. Into English it was missing entirely, and
+    # the cost was measurable in the runs: "One must know her in order to know how
+    # Qatar operates" and "the one who determines the strategy" are exactly the
+    # bureaucratic, copula-heavy phrasing the last sentence of this block forbids,
+    # and nothing was telling a he→en hop to avoid them. The old gate was written
+    # as "clean English in, so the license presumes a coherent input", but the
+    # license carries its own answer for a noisy one: the garble clause below
+    # asks for a literal rendering rather than a fluent guess exactly when the
+    # source is incoherent, so the guard is in the license, not in the gate.
     fluency = (
         f" Prioritize natural, idiomatic {tgt} phrasing: restructure the syntax "
         f"freely word order, clause boundaries, the verbs and collocations a "
@@ -822,10 +858,17 @@ def _translate_instruction(text: str, source: str, target: str, context: str = "
         f"collocation a native {tgt} speaker would use over bureaucratic or "
         f"copula-heavy phrasing; a word-for-word calque of an English "
         f"construction is wrong when {tgt} has an established way to say it."
-    ) if source == "en" and target != "en" else ""
-    # Same guard as the fluency license: false-friend military terms are a
-    # measured en→ru failure (дивизион, an artillery battalion, for "division")
-    # and the echelon rule fixed it with zero breaks on the controls.
+    ) if source != target and (source == "en" or target == "en") else ""
+    # The echelon rule deliberately does NOT follow the fluency license into
+    # English. It is a terminology rule, not a fluency one, and its measured
+    # failure is a false friend in the *target* (дивизион, an artillery
+    # battalion, for "division") which is a hazard of writing Russian, not of
+    # writing English. A Hebrew source's echelons are already handled, and
+    # handled better, by `_HE_MILITARY_NOTE` below, which names each Hebrew rank
+    # and its English term outright instead of asking the model to reason about
+    # sizes of formation; emitting both would say the same thing twice, once
+    # vaguely. For any other source into English the rule is simply unmeasured,
+    # and this block's whole history is that it earns its place per direction.
     echelon = (
         f" Military unit types translate by echelon: a division, a brigade, a "
         f"battalion each map to the {tgt} term for the same echelon and size of "
@@ -841,7 +884,8 @@ def _translate_instruction(text: str, source: str, target: str, context: str = "
         f"borrowed from a third language and spelled phonetically in its own alphabet "
         f"is written in the standard spelling it has in {tgt}, never transliterated "
         f"back letter by letter. Do not summarize, shorten, omit, or "
-        f"translate word-for-word. {style}{movie}{numbers}{fluency}{echelon}{garble}{names_note}{military}{tail} "
+        f"translate word-for-word. {style}{movie}{numbers}{fluency}{echelon}{garble}"
+        f"{names_note}{honorific}{military}{tail} "
         f"Output only the {tgt} translation, nothing else no notes, no comments, no "
         f"square brackets and no alternative renderings.\n\n"
         f"{src or 'Text'}: {text}"
@@ -1999,8 +2043,251 @@ def _assert_translated(segments: list[dict[str, Any]]) -> None:
     assert not missing, f"dubbed segments without text_en: {missing}"
 
 
+
+def _subtitle_placeholders(segments: list[dict[str, Any]], subs: list[dict[str, Any]],
+                           target: str) -> None:
+    """Give every kept segment the subtitle it will show.
+
+    A third-language keep whose text never got a target rendering (an "und"
+    verdict, or the translation below fails) must not put a foreign-script line in
+    the subtitles the placeholder is honest. A user passthrough is the same case:
+    the viewer is about to hear the target language, so the source-language ASR's
+    reading of it (which is what made the user reach for the override) is not the
+    subtitle. Both of its names count the studio's `edit.set_keep` writes the
+    same verdict as MANUAL_REASON (see `dubbing.USER_KEEP_REASONS`).
+    """
+    for seg in segments:
+        if not (seg["keep"] and seg not in subs and needs_translation(seg)):
+            continue
+        if ((seg.get("lang") or seg.get("keep_reason") in USER_KEEP_REASONS)
+                and not is_target_text(seg["text"], target)):
+            seg["text_en"] = "…"
+        else:
+            seg["text_en"] = seg["text"]
+
+
+def _take_identity(todo: list[dict[str, Any]], subs: list[dict[str, Any]],
+                   source: str, target: str) -> list[dict[str, Any]]:
+    """Fill in the segments already spoken in the target language, verbatim.
+
+    Same-language dubbing (he→he, en→en, …): the target line IS the source line.
+    There is nothing for a translator to do, so nothing loads Gemma the stage
+    completes on identity and stamps its fingerprint like any other run. Decided
+    per segment rather than per run, because a third-language span carries its own
+    `lang` and does need a real hop even on a same-language run (Arabic inside a
+    Hebrew video, dubbed into Hebrew).
+
+    Nothing is kept on "already the target language" grounds: `segments.mark_keep`
+    voids its script and speaker evidence when the pair shares a script, so every
+    speech segment is re-voiced in the cloned voice. The keeps that remain are the
+    ones that never depended on the pair music, noise, spans with no text, a
+    confident third language, the user's own passthrough.
+
+    `_finalize_numbers` still runs: digits are not speech, and spelling them is
+    code's job here exactly as it is on a translated line.
+    """
+    identity = [s for s in todo + subs
+                if same_language(segment_source(s, source), target)]
+    for seg in identity:
+        text = _finalize_numbers((seg.get("text") or "").strip(), target)
+        if text:
+            seg["text_en"] = text
+    return identity
+
+
+def _preceding_for(seg: dict[str, Any], *, own_pair: bool, seg_pivot: bool, seg_tgt: str,
+                   prev_of: dict[int, dict[str, Any]], mids: dict[int, str],
+                   before: dict[int, str]) -> tuple[str, str]:
+    """The line the viewer just heard, in the language this hop WRITES.
+
+    The previous English intermediate for a pivot's first hop, the previous target
+    output for a direct hop. Measured: garbled-name reconciliation fires with an
+    English preceding line and not with a source-language one. Falls back to the
+    previous SOURCE text for the first segment and wherever the previous
+    translation failed.
+
+    A segment off the run's own pair passes none: its neighbour spoke a different
+    language, so the preceding line carries no tie-breaking signal.
+
+    Returns (preceding, prev_mid) — the second is the pivot's second hop's own
+    context, which is the previous intermediate rather than the previous output.
+    """
+    if not own_pair:
+        prev = prev_of.get(seg["id"])
+        prior = ""
+        prev_mid = ""
+        if prev is not None:
+            if seg_pivot:
+                prev_mid = (mids.get(prev["id"]) or prev.get("text_mid") or "").strip()
+                prior = prev_mid
+            else:
+                prior = prev.get("text_en") or ""
+                if not is_target_text(prior, seg_tgt):
+                    prior = ""     # kept/failed neighbour: subtitle, not output
+        return prior.strip() or before.get(seg["id"], ""), prev_mid
+    return "", ""
+
+
+def _dub_pass(h, dub: list[dict[str, Any]], *, source: str, target: str, context: str,
+              before: dict[int, str], prev_of: dict[int, dict[str, Any]],
+              mids: dict[int, str], established: dict[str, list[str]],
+              register: str, genre: str, save) -> None:
+    """Translate every line that will be spoken, one segment at a time.
+
+    Translate each segment on its own standalone output is deterministic and
+    faithful, which matters more for a dub than resolving a pronoun; a marked
+    multi-segment window makes the model drift a clause onto its neighbour. The
+    per-video `context` supplies names the ASR mangles, and the preceding line
+    settles a word sense the sentence alone cannot.
+
+    A segment off the run's own language pair decides its hops for itself
+    (`segment_langs`): a dubbable third-language span (--dub-foreign) named by the
+    witness, a pair the editor overrode, or a line whose own script refutes
+    `--src`. An English span on a he→ru run goes en→ru directly, one hop.
+    """
+    for n, seg in enumerate(dub, 1):
+        if not needs_translation(seg):
+            continue
+        seg_src, seg_tgt = segment_langs(seg, source, target)
+        own_pair = (seg_src, seg_tgt) != (source, target)
+        seg_pivot = pivot_via_english(seg_src, seg_tgt)
+        preceding, prev_mid = _preceding_for(
+            seg, own_pair=own_pair, seg_pivot=seg_pivot, seg_tgt=seg_tgt,
+            prev_of=prev_of, mids=mids, before=before)
+        # Gloss clauses in the user context apply only where their word is
+        # spoken; gate against the ORIGINAL source text on both hops the
+        # second hop reads clean English, but the gloss's reason to exist
+        # (or not) is still the source segment (see `relevant_context`).
+        seg_ctx = relevant_context(context, seg["text"], seg_src)
+        if seg_pivot:
+            # src→en→tgt: the English hop is the measured-good line; the
+            # direct pair substitutes entities and bleeds neighbours (A/B'd).
+            mid = generate(h.processor, h.model, seg["text"], source=seg_src,
+                           target="en", context=seg_ctx,
+                           preceding=preceding, device=h.device,
+                           register=register, genre=genre,
+                           names=tuple(canonical_names(established["en"])))
+            if not is_target_text(mid, "en"):
+                text = ""
+            else:
+                # Digits → English words in code, before the intermediate is
+                # stored or handed to the target hop: the model translates
+                # digits as digits, and only code converts them (numwords).
+                mid = numwords.spell_numbers(mid.strip(), "en")
+                mids[seg["id"]] = mid
+                established["en"] = update_established_names(
+                    established["en"], mid, "en")
+                # The second hop sees the PREVIOUS segment's English
+                # intermediate as preceding ("" for the first / after a
+                # failed hop). The documented entity swap ("Jabhat al-Nusra"
+                # → "al-Qaeda's Front") happened with a HEBREW preceding
+                # line; A/B'd on both harness sets, a coherent English one
+                # measured safe 0 semantic breaks on 17 controls including
+                # every entity-swap guard line and fixed «запись»→«въезд»,
+                # a dangling «её», and a chameleon incoherence.
+                text = generate(h.processor, h.model, mid, source="en",
+                                target=seg_tgt, context=seg_ctx,
+                                preceding=prev_mid,
+                                device=h.device, register=register, genre=genre,
+                                names=tuple(canonical_names(
+                                    established.setdefault(seg_tgt, []))),
+                                numbers_spelled=True, asr_source=False)
+        else:
+            # A direct en→tgt hop gets the same treatment as the pivot's
+            # second hop: spell the English digits in code first, then ask
+            # the model only to keep the number-words as words.
+            src_text = seg["text"]
+            en_direct = seg_src == "en" and seg_tgt != "en"
+            if en_direct:
+                src_text = numwords.spell_numbers(src_text, "en")
+            text = generate(h.processor, h.model, src_text, source=seg_src,
+                            target=seg_tgt, context=seg_ctx,
+                            preceding=preceding, device=h.device,
+                            register=register, genre=genre,
+                            names=tuple(canonical_names(
+                                established.setdefault(seg_tgt, []))),
+                            numbers_spelled=en_direct)
+        # target=="en": spell the final English; otherwise: safety net over
+        # any digits the model passed through.
+        text = _finalize_numbers(text, seg_tgt)
+        if is_target_text(text, seg_tgt):
+            seg["text_en"] = text.strip()
+            established[seg_tgt] = update_established_names(
+                established.setdefault(seg_tgt, []), seg["text_en"], seg_tgt)
+            if seg_pivot:
+                seg["text_mid"] = mids[seg["id"]]
+        elif mark_failed(seg):
+            print(f"  translate: seg {seg['id']} failed → keep original",
+                  file=sys.stderr)
+        else:
+            print(f"  translate: seg {seg['id']} failed → still untranslated "
+                  f"(the user asked for this line to be dubbed)", file=sys.stderr)
+        if n % 8 == 0:
+            print(f"  translate: {n}/{len(dub)}", file=sys.stderr)
+            if save:
+                save()
+
+
+def _subtitle_pass(h, subs: list[dict[str, Any]], *, source: str, target: str,
+                   context: str, genre: str) -> None:
+    """Translate the subtitles of spans whose audio plays as recorded.
+
+    Subtitle-only: the audio stays original, so a failure here just leaves the
+    span's own transcription as the subtitle. Gloss gating applies here too,
+    against the span's own text and language. An interjection keep (movie mode)
+    has no span language: it is source speech kept for its actor's own voice, so
+    it translates from the run's source language unless its own script refutes
+    that too (`segment_langs`).
+    """
+    for seg in subs:
+        seg_lang, seg_tgt = segment_langs(seg, source, target)
+        seg_ctx = relevant_context(context, seg["text"], seg_lang)
+        if pivot_via_english(seg_lang, seg_tgt):
+            mid = generate(h.processor, h.model, seg["text"], source=seg_lang,
+                           target="en", context=seg_ctx, device=h.device,
+                           genre=genre)
+            text = "" if not is_target_text(mid, "en") else generate(
+                h.processor, h.model, numwords.spell_numbers(mid.strip(), "en"),
+                source="en", target=seg_tgt, context=seg_ctx, device=h.device,
+                numbers_spelled=True, asr_source=False, genre=genre)
+        else:
+            text = generate(h.processor, h.model, seg["text"], source=seg_lang,
+                            target=seg_tgt, context=seg_ctx, device=h.device,
+                            genre=genre)
+        text = _finalize_numbers(text, seg_tgt)
+        seg["text_en"] = text.strip() if is_target_text(text, seg_tgt) else "…"
+
+
+def _revision_pass(h, segments: list[dict[str, Any]], target: str) -> None:
+    """One pass over the finished dubbing script, reconciling name spellings.
+
+    Dubbed lines only kept segments' text_en is a subtitle of audio that will
+    play as-is. The entity table is canonicalised from the script's own
+    proper-noun occurrences, so a name the run spelled three ways converges on its
+    best-attested form. The caller runs this only when this call translated
+    something: a resumed no-op run must not re-revise an already-revised script.
+    A hand-corrected line is excluded outright: this pass rewrites the whole
+    script whenever anything was translated, which is exactly the path that would
+    silently undo a user's correction.
+    """
+    from . import manifest
+
+    rev = [s for s in segments
+           if not s.get("keep") and (s.get("text_en") or "").strip()
+           and not manifest.is_locked(s, "text_en")]
+    if not rev:
+        return
+    table = canonical_names(
+        [n for s in rev for n in _name_occurrences(s["text_en"], target)])
+    for s, text in zip(rev, revise_run(h.processor, h.model,
+                                       [s["text_en"] for s in rev],
+                                       target=target, names=table)):
+        s["text_en"] = text.strip()
+
+
 def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None,
         register: str = "narration", genre: str = "documentary") -> None:
+    """Stage 5: give every dubbed line its target text, and every keep a subtitle."""
     from . import manifest
 
     segments = m["segments"]
@@ -2008,48 +2295,14 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
     # subtitle translated below; every other keep is subtitled with its own text
     # as before.
     subs = [s for s in segments if needs_subtitle_translation(s)]
-    for seg in segments:
-        if seg["keep"] and seg not in subs and needs_translation(seg):
-            # A third-language keep whose text never got a target rendering (an
-            # "und" verdict, or the translation below fails) must not put a
-            # foreign-script line in the subtitles the placeholder is honest.
-            # A user passthrough is the same case: the viewer is about to hear the
-            # target language, so the source-language ASR's reading of it (which is
-            # what made the user reach for the override) is not the subtitle. Both
-            # of its names count the studio's `edit.set_keep` writes the same
-            # verdict as MANUAL_REASON (see `dubbing.USER_KEEP_REASONS`).
-            if ((seg.get("lang") or seg.get("keep_reason") in USER_KEEP_REASONS)
-                    and not is_target_text(seg["text"], target)):
-                seg["text_en"] = "…"
-            else:
-                seg["text_en"] = seg["text"]
+    _subtitle_placeholders(segments, subs, target)
 
     dub = [s for s in segments if not s["keep"]]
     todo = [s for s in dub if needs_translation(s)]
     if not todo and not subs:
         return
 
-    # Same-language dubbing (he→he, en→en, …): the target line IS the source line.
-    # There is nothing for a translator to do, so nothing loads Gemma the stage
-    # completes on identity and stamps its fingerprint like any other run. Decided
-    # per segment rather than per run, because a third-language span carries its own
-    # `lang` and does need a real hop even on a same-language run (Arabic inside a
-    # Hebrew video, dubbed into Hebrew).
-    #
-    # Nothing is kept on "already the target language" grounds: `segments.mark_keep`
-    # voids its script and speaker evidence when the pair shares a script, so every
-    # speech segment is re-voiced in the cloned voice. The keeps that remain are the
-    # ones that never depended on the pair music, noise, spans with no text, a
-    # confident third language, the user's own passthrough.
-    #
-    # `_finalize_numbers` still runs: digits are not speech, and spelling them is
-    # code's job here exactly as it is on a translated line.
-    identity = [s for s in todo + subs
-                if same_language(segment_source(s, source), target)]
-    for seg in identity:
-        text = _finalize_numbers((seg.get("text") or "").strip(), target)
-        if text:
-            seg["text_en"] = text
+    identity = _take_identity(todo, subs, source, target)
     if identity:
         print(f"  translate: {len(identity)} segment(s) already in {_lang(target)} "
               "kept verbatim, no translation", file=sys.stderr)
@@ -2072,160 +2325,13 @@ def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None
     # own language already established, so a recurring name stays one name.
     established: dict[str, list[str]] = {"en": [], target: []}
     with loaded() as h:
-        for n, seg in enumerate(dub, 1):
-            if not needs_translation(seg):
-                continue
-            # Translate each segment on its own standalone output is deterministic
-            # and faithful, which matters more for a dub than resolving a pronoun; a
-            # marked multi-segment window makes the model drift a clause onto its
-            # neighbour. The per-video `context` supplies names the ASR mangles, and
-            # the preceding line settles a word sense the sentence alone cannot.
-            # A segment off the run's own language pair decides its hops for
-            # itself (`segment_langs`): a dubbable third-language span
-            # (--dub-foreign) named by the witness, a pair the editor overrode, or
-            # a line whose own script refutes `--src`. An English span on a he→ru
-            # run goes en→ru directly, one hop. Its neighbour spoke a different
-            # language, so the preceding line carries no tie-breaking signal pass
-            # none rather than mislead the model.
-            seg_src, seg_tgt = segment_langs(seg, source, target)
-            own_pair = (seg_src, seg_tgt) != (source, target)
-            seg_pivot = pivot_via_english(seg_src, seg_tgt)
-            # The preceding line is shown in the language the hop WRITES the
-            # previous English intermediate for a pivot's first hop, the
-            # previous target output for a direct hop. Measured: garbled-name
-            # reconciliation fires with an English preceding line and not with
-            # a source-language one. Falls back to the previous SOURCE text for
-            # the first segment and wherever the previous translation failed.
-            preceding = ""
-            prev_mid = ""
-            if not own_pair:
-                prev = prev_of.get(seg["id"])
-                prior = ""
-                if prev is not None:
-                    if seg_pivot:
-                        prev_mid = (mids.get(prev["id"])
-                                    or prev.get("text_mid") or "").strip()
-                        prior = prev_mid
-                    else:
-                        prior = prev.get("text_en") or ""
-                        if not is_target_text(prior, seg_tgt):
-                            prior = ""     # kept/failed neighbour: subtitle, not output
-                preceding = prior.strip() or before.get(seg["id"], "")
-            # Gloss clauses in the user context apply only where their word is
-            # spoken; gate against the ORIGINAL source text on both hops the
-            # second hop reads clean English, but the gloss's reason to exist
-            # (or not) is still the source segment (see `relevant_context`).
-            seg_ctx = relevant_context(context, seg["text"], seg_src)
-            if seg_pivot:
-                # src→en→tgt: the English hop is the measured-good line; the
-                # direct pair substitutes entities and bleeds neighbours (A/B'd).
-                mid = generate(h.processor, h.model, seg["text"], source=seg_src,
-                               target="en", context=seg_ctx,
-                               preceding=preceding, device=h.device,
-                               register=register, genre=genre,
-                               names=tuple(canonical_names(established["en"])))
-                if not is_target_text(mid, "en"):
-                    text = ""
-                else:
-                    # Digits → English words in code, before the intermediate is
-                    # stored or handed to the target hop: the model translates
-                    # digits as digits, and only code converts them (numwords).
-                    mid = numwords.spell_numbers(mid.strip(), "en")
-                    mids[seg["id"]] = mid
-                    established["en"] = update_established_names(
-                        established["en"], mid, "en")
-                    # The second hop sees the PREVIOUS segment's English
-                    # intermediate as preceding ("" for the first / after a
-                    # failed hop). The documented entity swap ("Jabhat al-Nusra"
-                    # → "al-Qaeda's Front") happened with a HEBREW preceding
-                    # line; A/B'd on both harness sets, a coherent English one
-                    # measured safe 0 semantic breaks on 17 controls including
-                    # every entity-swap guard line and fixed «запись»→«въезд»,
-                    # a dangling «её», and a chameleon incoherence.
-                    text = generate(h.processor, h.model, mid, source="en",
-                                    target=seg_tgt, context=seg_ctx,
-                                    preceding=prev_mid,
-                                    device=h.device, register=register, genre=genre,
-                                    names=tuple(canonical_names(
-                                        established.setdefault(seg_tgt, []))),
-                                    numbers_spelled=True, asr_source=False)
-            else:
-                # A direct en→tgt hop gets the same treatment as the pivot's
-                # second hop: spell the English digits in code first, then ask
-                # the model only to keep the number-words as words.
-                src_text = seg["text"]
-                en_direct = seg_src == "en" and seg_tgt != "en"
-                if en_direct:
-                    src_text = numwords.spell_numbers(src_text, "en")
-                text = generate(h.processor, h.model, src_text, source=seg_src,
-                                target=seg_tgt, context=seg_ctx,
-                                preceding=preceding, device=h.device,
-                                register=register, genre=genre,
-                                names=tuple(canonical_names(
-                                    established.setdefault(seg_tgt, []))),
-                                numbers_spelled=en_direct)
-            # target=="en": spell the final English; otherwise: safety net over
-            # any digits the model passed through.
-            text = _finalize_numbers(text, seg_tgt)
-            if is_target_text(text, seg_tgt):
-                seg["text_en"] = text.strip()
-                established[seg_tgt] = update_established_names(
-                    established.setdefault(seg_tgt, []), seg["text_en"], seg_tgt)
-                if seg_pivot:
-                    seg["text_mid"] = mids[seg["id"]]
-            elif mark_failed(seg):
-                print(f"  translate: seg {seg['id']} failed → keep original",
-                      file=sys.stderr)
-            else:
-                print(f"  translate: seg {seg['id']} failed → still untranslated "
-                      f"(the user asked for this line to be dubbed)", file=sys.stderr)
-            if n % 8 == 0:
-                print(f"  translate: {n}/{len(dub)}", file=sys.stderr)
-                if save:
-                    save()
-        for seg in subs:
-            # Subtitle-only: the audio stays original, so a failure here just
-            # leaves the span's own transcription as the subtitle. Gloss gating
-            # applies here too, against the span's own text and language. An
-            # interjection keep (movie mode) has no span language: it is source
-            # speech kept for its actor's own voice, so it translates from the
-            # run's source language unless its own script refutes that too
-            # (`segment_langs`).
-            seg_lang, seg_tgt = segment_langs(seg, source, target)
-            seg_ctx = relevant_context(context, seg["text"], seg_lang)
-            if pivot_via_english(seg_lang, seg_tgt):
-                mid = generate(h.processor, h.model, seg["text"], source=seg_lang,
-                               target="en", context=seg_ctx, device=h.device,
-                               genre=genre)
-                text = "" if not is_target_text(mid, "en") else generate(
-                    h.processor, h.model, numwords.spell_numbers(mid.strip(), "en"),
-                    source="en", target=seg_tgt, context=seg_ctx, device=h.device,
-                    numbers_spelled=True, asr_source=False, genre=genre)
-            else:
-                text = generate(h.processor, h.model, seg["text"], source=seg_lang,
-                                target=seg_tgt, context=seg_ctx, device=h.device,
-                                genre=genre)
-            text = _finalize_numbers(text, seg_tgt)
-            seg["text_en"] = text.strip() if is_target_text(text, seg_tgt) else "…"
-        # Revision pass over the finished dubbing script (dubbed lines only —
-        # kept segments' text_en is a subtitle of audio that will play as-is).
-        # The entity table is canonicalised from the script's own proper-noun
-        # occurrences, so a name the run spelled three ways converges on its
-        # best-attested form. Runs only when this call translated something:
-        # a resumed no-op run must not re-revise an already-revised script.
-        # A hand-corrected line is excluded outright: this pass rewrites the whole
-        # script whenever anything was translated, which is exactly the path that
-        # would silently undo a user's correction.
-        rev = [s for s in segments
-               if not s.get("keep") and (s.get("text_en") or "").strip()
-               and not manifest.is_locked(s, "text_en")]
-        if todo and rev:
-            table = canonical_names(
-                [n for s in rev for n in _name_occurrences(s["text_en"], target)])
-            for s, text in zip(rev, revise_run(h.processor, h.model,
-                                               [s["text_en"] for s in rev],
-                                               target=target, names=table)):
-                s["text_en"] = text.strip()
+        _dub_pass(h, dub, source=source, target=target, context=context,
+                  before=before, prev_of=prev_of, mids=mids, established=established,
+                  register=register, genre=genre, save=save)
+        _subtitle_pass(h, subs, source=source, target=target, context=context,
+                       genre=genre)
+        if todo:
+            _revision_pass(h, segments, target)
     # Teardown (drop refs, collect, clear the MLX pool) is `loaded.__exit__`'s
     # job — the handle owned the only names, so leaving the block IS the free.
     manifest.save(workdir, m)
