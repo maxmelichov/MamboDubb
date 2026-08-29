@@ -265,7 +265,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not signing:
         banner([
-            "BUILDING UNSIGNED — Finder-drag of a downloaded .dmg still trips",
+            "BUILDING UNSIGNED. Finder-drag of a downloaded .dmg still trips",
             "Gatekeeper (\"damaged\", move to Trash). This build ad-hoc-signs",
             "the bundle and ships Install MamboDubb.command inside the .dmg,",
             "which a downloaded volume's quarantine flag stops anyone from",
@@ -273,11 +273,12 @@ def main(argv: list[str] | None = None) -> int:
             "install with:",
             "    curl -fsSL https://github.com/maxmelichov/MamboDubb/releases/latest/download/install.sh | sh",
             f"A real drag-to-Applications release needs {SIGN_VAR} and",
-            f"{', '.join(NOTARY_VARS)} — see docs/RELEASING.md.",
+            f"{', '.join(NOTARY_VARS)}; see docs/RELEASING.md.",
         ])
     elif not notarizing:
         banner([
-            f"{SIGN_VAR} is set but {', '.join(notary_missing)} " + ("is" if len(notary_missing) == 1 else "are") + " not:",
+            f"{SIGN_VAR} is set but {', '.join(notary_missing)} "
+            + ("is" if len(notary_missing) == 1 else "are") + " not:",
             "the app will be SIGNED but NOT NOTARIZED, and current macOS",
             "still blocks it (\"Apple could not verify…\"). Set all of",
             f"{', '.join(NOTARY_VARS)} for a shippable artifact.",
@@ -298,7 +299,7 @@ def main(argv: list[str] | None = None) -> int:
 
     app, dmg = artifact_paths()
     if not DRY_RUN and not dmg.is_file():
-        raise SystemExit(f"error: expected {dmg} — did the dmg bundle step fail?")
+        raise SystemExit(f"error: expected {dmg}; did the dmg bundle step fail?")
 
     if notarizing:
         notarize_dmg(dmg)
