@@ -46,6 +46,88 @@ CARRY_MIN_OVERLAP = 0.5
 DETECT_MIN_COVER = 0.6
 
 
+def _letters(text: str) -> int:
+    """How many alphabetic characters a line has. Under two is transcript noise."""
+    return sum(1 for ch in (text or "") if ch.isalpha())
+
+
+def _span_lang(seg: dict[str, Any], ranges: list[tuple[float, float, str | None]]) -> str | None:
+    """The language of the span this segment came out of, or None if it did not."""
+    for a, b, lang in ranges:
+        if a - 0.05 <= seg["start"] and seg["end"] <= b + 0.05:
+            return lang or ""
+    return None
+
+
+def _target_speakers(segments: list[dict[str, Any]], cross: bool, target: str) -> set[str]:
+    """Speakers who speak the target language for most of their airtime.
+
+    Measured over a whole speaker, which is what makes it a prior rather than a
+    verdict: `_says_source` is what can outvote it for one segment.
+    """
+    totals: dict[str, list[float]] = {}
+    for seg in segments:
+        if _letters(seg["text"]) < 2:
+            continue
+        dur = seg["end"] - seg["start"]
+        agg = totals.setdefault(seg["speaker"], [0.0, 0.0])
+        agg[0] += dur
+        if cross and script.is_script(seg["text"], target):
+            agg[1] += dur
+    return {spk for spk, (total, lat) in totals.items()
+            if total > 0 and lat / total >= SPEAKER_EN_RATIO}
+
+
+def _says_source(seg: dict[str, Any], cross: bool, src: str, seg_lang) -> bool:
+    """Per-segment evidence strong enough to outvote the speaker-level prior.
+
+    Two independent witnesses, OR'd. The TEXT witness: the segment's own
+    transcript is written dominantly in the SOURCE script, which for a
+    cross-script pair says this line was not spoken in the target language.
+    The AUDIO witness: the language classifier confidently names the source
+    language over that span. Either alone overturns the prior the audio
+    witness goes missing or guesses nonsense on short clips, which is how
+    whole passages of genuine source speech used to ride a speaker's prior
+    through the pipeline undubbed.
+
+    "Dominantly" is the same majority-of-letters test the rest of this
+    module measures script with, so a mostly-target line with one
+    source-script word embedded in it is not evidence and does not flip.
+    """
+    # Text witness. Void for a same-script pair, where the two languages are
+    # written identically and script says nothing about which one was spoken.
+    if cross and script.is_script(seg["text"], src):
+        return True
+    if seg_lang is None:
+        return False
+    verdict = seg_lang(seg)
+    if not verdict:
+        return False
+    lang, prob = verdict
+    return lang == src and float(prob) >= SPEAKER_EN_VETO_PROB
+
+
+def _names_other(seg: dict[str, Any], target: str, seg_lang) -> bool:
+    """The audio classifier confidently names a language that is NOT the target.
+
+    The mirror of the named-span rule, for witnesses the transcript left
+    nameless: script cannot tell English from German, but the classifier
+    can, and a confident non-target name outranks "it looks like the
+    target's script" for exactly the reason a named span does a he→de
+    run kept fifty lines of English as "already German" on script alone.
+    Same confidence bar as the source veto: an unsure verdict changes
+    nothing, and with no classifier at all nothing changes either.
+    """
+    if seg_lang is None:
+        return False
+    verdict = seg_lang(seg)
+    if not verdict:
+        return False
+    lang, prob = verdict
+    return (bool(lang) and lang != "und" and lang != target
+            and float(prob) >= SPEAKER_EN_VETO_PROB)
+
+
 def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None = None,
               target: str = "en", src: str = "he", dub_foreign: bool = False,
               genre: str = "documentary", seg_lang=None) -> None:
@@ -73,100 +155,18 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
     The speaker rule is a PRIOR, not a verdict. It is measured over a whole speaker,
     so it also keeps the genuine source-language lines of a mostly-target speaker,
     which then never get dubbed at all ("why isn't this dubbed?"). Two per-segment
-    witnesses can outvote it, and either one is enough:
-
-    - the segment's own TEXT is dominantly in the source script (cross-script pairs
-      only). A speaker who alternates languages transcribes as source script exactly
-      where they spoke the source language, and that is the one witness always
-      present it needs no model and does not depend on clip length.
-    - `seg_lang(seg)` returns the language classifier's verdict for that one segment
-      as `(lang, prob)` (or None when it has none) and it names the source language
-      confidently. The bar is deliberately high the classifier's documented
-      mislabels sit in the 0.34-0.60 band so an unsure verdict changes nothing.
-
-    The text witness is what the audio one cannot be: short source-language clips
-    routinely come back from the classifier as None or as a low-probability wrong
-    label, so on its own it left whole untranslated passages kept as `speaker_en`.
+    witnesses can outvote it (`_says_source`), and either one is enough.
     """
-    def letters(text: str) -> int:
-        return sum(1 for ch in (text or "") if ch.isalpha())
-
     cross = not script.same_script(src, target)
     # Test-locked legacy value: the target bucket is called "latin" for Latin-script
     # targets; any other script names itself honestly.
     target_reason = "latin" if script.script_for(target) == "latin" else "target_lang"
 
     ranges = [(s["start"], s["end"], s.get("lang")) for s in (spans or []) if s.get("words")]
-
-    def span_lang(seg: dict[str, Any]) -> str | None:
-        """The language of the span this segment came out of, or None if it did not."""
-        for a, b, lang in ranges:
-            if a - 0.05 <= seg["start"] and seg["end"] <= b + 0.05:
-                return lang or ""
-        return None
-    totals: dict[str, list[float]] = {}
-    for seg in segments:
-        if letters(seg["text"]) < 2:
-            continue
-        dur = seg["end"] - seg["start"]
-        agg = totals.setdefault(seg["speaker"], [0.0, 0.0])
-        agg[0] += dur
-        if cross and script.is_script(seg["text"], target):
-            agg[1] += dur
-    en_speakers = {
-        spk for spk, (total, lat) in totals.items() if total > 0 and lat / total >= SPEAKER_EN_RATIO
-    }
-
-    def says_source(seg: dict[str, Any]) -> bool:
-        """Per-segment evidence strong enough to outvote the speaker-level prior.
-
-        Two independent witnesses, OR'd. The TEXT witness: the segment's own
-        transcript is written dominantly in the SOURCE script, which for a
-        cross-script pair says this line was not spoken in the target language.
-        The AUDIO witness: the language classifier confidently names the source
-        language over that span. Either alone overturns the prior the audio
-        witness goes missing or guesses nonsense on short clips, which is how
-        whole passages of genuine source speech used to ride a speaker's prior
-        through the pipeline undubbed.
-
-        "Dominantly" is the same majority-of-letters test the rest of this
-        function measures script with, so a mostly-target line with one
-        source-script word embedded in it is not evidence and does not flip.
-        """
-        # Text witness. Void for a same-script pair, where the two languages are
-        # written identically and script says nothing about which one was spoken.
-        if cross and script.is_script(seg["text"], src):
-            return True
-        if seg_lang is None:
-            return False
-        verdict = seg_lang(seg)
-        if not verdict:
-            return False
-        lang, prob = verdict
-        return lang == src and float(prob) >= SPEAKER_EN_VETO_PROB
-
-    def names_other(seg: dict[str, Any]) -> bool:
-        """The audio classifier confidently names a language that is NOT the target.
-
-        The mirror of the named-span rule, for witnesses the transcript left
-        nameless: script cannot tell English from German, but the classifier
-        can, and a confident non-target name outranks "it looks like the
-        target's script" for exactly the reason a named span does a he→de
-        run kept fifty lines of English as "already German" on script alone.
-        Same confidence bar as the source veto: an unsure verdict changes
-        nothing, and with no classifier at all nothing changes either.
-        """
-        if seg_lang is None:
-            return False
-        verdict = seg_lang(seg)
-        if not verdict:
-            return False
-        lang, prob = verdict
-        return (bool(lang) and lang != "und" and lang != target
-                and float(prob) >= SPEAKER_EN_VETO_PROB)
+    en_speakers = _target_speakers(segments, cross, target)
 
     for seg in segments:
-        lang = span_lang(seg)
+        lang = _span_lang(seg, ranges)
         if lang is not None:
             # Not the source language, whatever it is: play it as it was recorded.
             # A witness that NAMED a language cleared its confidence threshold and
@@ -179,7 +179,7 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
             named = lang not in ("", "und")
             in_target = (lang == target
                          or (not named and cross and script.is_script(seg["text"], target)
-                             and not names_other(seg)))
+                             and not _names_other(seg, target, seg_lang)))
             if (dub_foreign and not in_target and lang and lang != "und"
                     and (seg.get("text") or "").strip() not in ("", "…")):
                 # Opted in, and the span is confident: known language, real words.
@@ -188,14 +188,15 @@ def mark_keep(segments: list[dict[str, Any]], spans: list[dict[str, Any]] | None
                 continue
             seg["keep"] = True
             seg["keep_reason"] = target_reason if in_target else "foreign"
-        elif letters(seg["text"]) < 2:
+        elif _letters(seg["text"]) < 2:
             # Transcript noise (stray glyphs). Nothing to translate, so let the
             # original audio through rather than leaving a hole.
             seg["keep"], seg["keep_reason"] = True, "no_text"
         elif cross and script.is_script(seg["text"], target):
             seg["keep"] = True
-            seg["keep_reason"] = "foreign" if names_other(seg) else target_reason
-        elif seg["speaker"] in en_speakers and not says_source(seg):
+            seg["keep_reason"] = ("foreign" if _names_other(seg, target, seg_lang)
+                                  else target_reason)
+        elif seg["speaker"] in en_speakers and not _says_source(seg, cross, src, seg_lang):
             seg["keep"], seg["keep_reason"] = True, "speaker_en"
         elif genre == "movie" and is_interjection_keep(seg, src, target):
             # Movie mode: a standalone greeting/interjection beat plays in the
