@@ -10,6 +10,13 @@ use crate::provision::resolve_workspace;
 use crate::workspace::{find_uv, inspect_workspace};
 use process::RunnerProcess;
 
+/// Every `RunnerState` mutex fails the same way, and the message is the same wherever
+/// it surfaces: a poisoned lock means a previous holder panicked, which the webview can
+/// only report.
+fn lock_poisoned<T>(_: T) -> String {
+    "runner state lock poisoned".to_string()
+}
+
 /// Start the studio server out of the configured workspace, or return the one already
 /// running. Idempotent: the webview calls it on mount without checking first.
 #[tauri::command]
@@ -21,10 +28,7 @@ pub async fn start_server(app: tauri::AppHandle) -> Result<ServerInfo, String> {
 
 #[tauri::command]
 pub async fn stop_server(state: State<'_, RunnerState>) -> Result<(), String> {
-    let mut guard = state
-        .process
-        .lock()
-        .map_err(|_| "runner state lock poisoned".to_string())?;
+    let mut guard = state.process.lock().map_err(lock_poisoned)?;
     if let Some(mut process) = guard.take() {
         process.kill();
     }
@@ -35,10 +39,7 @@ pub async fn stop_server(state: State<'_, RunnerState>) -> Result<(), String> {
 /// the UI polls to decide between the studio and the setup screen.
 #[tauri::command]
 pub async fn get_server_url(state: State<'_, RunnerState>) -> Result<Option<ServerInfo>, String> {
-    let mut guard = state
-        .process
-        .lock()
-        .map_err(|_| "runner state lock poisoned".to_string())?;
+    let mut guard = state.process.lock().map_err(lock_poisoned)?;
     if let Some(process) = guard.as_mut() {
         if process.is_alive() {
             return Ok(Some(process.info()));
@@ -58,10 +59,7 @@ pub async fn get_server_url(state: State<'_, RunnerState>) -> Result<Option<Serv
 /// whole start).
 #[tauri::command]
 pub async fn get_server_log(state: State<'_, RunnerState>) -> Result<String, String> {
-    let ring = state
-        .boot_log
-        .lock()
-        .map_err(|_| "runner state lock poisoned".to_string())?;
+    let ring = state.boot_log.lock().map_err(lock_poisoned)?;
     Ok(ring.text())
 }
 
@@ -82,15 +80,9 @@ fn ensure_server(app: &tauri::AppHandle) -> Result<ServerInfo, String> {
     // One starter at a time. The slow part below runs *outside* the `process` lock
     // so `get_server_log` keeps answering during a first-run sync; this gate is what
     // replaces the exclusion that lock used to provide.
-    let _starting = state
-        .start_gate
-        .lock()
-        .map_err(|_| "runner state lock poisoned".to_string())?;
+    let _starting = state.start_gate.lock().map_err(lock_poisoned)?;
     {
-        let mut guard = state
-            .process
-            .lock()
-            .map_err(|_| "runner state lock poisoned".to_string())?;
+        let mut guard = state.process.lock().map_err(lock_poisoned)?;
         if let Some(process) = guard.as_mut() {
             if process.is_alive() {
                 return Ok(process.info());
@@ -129,10 +121,7 @@ fn start_fresh(app: &tauri::AppHandle, state: &RunnerState) -> Result<ServerInfo
     // The shared ring, so the sync's progress is readable while spawn blocks.
     let process = RunnerProcess::spawn(&uv, &workspace, state.boot_log.clone())?;
     let info = process.info();
-    *state
-        .process
-        .lock()
-        .map_err(|_| "runner state lock poisoned".to_string())? = Some(process);
+    *state.process.lock().map_err(lock_poisoned)? = Some(process);
     Ok(info)
 }
 
