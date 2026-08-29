@@ -64,17 +64,16 @@ import json
 import re
 import sys
 from collections import Counter
-from pathlib import Path
 from collections.abc import Callable, Iterable, Sequence
+from pathlib import Path
 from typing import Any, NamedTuple
 
 import numpy as np
 import soundfile as sf
 
-from . import audio
+from . import audio, ttsopts
 from . import hebrew as hebrew_mod
 from . import script as script_mod
-from . import ttsopts
 from .script import count_letters, same_script, script_for, speech_units
 from .ttsopts import TtsOpts
 

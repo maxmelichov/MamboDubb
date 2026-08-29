@@ -41,8 +41,8 @@ from typing import Any
 
 import numpy as np
 
-from . import audio, manifest as manifest_mod, script, timeline, transcript
-from . import tts
+from . import audio, script, timeline, transcript, tts
+from . import manifest as manifest_mod
 
 SCAN_SR = 16000
 GAP_MIN_SEC = 2.0

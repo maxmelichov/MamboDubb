@@ -25,8 +25,8 @@ those are the slow ones, and the only ones that need the app's job slot.
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 from collections.abc import Callable, Iterable, Sequence
+from pathlib import Path
 from typing import Any
 
 from . import MANUAL_REASON, STAGES, manifest, script, ttsopts
@@ -1262,9 +1262,8 @@ def rebuild(m: dict[str, Any], workdir: Path, *, from_stage: str,
     timeline, when a line that has to be dubbed still cannot be
     (`_voice_stragglers`, which fills every hole it is allowed to fill first).
     """
-    from . import cli, mix, report
+    from . import cli, mix, report, translate
     from . import timeline as timeline_mod
-    from . import translate
     from . import tts as tts_mod
 
     if from_stage not in REBUILDABLE:

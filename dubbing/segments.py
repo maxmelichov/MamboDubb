@@ -16,8 +16,8 @@ import bisect
 import os
 import re
 import sys
-from pathlib import Path
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any
 
 from . import script

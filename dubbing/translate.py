@@ -62,13 +62,12 @@ import subprocess
 import sys
 import threading
 from collections import deque
-from pathlib import Path
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from . import USER_KEEP_REASONS, numwords
-from .script import (count_letters, is_script, same_script, script_for,
-                     scripts_used, speech_units)
+from .script import count_letters, is_script, same_script, script_for, scripts_used, speech_units
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODEL_PATH = REPO_ROOT / "models" / "gemma-4-12B-it-6bit"
