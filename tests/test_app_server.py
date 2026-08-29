@@ -3674,8 +3674,6 @@ def test_restoring_diarization_runs_through_the_one_install_slot(diarization,
                                                                 monkeypatch):
     """Same slot, same re-probe, same verdict shape as a download or a brew:
     there is no second install path to keep honest."""
-    from dubbing_app import setup as setup_mod
-
     source = a_weights_dir(diarization["source"])
     monkeypatch.setenv(install_mod.DIARIZATION_SOURCE_ENV, str(source))
     probed: list[str] = []

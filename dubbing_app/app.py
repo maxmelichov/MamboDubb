@@ -16,13 +16,14 @@ from __future__ import annotations
 import json
 import secrets
 import threading
-from contextlib import asynccontextmanager
+from collections.abc import Iterator
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import Body, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from dubbing import STAGES, manifest
@@ -31,7 +32,7 @@ from . import errors, events, install, jobs as jobs_mod, media, ops, peaks, setu
 from .errors import ApiError, busy, invalid, not_found
 from .events import EventBus
 from .jobs import JobQueue
-from .projects import Projects
+from .projects import Projects, slugify
 from .runner import SubprocessRunner
 
 # The `dubbing.cli` choice lists, restated. They cannot be imported: `dubbing.cli`
@@ -547,58 +548,9 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
         source = (body.source or "").strip()
         if not source:
             raise invalid("source is required")
-        # A local-file input is probed by actually opening it: macOS TCC denies at
-        # open(), not at stat(), so this is the only check that tells the truth.
-        # Failing here costs the user a sentence; failing at the fetch (or worse,
-        # mix) stage costs them a job that dies minutes in with an ffmpeg error
-        # that says nothing about permissions.
-        if not source.lower().startswith(("http://", "https://")):
-            path = Path(source).expanduser()
-            try:
-                with open(path, "rb") as fh:
-                    fh.read(1)
-            except FileNotFoundError:
-                raise invalid(f"input not found: {path}. Paste the file's full "
-                              "path, or pick it with Choose file.")
-            except OSError:
-                raise invalid(f"macOS is not letting this app read {path}. Grant "
-                              "access in System Settings → Privacy & Security → "
-                              "Files and Folders, or move the file somewhere the "
-                              "app can read.")
-        # A transcript the user brought. Parsed here rather than at the transcript
-        # stage for the same reason the source is opened here: a path with a typo
-        # in it, or the wrong file entirely, is a sentence at this door and a job
-        # that dies after a download and a stems separation at the other one.
-        # `dubbing.transcript` is safe to import in the server process its heavy
-        # imports (faster-whisper, torch, silero) are all function-local.
-        from dubbing import transcript as transcript_mod
-
-        captions = (body.captions or "").strip() or None
-        if body.transcript == "file" and not captions:
-            raise invalid("pick the transcript file: 'A transcript I have' has "
-                          "nothing to read without one.")
-        if captions:
-            try:
-                transcript_mod.check_transcript_file(Path(captions).expanduser())
-            except transcript_mod.TranscriptFileError as exc:
-                raise invalid(str(exc)) from exc
-            except OSError:
-                raise invalid(f"macOS is not letting this app read {captions}. Grant "
-                              "access in System Settings → Privacy & Security → "
-                              "Files and Folders, or move the file somewhere the "
-                              "app can read.")
-        # Hebrew needs two local models the other targets do not (the Qwen3-TTS
-        # Hebrew LoRA and its G2P). Said here, not at the tts stage: a run that
-        # found out there would already have paid for stems, ASR and diarization.
-        from dubbing import hebrew
-
-        if hebrew.is_hebrew(body.tgt_lang):
-            gaps = hebrew.missing()
-            if gaps:
-                raise invalid("Hebrew is not available as a target yet: "
-                              + "; ".join(g.replace("\n    ", ". Run: ") for g in gaps))
-        from .projects import slugify
-
+        _check_source_readable(source)
+        captions = _check_transcript_file(body)
+        _check_target_available(body.tgt_lang)
         name = projects.unique_name(body.name or slugify(source))
         workdir = projects.dir_for(name)
         workdir.mkdir(parents=True, exist_ok=False)
@@ -710,10 +662,8 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
             if "start" in fields:
                 guard_structural(name)
             m = projects.load(name)
-            try:
+            with _edits():
                 seg = _apply_patch(m, uid, fields)
-            except ops.EditError as exc:
-                raise invalid(str(exc)) from exc
             projects.save(name, m)
         for field in fields:
             bus.publish(name, events.segment_event(uid, field, "done"))
@@ -734,11 +684,9 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
         with lock_for(name):
             guard_structural(name)
             m = projects.load(name)
-            try:
+            with _edits():
                 uid = ops.add(m, body.start, body.end, text=body.text,
                               speaker=body.speaker)
-            except ops.EditError as exc:
-                raise invalid(str(exc)) from exc
             projects.save(name, m)
         bus.publish(name, events.segment_event(uid, "add", "done"))
         return {"uid": uid, "segment": projects.enrich(name, m, ops.find(m, uid))}
@@ -770,10 +718,8 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
         with lock_for(name):
             guard_structural(name)
             m = projects.load(name)
-            try:
+            with _edits():
                 uid_a, uid_b = ops.split(m, uid, body.at)
-            except ops.EditError as exc:
-                raise invalid(str(exc)) from exc
             projects.save(name, m)
         bus.publish(name, events.segment_event(uid, "split", "done"))
         return {"uids": [uid_a, uid_b],
@@ -788,10 +734,8 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
             other = body.other or body.uid or _next_uid(m, uid)
             if not other:
                 raise invalid("nothing to merge with: no following segment")
-            try:
+            with _edits():
                 merged = ops.merge(m, uid, other)
-            except ops.EditError as exc:
-                raise invalid(str(exc)) from exc
             projects.save(name, m)
         bus.publish(name, events.segment_event(merged, "merge", "done"))
         return {"uid": merged, "segment": projects.enrich(name, m, ops.find(m, merged))}
@@ -909,6 +853,88 @@ def create_app(outputs: Path, *, runner=None, version: str | None = None,
 # helpers
 # ---------------------------------------------------------------------------
 
+def _check_source_readable(source: str) -> None:
+    """Refuse a local file this process cannot open, at the door.
+
+    Probed by actually opening it: macOS TCC denies at open(), not at stat(), so
+    this is the only check that tells the truth. Failing here costs the user a
+    sentence; failing at the fetch (or worse, mix) stage costs them a job that
+    dies minutes in with an ffmpeg error that says nothing about permissions.
+    """
+    if source.lower().startswith(("http://", "https://")):
+        return
+    path = Path(source).expanduser()
+    try:
+        with open(path, "rb") as fh:
+            fh.read(1)
+    except FileNotFoundError:
+        raise invalid(f"input not found: {path}. Paste the file's full "
+                      "path, or pick it with Choose file.")
+    except OSError:
+        raise invalid(_no_read_access(str(path)))
+
+
+def _check_transcript_file(body: CreateProject) -> str | None:
+    """The caption path this project will run with, or None. Raises on a bad one.
+
+    Parsed here rather than at the transcript stage for the same reason the
+    source is opened here: a path with a typo in it, or the wrong file entirely,
+    is a sentence at this door and a job that dies after a download and a stems
+    separation at the other one. `dubbing.transcript` is safe to import in the
+    server process; its heavy imports (faster-whisper, torch, silero) are all
+    function-local.
+    """
+    from dubbing import transcript as transcript_mod
+
+    captions = (body.captions or "").strip() or None
+    if body.transcript == "file" and not captions:
+        raise invalid("pick the transcript file: 'A transcript I have' has "
+                      "nothing to read without one.")
+    if captions:
+        try:
+            transcript_mod.check_transcript_file(Path(captions).expanduser())
+        except transcript_mod.TranscriptFileError as exc:
+            raise invalid(str(exc)) from exc
+        except OSError:
+            raise invalid(_no_read_access(captions))
+    return captions
+
+
+def _check_target_available(tgt_lang: str) -> None:
+    """Hebrew needs two local models the other targets do not (the Qwen3-TTS
+    Hebrew LoRA and its G2P). Said here, not at the tts stage: a run that found
+    out there would already have paid for stems, ASR and diarization."""
+    from dubbing import hebrew
+
+    if not hebrew.is_hebrew(tgt_lang):
+        return
+    gaps = hebrew.missing()
+    if gaps:
+        raise invalid("Hebrew is not available as a target yet: "
+                      + "; ".join(g.replace("\n    ", ". Run: ") for g in gaps))
+
+
+def _no_read_access(path: str) -> str:
+    """The one sentence both file probes end on when the open is denied."""
+    return (f"macOS is not letting this app read {path}. Grant access in System "
+            "Settings → Privacy & Security → Files and Folders, or move the file "
+            "somewhere the app can read.")
+
+
+@contextmanager
+def _edits() -> Iterator[None]:
+    """Turn a refusal from `dubbing.edit` into the 400 the UI renders.
+
+    `dubbing.edit` is the authority on what is a structurally impossible edit,
+    and every route that makes one answers it the same way, so the mapping lives
+    in one place rather than in five identical except clauses.
+    """
+    try:
+        yield
+    except ops.EditError as exc:
+        raise invalid(str(exc)) from exc
+
+
 def _apply_patch(m: dict[str, Any], uid: str, fields: dict[str, Any]) -> dict[str, Any]:
     """Route a PATCH body through the `ops` setters never a raw dict update.
 
@@ -957,4 +983,4 @@ def _check_uids(projects: Projects, name: str, body: UidsBody) -> list[str]:
     return list(dict.fromkeys(body.uids))
 
 
-__all__ = ["create_app", "ApiError", "JSONResponse"]
+__all__ = ["create_app", "ApiError"]
