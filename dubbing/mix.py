@@ -165,6 +165,89 @@ def load_clip(path: Path, keep: bool) -> np.ndarray:
     return a.astype(np.float32)
 
 
+def fill_spans(segments: list[dict[str, Any]], media_end: float) -> list[tuple[float, float]]:
+    """Spans no segment claims: they carry the original vocals.
+
+    The timeline asserts each clip's length matches its place span within 20ms,
+    so the complement of the place intervals cannot collide with a clip.
+
+    A fragment whose words moved is not unaccounted speech.
+    `merge_stranded_fragments` folds a torn-off opener's TEXT into a later
+    segment, which dubs it; the opener's own seconds keep no placement, so the
+    fill would air the original recording of a line the dub is about to speak
+    the same words twice, once in each language. Counting those spans as claimed
+    is what makes the fill mean "speech nothing accounted for" again, which is
+    the only reason it exists.
+
+    Nor is a segment's own source span, and that one is not the same interval as
+    its placement. A clip is placed on the speech it was measured against and is
+    exactly as long as it is; a slowed-down clip, or one anchored earlier than
+    the ASR's boundary, leaves seconds of the segment's OWN window carrying no
+    placement. The fill aired the actor saying that very line: a 1.12s "צ'לסי."
+    was dubbed at 36.95-37.68 and the original played on at 37.68-38.42, so
+    "Chelsea" was heard twice, once in each language, 0.2s apart. Those seconds
+    are the most accounted-for in the file the segment is what dubbed them so
+    they are claimed by the segment, not by the geometry of its clip.
+    """
+    own = [(float(s["start"]), float(s["end"])) for s in segments]
+    absorbed = [(float(f["start"]), float(f["end"]))
+                for s in segments for f in (s.get("merged_from") or [])]
+    return unclaimed_spans(
+        [(s["place"]["start"], s["place"]["end"]) for s in segments] + own + absorbed,
+        media_end)
+
+
+def _voiced_in_fill(voc_path: Path, fill: list[tuple[float, float]],
+                    sr: int) -> list[tuple[float, float]]:
+    """Where the original vocals actually speak inside the fill spans.
+
+    The envelope ducks the bed under them, the same as it does under a dub.
+    """
+    voiced: list[tuple[float, float]] = []
+    with sf.SoundFile(str(voc_path)) as vf:
+        for t0, t1 in fill:
+            s0 = int(t0 * sr)
+            piece = _read_mono(vf, s0, int(t1 * sr) - s0)
+            voiced += [(t0 + a, t0 + b) for a, b in voiced_spans(piece, sr)]
+    return voiced
+
+
+def _add_fill(speech: np.ndarray, occupied: np.ndarray, fill: list[tuple[float, float]],
+              vf: sf.SoundFile, pos: int, block_end: int, sr: int, fade_n: int) -> None:
+    """Designed final pass: original vocals into every unclaimed span.
+
+    Runs after all placed clips, so an overlap here would mean the complement
+    disagrees with the placements a real bug.
+    """
+    for t0, t1 in fill:
+        s0, s1 = int(t0 * sr), int(t1 * sr)
+        a = max(s0, pos)
+        b = min(s1, block_end)
+        if b <= a:
+            continue
+        lo, hi = a - pos, b - pos
+        occ = occupied[lo:hi]
+        # A placed clip's audio can run a few ms past its declared place
+        # span (clip files are not sample-exact to the manifest), so the
+        # complement may brush a clip's tail. Trim those samples from the
+        # fill rather than double them; anything beyond ~0.1s means the
+        # complement truly disagrees with the placements a real bug.
+        overlap = int(occ.sum())
+        assert overlap <= int(0.1 * sr), (
+            "vocals fill overlaps a placed clip unclaimed-span "
+            f"computation is wrong near {a / sr:.2f}s"
+        )
+        piece = _read_mono(vf, a, b - a)
+        k = np.arange(a, b, dtype=np.float32)
+        edge = np.minimum((k - s0) / fade_n, (s1 - k) / fade_n)
+        piece *= np.clip(edge, 0.0, 1.0)
+        if overlap:
+            piece[occ] = 0.0
+        # Unity gain: undo the global speech lift applied below.
+        speech[lo:hi] += piece / SPEECH_GAIN
+        occupied[lo:hi] = True
+
+
 def assemble(m: dict[str, Any], workdir: Path, raw: Path) -> float:
     """Stream the mixed track into `raw`; return its absolute peak."""
     sr = audio.SR
@@ -172,40 +255,9 @@ def assemble(m: dict[str, Any], workdir: Path, raw: Path) -> float:
     media_end = float(m["source"]["duration"])
     total = max(media_end, max((s["place"]["end"] for s in segments), default=0.0) + 0.2)
 
-    # Spans the placements left empty: they carry the original vocals. The
-    # timeline asserts each clip's length matches its place span within 20ms,
-    # so the complement of the place intervals cannot collide with a clip.
-    # A fragment whose words moved is not unaccounted speech. `merge_stranded
-    # _fragments` folds a torn-off opener's TEXT into a later segment, which dubs
-    # it; the opener's own seconds keep no placement, so the fill below would air
-    # the original recording of a line the dub is about to speak the same words
-    # twice, once in each language. Counting those spans as claimed is what makes
-    # the fill mean "speech nothing accounted for" again, which is the only reason
-    # it exists.
-    # Nor is a segment's own source span, and that one is not the same interval as
-    # its placement. A clip is placed on the speech it was measured against and is
-    # exactly as long as it is; a slowed-down clip, or one anchored earlier than
-    # the ASR's boundary, leaves seconds of the segment's OWN window carrying no
-    # placement. The fill aired the actor saying that very line: a 1.12s "צ'לסי."
-    # was dubbed at 36.95-37.68 and the original played on at 37.68-38.42, so
-    # "Chelsea" was heard twice, once in each language, 0.2s apart. Those seconds
-    # are the most accounted-for in the file the segment is what dubbed them so
-    # they are claimed by the segment, not by the geometry of its clip.
-    own = [(float(s["start"]), float(s["end"])) for s in segments]
-    absorbed = [(float(f["start"]), float(f["end"]))
-                for s in segments for f in (s.get("merged_from") or [])]
-    fill = unclaimed_spans(
-        [(s["place"]["start"], s["place"]["end"]) for s in segments] + own + absorbed,
-        media_end)
+    fill = fill_spans(segments, media_end)
     voc_path = workdir / m["files"]["vocals"]
-    voiced: list[tuple[float, float]] = []
-    with sf.SoundFile(str(voc_path)) as vf:
-        for t0, t1 in fill:
-            s0 = int(t0 * sr)
-            piece = _read_mono(vf, s0, int(t1 * sr) - s0)
-            voiced += [(t0 + a, t0 + b) for a, b in voiced_spans(piece, sr)]
-
-    env = build_envelope(segments, total, voiced)
+    env = build_envelope(segments, total, _voiced_in_fill(voc_path, fill, sr))
     ctrl_t = np.arange(len(env), dtype=np.float32) / CTRL_HZ
 
     bg_path = workdir / m["files"]["background"]
@@ -255,36 +307,7 @@ def assemble(m: dict[str, Any], workdir: Path, raw: Path) -> float:
                     still.append((start, clip))
             pending = still
 
-            # Designed final pass: original vocals into every unclaimed span.
-            # Runs after all placed clips, so an overlap here would mean the
-            # complement above disagrees with the placements a real bug.
-            for t0, t1 in fill:
-                s0, s1 = int(t0 * sr), int(t1 * sr)
-                a = max(s0, pos)
-                b = min(s1, block_end)
-                if b <= a:
-                    continue
-                lo, hi = a - pos, b - pos
-                occ = occupied[lo:hi]
-                # A placed clip's audio can run a few ms past its declared place
-                # span (clip files are not sample-exact to the manifest), so the
-                # complement may brush a clip's tail. Trim those samples from the
-                # fill rather than double them; anything beyond ~0.1s means the
-                # complement truly disagrees with the placements a real bug.
-                overlap = int(occ.sum())
-                assert overlap <= int(0.1 * sr), (
-                    "vocals fill overlaps a placed clip unclaimed-span "
-                    f"computation is wrong near {a / sr:.2f}s"
-                )
-                piece = _read_mono(vf, a, b - a)
-                k = np.arange(a, b, dtype=np.float32)
-                edge = np.minimum((k - s0) / fade_n, (s1 - k) / fade_n)
-                piece *= np.clip(edge, 0.0, 1.0)
-                if overlap:
-                    piece[occ] = 0.0
-                # Unity gain: undo the global speech lift applied below.
-                speech[lo:hi] += piece / SPEECH_GAIN
-                occupied[lo:hi] = True
+            _add_fill(speech, occupied, fill, vf, pos, block_end, sr, fade_n)
 
             gain = np.interp(np.arange(pos, block_end, dtype=np.float32) / sr,
                              ctrl_t, env).astype(np.float32)
