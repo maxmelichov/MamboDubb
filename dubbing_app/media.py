@@ -12,9 +12,12 @@ from __future__ import annotations
 import mimetypes
 import re
 from pathlib import Path
-from typing import Iterator
+from typing import TYPE_CHECKING, Iterator
 
 from .errors import invalid, not_found
+
+if TYPE_CHECKING:                        # fastapi stays a request-time import
+    from fastapi.responses import Response
 
 CHUNK = 64 * 1024
 
@@ -95,7 +98,7 @@ def read_range(path: Path, start: int, end: int) -> Iterator[bytes]:
             yield chunk
 
 
-def serve(path: Path, range_header: str | None, *, head: bool = False):
+def serve(path: Path, range_header: str | None, *, head: bool = False) -> Response:
     """A 200, a 206 or a 416 for `path`, honouring `Range`."""
     from fastapi.responses import JSONResponse, Response, StreamingResponse
 

@@ -51,7 +51,8 @@ def record(status: str, name: str, reason: str) -> None:
     print(f"{status:4}  {name:<28}  {reason}", flush=True)
 
 
-def run(cmd: list[str], cwd: Path | None = None, env: dict | None = None):
+def run(cmd: list[str], cwd: Path | None = None,
+        env: dict | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         cmd,
         cwd=str(cwd or ROOT),
