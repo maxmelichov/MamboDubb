@@ -136,6 +136,33 @@ def test_translate_instruction_contractions_only_for_english():
     assert "Russian" in ru                              # target named via _LANG_NAMES
 
 
+def test_a_bare_honorific_is_ruled_a_title_on_every_hop():
+    """"שייחה היא בראש ובראשונה…" came back as "Sheikha is, first and foremost…".
+
+    Read cold that is a woman named Sheikha, which is not what the Hebrew says.
+    The rule is unconditional because the failure is: it does not depend on the
+    target, on the register, or on anything the caller passes. What the
+    established-names list does is make it likelier, so the rule is worded to
+    answer that list directly rather than merely to sit beside it.
+    """
+    for source, target in (("he", "en"), ("he", "ru"), ("en", "ru"), ("", "en")):
+        p = translate._translate_instruction("שייחה", source, target)
+        assert "is a title and not a name" in p
+        assert "sheikha, sheikh, emir, rabbi, imam, president" in p
+        assert "elsewhere in this video" in p
+    # Into English the rule says which article, and names the trap by example.
+    en = translate._translate_instruction("שייחה", "he", "en",
+                                          names=("Sheikha Moza",))
+    assert "\"the Sheikha\", not \"Sheikha\"" in en
+    assert "the definite article" in en
+    # The rule and the names note it answers both appear, note first.
+    assert en.index("these exact spellings") < en.index("is a title and not a name")
+    # Other targets are told to use their own way of naming a title-holder, not
+    # English's article: Russian has no article to reach for.
+    ru = translate._translate_instruction("שייחה", "he", "ru")
+    assert "the way Russian refers to" in ru
+
+
 def test_lang_names_cover_the_qwen_targets():
     for code, name in [("zh", "Chinese"), ("ja", "Japanese"), ("ko", "Korean"),
                        ("uk", "Ukrainian"), ("ru", "Russian"), ("pt", "Portuguese")]:

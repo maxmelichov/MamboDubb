@@ -91,7 +91,14 @@ STAGE_TAGS = {
     # now spell at all) — merged past a parallel claim on v36.
     # v38: Hebrew joined _PERCENT (אחוז), so "X%" in a Hebrew dub no longer
     # borrows English "percent" for tts.prepare_text to silently strip.
-    "translate": "translate/v39",
+    "translate": "translate/v40",
+    # v40: two prompt changes, so every translation is invalidated. The fluency
+    # license now rides any hop with English on one side rather than only the
+    # hops out of English, which is what a he→en run was missing when it wrote
+    # "One must know her in order to know how Qatar operates"; and a bare
+    # honorific is ruled a title rather than a name ("the Sheikha", not
+    # "Sheikha"), which the rolling established-names list had been quietly
+    # pushing the other way. The echelon rule keeps the narrower gate.
     # v39: the "X, X" repair no longer deletes a repetition the speaker made. Its
     # premise is a decode that flattened two distinct source words onto one, and
     # the source is the witness to that; a source that repeats the word adjacently

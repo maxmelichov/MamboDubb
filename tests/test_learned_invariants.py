@@ -31,22 +31,38 @@ from dubbing import manifest, translate
 # =============================================================================
 
 
-def test_collocation_and_echelon_sentences_only_on_en_to_non_en_hops():
-    """Both ride the fluency license's guard (source=="en" and target!="en").
+def test_the_two_sentences_that_used_to_share_a_gate_no_longer_do():
+    """The fluency license rides English on either side; echelon still only out.
 
-    A/B'd: the anti-calque sentence added +2 fixes in combination and the
-    echelon rule repaired дивизион→дивизия, each with 0 semantic breaks on the
-    controls. Neither belongs on a hop that reads the noisy source.
+    A/B'd out of English: the anti-calque sentence added +2 fixes in combination
+    and the echelon rule repaired дивизион→дивизия, each with 0 semantic breaks
+    on the controls. Into English the license was simply missing, and the Qatar
+    documentary paid for it in "One must know her in order to know how Qatar
+    operates" the copula-heavy phrasing the license's last sentence forbids. The
+    old gate justified itself as "presumes a coherent input"; the license carries
+    that guard itself (a garbled source gets a literal rendering, not a fluent
+    guess), so it moved onto every hop that touches English.
+
+    The echelon sentence did not follow, and this test is where that stays
+    deliberate. It is terminology, not fluency, and its measured failure is a
+    false friend in the target's own vocabulary. Into English a Hebrew source is
+    served by `_HE_MILITARY_NOTE`, which names the ranks outright.
     """
     hop2 = translate._translate_instruction("hello", "en", "ru",
                                             numbers_spelled=True, asr_source=False)
     assert "standard collocation" in hop2 and "copula-heavy" in hop2
     assert "Military unit types translate by echelon" in hop2
     assert "the Russian term for the same echelon" in hop2
-    for source, target in (("he", "en"), ("he", "ru"), ("ru", "en")):
-        p = translate._translate_instruction("text", source, target)
-        assert "standard collocation" not in p
+    # Into English: the license arrives, the echelon rule stays behind.
+    for source in ("he", "ru", ""):
+        p = translate._translate_instruction("text", source, "en")
+        assert "standard collocation" in p and "copula-heavy" in p
+        assert "idiomatic English phrasing" in p
         assert "echelon" not in p
+    # Neither one on a hop with English on neither side.
+    he_ru = translate._translate_instruction("text", "he", "ru")
+    assert "standard collocation" not in he_ru
+    assert "echelon" not in he_ru
 
 
 def test_no_dative_or_idiom_instruction_in_any_prompt():

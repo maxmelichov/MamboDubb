@@ -359,7 +359,9 @@ def test_the_stage_tags_moved():
     # v36: script-derived gloss floors, negations and shorten budgets (CJK/hangul).
     # v37: "%" survives into every TTS target's own vocabulary.
     # v39: a repetition the speaker actually made survives the "X, X" repair.
-    assert manifest.STAGE_TAGS["translate"] == "translate/v39"
+    # v40: the fluency license reaches the hops into English, and a bare
+    # honorific is ruled a title rather than a name.
+    assert manifest.STAGE_TAGS["translate"] == "translate/v40"
 
 
 def test_ipa_is_not_a_manifest_field():

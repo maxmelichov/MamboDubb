@@ -181,7 +181,10 @@ def test_translate_stage_tag_bumped():
     # ja/ko/zh percentages no longer vanish, it/pt no longer say "percent".
     # v39: a repetition the speaker actually made survives the "X, X" repair, so
     # a drama line keeps the beat the actor played.
-    assert manifest.STAGE_TAGS["translate"] == "translate/v39"
+    # v40: the fluency license reaches the hops INTO English as well as out of
+    # them, and a bare honorific is ruled a title rather than a name. Both are
+    # prompt text, so every translation this stage has ever written is stale.
+    assert manifest.STAGE_TAGS["translate"] == "translate/v40"
 
 
 # ------------------------------------------------------- per-segment gloss gating
@@ -281,14 +284,19 @@ def test_latin_script_source_passes_context_through_whole():
     assert translate.relevant_context(_CTX, "The elite lives there.", "en") == _CTX
 
 
-def test_fluency_license_only_on_the_hop_into_a_non_english_target():
+def test_fluency_license_on_every_hop_that_touches_english():
     into_ru = translate._translate_instruction("Hello there.", "en", "ru")
     assert "idiomatic Russian phrasing" in into_ru
     assert "never coin" in into_ru.lower()
-    # Never when reading the noisy source, and never into English.
-    assert "idiomatic" not in translate._translate_instruction("שלום", "he", "en")
+    # Into English too, which is where it was missing: a he→en hop was never
+    # asked to prefer the plain verb, and wrote "One must know her in order to
+    # know how Qatar operates" for a line three plain words would carry.
+    into_en = translate._translate_instruction("שלום", "he", "en")
+    assert "idiomatic English phrasing" in into_en
+    assert "never coin" in into_en.lower()
+    assert "idiomatic" in translate._translate_instruction("Привет.", "ru", "en")
+    # A hop with English on neither side is untouched by any of this.
     assert "idiomatic" not in translate._translate_instruction("שלום", "he", "ru")
-    assert "idiomatic" not in translate._translate_instruction("Привет.", "ru", "en")
 
 
 def test_garble_note_only_with_context_on_an_asr_hop():
