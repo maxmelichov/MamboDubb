@@ -1486,8 +1486,98 @@ def foreign_spans(words: list[dict[str, Any]], *, min_sec: float = 0.8,
     return spans
 
 
+def _caption_words(raw: str | None, *, has_captions: bool, limit: float | None,
+                   prefer: str, supplied: bool) -> list[dict[str, Any]]:
+    """The caption track's words, or none.
+
+    A file the user handed us is fatal when it will not parse; auto-captions the
+    fetch downloaded are optional, and a broken one falls back to the ASR like an
+    absent one.
+    """
+    if not has_captions:
+        return []
+    try:
+        return words_from_file(Path(raw), limit=limit)
+    except TranscriptFileError as exc:
+        if prefer == "file" or supplied:
+            raise SystemExit(str(exc)) from exc
+        print(f"  transcript: ignoring the downloaded captions ({exc})", file=sys.stderr)
+        return []
+
+
+def _refuse_unusable_captions(prefer: str, raw: str | None, *, has_captions: bool,
+                              caption_words: list[dict[str, Any]]) -> None:
+    """Fail now, by name, when the transcript the user asked for is not there."""
+    if prefer == "file" and not has_captions:
+        raise SystemExit("--transcript file was requested but no --captions file was given")
+    if prefer == "file" and not caption_words:
+        raise SystemExit(f"--transcript file was requested but {raw} holds no timed words")
+    if prefer == "captions" and not caption_words:
+        raise SystemExit("--transcript captions was requested but no caption file is available")
+
+
+def _asr_transcript(m: dict[str, Any], workdir: Path, *, src_lang: str, tgt_lang: str,
+                    limit: float | None, caption_words: list[dict[str, Any]]) -> tuple[
+                        list[dict[str, Any]], list[dict[str, Any]],
+                        list[dict[str, Any]], list[dict[str, Any]]]:
+    """Transcribe locally. Returns (words, recovered spans, target spans, lang runs)."""
+    source_wav = workdir / m["files"]["source_wav"]
+    vocals = workdir / m["files"].get("vocals", "")
+    model = load_asr(src_lang)
+    # Transcribe the isolated voice; judge speech presence from the mix.
+    words = words_from_whisper(model, vocals if vocals.is_file() else source_wav,
+                               src_lang, limit=limit)
+    caption_spans = (foreign_spans(caption_words, src=src_lang, tgt=tgt_lang)
+                     if caption_words else [])
+    duration = float(limit or m["source"]["duration"])
+    words, recovered = recover_gaps(
+        model, source_wav, words, src_lang, duration,
+        known=[(s["start"], s["end"]) for s in caption_spans],
+        tgt_lang=tgt_lang,
+        listen_wav=vocals if vocals.is_file() else None)
+    words = join_split_marks(drop_stock_phrases(drop_stretched_words(
+        drop_echo_words(collapse_repeats(words)))))
+    # Real target-language speech the source model rendered as gibberish:
+    # Silero VAD finds the utterances, VoxLingua107 says which are English,
+    # and those are kept as original audio instead of dubbed from nonsense.
+    en_model = load_target_asr(tgt_lang)
+    vad = load_vad()
+    lid = load_lid()
+    en_spans: list[dict[str, Any]] = []
+    lang_runs: list[dict[str, Any]] = []
+    if en_model is not None and vad is not None and lid is not None:
+        lid_wav = vocals if vocals.is_file() else source_wav
+        # Computed once and kept: the spans below are only the runs that
+        # are NOT the source language, but the editor app wants the whole
+        # picture including "this run is Hebrew, confidently" so it can
+        # suggest passthrough on a segment the automatic rules left dubbed.
+        runs = language_segments(vad, lid, lid_wav)
+        lang_runs = [{"start": a, "end": b, "lang": lang or ""} for a, b, lang in runs]
+        en_spans = detect_spoken_target_spans(
+            en_model, vad, lid, lid_wav, duration, tgt_lang,
+            source=src_lang, src_model=model, lsegs=runs, src_words=words)
+    return words, recovered, en_spans, lang_runs
+
+
+def _all_foreign_spans(caption_words: list[dict[str, Any]], recovered: list[dict[str, Any]],
+                       en_spans: list[dict[str, Any]], src_lang: str,
+                       tgt_lang: str) -> list[dict[str, Any]]:
+    """Merge the target-language spans from every witness, best witness first.
+
+    VAD+LID target spans are authoritative their boundaries are precise, so a
+    caption or gap-recovery span (coarser, source-model or caption derived) is kept
+    only where VAD/LID found no target-language speech, never overriding it.
+    """
+    others = ((foreign_spans(caption_words, src=src_lang, tgt=tgt_lang)
+               if caption_words else []) + recovered)
+    others = [s for s in others
+              if not any(s["start"] < e["end"] and e["start"] < s["end"] for e in en_spans)]
+    return merge_spans(en_spans + others)
+
+
 def run(m: dict[str, Any], workdir: Path, *, src_lang: str, tgt_lang: str = "en",
         prefer: str = "auto") -> None:
+    """Stage 3: produce `words.json` the word stream every later stage reads."""
     # Legacy ISO-639 spellings ("iw", "ji", "in") mean the same language to us and
     # to Whisper's `language=` argument; normalize once so every downstream use
     # (transcribe, LID comparison, script table) sees the modern code.
@@ -1495,26 +1585,16 @@ def run(m: dict[str, Any], workdir: Path, *, src_lang: str, tgt_lang: str = "en"
     raw = m["files"].get("captions_raw")
     limit = m["source"].get("duration")
     has_captions = bool(raw) and Path(raw).is_file()
+    supplied = bool((m["source"] or {}).get("captions"))
     recovered: list[dict[str, Any]] = []
     en_spans: list[dict[str, Any]] = []
     lang_runs: list[dict[str, Any]] = []
-    supplied = bool((m["source"] or {}).get("captions"))
-    try:
-        caption_words = words_from_file(Path(raw), limit=limit) if has_captions else []
-    except TranscriptFileError as exc:
-        # A file the user handed us is fatal; auto-captions the fetch downloaded
-        # are optional, and a broken one falls back to the ASR like an absent one.
-        if prefer == "file" or supplied:
-            raise SystemExit(str(exc)) from exc
-        print(f"  transcript: ignoring the downloaded captions ({exc})", file=sys.stderr)
-        caption_words = []
 
-    if prefer == "file" and not has_captions:
-        raise SystemExit("--transcript file was requested but no --captions file was given")
-    if prefer == "file" and not caption_words:
-        raise SystemExit(f"--transcript file was requested but {raw} holds no timed words")
-    if prefer == "captions" and not caption_words:
-        raise SystemExit("--transcript captions was requested but no caption file is available")
+    caption_words = _caption_words(raw, has_captions=has_captions, limit=limit,
+                                   prefer=prefer, supplied=supplied)
+    _refuse_unusable_captions(prefer, raw, has_captions=has_captions,
+                              caption_words=caption_words)
+
     if prefer in ("captions", "file"):
         # The user's own transcript and the video's own captions are read the
         # same way the only difference is which one is on record, and whether
@@ -1524,41 +1604,9 @@ def run(m: dict[str, Any], workdir: Path, *, src_lang: str, tgt_lang: str = "en"
         words, origin = caption_words, ("file" if prefer == "file" else "captions")
     else:
         try:
-            source_wav = workdir / m["files"]["source_wav"]
-            vocals = workdir / m["files"].get("vocals", "")
-            model = load_asr(src_lang)
-            # Transcribe the isolated voice; judge speech presence from the mix.
-            words = words_from_whisper(model, vocals if vocals.is_file() else source_wav,
-                                       src_lang, limit=limit)
-            caption_spans = (foreign_spans(caption_words, src=src_lang, tgt=tgt_lang)
-                             if caption_words else [])
-            words, recovered = recover_gaps(
-                model, source_wav, words, src_lang,
-                float(limit or m["source"]["duration"]),
-                known=[(s["start"], s["end"]) for s in caption_spans],
-                tgt_lang=tgt_lang,
-                listen_wav=vocals if vocals.is_file() else None)
-            words = join_split_marks(drop_stock_phrases(drop_stretched_words(
-                drop_echo_words(collapse_repeats(words)))))
-            # Real target-language speech the source model rendered as gibberish:
-            # Silero VAD finds the utterances, VoxLingua107 says which are English,
-            # and those are kept as original audio instead of dubbed from nonsense.
-            en_model = load_target_asr(tgt_lang)
-            vad = load_vad()
-            lid = load_lid()
-            if en_model is not None and vad is not None and lid is not None:
-                lid_wav = vocals if vocals.is_file() else source_wav
-                # Computed once and kept: the spans below are only the runs that
-                # are NOT the source language, but the editor app wants the whole
-                # picture including "this run is Hebrew, confidently" so it can
-                # suggest passthrough on a segment the automatic rules left dubbed.
-                runs = language_segments(vad, lid, lid_wav)
-                lang_runs = [{"start": a, "end": b, "lang": lang or ""}
-                             for a, b, lang in runs]
-                en_spans = detect_spoken_target_spans(
-                    en_model, vad, lid, lid_wav,
-                    float(limit or m["source"]["duration"]), tgt_lang,
-                    source=src_lang, src_model=model, lsegs=runs, src_words=words)
+            words, recovered, en_spans, lang_runs = _asr_transcript(
+                m, workdir, src_lang=src_lang, tgt_lang=tgt_lang, limit=limit,
+                caption_words=caption_words)
             origin = "asr"
         except Exception as exc:
             if prefer == "asr" or not caption_words:
@@ -1573,16 +1621,8 @@ def run(m: dict[str, Any], workdir: Path, *, src_lang: str, tgt_lang: str = "en"
             "<file.srt|.vtt|.json3>, or check that the ASR model is present under models/."
         )
 
-    # VAD+LID English spans are authoritative their boundaries are precise, so a
-    # caption or gap-recovery span (coarser, Hebrew-model or caption derived) is kept
-    # only where VAD/LID found no target-language speech, never overriding it.
-    others = ((foreign_spans(caption_words, src=src_lang, tgt=tgt_lang)
-               if caption_words else []) + recovered)
-    others = [s for s in others
-              if not any(s["start"] < e["end"] and e["start"] < s["end"] for e in en_spans)]
-    spans = merge_spans(en_spans + others)
-    path = workdir / "words.json"
-    path.write_text(
+    spans = _all_foreign_spans(caption_words, recovered, en_spans, src_lang, tgt_lang)
+    (workdir / "words.json").write_text(
         json.dumps({"origin": origin, "words": words, "foreign_spans": spans,
                     "lang_runs": lang_runs},
                    ensure_ascii=False),
