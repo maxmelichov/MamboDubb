@@ -460,6 +460,19 @@ def _sentence_bounds(seg: dict[str, Any], words: list[dict[str, Any]],
     return out
 
 
+def _merge_gap(seg: dict[str, Any], neighbour: dict[str, Any]) -> float:
+    """The largest gap `seg` may reach across to join `neighbour`.
+
+    A lone word or a fragment too short for TTS to voice at all may cross a
+    dramatic pause, but only to rejoin a substantial neighbour: two stranded
+    stubs re-merging would undo a real pause split.
+    """
+    substantial = (neighbour["end"] - neighbour["start"] >= MIN_LEN
+                   or len(neighbour["_words"]) >= MIN_WORDS)
+    micro = (len(seg["_words"]) == 1 or seg["end"] - seg["start"] < MIN_SEG_SEC)
+    return LONE_WORD_GAP if micro and substantial else MERGE_GAP
+
+
 def _snap_cut(seg: dict[str, Any], words: list[dict[str, Any]],
               ends: list[float], i: int, b: float) -> int | None:
     """A diarization cut moved onto the nearest sentence boundary, or None to drop it.
@@ -577,18 +590,7 @@ def _merge_stubs(segs: list[dict[str, Any]], src: str = "he",
                 cands.append((seg["start"] - out[i - 1]["end"], i - 1))
             if i + 1 < len(out) and out[i + 1]["speaker"] == seg["speaker"]:
                 cands.append((out[i + 1]["start"] - seg["end"], i + 1))
-            def _allow(j: int) -> float:
-                # A lone word or a fragment too short for TTS to voice at
-                # all may cross a dramatic pause, but only to rejoin a
-                # substantial neighbour: two stranded stubs re-merging would
-                # undo a real pause split.
-                tgt_seg = out[j]
-                substantial = (tgt_seg["end"] - tgt_seg["start"] >= MIN_LEN
-                               or len(tgt_seg["_words"]) >= MIN_WORDS)
-                micro = (len(seg["_words"]) == 1
-                         or seg["end"] - seg["start"] < MIN_SEG_SEC)
-                return LONE_WORD_GAP if micro and substantial else MERGE_GAP
-            cands = [c for c in cands if c[0] <= _allow(c[1])]
+            cands = [c for c in cands if c[0] <= _merge_gap(seg, out[c[1]])]
             if not cands:
                 continue
             _gap, j = min(cands)
@@ -1427,36 +1429,127 @@ def fill_uncovered_audible(segs: list[dict[str, Any]], levels, hop: float,
             s["id"] = k
 
 
-def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
-        spans: list[dict[str, Any]] | None = None, dub_foreign: bool = False,
-        genre: str = "documentary",
-        overrides: list[tuple[float, float, bool]] | None = None,
-        lang_runs: list[dict[str, Any]] | None = None) -> None:
-    src_lang = m["source"].get("src_lang") or "he"
-    tgt_lang = m["source"].get("tgt_lang") or "en"
-    # What this run could not do is recorded, not only printed: a stage that
-    # degrades itself is writing a verdict about every segment (one voice for the
-    # whole file, say), and report.json is where that has to be visible. Cleared
-    # first so a run that succeeds erases the previous run's excuse.
+def _clear_health(m: dict[str, Any]) -> dict[str, str]:
+    """Wipe this stage's degradation notes, and hand back the dict to refill.
+
+    What this run could not do is recorded, not only printed: a stage that
+    degrades itself is writing a verdict about every segment (one voice for the
+    whole file, say), and report.json is where that has to be visible. Cleared
+    first so a run that succeeds erases the previous run's excuse.
+    """
     health = m.setdefault("health", {})
     for key in HEALTH_KEYS:
         health.pop(key, None)
+    return health
 
-    def _note(key: str):
-        return lambda reason: health.__setitem__(key, reason)
 
-    turns = diarize(workdir / m["files"]["vocals"], note=_note("segments.diarization"))
-    # Smooth before refining: the blips absorbed here are what chop one speaker's
-    # long run into short ones, and every later decision (word labels, boundary
-    # cuts, embedding runs) must read the same, smoothed view of the turns.
+def _noter(health: dict[str, str], key: str) -> Callable[[str], None]:
+    """A one-argument callback the model loaders use to say what they fell back to."""
+    return lambda reason: health.__setitem__(key, reason)
+
+
+def _speaker_turns(vocals: Path, health: dict[str, str]) -> list[dict[str, Any]]:
+    """Diarize, absorb the blips, then refine the boundaries with embeddings.
+
+    Smooth before refining: the blips absorbed here are what chop one speaker's
+    long run into short ones, and every later decision (word labels, boundary
+    cuts, embedding runs) must read the same, smoothed view of the turns.
+    """
+    turns = diarize(vocals, note=_noter(health, "segments.diarization"))
     smoothed = smooth_turns(turns)
     moved = sum(1 for a, b in zip(sorted(turns, key=lambda t: (t["start"], t["end"])),
                                   smoothed) if a["speaker"] != b["speaker"])
     if moved:
         print(f"  segments: absorbed {moved} sub-{MIN_TURN_SEC}s speaker blip(s)",
               file=sys.stderr)
-    turns = refine_turns(smoothed, workdir / m["files"]["vocals"],
-                         note=_note("segments.turn_refinement"))
+    return refine_turns(smoothed, vocals, note=_noter(health, "segments.turn_refinement"))
+
+
+def _seg_lang_probe(src_wav: Path, lid) -> Callable[[dict[str, Any]],
+                                                    tuple[str, float] | None] | None:
+    """A per-segment language classifier, or None when the model is absent.
+
+    Asked from the source mix, like every other presence question: Demucs
+    sometimes routes a speaker into the music stem. Only reached for segments
+    the speaker-level prior would otherwise keep, so this costs one embedding
+    pass per line of a mostly-target speaker, not one per segment in the file.
+    """
+    from . import audio, transcript
+
+    if lid is None:
+        return None
+
+    def seg_lang(seg: dict[str, Any]) -> tuple[str, float] | None:
+        try:
+            clip = audio.decode_mono(src_wav, 16000, start=seg["start"],
+                                     end=min(seg["end"], seg["start"] + transcript.LID_WINDOW))
+            return transcript.detect_language(lid, clip)
+        except Exception as exc:                                    # pragma: no cover
+            print(f"  segments: per-segment language check failed ({exc})", file=sys.stderr)
+            return None
+
+    return seg_lang
+
+
+def _is_target_probe(src_wav: Path, lid, tgt: str) -> Callable[[float, float], bool] | None:
+    """Asks whether a span is spoken in the target language. None without the model."""
+    from . import audio, transcript
+
+    if lid is None:
+        return None
+
+    def is_target(a: float, b: float) -> bool:
+        clip = audio.decode_mono(src_wav, 16000, start=a,
+                                 end=min(b, a + transcript.LID_WINDOW))
+        lang, prob = transcript.detect_language(lid, clip)
+        return lang == tgt and prob >= transcript.LID_MIN_PROB
+
+    return is_target
+
+
+def _assert_every_word_placed(words: list[dict[str, Any]], segs: list[dict[str, Any]],
+                              spans: list[dict[str, Any]]) -> None:
+    """No transcript word may fall outside every segment: it would never be heard."""
+    lost = [w for w in unsegmented_words(words, segs, spans)
+            if sum(1 for ch in w["text"] if ch.isalpha()) >= 2]
+    assert not lost, (
+        f"{len(lost)} transcript words fell outside every segment, starting at "
+        f"{lost[0]['t']:.2f}s ({lost[0]['text']!r}) they would never be heard"
+    )
+
+
+def _summarize(m: dict[str, Any], segs: list[dict[str, Any]]) -> None:
+    """Publish the settled segments and their speakers, and say what came out."""
+    m["segments"] = segs
+    m["speakers"] = {
+        spk: {"dur": round(sum(s["end"] - s["start"] for s in segs if s["speaker"] == spk), 2)}
+        for spk in sorted({s["speaker"] for s in segs})
+    }
+    kept = sum(1 for s in segs if s["keep"])
+    forced = sum(1 for s in segs if s.get("passthrough") is not None)
+    print(
+        f"  segments: {len(segs)} segments, {len(m['speakers'])} speakers, "
+        f"{kept} keep-original"
+        f"{f', {forced} user-set' if forced else ''}",
+        file=sys.stderr,
+    )
+
+
+def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
+        spans: list[dict[str, Any]] | None = None, dub_foreign: bool = False,
+        genre: str = "documentary",
+        overrides: list[tuple[float, float, bool]] | None = None,
+        lang_runs: list[dict[str, Any]] | None = None) -> None:
+    """Stage 4: words plus diarization in, one keep-or-dub decision per segment out."""
+    from . import audio, manifest, transcript
+
+    src_lang = m["source"].get("src_lang") or "he"
+    tgt_lang = m["source"].get("tgt_lang") or "en"
+    vocals = workdir / m["files"]["vocals"]
+    src_wav = workdir / m["files"]["source_wav"]
+    health = _clear_health(m)
+
+    turns = _speaker_turns(vocals, health)
     assign_word_speakers(words, turns)
     segs = words_to_segments(words, src_lang, tgt_lang, turns=turns)
     # Word timestamps run late after a handoff; diarization knows better where the
@@ -1468,29 +1561,8 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
         segs = splice_foreign_spans(segs, spans, words, src_lang, tgt_lang)
         for i, seg in enumerate(segs):
             seg["id"] = i
-    from . import audio, transcript
 
-    src = workdir / m["files"]["source_wav"]
     lid = transcript.load_lid()
-
-    def seg_lang(seg: dict[str, Any]) -> tuple[str, float] | None:
-        """What the classifier hears in this one segment (None when it cannot ask).
-
-        Asked from the source mix, like every other presence question: Demucs
-        sometimes routes a speaker into the music stem. Only reached for segments
-        the speaker-level prior would otherwise keep, so this costs one embedding
-        pass per line of a mostly-target speaker, not one per segment in the file.
-        """
-        if lid is None:
-            return None
-        try:
-            clip = audio.decode_mono(src, 16000, start=seg["start"],
-                                     end=min(seg["end"], seg["start"] + transcript.LID_WINDOW))
-            return transcript.detect_language(lid, clip)
-        except Exception as exc:                                    # pragma: no cover
-            print(f"  segments: per-segment language check failed ({exc})", file=sys.stderr)
-            return None
-
     # The user's overrides survive a re-segmentation by time, not by id this
     # stage renumbers everything it rebuilds. Carried before the automatic rules
     # run so `apply_passthrough` below has the last word over them.
@@ -1499,7 +1571,7 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
         print(f"  segments: carried {carried}/{len(overrides)} passthrough override(s)",
               file=sys.stderr)
     mark_keep(segs, spans, tgt_lang, src_lang, dub_foreign, genre=genre,
-              seg_lang=seg_lang if lid is not None else None)
+              seg_lang=_seg_lang_probe(src_wav, lid))
     apply_passthrough(segs)
 
     # Drop sub-word noise fragments (a lone "ב", stray glyphs). Kept as original
@@ -1519,16 +1591,11 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
     for i, seg in enumerate(segs):
         seg["id"] = i
 
-    lost = [w for w in unsegmented_words(words, segs, spans or [])
-            if sum(1 for ch in w["text"] if ch.isalpha()) >= 2]
-    assert not lost, (
-        f"{len(lost)} transcript words fell outside every segment, starting at "
-        f"{lost[0]['t']:.2f}s ({lost[0]['text']!r}) they would never be heard"
-    )
+    _assert_every_word_placed(words, segs, spans or [])
+
     # Keep segments (original audio) must not clip a speaker mid-sentence.
     total = float(m["source"].get("duration") or 0.0)
-    levels = audio.frame_rms(audio.decode_mono(workdir / m["files"]["vocals"], 16000),
-                             16000, 0.1)
+    levels = audio.frame_rms(audio.decode_mono(vocals, 16000), 16000, 0.1)
     extend_keeps_to_speech_end(segs, levels, 0.1, total or len(levels) * 0.1, words)
     # Audible stretches no segment covers: keep the original audio only where it is
     # the target language (VoxLingua confirms), so a missed English line is heard
@@ -1536,39 +1603,15 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
     # is judged from the source mix, not the vocals Demucs sometimes routes a
     # speaker into the music stem, and that speech must still count. Falls back to
     # no filling when the LID model is absent.
-    src_levels = audio.frame_rms(audio.decode_mono(src, 16000), 16000, 0.1)
-    is_target = None
-    if lid is not None:
-        tgt = tgt_lang
-
-        def is_target(a: float, b: float) -> bool:
-            clip = audio.decode_mono(src, 16000, start=a,
-                                     end=min(b, a + transcript.LID_WINDOW))
-            lang, prob = transcript.detect_language(lid, clip)
-            return lang == tgt and prob >= transcript.LID_MIN_PROB
-
+    src_levels = audio.frame_rms(audio.decode_mono(src_wav, 16000), 16000, 0.1)
     fill_uncovered_audible(segs, src_levels, 0.1, total or len(src_levels) * 0.1,
-                           is_target_lang=is_target, voice_levels=levels,
-                           win=transcript.LID_WINDOW)
+                           is_target_lang=_is_target_probe(src_wav, lid, tgt_lang),
+                           voice_levels=levels, win=transcript.LID_WINDOW)
     # Advisory only: every segment that exists now including the ones the fill
     # just added gets the classifier's label for the app to read.
     stamp_detected_lang(segs, lang_runs)
     # Identity is minted once, here, after every split/splice/fill has settled —
     # `id` is positional and renumbered above, so nothing outside the pipeline can
     # key on it. See `manifest.mint_uid`.
-    from . import manifest
-
     manifest.ensure_uids(segs)
-    m["segments"] = segs
-    m["speakers"] = {
-        spk: {"dur": round(sum(s["end"] - s["start"] for s in segs if s["speaker"] == spk), 2)}
-        for spk in sorted({s["speaker"] for s in segs})
-    }
-    kept = sum(1 for s in segs if s["keep"])
-    forced = sum(1 for s in segs if s.get("passthrough") is not None)
-    print(
-        f"  segments: {len(segs)} segments, {len(m['speakers'])} speakers, "
-        f"{kept} keep-original"
-        f"{f', {forced} user-set' if forced else ''}",
-        file=sys.stderr,
-    )
+    _summarize(m, segs)
