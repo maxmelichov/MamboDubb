@@ -25,7 +25,9 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -98,7 +100,7 @@ def auto_installers(platform: str | None = None) -> dict[str, tuple[str, ...]]:
             if unattended(id_, platform)}
 
 
-def utf8_stdio(streams=None) -> None:
+def utf8_stdio(streams: Iterable[Any] | None = None) -> None:
     """Make this process's stdout/stderr speak UTF-8 whatever the console says.
 
     Windows still starts Python with the ANSI code page on stdio, and every

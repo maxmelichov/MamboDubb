@@ -63,6 +63,7 @@ import sys
 import threading
 from collections import deque
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from . import USER_KEEP_REASONS, numwords
@@ -2131,7 +2132,8 @@ def _preceding_for(seg: dict[str, Any], *, own_pair: bool, seg_pivot: bool, seg_
 def _dub_pass(h, dub: list[dict[str, Any]], *, source: str, target: str, context: str,
               before: dict[int, str], prev_of: dict[int, dict[str, Any]],
               mids: dict[int, str], established: dict[str, list[str]],
-              register: str, genre: str, save) -> None:
+              register: str, genre: str,
+              save: Callable[[], None] | None) -> None:
     """Translate every line that will be spoken, one segment at a time.
 
     Translate each segment on its own standalone output is deterministic and
@@ -2285,8 +2287,9 @@ def _revision_pass(h, segments: list[dict[str, Any]], target: str) -> None:
         s["text_en"] = text.strip()
 
 
-def run(m: dict[str, Any], workdir: Path, *, source: str, target: str, save=None,
-        register: str = "narration", genre: str = "documentary") -> None:
+def run(m: dict[str, Any], workdir: Path, *, source: str, target: str,
+        save: Callable[[], None] | None = None, register: str = "narration",
+        genre: str = "documentary") -> None:
     """Stage 5: give every dubbed line its target text, and every keep a subtitle."""
     from . import manifest
 

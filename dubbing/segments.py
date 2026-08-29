@@ -17,7 +17,8 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Callable
+from collections.abc import Callable, Sequence
+from typing import Any
 
 from . import script
 
@@ -1277,7 +1278,8 @@ def refine_turns(turns: list[dict[str, Any]], vocals: Path, *,
     return out
 
 
-def extend_keeps_to_speech_end(segs: list[dict[str, Any]], levels, hop: float,
+def extend_keeps_to_speech_end(segs: list[dict[str, Any]], levels: Sequence[float],
+                               hop: float,
                                total: float,
                                words: list[dict[str, Any]] | None = None) -> None:
     """Grow each keep segment's end through trailing speech, up to the next segment.
@@ -1351,8 +1353,10 @@ def _judge_windows(a: float, b: float, win: float, is_target_lang) -> list[tuple
     return [(x, y) for x, y in runs]
 
 
-def fill_uncovered_audible(segs: list[dict[str, Any]], levels, hop: float,
-                           total: float, is_target_lang=None, voice_levels=None,
+def fill_uncovered_audible(segs: list[dict[str, Any]], levels: Sequence[float],
+                           hop: float, total: float,
+                           is_target_lang: Callable[[float, float], bool] | None = None,
+                           voice_levels: Sequence[float] | None = None,
                            win: float = 4.0) -> None:
     """Keep original audio for audible stretches no segment covers target only.
 

@@ -65,6 +65,7 @@ import re
 import sys
 from collections import Counter
 from pathlib import Path
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any, NamedTuple
 
 import numpy as np
@@ -455,7 +456,8 @@ def _prefix_distances(chunks, target: str) -> list[int]:
     return out
 
 
-def carrier_candidates(words, carrier_text: str | None = None, *,
+def carrier_candidates(words: Sequence[tuple[str, float]],
+                       carrier_text: str | None = None, *,
                        lo: float | None = None, hi: float | None = None,
                        slack: int | None = None,
                        descent: int | None = None) -> list[float]:
@@ -519,7 +521,8 @@ def carrier_candidates(words, carrier_text: str | None = None, *,
     return [words[i + 1][1] for i in keep]
 
 
-def carrier_boundary(words, carrier_text: str | None = None, **kw) -> float | None:
+def carrier_boundary(words: Sequence[tuple[str, float]],
+                     carrier_text: str | None = None, **kw) -> float | None:
     """The single best guess at where the sentence starts, or `None` for none.
 
     The head of `carrier_candidates`. Nothing in the pipeline uses this to make a cut
@@ -620,7 +623,7 @@ _QWEN_LANG_NAMES = {
 }
 
 
-def qwen_language_name(code: str, supported) -> str:
+def qwen_language_name(code: str, supported: Iterable[str] | None) -> str:
     """The checkpoint's name for a language code, or "Auto" when unsupported."""
     want = _QWEN_LANG_NAMES.get((code or "").lower())
     if want:
@@ -763,7 +766,7 @@ def _embed_wavfile(path: Path) -> np.ndarray | None:
     return _embed_clip(model, audio.decode_mono(path, 16000))
 
 
-def reject_voice_outliers(vecs, *, low: float = REF_SIM_OUTLIER,
+def reject_voice_outliers(vecs: Sequence[Any], *, low: float = REF_SIM_OUTLIER,
                           coherent: float = REF_SIM_COHERENT) -> list[bool]:
     """Keep-mask over one speaker's candidate windows; False = different voice.
 
@@ -2594,7 +2597,7 @@ def _speak_original(engine: Engine, seg: dict[str, Any], workdir: Path) -> None:
 
 
 def _first_pass(engine: Engine, todo: list[dict[str, Any]], workdir: Path,
-                save) -> list[dict[str, Any]]:
+                save: Callable[[], None] | None) -> list[dict[str, Any]]:
     """Synthesize every segment's first take. Returns the ones that need the ladder.
 
     Generation runs on the GPU, verification (Whisper) on the CPU. Generate each
@@ -2685,8 +2688,8 @@ def _slice_keeps(engine: Engine, m: dict[str, Any], workdir: Path) -> None:
             seg["tts"] = engine.keep_clip(seg)
 
 
-def run(m: dict[str, Any], workdir: Path, *, save=None, device: str | None = None,
-        model: str = DEFAULT_TTS_MODEL) -> Engine:
+def run(m: dict[str, Any], workdir: Path, *, save: Callable[[], None] | None = None,
+        device: str | None = None, model: str = DEFAULT_TTS_MODEL) -> Engine:
     """Stage 6: give every segment audio a clone of its speaker, or its own slice."""
     engine = Engine(m, workdir, device=device, model=model)
     _reset_stage_notes(m)

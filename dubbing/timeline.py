@@ -57,6 +57,7 @@ import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from . import audio, manifest, script, tts
@@ -610,7 +611,8 @@ def _shorten_budgets(items: list[dict[str, Any]], want: list[tuple[float, int, f
 def _shorten_rounds(items: list[dict[str, Any]], places: list[dict[str, Any]],
                     by_id: dict[int, dict[str, Any]], by_index: dict[int, int],
                     rates: Rates, media_end: float, run_tgt: str,
-                    shorten_many, resynth_many) -> tuple[
+                    shorten_many: Callable | None,
+                    resynth_many: Callable | None) -> tuple[
                         list[dict[str, Any]], dict[int, str], dict[int, str], dict[int, str]]:
     """Rescue late and overhanging lines by re-translating them shorter.
 
@@ -732,7 +734,8 @@ def _record_places(by_id: dict[int, dict[str, Any]], items: list[dict[str, Any]]
             seg["place"]["shorten"] = refused[it["id"]]
 
 
-def run(m: dict[str, Any], workdir: Path, *, shorten_many=None, resynth_many=None,
+def run(m: dict[str, Any], workdir: Path, *, shorten_many: Callable | None = None,
+        resynth_many: Callable | None = None,
         genre: str = "documentary") -> None:
     """Place every clip: plan, rescue what does not fit, bake the tempo, re-place."""
     rates = rates_for_genre(genre)

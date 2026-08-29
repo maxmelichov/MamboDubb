@@ -26,7 +26,8 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
+from typing import Any
 
 from . import MANUAL_REASON, STAGES, manifest, script, ttsopts
 

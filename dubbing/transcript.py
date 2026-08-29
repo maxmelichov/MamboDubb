@@ -32,6 +32,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from collections.abc import Iterable, Iterator
 from typing import Any
 
 from . import script
@@ -668,7 +669,8 @@ def join_split_marks(words: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def speech_only(segments, *, min_logprob: float = ASR_MIN_LOGPROB):
+def speech_only(segments: Iterable[Any], *,
+                min_logprob: float = ASR_MIN_LOGPROB) -> Iterator[Any]:
     """Yield the decoded segments that read like speech, dropping the rest.
 
     `vad_filter=True` is not this gate: Silero passes the music intro as speech,
