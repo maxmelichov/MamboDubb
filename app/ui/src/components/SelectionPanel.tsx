@@ -65,17 +65,17 @@ import {
   verifyConcern,
   type SegmentState,
 } from "../lib/segments";
+import { SOURCE_LANG_CODES, TARGET_LANG_CODES } from "../lib/languages";
 import type { Segment, SegmentPatch, TtsOpts } from "../lib/types";
 
 /*
- * Two lists, because one could not say the true thing: what the ASR and the
- * translator can READ is Arabic plus every dub target, while what Qwen3-TTS can
- * SPEAK is that set minus Arabic. A single array offered Arabic as a per-segment
- * target, which is a line whose tts can only fail. `""` leads both lists — it is
+ * The run's own two lists, which differ because what the ASR and the translator
+ * can READ is Arabic plus every dub target, while what Qwen3-TTS can SPEAK is
+ * that set minus Arabic (see `lib/languages`). `""` leads both here — it is
  * "inherit", and the empty string is what *clears* an override (see below).
  */
-const SRC_LANGS = ["", "he", "en", "ar", "ru", "fr", "es", "de", "it", "pt", "zh", "ja", "ko"];
-const TGT_LANGS = ["", "en", "he", "ru", "fr", "es", "de", "it", "pt", "zh", "ja", "ko"];
+const SRC_LANGS = ["", ...SOURCE_LANG_CODES];
+const TGT_LANGS = ["", ...TARGET_LANG_CODES];
 
 /** The picker's own option list — codes in the value, names on the screen. */
 function LangOptions({ langs }: { langs: string[] }) {

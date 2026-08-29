@@ -21,8 +21,7 @@
  *
  * The runs used to be a third *column* here, competing with the form for the
  * width. They are a page of their own now (RunsPage, at /runs) and this form is
- * home at "/" — but the newest few of them close the page (`HomeRuns`, at the
- * foot of this file), below the form *and* the rail. Below, not beside — asked
+ * home at "/" — but the newest few of them close the page (`components/HomeRuns`), below the form *and* the rail. Below, not beside — asked
  * for twice, so it is the layout: the form keeps the whole top of the screen
  * and Start dubbing stays above the fold, while "is yesterday's dub still
  * here?" is answered by scrolling rather than by finding the nav pill.
@@ -40,8 +39,8 @@
  * fill with the accent when picked, the register is a pill.
  */
 
-import { useEffect, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   ArrowRight,
   Captions,
@@ -57,7 +56,7 @@ import {
   Timer,
 } from "lucide-react";
 import { PageShell } from "../components/AppShell";
-import { RunRow, orderRuns } from "../components/RunRow";
+import { HomeRuns } from "../components/HomeRuns";
 import {
   Button,
   Card,
@@ -77,44 +76,9 @@ import {
   TextInput,
 } from "../components/ui";
 import { api } from "../lib/api";
+import { SOURCE_LANGUAGES, TARGET_LANGUAGES } from "../lib/languages";
 import { isDesktop, pickTranscriptFile, pickVideoFile } from "../lib/desktop";
-import type { CreateProjectRequest, ProjectSummary } from "../lib/types";
-
-// What can be HEARD is broader than what can be SPOKEN: the ASR + translator
-// handle these sources, but the synthesizer voices Qwen3-TTS's ten languages
-// plus Hebrew (a LoRA over the same checkpoint; the server refuses a Hebrew
-// target with the download command if the adapter isn't installed). Arabic is
-// the one language left on this list and off the other offering it as a
-// target would create a project whose tts stage can only fail, so the two lists
-// stay deliberately different.
-const SRC_LANGS = [
-  ["he", "Hebrew"],
-  ["en", "English"],
-  ["ar", "Arabic"],
-  ["ru", "Russian"],
-  ["fr", "French"],
-  ["es", "Spanish"],
-  ["de", "German"],
-  ["it", "Italian"],
-  ["pt", "Portuguese"],
-  ["zh", "Chinese"],
-  ["ja", "Japanese"],
-  ["ko", "Korean"],
-] as const;
-
-const TGT_LANGS = [
-  ["en", "English"],
-  ["he", "Hebrew"],
-  ["ru", "Russian"],
-  ["fr", "French"],
-  ["es", "Spanish"],
-  ["de", "German"],
-  ["it", "Italian"],
-  ["pt", "Portuguese"],
-  ["zh", "Chinese"],
-  ["ja", "Japanese"],
-  ["ko", "Korean"],
-] as const;
+import type { CreateProjectRequest } from "../lib/types";
 
 export function ImportPage() {
   const navigate = useNavigate();
@@ -376,7 +340,7 @@ export function ImportPage() {
                   value={form.src_lang}
                   onChange={(event) => update({ src_lang: event.currentTarget.value })}
                 >
-                  {SRC_LANGS.map(([code, label]) => (
+                  {SOURCE_LANGUAGES.map(([code, label]) => (
                     <option key={code} value={code}>
                       {label}
                     </option>
@@ -389,7 +353,7 @@ export function ImportPage() {
                   value={form.tgt_lang}
                   onChange={(event) => update({ tgt_lang: event.currentTarget.value })}
                 >
-                  {TGT_LANGS.map(([code, label]) => (
+                  {TARGET_LANGUAGES.map(([code, label]) => (
                     <option key={code} value={code}>
                       {label}
                     </option>
@@ -629,106 +593,5 @@ export function ImportPage() {
         </ErrorBlock>
       ) : null}
     </PageShell>
-  );
-}
-
-/** How many rows the glance shows before it defers to the archive. */
-const HOME_RUNS = 8;
-
-/**
- * The workspace, under the form.
- *
- * Home is the new-dub form and stays the new-dub form — but a screen that only
- * ever offers to start something implies there is nothing already started, and
- * the run people actually want on a second visit is usually the one still in
- * flight. So the newest few rows sit under the card, running-first, in the same
- * rows /runs draws (`components/RunRow`), with "All runs" as the way to the
- * whole list. Four of them: enough to hold the one that is running and the ones
- * from this morning, few enough that the form is still what this page is.
- *
- * It is quiet about its failures on purpose. A server that did not answer is
- * worth a sentence here and a red card *there* — this region is a shortcut, and
- * a shortcut that shouts about a list you did not ask for is a worse home
- * screen than one that simply has no shortcut in it. Zero runs draws nothing at
- * all: the empty state for "no runs yet" is the form the user is looking at.
- */
-function HomeRuns() {
-  const navigate = useNavigate();
-  const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    void api
-      .listProjects()
-      .then((list) => {
-        if (!cancelled) setProjects(list);
-      })
-      .catch(() => {
-        if (!cancelled) setFailed(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // Vanishing here leaves the column a dead plane under the form — the exact
-  // hole the user pointed at. While loading, on failure, and with zero runs
-  // alike, the region keeps its place with a quiet card instead.
-  if (failed || projects == null || projects.length === 0) {
-    return (
-      <section data-region="home-runs" className="flex min-h-0 flex-1 flex-col gap-2.5">
-        <div className="px-1">
-          <SectionLabel icon={Clapperboard}>Your runs</SectionLabel>
-        </div>
-        <div className="flex min-h-40 flex-1 items-center justify-center rounded-2xl border border-dashed border-border px-6 py-10">
-          <p className="max-w-sm text-center text-[13px] leading-relaxed text-muted">
-            {projects == null && !failed
-              ? "Looking for runs…"
-              : "Nothing here yet. Every dub you start lands in this list, live while it runs."}
-          </p>
-        </div>
-      </section>
-    );
-  }
-  const ordered = orderRuns(projects);
-  const shown = ordered.slice(0, HOME_RUNS);
-
-  return (
-    <section data-region="home-runs" className="flex min-h-0 flex-1 flex-col gap-2.5">
-      <div className="flex flex-wrap items-center justify-between gap-3 px-1">
-        <div className="flex items-baseline gap-3">
-          <SectionLabel icon={Clapperboard}>Your runs</SectionLabel>
-          <span className="text-[11px] tabular-nums text-muted">
-            {projects.length} {projects.length === 1 ? "run" : "runs"} in outputs/
-          </span>
-        </div>
-        {/* A link, not a button: the page's one *button* is Start dubbing, and
-            a second filled control under it would compete with it. */}
-        <Link
-          to="/runs"
-          data-all-runs
-          className="rounded-md text-[11px] font-bold uppercase tracking-[0.14em] text-muted transition-colors hover:text-primary"
-        >
-          All runs →
-        </Link>
-      </div>
-      {/* A strip of padding, so the hover lift is not shaved off at the edges. */}
-      <ul className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-0.5">
-        {shown.map((project) => (
-          <RunRow
-            key={project.name}
-            project={project}
-            compact
-            onOpen={() => navigate(`/editor/${encodeURIComponent(project.name)}`)}
-          />
-        ))}
-      </ul>
-      {ordered.length > shown.length ? (
-        <p className="px-1 text-[11px] text-muted">
-          {ordered.length - shown.length} more on the runs page.
-        </p>
-      ) : null}
-    </section>
   );
 }
