@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import FastAPI, Form, HTTPException, UploadFile
@@ -28,11 +29,20 @@ app = FastAPI(title="Dubbing Editor")
 STATIC = Path(__file__).parent / "static"
 
 
-def _run_or_404(fn, *args):
+def _run_or_404(fn: Callable[..., Any], *args: Any) -> Any:
+    """Call a `runs` lookup, turning its KeyError into the 404 it means."""
     try:
         return fn(*args)
     except KeyError as exc:
         raise HTTPException(404, str(exc)) from None
+
+
+def _segment_or_404(m: dict[str, Any], seg_id: int) -> dict[str, Any]:
+    """The segment with this positional id, or a 404."""
+    seg = next((s for s in m.get("segments") or [] if s["id"] == seg_id), None)
+    if seg is None:
+        raise HTTPException(404, "no such segment")
+    return seg
 
 
 @app.get("/api/health")
@@ -153,9 +163,7 @@ def api_file(run: str, path: str) -> FileResponse:
 @app.get("/api/runs/{run}/segments/{seg_id}/dubbed")
 def api_dubbed(run: str, seg_id: int) -> FileResponse:
     m = _run_or_404(runs.load, run)
-    seg = next((s for s in m.get("segments") or [] if s["id"] == seg_id), None)
-    if seg is None:
-        raise HTTPException(404, "no such segment")
+    seg = _segment_or_404(m, seg_id)
     try:
         return FileResponse(runs.dubbed_clip(run, seg))
     except KeyError:
@@ -165,9 +173,7 @@ def api_dubbed(run: str, seg_id: int) -> FileResponse:
 @app.get("/api/runs/{run}/segments/{seg_id}/original")
 def api_original(run: str, seg_id: int) -> FileResponse:
     m = _run_or_404(runs.load, run)
-    seg = next((s for s in m.get("segments") or [] if s["id"] == seg_id), None)
-    if seg is None:
-        raise HTTPException(404, "no such segment")
+    seg = _segment_or_404(m, seg_id)
     try:
         return FileResponse(runs.original_slice(run, seg))
     except KeyError:

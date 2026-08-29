@@ -133,6 +133,54 @@ def earliest(stages: list[str] | set[str]) -> str | None:
     return known[0] if known else None
 
 
+def _segment_id(edit: dict[str, Any]) -> int:
+    try:
+        return int(edit["id"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError(f"edit without a valid segment id: {edit!r}") from None
+
+
+def _apply_field(seg: dict[str, Any], seg_id: int, name: str, raw: Any) -> str | None:
+    """Write one field into `seg`, or leave it alone when nothing changed.
+
+    Returns the stage that has to re-run for the edit to reach the mix, or None
+    when the value was already what is stored: saving an untouched form must not
+    invalidate anything.
+    """
+    if name in REJECTED:
+        raise ValueError(f"field {name!r}: {REJECTED[name]}")
+    if name not in EDITABLE:
+        raise ValueError(f"field {name!r} is not editable")
+    coerce, stage = EDITABLE[name]
+    try:
+        value = coerce(raw)
+    except ValueError as exc:
+        raise ValueError(f"segment {seg_id}, field {name!r}: {exc}") from None
+    if name == "passthrough":
+        # The pipeline's own TRI-state key: absent means "decide automatically",
+        # True means "play the original", False means "dub this span". False is
+        # therefore a real value and must not be folded into "empty" the way a
+        # blank text field is; doing that made "dub this foreign line after all"
+        # a silent no-op.
+        if seg.get(name) is value:
+            return None
+        seg[name] = value
+    else:
+        # Absent and empty are the same state, so clearing an unset field is a
+        # no-op rather than a manifest change that invalidates a stage.
+        if value == seg.get(name) or (not value and not seg.get(name)):
+            return None
+        if not value and name in ("text", "text_en"):
+            # Blanking these would leave the synthesiser nothing to say.
+            raise ValueError(f"segment {seg_id}, field {name!r}: cannot be empty")
+        if not value:
+            seg.pop(name, None)       # cleared: drop it, don't store a blank
+        else:
+            seg[name] = value
+    _relock(seg, name)
+    return stage
+
+
 def apply_edits(m: dict[str, Any], edits: list[dict[str, Any]]) -> dict[str, Any]:
     """Write `edits` into the manifest in place.
 
@@ -147,47 +195,16 @@ def apply_edits(m: dict[str, Any], edits: list[dict[str, Any]]) -> dict[str, Any
     stages: set[str] = set()
 
     for edit in edits:
-        try:
-            seg_id = int(edit["id"])
-        except (KeyError, TypeError, ValueError):
-            raise ValueError(f"edit without a valid segment id: {edit!r}") from None
+        seg_id = _segment_id(edit)
         seg = by_id.get(seg_id)
         if seg is None:
             raise ValueError(f"no segment {seg_id} in this run")
         touched = False
-        for name, raw in (edit.get("fields") or {}).items():
-            name = ALIASES.get(name, name)
-            if name in REJECTED:
-                raise ValueError(f"field {name!r}: {REJECTED[name]}")
-            if name not in EDITABLE:
-                raise ValueError(f"field {name!r} is not editable")
-            coerce, stage = EDITABLE[name]
-            try:
-                value = coerce(raw)
-            except ValueError as exc:
-                raise ValueError(f"segment {seg_id}, field {name!r}: {exc}") from None
-            if name == "passthrough":
-                # The pipeline's own TRI-state key: absent means "decide
-                # automatically", True means "play the original", False means "dub
-                # this span". False is therefore a real value and must not be
-                # folded into "empty" the way a blank text field is doing that
-                # made "dub this foreign line after all" a silent no-op.
-                if seg.get(name) is value:
-                    continue
-                seg[name] = value
-            else:
-                # Absent and empty are the same state, so clearing an unset field is
-                # a no-op rather than a manifest change that invalidates a stage.
-                if value == seg.get(name) or (not value and not seg.get(name)):
-                    continue
-                if not value and name in ("text", "text_en"):
-                    # Blanking these would leave the synthesiser nothing to say.
-                    raise ValueError(f"segment {seg_id}, field {name!r}: cannot be empty")
-                if not value:
-                    seg.pop(name, None)   # cleared: drop it, don't store a blank
-                else:
-                    seg[name] = value
-            _relock(seg, name)
+        for wire_name, raw in (edit.get("fields") or {}).items():
+            name = ALIASES.get(wire_name, wire_name)
+            stage = _apply_field(seg, seg_id, name, raw)
+            if stage is None:
+                continue
             touched = True
             changed_fields.add(name)
             stages.add(stage)
