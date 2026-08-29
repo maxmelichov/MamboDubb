@@ -540,6 +540,82 @@ def fetch_in_flight(root: Path) -> bool:
     return False
 
 
+def _model_location(path: Path, hub: str, hub_cached: bool,
+                    hub_bytes: int) -> tuple[Path, int, str]:
+    """Where this model is, how many bytes are there, and which state that is.
+
+    The local directory first, then the Hugging Face cache when every loader of
+    this model accepts the hub id (`hub_cached`). `model_ready` decides between
+    READY and INCOMPLETE; nothing on disk at all is MISSING.
+    """
+    present = path.is_dir() and any(path.iterdir())
+    where = path
+    if not present and hub and hub_cached:
+        cached = hf_cache_repo(hub)
+        if cached is not None:
+            present, where = True, cached
+    size = dir_size(where) if present else 0
+    if not present:
+        return where, size, MISSING
+    return where, size, (READY if model_ready(where, size, hub_bytes) else INCOMPLETE)
+
+
+def _model_detail(state: str, path: Path, where: Path, size: int, *, hub: str,
+                  hub_bytes: int, note: str, fix: str, downloading: bool) -> str:
+    """The sentence under the row: what is there, and what to do about it."""
+    if state == READY:
+        origin = f"{path}" if where == path else f"the Hugging Face cache ({where})"
+        return f"{human_bytes(size)} in {origin}"
+    if state == INCOMPLETE:
+        # The two halves a user needs in this state and in no other: how far in
+        # it is, and whether anything is still working on it. "Incomplete" alone
+        # would leave them staring at a screen with nothing to decide.
+        progress = (f"{int(100 * size / hub_bytes)}% of {human_bytes(hub_bytes)}"
+                    if hub_bytes else f"{human_bytes(size)} so far")
+        detail = (f"incomplete: {human_bytes(size)} in {where}: "
+                  + (f"downloading, {progress}" if downloading
+                     else "partial download, press Download to finish"))
+        if hub:
+            detail += f". It resumes: `uv run hf download {hub} --local-dir {path}`"
+        elif fix:
+            detail += f". Restore it: `{fix}`"
+        return detail
+    detail = f"missing: {path}" + (f" ({note})" if note else "")
+    if hub:
+        approx = f" (~{human_bytes(hub_bytes)})" if hub_bytes else ""
+        detail += f". Fetch it{approx}: `uv run hf download {hub} --local-dir {path}`"
+    elif fix:
+        detail += f". Restore it: `{fix}`"
+    return detail
+
+
+def _model_extra(path: Path, where: Path, size: int, *, hub: str, hub_bytes: int,
+                 fix: str, downloading: bool) -> dict[str, Any]:
+    """The row's data fields, beside the sentence.
+
+    `path` stays the pipeline's own constant whichever place answered: it is
+    where this model belongs, and a row that renamed itself after the cache
+    would stop being checkable against `dubbing`'s constants. Where it was
+    actually found, when that is somewhere else, is a second field.
+
+    `downloading` goes on only where it is true, and only where it can be: a
+    live fetch is the one state on this screen that resolves itself, and it is
+    what tells a client to keep polling instead of leaving a stale row under a
+    Re-check button.
+    """
+    extra: dict[str, Any] = {"path": str(path), "bytes": size}
+    if where != path:
+        extra["found_at"] = str(where)
+    if hub:
+        extra["hub"] = hub
+        extra["download_bytes"] = hub_bytes
+    if fix:
+        extra["fix"] = fix
+    if downloading:
+        extra["downloading"] = True
+    return extra
+
+
 def model(id_: str, label: str, path: Path, *, severity: str = BLOCKING,
           note: str = "", hub: str = "", hub_bytes: int = 0,
           hub_cached: bool = False, fix: str = "") -> dict[str, Any]:
@@ -603,57 +679,12 @@ def model(id_: str, label: str, path: Path, *, severity: str = BLOCKING,
     holds the other half of that promise, and will never again answer a finished
     download with "start it again".
     """
-    present = path.is_dir() and any(path.iterdir()) if path.is_dir() else False
-    where = path
-    if not present and hub and hub_cached:
-        cached = hf_cache_repo(hub)
-        if cached is not None:
-            present, where = True, cached
-    size = dir_size(where) if present else 0
-    state = MISSING
-    if present:
-        state = READY if model_ready(where, size, hub_bytes) else INCOMPLETE
+    where, size, state = _model_location(path, hub, hub_cached, hub_bytes)
     downloading = fetch_in_flight(where) if state == INCOMPLETE else False
-    if state == READY:
-        origin = f"{path}" if where == path else f"the Hugging Face cache ({where})"
-        detail = f"{human_bytes(size)} in {origin}"
-    elif state == INCOMPLETE:
-        # The two halves a user needs in this state and in no other: how far in
-        # it is, and whether anything is still working on it. "Incomplete" alone
-        # would leave them staring at a screen with nothing to decide.
-        progress = (f"{int(100 * size / hub_bytes)}% of {human_bytes(hub_bytes)}"
-                    if hub_bytes else f"{human_bytes(size)} so far")
-        detail = (f"incomplete: {human_bytes(size)} in {where}: "
-                  + (f"downloading, {progress}" if downloading
-                     else "partial download, press Download to finish"))
-        if hub:
-            detail += f". It resumes: `uv run hf download {hub} --local-dir {path}`"
-        elif fix:
-            detail += f". Restore it: `{fix}`"
-    else:
-        detail = f"missing: {path}" + (f" ({note})" if note else "")
-        if hub:
-            approx = f" (~{human_bytes(hub_bytes)})" if hub_bytes else ""
-            detail += f". Fetch it{approx}: `uv run hf download {hub} --local-dir {path}`"
-        elif fix:
-            detail += f". Restore it: `{fix}`"
-    # `path` stays the pipeline's own constant whichever place answered: it is
-    # where this model belongs, and a row that renamed itself after the cache
-    # would stop being checkable against `dubbing`'s constants. Where it was
-    # actually found, when that is somewhere else, is a second field.
-    extra: dict[str, Any] = {"path": str(path), "bytes": size}
-    if where != path:
-        extra["found_at"] = str(where)
-    if hub:
-        extra["hub"] = hub
-        extra["download_bytes"] = hub_bytes
-    if fix:
-        extra["fix"] = fix
-    # Only where it is true, and only where it can be: a live fetch is the one
-    # state on this screen that resolves itself, and it is what tells a client
-    # to keep polling instead of leaving a stale row under a Re-check button.
-    if downloading:
-        extra["downloading"] = True
+    detail = _model_detail(state, path, where, size, hub=hub, hub_bytes=hub_bytes,
+                           note=note, fix=fix, downloading=downloading)
+    extra = _model_extra(path, where, size, hub=hub, hub_bytes=hub_bytes, fix=fix,
+                         downloading=downloading)
     return check(id_, label, state == READY, detail, severity=severity,
                  state=state, **extra)
 
@@ -928,7 +959,7 @@ def model_checks() -> list[dict[str, Any]]:
     pair a Korean checkpoint has nothing to say about a Hebrew→English run so
     they are optional and stay out of the way.
     """
-    from dubbing import hebrew, segments, transcript, translate, tts
+    from dubbing import hebrew, segments, transcript, tts
 
     downloads = model_downloads()
 
@@ -1085,6 +1116,25 @@ def hf_cache_repo(hub: str) -> Path | None:
     return None
 
 
+def _demucs_cache() -> Path | None:
+    """The cache holding the Demucs weights, or None when neither has them.
+
+    Two caches, because demucs changed homes: 3.x keeps `.th` weights under the
+    torch hub cache, 4.x fetches from the Hugging Face Hub into the HF cache as
+    `models--adefossez--*` (with the payload under `blobs/`).
+    """
+    torch_cache = Path(os.environ.get("TORCH_HOME") or (Path.home() / ".cache" / "torch")) / "hub"
+    if torch_cache.is_dir() and any(torch_cache.rglob("*.th")):
+        return torch_cache
+    hf_cache = hf_hub_cache()
+    if hf_cache.is_dir():
+        for repo in sorted(hf_cache.glob("models--adefossez--*")):
+            blobs = repo / "blobs"
+            if blobs.is_dir() and any(blobs.iterdir()):
+                return repo
+    return None
+
+
 def demucs_check() -> dict[str, Any]:
     """Optional by contract: Demucs fetches `htdemucs_ft` the first time `stems`
     runs, so absence is a slow first run, not a broken install and not a worse
@@ -1106,20 +1156,9 @@ def demucs_check() -> dict[str, Any]:
     old one made this a row that could never pass on a working install."""
     from dubbing import stems
 
-    torch_cache = Path(os.environ.get("TORCH_HOME") or (Path.home() / ".cache" / "torch")) / "hub"
-    found: Path | None = None
-    if torch_cache.is_dir() and any(torch_cache.rglob("*.th")):
-        found = torch_cache
-    else:
-        hf_cache = hf_hub_cache()
-        if hf_cache.is_dir():
-            for repo in sorted(hf_cache.glob("models--adefossez--*")):
-                blobs = repo / "blobs"
-                if blobs.is_dir() and any(blobs.iterdir()):
-                    found = repo
-                    break
     from .install import DEMUCS_ID, route
 
+    found = _demucs_cache()
     present = found is not None
     size = dir_size(found) if found is not None else 0
     if present:
