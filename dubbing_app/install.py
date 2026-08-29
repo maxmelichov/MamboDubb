@@ -529,56 +529,71 @@ class Installer:
         """Begin installing `id_`. Raises the 400/409 the UI renders."""
         argv = self.recipes.get(id_)
         if argv is None:
-            # A platform whose package manager cannot run unattended contributes
-            # no recipes at all (Linux: `sudo apt-get` wants a password), so
-            # ffmpeg arrives here with no argv — and still has a route. The
-            # static build is the only button that can exist there, and without
-            # it "install everything" would silently skip the one tool every
-            # stage shells out to.
-            if static_route(id_):
-                return self._begin(
-                    id_, [f"# no package manager here can install {id_} unattended, "
-                          f"so installing a static ffmpeg/ffprobe build into "
-                          f"{tools.tools_bin()}"],
-                    target=self._run_static, args=(id_,))
-            if id_ == DEMUCS_ID:
-                # A subprocess like the package managers, and for the same
-                # reason: it imports torch and demucs, which the server process
-                # spends its life not importing (`setup.py` rule one).
-                demucs = demucs_argv()
-                return self._begin(
-                    id_, ["$ " + " ".join(demucs),
-                          "fetching the stem-separation weights into the cache the "
-                          "first stems run would fill anyway"],
-                    target=self._run, args=(id_, demucs))
-            if id_ == DIARIZATION_ID and installable(id_):
-                source = diarization_source()
-                assert source is not None            # installable() just said so
-                return self._begin(
-                    id_, [f"# restoring the bundled diarization weights from "
-                          f"{source[1]}, and verifying them against {DIARIZATION_SUMS}"],
-                    target=self._run_restore, args=(id_,))
-            spec = self.downloads.get(id_)
-            if spec is None:
-                raise invalid(self._refusal(id_))
-            return self._start_download(id_, spec)
+            return self._start_without_recipe(id_)
         manager = argv[0]
         if shutil.which(manager) is None:
-            # The recipe is here but the manager is not: a brewless Mac, a
-            # Windows with no winget. "Install the package manager first" dies
-            # at a terminal, so take the static route instead of refusing.
-            # Checked here, not at table-build time, so a brew installed
-            # mid-session is picked up on the next press.
-            if static_route(id_):
-                return self._begin(
-                    id_, [f"# {manager} is not on this machine, so installing a "
-                          f"static ffmpeg/ffprobe build into {tools.tools_bin()}"],
-                    target=self._run_static, args=(id_,))
-            template = MANAGERS.get(manager,
-                                    "`{manager}` is not on PATH: install `{command}` by hand.")
-            raise invalid(template.format(tool=id_, command=" ".join(argv), manager=manager))
+            return self._start_without_manager(id_, tuple(argv), manager)
         return self._begin(id_, ["$ " + " ".join(argv)],
                            target=self._run, args=(id_, tuple(argv)))
+
+    def _start_without_recipe(self, id_: str) -> dict[str, Any]:
+        """The rows whose install is not a package-manager argv at all.
+
+        A platform whose package manager cannot run unattended contributes no
+        recipes at all (Linux: `sudo apt-get` wants a password), so ffmpeg
+        arrives here with no argv and still has a route. Then the two ids whose
+        fix is neither a manager nor a snapshot, and last the hub downloads.
+        An id in none of those is the 400 that names what the app does install.
+        """
+        if static_route(id_):
+            # The static build is the only button that can exist there, and
+            # without it "install everything" would silently skip the one tool
+            # every stage shells out to.
+            return self._start_static(
+                id_, f"# no package manager here can install {id_} unattended, "
+                     f"so installing a static ffmpeg/ffprobe build into "
+                     f"{tools.tools_bin()}")
+        if id_ == DEMUCS_ID:
+            # A subprocess like the package managers, and for the same reason:
+            # it imports torch and demucs, which the server process spends its
+            # life not importing (`setup.py` rule one).
+            demucs = demucs_argv()
+            return self._begin(
+                id_, ["$ " + " ".join(demucs),
+                      "fetching the stem-separation weights into the cache the "
+                      "first stems run would fill anyway"],
+                target=self._run, args=(id_, demucs))
+        if id_ == DIARIZATION_ID and installable(id_):
+            source = diarization_source()
+            assert source is not None            # installable() just said so
+            return self._begin(
+                id_, [f"# restoring the bundled diarization weights from "
+                      f"{source[1]}, and verifying them against {DIARIZATION_SUMS}"],
+                target=self._run_restore, args=(id_,))
+        spec = self.downloads.get(id_)
+        if spec is None:
+            raise invalid(self._refusal(id_))
+        return self._start_download(id_, spec)
+
+    def _start_without_manager(self, id_: str, argv: tuple[str, ...],
+                               manager: str) -> dict[str, Any]:
+        """The recipe is here but the manager is not: a brewless Mac, a Windows
+        with no winget. "Install the package manager first" dies at a terminal,
+        so take the static route instead of refusing. Checked here, not at
+        table-build time, so a brew installed mid-session is picked up on the
+        next press."""
+        if static_route(id_):
+            return self._start_static(
+                id_, f"# {manager} is not on this machine, so installing a "
+                     f"static ffmpeg/ffprobe build into {tools.tools_bin()}")
+        template = MANAGERS.get(manager,
+                                "`{manager}` is not on PATH: install `{command}` by hand.")
+        raise invalid(template.format(tool=id_, command=" ".join(argv), manager=manager))
+
+    def _start_static(self, id_: str, why: str) -> dict[str, Any]:
+        """Claim the slot for the pinned static ffmpeg build. `why` is the line
+        the tail opens with, naming which of the two ways we got here."""
+        return self._begin(id_, [why], target=self._run_static, args=(id_,))
 
     def _start_download(self, id_: str, spec: dict[str, Any]) -> dict[str, Any]:
         """Claim the slot for a hub snapshot. Same slot as the tools — the
@@ -751,7 +766,7 @@ class Installer:
             ok = True
             self._line("download complete")
         except Exception as exc:                       # network, auth, disk — all of it
-            error = (f"{type(exc).__name__}: {exc} partial files are kept, "
+            error = (f"{type(exc).__name__}: {exc}. Partial files are kept, "
                      "so starting the install again resumes the download")
             self._line(error)
         self._finish(id_, ok, error)
