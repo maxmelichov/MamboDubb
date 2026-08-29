@@ -175,48 +175,21 @@ def declared_source_mismatch(m: dict[str, Any],
     return {"declared": src, "in_source_script": round(frac, 2)}
 
 
-def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
-    segments = m["segments"]
-    words = transcript.load_words(workdir, m)
+def _verify_counts(segments: list[dict[str, Any]]) -> tuple[dict[str, int], list[dict]]:
+    """How the clips that will actually be heard scored, and who sounds wrong.
 
-    # No placement, no clip file behind the placement, or no clip at all. The
-    # third is the one this report used to miss: a segment whose tts record was
-    # invalidated and never refilled has nothing to place, and the timeline that
-    # deferred over it left the mix to fill its span with the original vocals.
-    # It is a hole in the dub whether or not a stale placement survived beside it.
-    unaccounted = sorted({
-        s["id"] for s in segments
-        if not (s.get("tts") or {}).get("clip")
-        or not s.get("place") or not (workdir / s["place"]["clip"]).is_file()})
-    dubbed = [s for s in segments if not s["keep"]]
-    kept = [s for s in segments if s["keep"]]
-    keep_reasons: dict[str, int] = {}
-    for s in kept:
-        keep_reasons[s["keep_reason"] or "?"] = keep_reasons.get(s["keep_reason"] or "?", 0) + 1
-
-    # Retention is measured in speech units (characters for a CJK/Korean target),
-    # like every other length budget: `.split()` counts a whole Japanese line as
-    # one word, and every shortening then reported a retention of exactly 1.0.
-    run_tgt = (m.get("source") or {}).get("tgt_lang") or "en"
-    shortened = [{
-        "id": s["id"], "start": s["start"],
-        "before": s["text_en"], "after": s["place"]["spoken"],
-        "retention": round(
-            script.speech_units(s["place"]["spoken"], s.get("tgt_lang") or run_tgt)
-            / max(1, script.speech_units(s["text_en"], s.get("tgt_lang") or run_tgt)), 2),
-    } for s in segments if (s.get("place") or {}).get("spoken")]
-
-    # "unverified" is its own verdict: the clip cleared the length guard and no
-    # ASR ever heard it (dubbing/tts.py, NO_ASR). Counting it as "ok" made a run
-    # with no verifier at all look like a run where everything passed. "accepted"
-    # is the same argument one bar down: a clip that cleared the accept floor but
-    # never reached CLONE_GOOD_OVERLAP, after every reference was tried. It is a
-    # real dub and it is not a clean one, and folding it into "ok" is how a run
-    # full of half-garbled lines read as fully verified.
-    # "wrong_voice" is the third: ECAPA says the clip is a different person from
-    # the segment's own audio (dubbing/tts.py, CLONE_VOICE_MIN). It is a real dub
-    # of the right words and it is the failure a listener notices first, so it is
-    # counted apart and named with the lines it happened on.
+    "unverified" is its own verdict: the clip cleared the length guard and no
+    ASR ever heard it (dubbing/tts.py, NO_ASR). Counting it as "ok" made a run
+    with no verifier at all look like a run where everything passed. "accepted"
+    is the same argument one bar down: a clip that cleared the accept floor but
+    never reached CLONE_GOOD_OVERLAP, after every reference was tried. It is a
+    real dub and it is not a clean one, and folding it into "ok" is how a run
+    full of half-garbled lines read as fully verified.
+    "wrong_voice" is the third: ECAPA says the clip is a different person from
+    the segment's own audio (dubbing/tts.py, CLONE_VOICE_MIN). It is a real dub
+    of the right words and it is the failure a listener notices first, so it is
+    counted apart and named with the lines it happened on.
+    """
     verify = {"ok": 0, "accepted": 0, "soft": 0, "keep": 0, "unverified": 0,
               "wrong_voice": 0}
     wrong_voice = []
@@ -235,11 +208,82 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
             wrong_voice.append({"id": s["id"], "start": s["start"],
                                 "speaker": s.get("speaker"),
                                 "voice": (s.get("tts") or {}).get("voice")})
+    return verify, wrong_voice
 
-    drifts = [s["place"]["drift"] for s in segments if s.get("place")]
-    rates = [s["place"]["rate"] for s in segments if s.get("place")]
-    overruns = [s["place"]["overrun"] for s in segments
-                if (s.get("place") or {}).get("overrun")]
+
+def _shortened_lines(segments: list[dict[str, Any]], run_tgt: str) -> list[dict[str, Any]]:
+    """Every line the timeline rewrote shorter, with how much of it survived.
+
+    Retention is measured in speech units (characters for a CJK/Korean target),
+    like every other length budget: `.split()` counts a whole Japanese line as
+    one word, and every shortening then reported a retention of exactly 1.0.
+    """
+    def units(text: str, seg: dict[str, Any]) -> int:
+        return script.speech_units(text, seg.get("tgt_lang") or run_tgt)
+
+    return [{
+        "id": s["id"], "start": s["start"],
+        "before": s["text_en"], "after": s["place"]["spoken"],
+        "retention": round(units(s["place"]["spoken"], s) / max(1, units(s["text_en"], s)), 2),
+    } for s in segments if (s.get("place") or {}).get("spoken")]
+
+
+def _degraded(m: dict[str, Any], keep_reasons: dict[str, int],
+              dubbed: list[dict[str, Any]]) -> tuple[dict[str, str], dict[str, int] | None]:
+    """What ran degraded (the stages' own `m["health"]`), plus total TTS failure.
+
+    The second half is the one degradation no stage is in a position to report
+    about itself. A `tts_failed` keep is the TTS stage's per-segment safety net:
+    that line did not come out usable, the source audio stands in for it, and the
+    run is a dub with one gap. The same reason on *every* line that was supposed
+    to be dubbed is a different event wearing the same name. It means the engine
+    never loaded and nothing was synthesized at all, so the "dub" the mix
+    produces is the source audio end to end, in the source language.
+
+    That used to finish clean (issue #15): `degraded` empty, exit 0, a
+    preview.mp4 indistinguishable from a successful run until someone listened
+    to it. The boundary is total failure, not any failure: a partial pile of
+    tts_failed keeps is the fallback working as designed and still exits 0.
+    """
+    health = dict(m.get("health") or {})
+    tts_unavailable = None
+    if keep_reasons.get("tts_failed") and not dubbed:
+        tts_unavailable = {"kept": keep_reasons["tts_failed"]}
+        health["tts.synthesis"] = (
+            f"produced nothing all {tts_unavailable['kept']} segment(s) fell "
+            "back to source audio, so this dub is the untranslated original")
+    return health, tts_unavailable
+
+
+def collect(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
+    """Everything `report.json` says about this run. Writes nothing, prints nothing."""
+    segments = m["segments"]
+    words = transcript.load_words(workdir, m)
+
+    # No placement, no clip file behind the placement, or no clip at all. The
+    # third is the one this report used to miss: a segment whose tts record was
+    # invalidated and never refilled has nothing to place, and the timeline that
+    # deferred over it left the mix to fill its span with the original vocals.
+    # It is a hole in the dub whether or not a stale placement survived beside it.
+    unaccounted = sorted({
+        s["id"] for s in segments
+        if not (s.get("tts") or {}).get("clip")
+        or not s.get("place") or not (workdir / s["place"]["clip"]).is_file()})
+    dubbed = [s for s in segments if not s["keep"]]
+    kept = [s for s in segments if s["keep"]]
+    keep_reasons: dict[str, int] = {}
+    for s in kept:
+        keep_reasons[s["keep_reason"] or "?"] = keep_reasons.get(s["keep_reason"] or "?", 0) + 1
+
+    run_tgt = (m.get("source") or {}).get("tgt_lang") or "en"
+    shortened = _shortened_lines(segments, run_tgt)
+    verify, wrong_voice = _verify_counts(segments)
+    health, tts_unavailable = _degraded(m, keep_reasons, dubbed)
+
+    placed = [s for s in segments if s.get("place")]
+    drifts = [s["place"]["drift"] for s in placed]
+    rates = [s["place"]["rate"] for s in placed]
+    overruns = [s["place"]["overrun"] for s in placed if s["place"].get("overrun")]
     # A rescue that was attempted and abandoned the missing half of the
     # shortened/drift story. Not the same thing as a late line: a refused shorten
     # means the clip kept every word and the slot had to absorb it in speed, and
@@ -248,7 +292,7 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
     abandoned = [{"id": s["id"], "start": s["start"],
                   "reason": s["place"]["shorten"],
                   "overrun": s["place"].get("overrun") or 0.0}
-                 for s in segments if (s.get("place") or {}).get("shorten")]
+                 for s in placed if s["place"].get("shorten")]
     # A kept span whose subtitle is the translate stage's "…" placeholder: the
     # translator refused and the viewer gets an ellipsis where a line should be.
     # (The placeholder is written both by design a passed-through span has no
@@ -257,35 +301,14 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
     # visibility that costs nothing meanwhile.)
     subtitles_failed = [s["id"] for s in kept
                         if (s.get("text_en") or "").strip() == "…"]
-    # What ran degraded this run, written by the stages themselves.
-    health = dict(m.get("health") or {})
-    # ...plus the one degradation no stage is in a position to report about
-    # itself. A `tts_failed` keep is the TTS stage's per-segment safety net: that
-    # line did not come out usable, the source audio stands in for it, and the run
-    # is a dub with one gap. The same reason on *every* line that was supposed to
-    # be dubbed is a different event wearing the same name. It means the engine
-    # never loaded and nothing was synthesized at all, so the "dub" the mix
-    # produces is the source audio end to end, in the source language.
-    #
-    # That used to finish clean (issue #15): `degraded` empty, exit 0, a
-    # preview.mp4 indistinguishable from a successful run until someone listened
-    # to it. The boundary is total failure, not any failure: a partial pile of
-    # tts_failed keeps is the fallback working as designed and still exits 0.
-    tts_unavailable = None
-    if keep_reasons.get("tts_failed") and not dubbed:
-        tts_unavailable = {"kept": keep_reasons["tts_failed"]}
-        health["tts.synthesis"] = (
-            f"produced nothing all {tts_unavailable['kept']} segment(s) fell "
-            "back to source audio, so this dub is the untranslated original")
     # A locked clip whose text has moved on since it was made: the pipeline may
     # not replace it (the user approved it) and may not pretend it is current.
     stale_locked = [{"id": s["id"], "uid": s.get("uid")}
                     for s in segments if tts.clip_text_stale(s)]
     spans = uncovered_spans(workdir / m["files"]["source_wav"], words, segments,
                             float(m["source"]["duration"]))
-    faint_endings = faint_line_endings(workdir, dubbed)
 
-    report = {
+    return {
         # What this report is a report *about*. Nothing else on disk says so: an
         # edit made a minute later changes no stage parameter, so a reader had no
         # way to tell a current report from one the manifest had moved past hours
@@ -318,27 +341,33 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
             "mean": round(sum(drifts) / len(drifts), 3) if drifts else 0.0,
             "over_soft": sum(1 for d in drifts if d > timeline.DRIFT_SOFT),
         },
-        "faint_endings": faint_endings,
+        "faint_endings": faint_line_endings(workdir, dubbed),
         "speed": {"max": round(max(rates, default=1.0), 3),
                   "compressed": sum(1 for r in rates if r > 1.01)},
         "uncovered_audible": spans,
         "source_mismatch": declared_source_mismatch(m, segments),
     }
-    (workdir / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1),
-                                         encoding="utf-8")
 
+
+def summarize(report: dict[str, Any]) -> None:
+    """Print the run's headline counts and every warning in it, to stderr.
+
+    Reads only the report, so what the human is told and what `report.json`
+    records cannot drift apart.
+    """
+    verify = report["verify"]
     print("", file=sys.stderr)
-    print(f"  {len(segments)} segments: {len(dubbed)} dubbed, {len(kept)} original "
-          f"({keep_reasons})", file=sys.stderr)
+    print(f"  {report['segments']} segments: {report['dubbed']} dubbed, "
+          f"{report['kept']} original ({report['keep_reasons']})", file=sys.stderr)
     print(f"  tts verify: {verify}", file=sys.stderr)
-    if tts_unavailable:
-        print(f"  FAIL: TTS produced nothing all {tts_unavailable['kept']} "
+    if report["tts_unavailable"]:
+        print(f"  FAIL: TTS produced nothing all {report['tts_unavailable']['kept']} "
               "segment(s) fell back to their source audio, so this run's dub is "
               "the untranslated original. The synthesis engine did not load; the "
               "per-segment errors above say why.", file=sys.stderr)
-    if wrong_voice:
-        ids = ", ".join(str(w["id"]) for w in wrong_voice[:10])
-        print(f"  WARNING: {len(wrong_voice)} clip(s) speak the right words in "
+    if report["wrong_voice"]:
+        ids = ", ".join(str(w["id"]) for w in report["wrong_voice"][:10])
+        print(f"  WARNING: {len(report['wrong_voice'])} clip(s) speak the right words in "
               f"another voice (seg {ids}) re-voice them from a reference of the "
               "right speaker", file=sys.stderr)
     if verify["unverified"]:
@@ -357,19 +386,20 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
               f"in the declared source language ({mm['declared']}) the declaration "
               "is probably wrong; re-create the project with the language the video "
               "actually speaks", file=sys.stderr)
-    for name, reason in sorted(health.items()):
+    for name, reason in sorted(report["degraded"].items()):
         print(f"  degraded: {name} {reason}", file=sys.stderr)
     print(f"  drift: max {report['drift']['max']}s, {report['drift']['over_soft']} over "
           f"{timeline.DRIFT_SOFT}s | speed-up on {report['speed']['compressed']} segments "
           f"(max {report['speed']['max']}x)", file=sys.stderr)
-    if overruns:
-        print(f"  overrun: {len(overruns)} clip(s) still talking past the next "
+    if report["overrun"]["count"]:
+        print(f"  overrun: {report['overrun']['count']} clip(s) still talking past the next "
               f"speaker's onset, worst {report['overrun']['max']}s", file=sys.stderr)
     if report["faint_endings"]:
         worst = min(report["faint_endings"], key=lambda f: f["db"])
         print(f"  faint endings: {len(report['faint_endings'])} line(s) close on a "
               f"fricative too quiet to carry, worst {worst['db']}dB under the line "
               f"at {worst['start']:.2f}s (seg {worst['id']})", file=sys.stderr)
+    abandoned = report["shorten_abandoned"]
     if abandoned:
         # Its own heading, and its own truth. These lines used to print under the
         # overrun count and each claimed to be "still late", so a run with one
@@ -381,26 +411,35 @@ def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
                 else ", absorbed by the speed-up")
         print(f"    seg {item['id']} @{item['start']:.1f}s {item['reason']}{late}",
               file=sys.stderr)
-    if subtitles_failed:
-        print(f"  subtitles: {len(subtitles_failed)} kept segment(s) show the "
-              f"\"…\" placeholder instead of a line: {subtitles_failed[:10]}",
+    if report["subtitles_failed"]:
+        print(f"  subtitles: {len(report['subtitles_failed'])} kept segment(s) show the "
+              f"\"…\" placeholder instead of a line: {report['subtitles_failed'][:10]}",
               file=sys.stderr)
-    for item in stale_locked:
+    for item in report["stale_locked_clips"]:
         print(f"  CONFLICT: seg {item['id']} has a locked clip made for text that "
               "has since changed it speaks the old line (resynthesize it, or "
               "release the lock)", file=sys.stderr)
-    if shortened:
-        print(f"  shortened for timing: {len(shortened)} segments", file=sys.stderr)
-        for s in shortened:
+    if report["shortened"]:
+        print(f"  shortened for timing: {len(report['shortened'])} segments", file=sys.stderr)
+        for s in report["shortened"]:
             print(f"    seg {s['id']} @{s['start']:.1f}s kept {s['retention']:.0%} of words",
                   file=sys.stderr)
+    spans = report["uncovered_audible"]
     if spans:
         total_gap = sum(s["duration"] for s in spans)
         print(f"  uncovered audible audio: {len(spans)} spans, {total_gap:.1f}s total "
               "(music, or transcript missed it)", file=sys.stderr)
         for s in spans[:10]:
             print(f"    {s['start']:.1f}-{s['end']:.1f}s (rms {s['rms']:.3f})", file=sys.stderr)
-    if unaccounted:
-        print(f"  FAIL: {len(unaccounted)} segments have no audio: {unaccounted}",
-              file=sys.stderr)
+    if report["unaccounted"]:
+        print(f"  FAIL: {len(report['unaccounted'])} segments have no audio: "
+              f"{report['unaccounted']}", file=sys.stderr)
+
+
+def run(m: dict[str, Any], workdir: Path) -> dict[str, Any]:
+    """Count, write `report.json`, tell the human what is wrong with the run."""
+    report = collect(m, workdir)
+    (workdir / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1),
+                                         encoding="utf-8")
+    summarize(report)
     return report
