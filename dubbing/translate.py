@@ -2049,7 +2049,7 @@ def _subtitle_placeholders(segments: list[dict[str, Any]], subs: list[dict[str, 
     """Give every kept segment the subtitle it will show.
 
     A third-language keep whose text never got a target rendering (an "und"
-    verdict, or the translation below fails) must not put a foreign-script line in
+    verdict, or `_subtitle_pass` fails) must not put a foreign-script line in
     the subtitles the placeholder is honest. A user passthrough is the same case:
     the viewer is about to hear the target language, so the source-language ASR's
     reading of it (which is what made the user reach for the override) is not the

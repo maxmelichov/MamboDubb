@@ -243,7 +243,7 @@ def _add_fill(speech: np.ndarray, occupied: np.ndarray, fill: list[tuple[float, 
         piece *= np.clip(edge, 0.0, 1.0)
         if overlap:
             piece[occ] = 0.0
-        # Unity gain: undo the global speech lift applied below.
+        # Unity gain: undo the global speech lift `assemble` applies.
         speech[lo:hi] += piece / SPEECH_GAIN
         occupied[lo:hi] = True
 
