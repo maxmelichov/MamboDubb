@@ -6,8 +6,8 @@
  * ten languages plus Hebrew (a LoRA over the same checkpoint; the server
  * refuses a Hebrew target with the download command if the adapter is not
  * installed). Arabic is the one language on the source list and off the target
- * one — offering it as a target would create a project whose tts stage can only
- * fail — so the two lists stay deliberately different.
+ * one, because offering it as a target would create a project whose tts stage
+ * can only fail. That is why the two lists stay deliberately different.
  *
  * The import screen picks a run's pair from these; the selection panel offers
  * the same codes again as per-segment overrides. They were two hand-kept copies

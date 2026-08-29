@@ -4,7 +4,7 @@
  * editor the timing shelf opens with.
  *
  * They start shut (`Disclosure`), so this is the part of the panel a reviewer
- * only reads when something is wrong — which is why it is its own file.
+ * only reads when something is wrong, which is why it is its own file.
  */
 
 import { useState } from "react";

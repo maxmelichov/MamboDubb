@@ -64,7 +64,7 @@ import type { Segment, SegmentPatch } from "../lib/types";
 /*
  * The run's own two lists, which differ because what the ASR and the translator
  * can READ is Arabic plus every dub target, while what Qwen3-TTS can SPEAK is
- * that set minus Arabic (see `lib/languages`). `""` leads both here — it is
+ * that set minus Arabic (see `lib/languages`). `""` leads both here: it is
  * "inherit", and the empty string is what *clears* an override (see below).
  */
 const SRC_LANGS = ["", ...SOURCE_LANG_CODES];
