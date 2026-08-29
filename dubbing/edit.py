@@ -816,6 +816,69 @@ def _preceding(m: dict[str, Any], seg: dict[str, Any], pivot: bool, target: str,
     return prior or (prev.get("text") or "").strip()
 
 
+def _take_verbatim(m: dict[str, Any], segs: list[dict[str, Any]],
+                   out: dict[str, str]) -> list[dict[str, Any]]:
+    """Restore the same-language segments in place; return the ones needing a model.
+
+    A same-language segment needs no model: the line is already in the target
+    language, so "re-translate" means restoring it verbatim (see `translate.run`).
+    Filtered before the load, so a purely same-language redo never pays for Gemma.
+    """
+    from . import translate
+
+    todo: list[dict[str, Any]] = []
+    for seg in segs:
+        if not translate.same_language(*_langs(m, seg)):
+            todo.append(seg)
+            continue
+        _unlock(seg, "text_en")
+        invalidate(m, seg["uid"], stages={"translate"})
+        seg["text_en"] = translate._finalize_numbers(
+            (seg.get("text") or "").strip(), _langs(m, seg)[1])
+        out[seg["uid"]] = seg["text_en"]
+    return todo
+
+
+def _translate_line(h, m: dict[str, Any], seg: dict[str, Any], *, source: str, target: str,
+                    pivot: bool, preceding: str, context: str, register: str,
+                    genre: str) -> tuple[str, str]:
+    """One segment's translation, by the same recipe `translate.run` uses.
+
+    Returns (target text, English intermediate) — the intermediate is "" on a
+    direct hop, and the text is "" wherever a hop came back in the wrong language.
+    """
+    from . import numwords, translate
+
+    mid = ""
+    if pivot:
+        mid = translate.generate(h.processor, h.model, seg["text"], source=source,
+                                 target="en", context=context, preceding=preceding,
+                                 device=h.device, register=register, genre=genre,
+                                 names=_established(m, "en"))
+        if not translate.is_target_text(mid, "en"):
+            text = ""
+        else:
+            mid = numwords.spell_numbers(mid.strip(), "en")
+            text = translate.generate(h.processor, h.model, mid, source="en",
+                                      target=target, context=context,
+                                      preceding="", device=h.device,
+                                      register=register, genre=genre,
+                                      names=_established(m, target),
+                                      numbers_spelled=True, asr_source=False)
+    else:
+        src_text = seg["text"]
+        en_direct = source == "en" and target != "en"
+        if en_direct:
+            src_text = numwords.spell_numbers(src_text, "en")
+        text = translate.generate(h.processor, h.model, src_text, source=source,
+                                  target=target, context=context,
+                                  preceding=preceding, device=h.device,
+                                  register=register, genre=genre,
+                                  names=_established(m, target),
+                                  numbers_spelled=en_direct)
+    return translate._finalize_numbers(text, target), mid
+
+
 def retranslate(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
                 progress: Progress | None = None, register: str = "narration",
                 genre: str = "documentary",
@@ -841,7 +904,7 @@ def retranslate(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
     size is the honest count of what this call achieved; the rest is reported on
     the progress channel and left visibly unfinished.
     """
-    from . import numwords, translate
+    from . import translate
 
     segs = _still_present(m, uids)
     if not segs:
@@ -850,20 +913,8 @@ def retranslate(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
         segs = [s for s in segs if not manifest.is_locked(s, "text_en")]
     context = (m.get("source") or {}).get("context") or ""
     out: dict[str, str] = {}
-    # Same-language segments need no model: the line is already in the target
-    # language, so "re-translate" means restoring it verbatim (see `translate.run`).
-    # Filtered before the load, so a purely same-language redo never pays for Gemma.
-    same: list[dict[str, Any]] = []
-    todo: list[dict[str, Any]] = []
-    for seg in segs:
-        (same if translate.same_language(*_langs(m, seg)) else todo).append(seg)
-    for seg in same:
-        _unlock(seg, "text_en")
-        invalidate(m, seg["uid"], stages={"translate"})
-        seg["text_en"] = translate._finalize_numbers(
-            (seg.get("text") or "").strip(), _langs(m, seg)[1])
-        out[seg["uid"]] = seg["text_en"]
-    asked, segs = len(segs), todo
+    asked = len(segs)
+    segs = _take_verbatim(m, segs, out)
     if not segs:
         _progress(progress, 1.0, f"translated {len(out)} of {asked} segment(s)")
         return out
@@ -881,34 +932,9 @@ def retranslate(m: dict[str, Any], workdir: Path, uids: Sequence[str], *,
             preceding = _preceding(m, seg, pivot, target,
                                    (source, target) != run_pair)
             seg_ctx = translate.relevant_context(context, seg["text"], source)
-            mid = ""
-            if pivot:
-                mid = translate.generate(h.processor, h.model, seg["text"], source=source,
-                                         target="en", context=seg_ctx, preceding=preceding,
-                                         device=h.device, register=register, genre=genre,
-                                         names=_established(m, "en"))
-                if not translate.is_target_text(mid, "en"):
-                    text = ""
-                else:
-                    mid = numwords.spell_numbers(mid.strip(), "en")
-                    text = translate.generate(h.processor, h.model, mid, source="en",
-                                              target=target, context=seg_ctx,
-                                              preceding="", device=h.device,
-                                              register=register, genre=genre,
-                                              names=_established(m, target),
-                                              numbers_spelled=True, asr_source=False)
-            else:
-                src_text = seg["text"]
-                en_direct = source == "en" and target != "en"
-                if en_direct:
-                    src_text = numwords.spell_numbers(src_text, "en")
-                text = translate.generate(h.processor, h.model, src_text, source=source,
-                                          target=target, context=seg_ctx,
-                                          preceding=preceding, device=h.device,
-                                          register=register, genre=genre,
-                                          names=_established(m, target),
-                                          numbers_spelled=en_direct)
-            text = translate._finalize_numbers(text, target)
+            text, mid = _translate_line(h, m, seg, source=source, target=target,
+                                        pivot=pivot, preceding=preceding, context=seg_ctx,
+                                        register=register, genre=genre)
             # The result is the machine's, so the lock the user's old text held is
             # gone and the clip built on that text with it.
             _unlock(seg, "text_en")
@@ -1187,6 +1213,29 @@ def start_stage(m: dict[str, Any], from_stage: str) -> tuple[str, str | None]:
     return from_stage, None
 
 
+def _clear_for_rebuild(m: dict[str, Any], from_stage: str, asked: str) -> None:
+    """Clear what the user asked to redo; only reopen what the render backed into.
+
+    A stage this render was *asked* for is done over: "rebuild from tts" means
+    the clips are to be made again, so its per-segment results are cleared and
+    `reset_stage` is the whole point. A stage it only BACKED UP INTO is the
+    opposite request it is here to fill the holes that stopped the render, and
+    `reset_stage` on it deletes every unlocked clip (or every unlocked
+    translation) in the run. That is how correcting one line and pressing Render
+    re-synthesized six hundred: "it removed all my renders and started from
+    zero" was the button doing exactly that. So the backed-up prefix is only
+    *reopened* (`unmark_stage`, which keeps the per-segment work and the resume
+    marks), and the stages the user asked for are cleared as before.
+    """
+    for stage in STAGES[STAGES.index(from_stage):STAGES.index(asked)]:
+        manifest.unmark_stage(m, stage)
+    for stage in STAGES[STAGES.index(asked):]:
+        manifest.clear_stage(m, stage)
+    for stage in STAGES[STAGES.index(asked) + 1:]:
+        manifest.reset_stage(m, stage)
+    manifest.reset_stage(m, asked)
+
+
 def rebuild(m: dict[str, Any], workdir: Path, *, from_stage: str,
             progress: Progress | None = None, save: Callable[[], None] | None = None,
             **overrides: Any) -> list[str]:
@@ -1227,24 +1276,8 @@ def rebuild(m: dict[str, Any], workdir: Path, *, from_stage: str,
         _progress(progress, 0.0, why)
     args = _args(m, **overrides)
     params = cli.stage_params(args, m)
-    todo = [s for s in STAGES[STAGES.index(from_stage):]]
-    # A stage this render was *asked* for is done over: "rebuild from tts" means
-    # the clips are to be made again, so its per-segment results are cleared and
-    # `reset_stage` is the whole point. A stage it only BACKED UP INTO is the
-    # opposite request it is here to fill the holes that stopped the render, and
-    # `reset_stage` on it deletes every unlocked clip (or every unlocked
-    # translation) in the run. That is how correcting one line and pressing Render
-    # re-synthesized six hundred: "it removed all my renders and started from
-    # zero" was the button doing exactly that. So the backed-up prefix is only
-    # *reopened* (`unmark_stage`, which keeps the per-segment work and the resume
-    # marks), and the stages the user asked for are cleared as before.
-    for stage in STAGES[STAGES.index(from_stage):STAGES.index(asked)]:
-        manifest.unmark_stage(m, stage)
-    for stage in STAGES[STAGES.index(asked):]:
-        manifest.clear_stage(m, stage)
-    for stage in STAGES[STAGES.index(asked) + 1:]:
-        manifest.reset_stage(m, stage)
-    manifest.reset_stage(m, asked)
+    todo = list(STAGES[STAGES.index(from_stage):])
+    _clear_for_rebuild(m, from_stage, asked)
 
     save = save or (lambda: manifest.save(workdir, m))
     engine = None
