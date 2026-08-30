@@ -45,7 +45,9 @@ import {
   VolumeX,
 } from "lucide-react";
 import { cn } from "../lib/classNames";
+import { isDesktop, setWindowFullscreen } from "../lib/desktop";
 import { timecode } from "../lib/format";
+import { ErrorBar } from "./ui";
 import type { Transport } from "../lib/useTransport";
 import type { ReactNode } from "react";
 
@@ -67,6 +69,22 @@ const NOTHING_TO_PLAY = "Nothing to play yet: the fetch stage hasn't run";
  * hasn't run" is the wrong sentence for every one of those.
  */
 const NO_MEDIA = "This run's video could not be loaded: there is nothing to play";
+
+/*
+ * The two ways fullscreen can end badly, said out loud.
+ *
+ * Neither of these is "the button did nothing", which is the state this pair
+ * exists to make unreachable. The first is the fallback landing half-way: the
+ * webview refused the Fullscreen API *and* the shell would not take the window
+ * with it, so the picture fills the app window and the app window is whatever
+ * size it was. That is a real result and a worse one than asked for, so it is
+ * worth a sentence. The second is the genuinely bad one, where the browser will
+ * not let go, and the sentence has to name the way out.
+ */
+const FULLSCREEN_WINDOW_ONLY =
+  "This build's webview refused fullscreen and the window would not follow, so the picture fills the app window instead.";
+
+const FULLSCREEN_STUCK = "The browser refused to leave fullscreen. Press Escape to get out.";
 
 export function VideoPlayer({
   src,
@@ -108,15 +126,117 @@ export function VideoPlayer({
    * the scrub exactly as they move with the timeline's own seek.
    */
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const [fullscreen, setFullscreen] = useState(false);
+
+  /*
+   * Fullscreen, and what to do when the platform says no.
+   *
+   * This was one line that asked the element to go fullscreen and swallowed the
+   * rejection in an empty `catch`, which is how "full screen dont work" got to
+   * be a bug report with no evidence attached: in the desktop shell the press
+   * did nothing, said nothing, and left no trace anywhere.
+   *
+   * The reason is not the button and not the page. The shell is a WKWebView,
+   * and WebKit only honours the Fullscreen API when the `fullScreenEnabled`
+   * preference is set on the webview before it is created. wry does set it, but
+   * only under its `fullscreen` Cargo feature, which Tauri re-exports as
+   * `macos-private-api`, and the shell did not ask for it. That switch is now
+   * on (see `app/desktop/src-tauri/Cargo.toml`), so the desktop path and the
+   * browser path are the same path: `requestFullscreen` on the stage, with the
+   * platform's own escape key and menu-bar behaviour for free.
+   *
+   * The fallback below is not there to paper over that fix. It is there because
+   * a private WebKit preference is exactly the sort of thing that stops working
+   * one macOS release later, and because this bundle also has to survive a
+   * WebKitGTK or WebView2 that refuses for its own reasons. When the request is
+   * refused we fill instead: the stage goes `fixed inset-0` over the page, and
+   * on the desktop we additionally ask the *window* to go fullscreen, so what
+   * the user gets is still a picture that covers the screen rather than nothing
+   * at all. The rejection reason goes to the console either way, because the
+   * whole point of the old empty `catch` being wrong is that nobody could see
+   * the refusal, and if the window would not come with us we say so out loud.
+   *
+   * Two states, because the icon must never claim something the screen is not
+   * doing. `native` is the browser's, and only the browser can set or clear it,
+   * so it is read back off `fullscreenchange` and compared against our own
+   * element rather than any element. `filling` is ours, and is the truth for
+   * the fallback, which fires no `fullscreenchange` at all. The button and the
+   * double-click read the two together.
+   */
+  const [native, setNative] = useState(false);
+  const [filling, setFilling] = useState(false);
+  const [refused, setRefused] = useState<string | null>(null);
+  const fullscreen = native || filling;
+
   useEffect(() => {
-    const onChange = () => setFullscreen(document.fullscreenElement != null);
+    const onChange = () =>
+      setNative(rootRef.current != null && document.fullscreenElement === rootRef.current);
     document.addEventListener("fullscreenchange", onChange);
     return () => document.removeEventListener("fullscreenchange", onChange);
   }, []);
+
+  const leaveFill = () => {
+    setFilling(false);
+    setRefused(null);
+    void setWindowFullscreen(false);
+  };
+
+  /*
+   * Escape, by hand, because the fill is not a real fullscreen and nothing else
+   * will do it. Capture phase and `stopPropagation`, so the one press that
+   * leaves the fill does not also reach the editor's own Escape and clear the
+   * selection underneath it.
+   */
+  useEffect(() => {
+    if (!filling) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      leaveFill();
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [filling]);
+
+  const enterFullscreen = async () => {
+    const root = rootRef.current;
+    if (!root) return;
+    setRefused(null);
+
+    const request = root.requestFullscreen?.bind(root);
+    if (request) {
+      try {
+        await request();
+        // `fullscreenchange` takes it from here; nothing to fill.
+        return;
+      } catch (error) {
+        console.warn("VideoPlayer: the platform refused element fullscreen", error);
+      }
+    } else {
+      console.warn("VideoPlayer: no Fullscreen API on this element");
+    }
+
+    setFilling(true);
+    // False in a browser, where filling the viewport is already the whole of
+    // what we can do and nothing is wrong. Only the shell owes us a window.
+    const windowed = await setWindowFullscreen(true);
+    if (isDesktop() && !windowed) setRefused(FULLSCREEN_WINDOW_ONLY);
+  };
+
+  const exitFullscreen = async () => {
+    if (document.fullscreenElement) {
+      try {
+        await document.exitFullscreen();
+      } catch (error) {
+        console.warn("VideoPlayer: the platform refused to exit fullscreen", error);
+        setRefused(FULLSCREEN_STUCK);
+        return;
+      }
+    }
+    leaveFill();
+  };
+
   const toggleFullscreen = () => {
-    if (document.fullscreenElement) void document.exitFullscreen();
-    else void rootRef.current?.requestFullscreen?.().catch(() => {});
+    void (fullscreen ? exitFullscreen() : enterFullscreen());
   };
 
   // Volume lives on the element, but the element is remounted per source —
@@ -147,7 +267,14 @@ export function VideoPlayer({
   const silent = mode === "none" || src == null || failed;
 
   return (
-    <div ref={rootRef} className={cn("flex flex-col bg-sunken", className)}>
+    <div
+      ref={rootRef}
+      // `fill` drops the caller's own sizing on purpose: `className` is what
+      // parks this in the editor's right-hand column, and a fullscreen that
+      // still obeys a 40rem max-width is not a fullscreen.
+      data-fullscreen={fullscreen ? (filling ? "fill" : "native") : undefined}
+      className={cn("flex flex-col bg-sunken", filling ? "fixed inset-0 z-50" : className)}
+    >
       <div
         className={cn("relative min-h-0 flex-1", picture && "cursor-pointer")}
         // On the PICTURE only: with the placeholder up, a click is aimed at
@@ -171,6 +298,10 @@ export function VideoPlayer({
         ) : null}
         {picture ? null : failed ? <MediaError label={srcLabel} /> : placeholder}
       </div>
+
+      {/* The house error strip, in the player rather than the page: the press
+          happened here, and in the fill the page's own chrome is behind us. */}
+      {refused ? <ErrorBar message={refused} onDismiss={() => setRefused(null)} /> : null}
 
       <Scrubber current={transport.currentTime} duration={duration} seek={transport.seek} />
 

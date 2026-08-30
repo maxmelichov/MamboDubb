@@ -26,6 +26,7 @@
  *   set_workspace({ path })     -> void
  *   check_workspace({ path })   -> unknown
  *   start_server() / stop_server()
+ *   set_window_fullscreen({ value }) -> void   the whole window, not an element
  *
  * Only the four the UI actually needs are wrapped below; the rest are listed so
  * the next person does not have to go and read the Rust.
@@ -197,6 +198,26 @@ export function pickVideoFile(): Promise<string | null> {
 export function pickTranscriptFile(): Promise<string | null> {
   if (!isDesktop()) return Promise.resolve(null);
   return call<string | null>("pick_transcript_file", undefined, null);
+}
+
+/**
+ * Put the *window* into fullscreen, or take it out again.
+ *
+ * This is the video player's second-choice fullscreen and nothing else should
+ * want it. The first choice is the Fullscreen API on the stage element, which
+ * is what a browser does and what the shell does too now that the webview has
+ * the preference set for it. When a platform refuses that, filling the page is
+ * only half an answer, because the page is inside a window that is 1280 wide;
+ * this is the other half.
+ *
+ * False for all of "not the desktop", "this shell predates the command" and
+ * "the window refused", and the caller wants that conflation: every one of them
+ * means the picture is as big as it is going to get without help, and the
+ * player says so rather than pretending it went fullscreen.
+ */
+export function setWindowFullscreen(value: boolean): Promise<boolean> {
+  if (!isDesktop()) return Promise.resolve(false);
+  return callOk("set_window_fullscreen", { value });
 }
 
 /**

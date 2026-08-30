@@ -16,7 +16,18 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset"] }
+# `macos-private-api` is the switch for element fullscreen, and the only reason it
+# is here. It forwards to `wry/fullscreen`, which sets the `fullScreenEnabled`
+# preference on the WKWebView before it is built; without it WebKit rejects every
+# `requestFullscreen()` the page makes, which is what "full screen dont work" was.
+# It is a private Apple key, so this bundle must never go to the Mac App Store;
+# it does not (see `bundle.targets`: app, dmg, nsis, msi, deb, appimage).
+#
+# It is paired with `app.macOSPrivateApi: true` in tauri.conf.json, and the build
+# script fails if the two disagree, so change them together. That flag is not the
+# same thing as the window's `fullscreen`, which is only what size the window
+# opens at and has never had anything to do with what the page is allowed to do.
+tauri = { version = "2", features = ["protocol-asset", "macos-private-api"] }
 tauri-plugin-opener = "2"
 tauri-plugin-http = "2"
 tauri-plugin-dialog = "2"

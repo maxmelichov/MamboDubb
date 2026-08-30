@@ -1,6 +1,7 @@
 mod files;
 mod provision;
 mod runner;
+mod window;
 mod workspace;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -23,6 +24,7 @@ pub fn run() {
             files::pick_video_file,
             files::pick_transcript_file,
             files::pick_workspace_dir,
+            window::set_window_fullscreen,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

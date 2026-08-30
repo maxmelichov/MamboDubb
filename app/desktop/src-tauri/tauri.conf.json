@@ -26,6 +26,7 @@
         "backgroundColor": "#f2f1ec"
       }
     ],
+    "macOSPrivateApi": true,
     "security": {
       "assetProtocol": {
         "enable": true,

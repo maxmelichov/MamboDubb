@@ -3355,12 +3355,35 @@ scrubber().dispatchEvent(
 );
 await settle(150);
 check("…and scrubs back", Math.abs(scrubAt() - scrubFrom) <= 1);
+const fullscreenButton = () =>
+  [...document.querySelectorAll("button")].find((b) =>
+    ["Fullscreen", "Exit fullscreen"].includes(b.getAttribute("aria-label")),
+  );
 check(
   "volume and fullscreen sit in the bar",
-  document.querySelector("[data-volume]") != null &&
-    [...document.querySelectorAll("button")].some((b) =>
-      ["Fullscreen", "Exit fullscreen"].includes(b.getAttribute("aria-label")),
-    ),
+  document.querySelector("[data-volume]") != null && fullscreenButton() != null,
+);
+/*
+ * Fullscreen, and the state it reports.
+ *
+ * "full screen dont work": the press did nothing and said nothing, because the
+ * handler swallowed the platform's rejection in an empty `catch`. The player
+ * now says out loud what it is doing, on the stage itself, and the button reads
+ * back off the same answer, so an icon that says "Exit fullscreen" over a
+ * picture that is not fullscreen is a state that cannot be reached.
+ *
+ * What can be asserted here is the resting state and the refusal. Every fixture
+ * run is a run whose picture jsdom will not load, so the button is honestly
+ * dead in all three of them, and the four transitions (requested, entered,
+ * exited, refused) are not reachable from this harness: they need a `<video>`
+ * that loads, which fixture mode by construction does not have. See the note in
+ * VideoPlayer.tsx for what the fallback does when a real webview refuses.
+ */
+check("the player is not claiming to be fullscreen", transportBar().parentElement.getAttribute("data-fullscreen") == null);
+check(
+  "…and with no picture the button is dead rather than silent",
+  fullscreenButton().disabled &&
+    /Fullscreen needs a picture to fill/.test(fullscreenButton().getAttribute("title")),
 );
 /*
  * …in a band, not on a stage.
