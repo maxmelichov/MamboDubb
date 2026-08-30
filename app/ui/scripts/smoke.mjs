@@ -358,8 +358,9 @@ const root = document.getElementById("root");
  * first paint is the work itself. The hero stays gone on both pages.
  *
  * What home *does* carry is a glance at the same runs, under the card: capped,
- * compact, and marked `home-runs` rather than `runs` so the two claims stay
- * separable — the archive is still one place, and this is a shortcut to it.
+ * drawn as a strip of tabs, and marked `home-runs` rather than `runs` so the
+ * two claims stay separable: the archive is still one place, and this is a
+ * shortcut to it.
  */
 check(
   "home screen renders without hero copy",
@@ -374,11 +375,62 @@ check("home is the form, not a menu", root.querySelector('[data-region="new-dub"
 await new Promise((resolve) => setTimeout(resolve, 200));
 const homeRuns = () => root.querySelector('[data-region="home-runs"]');
 check("the workspace's runs sit under the form", homeRuns() != null);
+const homeTabs = () => [...homeRuns().querySelectorAll("li")];
 check(
-  "…as the same rows the archive draws, capped at a glance",
-  homeRuns().querySelectorAll("li").length === 3 &&
-    homeRuns().querySelectorAll("li").length <= 5 &&
-    /Running translate/.test(homeRuns().textContent),
+  "…as a strip of tabs, one per run, capped at a glance",
+  homeTabs().length === 3 &&
+    homeTabs().length <= 8 &&
+    homeTabs().every((li) => li.parentElement === homeRuns().querySelector("[data-runs-strip]")),
+);
+/*
+ * They look like tabs and they behave like links, and the roles have to follow
+ * the behaviour rather than the look: `role="tab"` promises a panel on this
+ * page that is about to become the shown one, and these leave the page for the
+ * editor instead. A screen reader told "tab, 1 of 3, not selected" about a
+ * control that navigates has been told something untrue.
+ */
+check(
+  "the tabs are links, not a tablist",
+  homeRuns().querySelector('[role="tab"], [role="tablist"], [role="tabpanel"]') == null &&
+    homeTabs().every((li) =>
+      /^\/editor\//.test(li.querySelector("a")?.getAttribute("href") ?? ""),
+    ),
+);
+/*
+ * The point of the strip. Two dubs of one video share a title, a pair and often
+ * a phrase, so a tab labelled by title alone would be three identical tabs
+ * where there used to be three distinguishable rows. Every tab has to read
+ * differently from every other, and each one has to carry the fields that do
+ * the distinguishing: how long the cut is, how long ago it was touched, and
+ * where the run got to.
+ */
+const tabText = homeTabs().map((li) => li.textContent.replace(/\s+/g, " ").trim());
+check(
+  "no two tabs read alike",
+  new Set(tabText).size === tabText.length,
+);
+check(
+  "…because each carries its duration, its age and its state",
+  tabText.every((text) => /\d+:\d\d/.test(text)) &&
+    tabText.every((text) => /(just now|ago)/.test(text)) &&
+    tabText.every((text) => /(Complete|Running|Stopped|Failed|Not started)/.test(text)),
+);
+/* The long field is the one that must not set the strip's width: the title is
+   truncated on screen and kept whole in the tooltip. */
+check(
+  "the whole title survives in the tooltip",
+  homeTabs().every((li) => (li.querySelector("a")?.getAttribute("title") ?? "").length > 0) &&
+    /Doha panel, full episode/.test(
+      homeTabs()
+        .map((li) => li.querySelector("a").getAttribute("title"))
+        .join(" "),
+    ),
+);
+/* Many runs scroll sideways inside the strip. The page body never grows a
+   horizontal scrollbar because the overflow is owned by this box. */
+check(
+  "the strip owns its own sideways scroll",
+  homeRuns().querySelector("[data-runs-strip]").className.includes("overflow-x-auto"),
 );
 check("…with the way to the whole list", homeRuns().querySelector("[data-all-runs]") != null);
 /* The context box is two rows, not a paragraph field. It was the tallest thing
@@ -423,6 +475,54 @@ check(
   document.querySelectorAll('[data-region="runs"] li').length === 3,
 );
 check("…and the list is counted in words", /3 runs in outputs\//.test(root.textContent));
+check(
+  "…as full-width rows, not tabs: the archive keeps its shape",
+  document.querySelector('[data-region="runs"] [data-runs-strip]') == null &&
+    document.querySelectorAll('[data-region="runs"] li button').length === 3,
+);
+
+/*
+ * The stage chip is ONE control.
+ *
+ * It used to be two: a badge reading "Stopped after 4 of 9", a gap, and then a
+ * bordered track of the same nine stages. Two borders around one fact is how a
+ * user reads a sentence and its own picture as two unrelated widgets, which is
+ * what they said about it. So the bar and the phrase share a border now, and
+ * the check is structural: the words are *inside* the element that holds the
+ * bar, and there is exactly one such element per run.
+ *
+ * It also has to say it once. The phrase on screen already spells out the
+ * count, so the chip's screen-reader sentence stops repeating it; hearing
+ * "Stopped after 4 of 9" and then "4 of 9 stages done" is one fact twice.
+ */
+const runChips = () => [...document.querySelectorAll('[data-region="runs"] [data-stage-chip]')];
+check(
+  "the phrase and the bar share one chip",
+  runChips().length === 3 &&
+    runChips().every((chip) => chip.querySelector("[data-stage-track]") != null) &&
+    runChips().every((chip) => /(Complete|Running|Stopped|Failed|Not started)/.test(chip.textContent)),
+);
+check(
+  "…and nothing outside it restates the phrase",
+  [...document.querySelectorAll('[data-region="runs"] li')].every(
+    (li) => (li.textContent.match(/Running translate/g) ?? []).length <= 1,
+  ),
+);
+check(
+  "…including to a screen reader",
+  runChips().every((chip) => !/stages done/.test(chip.textContent)),
+);
+/* "Stopped after 4 of 9" is not "4 of 9 done": it says the run will not move
+   again on its own, and "Failed at fetch" says something else again. The bar
+   alone cannot tell those apart, so the merged chip keeps the phrase verbatim
+   and the states stay distinguishable. */
+const chipPhrases = runChips().map((chip) => chip.textContent);
+check(
+  "the chip keeps the run's state, not just its count",
+  /Running translate/.test(chipPhrases.join(" ")) &&
+    /Failed at fetch/.test(chipPhrases.join(" ")) &&
+    new Set(chipPhrases).size > 1,
+);
 
 /*
  * The toggle itself, driven through the DOM. jsdom does not run index.html's

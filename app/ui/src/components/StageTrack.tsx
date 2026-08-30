@@ -16,11 +16,34 @@
  * Three screens use it the job bar, the projects list and the preview
  * placeholder and they share it so a run cannot look 6/9 in one place and
  * "mix" in another.
+ *
+ * The chip carries the words too. It used to sit next to a separate badge
+ * holding the run's phrase, two borders and a gap for one fact, which is what
+ * a user meant by "the progress and the dots need to be more connected". With
+ * `label="state"` the phrase lives inside this border, beside the fill it
+ * describes, and the chip takes the phrase's tone.
  */
 
+import { badgeTone } from "./ui";
 import { cn } from "../lib/classNames";
-import { summarizeStages } from "../lib/stages";
+import { stageTone, summarizeStages } from "../lib/stages";
 import { STAGES, type Stage, type StageStatus } from "../lib/types";
+
+/**
+ * What the chip says next to the bar.
+ *
+ * `"state"` is the merged control. The run's position used to be drawn as two
+ * bordered chips with a gap between them, a badge reading "Stopped after 4 of
+ * 9" and, beside it, a track of the same nine stages: one fact, stated twice,
+ * in two containers, which is exactly how a user reads them as two unrelated
+ * widgets. In `"state"` the phrase and the bar share one border, so the number
+ * and the fill are visibly the same sentence, and the chip wears the state's
+ * tone the way the badge did.
+ *
+ * `"stage"` is the older, quieter label: just the stage being worked on, for
+ * the panel that has already said the whole sentence in its headline.
+ */
+type TrackLabel = "state" | "stage" | "none";
 
 /**
  * The three stages a render re-runs, and so the three a manifest edit outdates.
@@ -31,7 +54,7 @@ const RENDER_STAGES: Stage[] = ["timeline", "mix", "report"];
 export function StageTrack({
   stages,
   current,
-  showLabel = true,
+  label = "stage",
   stale = false,
   rebuilding = false,
   className,
@@ -39,7 +62,7 @@ export function StageTrack({
   stages?: Partial<Record<Stage, StageStatus>>;
   /** Overrides the stage derived from `stages` the live one from the stream. */
   current?: Stage | null;
-  showLabel?: boolean;
+  label?: TrackLabel;
   /**
    * The job in flight is rebuilding the end of a run that already got there
    * a render, a re-voice, a re-translate rather than running it for the first
@@ -75,11 +98,16 @@ export function StageTrack({
   const rebuildNote = waiting.length
     ? ` · rebuilding ${waiting.length + 1} of ${STAGES.length} stages; the rest stand`
     : "";
+  // The phrase is the message and the tone is reinforcement, the same contract
+  // the badge held before the two chips became one.
+  const stated = label === "state";
 
   return (
     <span
+      data-stage-chip
       className={cn(
-        "inline-flex shrink-0 items-center gap-1 rounded-md border border-border bg-raised px-2 py-1",
+        "inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-1",
+        stated ? badgeTone[stageTone(summary)] : "border-border bg-raised",
         className,
       )}
       title={
@@ -129,7 +157,9 @@ export function StageTrack({
                 // Equal ninths, joined. The separator is a hairline of the chip's
                 // own background rather than a drawn line: it is the gap the nine
                 // dots used to leave, only one pixel of it, so the segments are
-                // countable without a tenth colour to measure.
+                // countable without a tenth colour to measure. A toned chip lays
+                // a tint of about a tenth over that same ground, which is far
+                // too little to stop the hairline reading as a gap.
                 "h-full flex-1 transition-colors",
                 i > 0 && "border-l border-raised",
                 failedHere
@@ -165,17 +195,38 @@ export function StageTrack({
           );
         })}
       </span>
-      {showLabel ? (
+      {stated ? (
+        // `summary.label` verbatim, because "Stopped after 4 of 9" and "4 of 9
+        // done" are different facts: the first says the run will not move again
+        // on its own. Merging the chips must not quietly trade that away, so the
+        // phrase the badge carried is the phrase the merged chip carries, at the
+        // badge's own size and weight.
+        <span className="ml-1 whitespace-nowrap text-[10px] font-bold uppercase tracking-[0.12em]">
+          {summary.label}
+        </span>
+      ) : label === "stage" ? (
         <span className="ml-1 text-[11px] font-semibold text-secondary">
           {active ?? "done"}
         </span>
       ) : null}
-      <span className="sr-only">
-        {summary.done} of {summary.total} stages done
-        {active ? `, at ${active}` : ""}
-        {stale ? ", timeline, mix and report are about an older cut" : ""}
-        {rebuildNote ? `, rebuilding the last ${waiting.length + 1} stages` : ""}
-      </span>
+      {/* Said once. With the phrase on screen the count is already spoken, and a
+          screen reader that hears "Stopped after 4 of 9" and then "4 of 9 stages
+          done" is being told one thing twice; the hover tooltip above keeps the
+          detail the phrase leaves out. Without a visible phrase the bar is a
+          picture with no words, so it says the sentence itself. */}
+      {stated ? (
+        <span className="sr-only">
+          {stale ? ", timeline, mix and report are about an older cut" : ""}
+          {rebuildNote ? `, rebuilding the last ${waiting.length + 1} stages` : ""}
+        </span>
+      ) : (
+        <span className="sr-only">
+          {summary.done} of {summary.total} stages done
+          {active ? `, at ${active}` : ""}
+          {stale ? ", timeline, mix and report are about an older cut" : ""}
+          {rebuildNote ? `, rebuilding the last ${waiting.length + 1} stages` : ""}
+        </span>
+      )}
     </span>
   );
 }

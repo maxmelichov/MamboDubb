@@ -188,6 +188,10 @@ export function PreviewPlaceholder({
             stages={project?.stages}
             current={stage?.stage ?? null}
             stale={stale}
+            /* The stage name only. This panel is the one place the run's whole
+               phrase is already a headline two lines up, so the merged chip's
+               state text would be the third telling of it. */
+            label="stage"
             /*
               A render, a re-voice or a re-translate rebuilds the end of a run
               that already reached the end. It clears the marks of the stages it

@@ -815,7 +815,11 @@ export function ConfirmButton({
 
 type BadgeTone = "neutral" | "good" | "warn" | "bad" | "accent";
 
-const badgeTone: Record<BadgeTone, string> = {
+/* Exported because the stage track wears the same tone when it carries the run's
+   phrase: the count, the bar and the state used to be a badge plus a separate
+   chip, and two containers is how one fact reads as two. One table of tones, so
+   a failed run is the same red wherever the phrase is drawn. */
+export const badgeTone: Record<BadgeTone, string> = {
   neutral: "border-border bg-raised text-secondary",
   good: "border-good/35 bg-good/10 text-primary",
   warn: "border-warning/45 bg-warning/12 text-primary",

@@ -3,35 +3,51 @@
  */
 
 import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { Clapperboard } from "lucide-react";
-import { RunRow, orderRuns } from "./RunRow";
+import { RunTab, orderRuns } from "./RunRow";
 import { SectionLabel } from "./ui";
 import { api } from "../lib/api";
 import type { ProjectSummary } from "../lib/types";
 
-/** How many rows the glance shows before it defers to the archive. */
+/**
+ * How many tabs the glance shows before it defers to the archive.
+ *
+ * The cap stays, and the strip scrolls sideways rather than wrapping. Wrapping
+ * is the option that costs the form: every wrapped line is another band of
+ * height under the card, and on a short window the fifth run is what pushes
+ * Start dubbing off the screen. A sideways scroll spends a fixed strip of
+ * height no matter how many runs there are, and the cap keeps that scroll short
+ * enough to be a glance rather than a second archive. The count and "All runs"
+ * above the strip are what say there is more, because a scroll box that runs
+ * past its right edge does not announce itself.
+ */
 const HOME_RUNS = 8;
 
 /**
  * The workspace, under the form.
  *
- * Home is the new-dub form and stays the new-dub form — but a screen that only
+ * Home is the new-dub form and stays the new-dub form, but a screen that only
  * ever offers to start something implies there is nothing already started, and
  * the run people actually want on a second visit is usually the one still in
- * flight. So the newest few rows sit under the card, running-first, in the same
- * rows /runs draws (`components/RunRow`), with "All runs" as the way to the
- * whole list. Four of them: enough to hold the one that is running and the ones
- * from this morning, few enough that the form is still what this page is.
+ * flight. So the newest few sit under the card, running-first, with "All runs"
+ * as the way to the whole list.
+ *
+ * They are tabs rather than rows because of what home's runs actually look
+ * like: dub one video twice and the two rows carry the same title, the same
+ * pair and the same phrase, full width, stacked, with the right half of the
+ * screen empty. The archive keeps the rows, since a row is right when the list
+ * is the page. Here the list is a shortcut, so it is a strip along the top of
+ * the region and the tabs carry the fields that differ.
  *
  * It is quiet about its failures on purpose. A server that did not answer is
- * worth a sentence here and a red card *there* — this region is a shortcut, and
- * a shortcut that shouts about a list you did not ask for is a worse home
- * screen than one that simply has no shortcut in it. Zero runs draws nothing at
- * all: the empty state for "no runs yet" is the form the user is looking at.
+ * worth a sentence here and a red card *there*, because this region is a
+ * shortcut, and a shortcut that shouts about a list you did not ask for is a
+ * worse home screen than one that simply has no shortcut in it. Zero runs draws
+ * nothing at all: the empty state for "no runs yet" is the form the user is
+ * looking at.
  */
 export function HomeRuns() {
-  const navigate = useNavigate();
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -91,15 +107,16 @@ export function HomeRuns() {
           All runs →
         </Link>
       </div>
-      {/* A strip of padding, so the hover lift is not shaved off at the edges. */}
-      <ul className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-0.5">
+      {/* The rail the tabs are seated on. `overflow-x-auto` keeps the scroll
+          inside this box, so a ninth run cannot put a scrollbar on the page
+          body, and `min-w-0` is what lets a flex column's child be narrower
+          than its content in the first place. */}
+      <ul
+        data-runs-strip
+        className="flex w-full min-w-0 shrink-0 items-stretch gap-2 overflow-x-auto overflow-y-hidden border-b border-border px-0.5 pt-0.5"
+      >
         {shown.map((project) => (
-          <RunRow
-            key={project.name}
-            project={project}
-            compact
-            onOpen={() => navigate(`/editor/${encodeURIComponent(project.name)}`)}
-          />
+          <RunTab key={project.name} project={project} />
         ))}
       </ul>
       {ordered.length > shown.length ? (
