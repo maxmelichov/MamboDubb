@@ -5,22 +5,23 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Clapperboard } from "lucide-react";
-import { RunTab, orderRuns } from "./RunRow";
+import { RunRow, orderRuns } from "./RunRow";
 import { SectionLabel } from "./ui";
 import { api } from "../lib/api";
 import type { ProjectSummary } from "../lib/types";
 
 /**
- * How many tabs the glance shows before it defers to the archive.
+ * How many lines the glance shows before it defers to the archive.
  *
- * The cap stays, and the strip scrolls sideways rather than wrapping. Wrapping
- * is the option that costs the form: every wrapped line is another band of
- * height under the card, and on a short window the fifth run is what pushes
- * Start dubbing off the screen. A sideways scroll spends a fixed strip of
- * height no matter how many runs there are, and the cap keeps that scroll short
- * enough to be a glance rather than a second archive. The count and "All runs"
- * above the strip are what say there is more, because a scroll box that runs
- * past its right edge does not announce itself.
+ * The cap stays at eight, and stays for a different reason than it used to.
+ * It no longer buys height back: the list is its own scroll box inside a
+ * `min-h-0 flex-1` section, so the region is the height the column leaves it
+ * whether it holds four runs or forty, and the form above it never moves. What
+ * the cap buys is that this stays a glance. A workspace with nineteen runs
+ * scrolled whole under the new-dub form is a second archive with a worse header,
+ * and the archive is one place. Eight is about what the region shows without
+ * scrolling at a normal window height, so the common case is the whole list at
+ * once and the count plus "N more on the runs page" says where the rest is.
  */
 const HOME_RUNS = 8;
 
@@ -33,12 +34,16 @@ const HOME_RUNS = 8;
  * flight. So the newest few sit under the card, running-first, with "All runs"
  * as the way to the whole list.
  *
- * They are tabs rather than rows because of what home's runs actually look
- * like: dub one video twice and the two rows carry the same title, the same
- * pair and the same phrase, full width, stacked, with the right half of the
- * screen empty. The archive keeps the rows, since a row is right when the list
- * is the page. Here the list is a shortcut, so it is a strip along the top of
- * the region and the tabs carry the fields that differ.
+ * A vertical list, one run per line, scrolling inside its own box. It was a
+ * sideways strip of cards for one commit, on the theory that a narrow card can
+ * only carry what differs between two dubs of one source. Seen against a real
+ * workspace the theory lost to the shape: a list of runs reads down, a sideways
+ * scroll hides most of itself off the right edge, and the user said so plainly.
+ * What the strip was right about is kept in the line instead, so each run still
+ * carries the timing pair that tells two dubs of one video apart. It is the
+ * archive's own row (`components/RunRow`), one density tighter, because two
+ * lists of the same object drifting apart is the thing having a shared
+ * component prevents.
  *
  * It is quiet about its failures on purpose. A server that did not answer is
  * worth a sentence here and a red card *there*, because this region is a
@@ -107,16 +112,17 @@ export function HomeRuns() {
           All runs →
         </Link>
       </div>
-      {/* The rail the tabs are seated on. `overflow-x-auto` keeps the scroll
-          inside this box, so a ninth run cannot put a scrollbar on the page
-          body, and `min-w-0` is what lets a flex column's child be narrower
-          than its content in the first place. */}
+      {/* The column. `min-h-0` with `flex-1` is what keeps the scroll inside
+          this box: without it a flex child refuses to be shorter than its
+          content, the section grows to whatever nineteen runs need, and the
+          form above it is pushed off a short window. A strip of padding, so the
+          hover lift is not shaved off at the edges. */}
       <ul
-        data-runs-strip
-        className="flex w-full min-w-0 shrink-0 items-stretch gap-2 overflow-x-auto overflow-y-hidden border-b border-border px-0.5 pt-0.5"
+        data-runs-list
+        className="flex min-h-0 w-full min-w-0 flex-1 flex-col gap-2 overflow-y-auto p-0.5"
       >
         {shown.map((project) => (
-          <RunTab key={project.name} project={project} />
+          <RunRow key={project.name} project={project} compact />
         ))}
       </ul>
       {ordered.length > shown.length ? (

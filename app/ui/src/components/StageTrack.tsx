@@ -9,9 +9,21 @@
  *
  * It used to be nine loose dots. Nine separated marks read as nine unrelated
  * facts; the run is one thing moving through one pipeline, so it is drawn as
- * one rounded tube filled from the left, with hairline separators in the chip's
- * own background so the nine are still countable. The states are unchanged, and
- * so are the reasons for them, written on each branch below.
+ * one rounded tube filled from the left. The states are unchanged, and so are
+ * the reasons for them, written on each branch below.
+ *
+ * The tube carried a hairline separator on each of the eight inner joins for a
+ * while, drawn in the chip's own background so the nine were countable. At the
+ * size this actually ships at, on a dark theme, a hairline of ground colour
+ * across a solid fill is not a hairline: it is a gap, and a complete run read
+ * as roughly ten white blocks in a rounded outline, which is the segmented
+ * battery gauge the dots were replaced to stop being. Connectedness is what was
+ * asked for, twice. Counting to nine by eye never was, and the count is already
+ * written out in words beside the bar ("Complete", "Stopped after 4 of 9"),
+ * which answers "how far along" better than counting blocks does. So adjacent
+ * segments in the same state are one unbroken length of fill, and the only
+ * edges left in the bar are the ones where the state actually changes, which
+ * are the joins that carry information.
  *
  * Three screens use it the job bar, the projects list and the preview
  * placeholder and they share it so a run cannot look 6/9 in one place and
@@ -120,12 +132,17 @@ export function StageTrack({
         * One tube, not nine dots. `overflow-hidden` plus `rounded-full` is what
         * rounds the two ends of the bar and leaves the eight inner joins square,
         * so the segments meet edge to edge and the fill reads as one length.
-        * The bar carries the empty colour itself, so a run with nothing done is
-        * still a countable track rather than a hole in the chip.
+        * No segment carries a radius of its own: the capsule is the parent's
+        * shape, clipped, and a rounded child inside it is how a bar turns back
+        * into a row of beads. The bar carries the empty colour itself, so a run
+        * with nothing done is still a visible track rather than a hole in the
+        * chip. `h-2.5` is the height it reads as a capsule at: at 8px the 4px
+        * radius is most of the bar's own height, so the ends look clipped
+        * rather than rounded.
         */}
       <span
         data-stage-track
-        className="flex h-2 w-18 shrink-0 overflow-hidden rounded-full bg-axis"
+        className="flex h-2.5 w-18 shrink-0 overflow-hidden rounded-full bg-axis"
       >
         {STAGES.map((stage, i) => {
           const status = stages?.[stage];
@@ -154,14 +171,15 @@ export function StageTrack({
                     : stage
               }
               className={cn(
-                // Equal ninths, joined. The separator is a hairline of the chip's
-                // own background rather than a drawn line: it is the gap the nine
-                // dots used to leave, only one pixel of it, so the segments are
-                // countable without a tenth colour to measure. A toned chip lays
-                // a tint of about a tenth over that same ground, which is far
-                // too little to stop the hairline reading as a gap.
+                // Equal ninths, and nothing drawn between them. The separator
+                // that used to sit on each inner join was a hairline of the
+                // chip's own ground, which against a solid fill is read as a
+                // gap and turned the tube back into beads. The joins that mean
+                // something are the ones where the state changes, and those
+                // draw themselves: the fill colour changes there. Everywhere
+                // else the neighbours share a colour and now share an edge, so
+                // a finished run is one length of fill from end to end.
                 "h-full flex-1 transition-colors",
-                i > 0 && "border-l border-raised",
                 failedHere
                   ? "bg-critical"
                   : isActive

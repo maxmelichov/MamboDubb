@@ -358,9 +358,9 @@ const root = document.getElementById("root");
  * first paint is the work itself. The hero stays gone on both pages.
  *
  * What home *does* carry is a glance at the same runs, under the card: capped,
- * drawn as a strip of tabs, and marked `home-runs` rather than `runs` so the
- * two claims stay separable: the archive is still one place, and this is a
- * shortcut to it.
+ * drawn as the archive's own rows one density tighter, and marked `home-runs`
+ * rather than `runs` so the two claims stay separable: the archive is still one
+ * place, and this is a shortcut to it.
  */
 check(
   "home screen renders without hero copy",
@@ -375,62 +375,79 @@ check("home is the form, not a menu", root.querySelector('[data-region="new-dub"
 await new Promise((resolve) => setTimeout(resolve, 200));
 const homeRuns = () => root.querySelector('[data-region="home-runs"]');
 check("the workspace's runs sit under the form", homeRuns() != null);
-const homeTabs = () => [...homeRuns().querySelectorAll("li")];
-check(
-  "…as a strip of tabs, one per run, capped at a glance",
-  homeTabs().length === 3 &&
-    homeTabs().length <= 8 &&
-    homeTabs().every((li) => li.parentElement === homeRuns().querySelector("[data-runs-strip]")),
-);
+const homeRows = () => [...homeRuns().querySelectorAll("li")];
 /*
- * They look like tabs and they behave like links, and the roles have to follow
- * the behaviour rather than the look: `role="tab"` promises a panel on this
- * page that is about to become the shown one, and these leave the page for the
- * editor instead. A screen reader told "tab, 1 of 3, not selected" about a
- * control that navigates has been told something untrue.
+ * A vertical column, one run per line. It was a sideways strip of cards for one
+ * commit and the user rejected the orientation on sight; a list of runs reads
+ * down, and a sideways scroll hides most of itself past the right edge. So the
+ * assertion is the axis: every row is a child of the one list box, and that box
+ * stacks (`flex-col`) and scrolls down rather than across.
  */
 check(
-  "the tabs are links, not a tablist",
+  "…as a vertical list, one line per run, capped at a glance",
+  homeRows().length === 3 &&
+    homeRows().length <= 8 &&
+    homeRows().every((li) => li.parentElement === homeRuns().querySelector("[data-runs-list]")),
+);
+check(
+  "…stacked down the column, not across it",
+  (() => {
+    const list = homeRuns().querySelector("[data-runs-list]").className;
+    return /flex-col/.test(list) && /overflow-y-auto/.test(list) && !/overflow-x-auto/.test(list);
+  })(),
+);
+/*
+ * Nothing here claims to be a tab. These navigate to /editor/<name> rather than
+ * switching a panel on this page, and `role="tab"` would promise a panel that
+ * is about to become the shown one and announce a selected state that never
+ * arrives, because the screen is gone. A screen reader told "tab, 1 of 3, not
+ * selected" about a control that navigates has been told something untrue.
+ */
+check(
+  "the rows are links, and nothing claims a tab role",
   homeRuns().querySelector('[role="tab"], [role="tablist"], [role="tabpanel"]') == null &&
-    homeTabs().every((li) =>
+    homeRows().every((li) =>
       /^\/editor\//.test(li.querySelector("a")?.getAttribute("href") ?? ""),
     ),
 );
 /*
- * The point of the strip. Two dubs of one video share a title, a pair and often
- * a phrase, so a tab labelled by title alone would be three identical tabs
- * where there used to be three distinguishable rows. Every tab has to read
- * differently from every other, and each one has to carry the fields that do
- * the distinguishing: how long the cut is, how long ago it was touched, and
+ * What a line has to carry. Two dubs of one video share a title, a pair and
+ * often a phrase, so a list labelled by title alone would be three identical
+ * lines where there used to be three distinguishable ones. Every row has to
+ * read differently from every other, and each one has to carry the fields that
+ * do the distinguishing: how long the cut is, how long ago it was touched, and
  * where the run got to.
  */
-const tabText = homeTabs().map((li) => li.textContent.replace(/\s+/g, " ").trim());
+const rowText = homeRows().map((li) => li.textContent.replace(/\s+/g, " ").trim());
 check(
-  "no two tabs read alike",
-  new Set(tabText).size === tabText.length,
+  "no two rows read alike",
+  new Set(rowText).size === rowText.length,
 );
 check(
   "…because each carries its duration, its age and its state",
-  tabText.every((text) => /\d+:\d\d/.test(text)) &&
-    tabText.every((text) => /(just now|ago)/.test(text)) &&
-    tabText.every((text) => /(Complete|Running|Stopped|Failed|Not started)/.test(text)),
+  rowText.every((text) => /\d+:\d\d/.test(text)) &&
+    rowText.every((text) => /(just now|ago)/.test(text)) &&
+    rowText.every((text) => /(Complete|Running|Stopped|Failed|Not started)/.test(text)),
 );
-/* The long field is the one that must not set the strip's width: the title is
+/* The long field is the one that must not set the line's width: the title is
    truncated on screen and kept whole in the tooltip. */
 check(
   "the whole title survives in the tooltip",
-  homeTabs().every((li) => (li.querySelector("a")?.getAttribute("title") ?? "").length > 0) &&
+  homeRows().every((li) => (li.querySelector("a")?.getAttribute("title") ?? "").length > 0) &&
     /Doha panel, full episode/.test(
-      homeTabs()
+      homeRows()
         .map((li) => li.querySelector("a").getAttribute("title"))
         .join(" "),
     ),
 );
-/* Many runs scroll sideways inside the strip. The page body never grows a
-   horizontal scrollbar because the overflow is owned by this box. */
+/* Nineteen runs must not push Start dubbing off a short window. The list owns
+   its own vertical scroll inside a section that is allowed to be shorter than
+   its content, which is what `min-h-0` on a flex child buys. */
 check(
-  "the strip owns its own sideways scroll",
-  homeRuns().querySelector("[data-runs-strip]").className.includes("overflow-x-auto"),
+  "the list owns its own scroll, so the form keeps its place",
+  /min-h-0/.test(homeRuns().className) &&
+    /flex-1/.test(homeRuns().className) &&
+    /min-h-0/.test(homeRuns().querySelector("[data-runs-list]").className),
 );
 check("…with the way to the whole list", homeRuns().querySelector("[data-all-runs]") != null);
 /* The context box is two rows, not a paragraph field. It was the tallest thing
@@ -475,10 +492,12 @@ check(
   document.querySelectorAll('[data-region="runs"] li').length === 3,
 );
 check("…and the list is counted in words", /3 runs in outputs\//.test(root.textContent));
+/* The same row component home draws, one density looser, and the same axis:
+   full-width lines down a column, each one the link to its editor. */
 check(
-  "…as full-width rows, not tabs: the archive keeps its shape",
+  "…as full-width rows down a column, one link each",
   document.querySelector('[data-region="runs"] [data-runs-strip]') == null &&
-    document.querySelectorAll('[data-region="runs"] li button').length === 3,
+    document.querySelectorAll('[data-region="runs"] li > a[href^="/editor/"]').length === 3,
 );
 
 /*
@@ -2863,6 +2882,16 @@ check("the preview shows the pipeline position", /stages done/.test(root.textCon
  * eight inner joins square, which is the whole difference between a bar and a
  * row of pills. jsdom has no layout, so what is worth asserting is the
  * structure that produces it and never the geometry.
+ *
+ * Nothing may be drawn on those inner joins. Each one carried a hairline
+ * separator in the chip's own ground for a while, so the nine could be counted;
+ * at the size this ships at, on the dark theme, a hairline of ground colour
+ * across a solid fill is a gap, and a finished run read as ten white blocks in
+ * a rounded outline. That is the segmented gauge the dots were replaced to stop
+ * being. The joins that mean anything are the ones where the state changes, and
+ * those draw themselves in fill colour; adjacent segments in one state now
+ * share an edge, so the fill is one length. The count is not lost with them: it
+ * is written out in words beside the bar.
  */
 const stageTrack = () => document.querySelector("[data-stage-track]");
 const stageSegments = () => [...stageTrack().querySelectorAll("[data-stage-segment]")];
@@ -2873,9 +2902,20 @@ check(
     !/\bgap-/.test(stageTrack().className),
 );
 check(
-  "…cut into nine equal segments, still countable by a hairline",
+  "…cut into nine equal segments with nothing drawn between them",
   stageSegments().length === 9 &&
-    stageSegments().every((seg, i) => /flex-1/.test(seg.className) && /border-l/.test(seg.className) === (i > 0)),
+    stageSegments().every((seg) => /flex-1/.test(seg.className)) &&
+    stageSegments().every((seg) => !/\bborder(-|\b)/.test(seg.className)) &&
+    stageSegments().every((seg) => !/\brounded/.test(seg.className)),
+);
+/* The count the bar stops trying to be countable for is spoken instead: the
+   merged chip carries the phrase, and the phrase carries the number. */
+check(
+  "…because the phrase beside the bar says how far along it is",
+  /(Complete|Running|Stopped after \d+ of \d+|Failed at|Not started|\d+ of \d+)/.test(
+    stageTrack().closest("[data-stage-chip]").textContent +
+      stageTrack().closest("[data-stage-chip]").getAttribute("title"),
+  ),
 );
 /*
  * The empty tail of the bar is `axis`, carried by the bar itself: a

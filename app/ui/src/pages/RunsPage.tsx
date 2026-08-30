@@ -160,11 +160,7 @@ export function RunsPage() {
           // shadows are not shaved off at the column's edges.
           <ul className="flex flex-col gap-2.5 p-0.5">
             {ordered.map((project) => (
-              <RunRow
-                key={project.name}
-                project={project}
-                onOpen={() => navigate(`/editor/${encodeURIComponent(project.name)}`)}
-              />
+              <RunRow key={project.name} project={project} />
             ))}
           </ul>
         )}
