@@ -154,6 +154,12 @@ function ShellNav() {
  * logo: on the editor the one navigation a user wants from the top-left is
  * "out of this run", and a wordmark that happens to be clickable does not say
  * so. It says "Runs", with the arrow, because that is where it goes.
+ *
+ * It is medium rather than semibold: the identity area beside it holds the
+ * heading of whatever screen this is, and the bar reads as a hierarchy only if
+ * the heading is the heaviest thing in it. The size, the 28px hit area and the
+ * secondary-to-primary hover are all unchanged, so the exit is no harder to
+ * find or to hit, it simply stops competing with the title.
  */
 export function AppHeader({
   children,
@@ -169,7 +175,7 @@ export function AppHeader({
       <Link
         to="/runs"
         className={cn(
-          "inline-flex h-7 shrink-0 items-center gap-1 rounded-md pr-1.5 text-[12.5px] font-semibold",
+          "inline-flex h-7 shrink-0 items-center gap-1 rounded-md pr-1.5 text-[12.5px] font-medium",
           "text-secondary transition-colors hover:text-primary",
         )}
         title="Back to every run in the workspace"

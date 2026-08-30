@@ -1027,8 +1027,19 @@ export function EditorPage() {
           </>
         }
       >
+        {/*
+          The title is the heading of this screen, so it is sized like one. It
+          used to share the bar's 12.5px semibold with the back link, which made
+          three peers of a heading, an exit and a label, and the eye had nothing
+          to land on first. It now carries the only large type in the bar; the
+          back link and the badge keep the bar's small sizes and step down in
+          weight, so the hierarchy is settled by scale rather than by colour and
+          the palette is untouched. Still `min-w-0 flex-1 truncate` with the
+          full text on `title`, because the source headline is frequently longer
+          than the bar and sometimes right-to-left.
+        */}
         <span
-          className="min-w-0 flex-1 truncate text-[12.5px] font-semibold text-primary"
+          className="min-w-0 flex-1 truncate text-[15px] font-semibold tracking-[-0.01em] text-primary"
           title={project?.source.title}
         >
           {project?.source.title ?? name}
