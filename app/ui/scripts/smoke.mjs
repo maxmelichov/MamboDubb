@@ -45,6 +45,19 @@ dom.window.HTMLMediaElement.prototype.play = function play() {
   return Promise.resolve();
 };
 dom.window.HTMLMediaElement.prototype.pause = function pause() {};
+// …which also means every element measures zero pixels wide, and the timeline
+// works out the scale at which the run fits from the width of its own scroll
+// box. Zero width, no fit, no zoom floor, and the whole bottom end of the zoom
+// ladder is untestable. The strip is the one horizontally scrolling box on the
+// screen, so it is the one element handed a plausible width.
+const VIEWPORT = 1200;
+Object.defineProperty(dom.window.Element.prototype, "clientWidth", {
+  configurable: true,
+  get() {
+    // SVG elements carry an SVGAnimatedString here, not a string, hence `?.`.
+    return this.className?.includes?.("overflow-x-auto") ? VIEWPORT : 0;
+  },
+});
 dom.window.URL.createObjectURL = () => "blob:fixture";
 globalThis.URL.createObjectURL = dom.window.URL.createObjectURL;
 // jsdom ships no clipboard, and the setup screen's copy buttons only show their
@@ -3557,6 +3570,91 @@ const withFile = calls().created.at(-1);
 check(
   "…carrying the transcript mode and the file it is to read",
   withFile.transcript === "file" && withFile.captions === TRANSCRIPT_PATH,
+);
+
+/*
+ * "this work only to make bigger."
+ *
+ * The zoom stepper, at both ends of its range. − clamped with
+ * `Math.max(step, Math.min(z, floor))`, which at or below the floor evaluates
+ * to the zoom unchanged, and the floor was the fit scale exactly so one press
+ * of Fit on a short run parked it there and every − after that was a no-op.
+ * The floor is now half fit, which gives a short run somewhere to back off to,
+ * and both ends of the ladder now grey out and say why when they run out.
+ *
+ * Everything here is read off the readout, which rounds one decimal below ten
+ * and to whole numbers above, so the comparisons carry that much slack rather
+ * than pretending the cell is a float.
+ */
+await go("/editor/kan11_v3", 700);
+const zoomButton = (label) =>
+  [...document.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === label);
+const zoomReadout = () => document.querySelector("[data-zoom-readout]");
+const pxPerSecond = () => Number(zoomReadout().textContent.replace("px/s", ""));
+const fitButton = () => document.querySelector("[data-zoom-fit]");
+const slack = (value) => (value >= 10 ? 0.5 : 0.05);
+
+check("the strip measured itself, so Fit is live", !fitButton().disabled);
+clickIt(fitButton());
+await settle(150);
+const fit = pxPerSecond();
+check("Fit lands on a real scale", fit > 0);
+check(
+  "…and the readout says the number IS the fit, not a coincidence beside FIT",
+  zoomReadout().getAttribute("data-zoom-readout") === "fit",
+);
+check("…and Fit, having arrived, stops offering to go there", fitButton().disabled);
+check(
+  "…saying that rather than going quiet",
+  /Already fitted/.test(fitButton().getAttribute("title") ?? ""),
+);
+
+check("− is still live at the fit scale, which is the bug", !zoomButton("Zoom out").disabled);
+clickIt(zoomButton("Zoom out"));
+await settle(150);
+const stepped = pxPerSecond();
+check("…and it actually moves", stepped < fit - slack(fit));
+check("…never below half the fit scale", stepped >= fit / 2 - slack(stepped) - slack(fit) / 2);
+
+// Walk it to the bottom: it has to terminate, and terminate visibly.
+let presses = 0;
+while (!zoomButton("Zoom out").disabled && presses < 20) {
+  clickIt(zoomButton("Zoom out"));
+  await settle(60);
+  presses += 1;
+}
+check("the ladder bottoms out instead of halving forever", presses < 20);
+const floor = pxPerSecond();
+check(
+  "…on the floor, which is half the fit scale",
+  Math.abs(floor - fit / 2) <= slack(floor) + slack(fit) / 2,
+);
+check(
+  "…and the − that can no longer act says so",
+  /whole run is on screen/.test(zoomButton("Zoom out").getAttribute("title") ?? ""),
+);
+clickIt(zoomButton("Zoom out"));
+await settle(150);
+check("…and pressing it there is a no-op, honestly signposted", pxPerSecond() === floor);
+
+// And the other end. + walks the ladder and stops at 256, disabled, with a
+// reason on it, because a stepper with one honest end is still half a lie.
+presses = 0;
+while (!zoomButton("Zoom in").disabled && presses < 20) {
+  const before = pxPerSecond();
+  clickIt(zoomButton("Zoom in"));
+  await settle(60);
+  check(`…+ climbs, ${before} to ${pxPerSecond()}`, pxPerSecond() > before);
+  presses += 1;
+}
+check("+ tops out at the ladder's own maximum", pxPerSecond() === 256);
+check(
+  "…and says it has, rather than looking pressable",
+  /all the way in/.test(zoomButton("Zoom in").getAttribute("title") ?? ""),
+);
+check(
+  "…and the readout is back to a plain scale, not the fit",
+  zoomReadout().getAttribute("data-zoom-readout") === "free",
 );
 
 check(

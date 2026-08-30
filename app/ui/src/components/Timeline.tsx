@@ -144,6 +144,8 @@ export function Timeline({
   busyUids,
   pxPerSecond,
   fitPxPerSecond,
+  minPxPerSecond,
+  maxPxPerSecond,
   matchedUids,
   highlightGap,
   sourcePeaks,
@@ -170,12 +172,24 @@ export function Timeline({
   /**
    * The zoom at which the whole run is exactly as wide as the strip.
    *
-   * It is the *floor*: below it the run stops filling the window and the strip
-   * is empty space with a run drawn in the left of it, which is the one zoom
-   * level that answers no question at all. Null until the strip has been
+   * It is a landmark, not the floor: it is where Fit lands and where the run
+   * sits edge to edge with no margin either side. Null until the strip has been
    * measured (the first frame, and any run with no length).
    */
   fitPxPerSecond: number | null;
+  /**
+   * The smallest zoom anything in this cluster will reach, half of fit.
+   *
+   * Far below fit the run stops filling the window and the strip is empty space
+   * with a smear drawn in the left of it, which is the one zoom level that
+   * answers no question at all, so there has to be a bottom. It is here rather
+   * than computed locally because the page's −, pinch and ⌘-scroll all stop at
+   * the same number and the button has to grey out on exactly that number, not
+   * on a second opinion about it.
+   */
+  minPxPerSecond: number;
+  /** The top of the ladder, for the same reason: + greys out on exactly it. */
+  maxPxPerSecond: number;
   /**
    * The uids the search matches, or null when nothing is being searched for.
    *
@@ -238,10 +252,16 @@ export function Timeline({
   // scroll range at all and the last marks are permanently covered.
   const width = Math.max(320, total * pxPerSecond) + 208;
   const gaps = useMemo(() => unclaimedSpans(segments, total), [segments, total]);
-  // A hair of tolerance: `fit` is a float and the state it was written into is
-  // the same float, but a resize can move it by a fraction of a pixel and a −
-  // that greys itself out one pixel early reads as broken.
-  const atFloor = fitPxPerSecond != null && pxPerSecond <= fitPxPerSecond + 1e-6;
+  // A hair of tolerance on both: the floor and the fit scale are floats and the
+  // state they were written into is the same float, but a resize can move them
+  // by a fraction of a pixel and a − that greys itself out one pixel early
+  // reads as broken. `atFloor` and `atCeiling` are the two ends of the ladder;
+  // `atFit` is the landmark in between, which the Fit button and the readout
+  // both have to know about because pressing Fit while already on it is the
+  // other press in this cluster that can do nothing.
+  const atFloor = pxPerSecond <= minPxPerSecond + 1e-6;
+  const atCeiling = pxPerSecond >= maxPxPerSecond - 1e-6;
+  const atFit = fitPxPerSecond != null && Math.abs(pxPerSecond - fitPxPerSecond) <= 1e-6;
   const tickStep = useMemo(
     () => TICK_STEPS.find((step) => step * pxPerSecond >= 64) ?? TICK_STEPS[TICK_STEPS.length - 1],
     [pxPerSecond],
@@ -721,10 +741,20 @@ export function Timeline({
             twelve-minute run went to a two-inch smear against the left edge of
             a strip that was otherwise empty and nothing in the cluster could
             get back to a useful scale except pressing + the same number of
-            times and counting. The floor is the zoom at which the run is
-            exactly as wide as the strip, and Fit is the one press that goes
-            there: between − and the readout, because that is the direction it
+            times and counting. So there is a floor, and Fit is the one press
+            that goes to the scale where the run is exactly as wide as the
+            strip: between − and the readout, because that is the direction it
             travels.
+
+            The floor is *half* fit rather than fit, which is the fix for the
+            second version of the same complaint. When it was fit exactly, one
+            press of Fit on a short run put the zoom on the floor and every −
+            after it did nothing, behind a button that told you so only by
+            being 45% opaque. Half fit gives the run a margin to back off into,
+            − reaches it in a press or two, and then it greys out for real.
+
+            All three of these say why when they cannot act, because a stepper
+            whose ends are silent is a stepper you press twice to find out.
           */}
           <ButtonGroup className="h-6">
             <Button
@@ -732,7 +762,11 @@ export function Timeline({
               size="xs"
               onClick={onZoomOut}
               disabled={atFloor}
-              title={atFloor ? "The whole run already fits the strip" : "Zoom out"}
+              title={
+                atFloor
+                  ? "Zoomed all the way out: the whole run is on screen with room to spare"
+                  : "Zoom out"
+              }
               aria-label="Zoom out"
             >
               <Minus className="h-3 w-3" />
@@ -742,21 +776,46 @@ export function Timeline({
               size="xs"
               data-zoom-fit
               onClick={onFit}
-              disabled={fitPxPerSecond == null}
-              title="Zoom so the whole run fits the strip"
+              disabled={fitPxPerSecond == null || atFit}
+              title={
+                atFit
+                  ? "Already fitted: the run is exactly as wide as the strip"
+                  : "Zoom so the whole run fits the strip"
+              }
               className="px-2 text-[10px] font-bold uppercase tracking-[0.12em]"
             >
               Fit
             </Button>
-            <span className="flex w-12 items-center justify-center bg-raised font-mono text-[11px] tabular-nums text-muted">
+            {/*
+              The readout and Fit sit next to each other, so at the fit scale
+              the cluster reads "FIT 41px/s" with nothing saying that the 41 IS
+              the fit. Marking it is the readout's job rather than another
+              label's: same cell, same width, just no longer the quiet ink.
+            */}
+            <span
+              data-zoom-readout={atFit ? "fit" : "free"}
+              title={
+                atFit
+                  ? `${zoomLabel(pxPerSecond)} pixels per second, the scale at which the run fits the strip`
+                  : `${zoomLabel(pxPerSecond)} pixels per second`
+              }
+              className={cn(
+                "flex w-12 items-center justify-center bg-raised font-mono text-[11px] tabular-nums",
+                atFit ? "text-primary" : "text-muted",
+              )}
+            >
               {zoomLabel(pxPerSecond)}px/s
             </span>
             <Button
               variant="ghost"
               size="xs"
               onClick={onZoomIn}
-              disabled={pxPerSecond >= 256 - 1e-6}
-              title="Zoom in, or pinch / ⌘-scroll the strip for any scale"
+              disabled={atCeiling}
+              title={
+                atCeiling
+                  ? "Zoomed all the way in"
+                  : "Zoom in, or pinch / ⌘-scroll the strip for any scale"
+              }
               aria-label="Zoom in"
             >
               <Plus className="h-3 w-3" />

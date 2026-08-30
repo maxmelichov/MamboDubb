@@ -79,9 +79,37 @@ import type { ProjectOptionsPatch, Segment } from "../lib/types";
 // The button ladder. 32 px/s was the old ceiling and it made fine retiming a
 // guess — a 100 ms nudge was three pixels. 256 px/s puts a syllable on screen.
 // The ladder is what +/− walk; the pinch/⌘-scroll zoom moves freely between
-// the fit floor and ZOOM_MAX and is not snapped to it.
+// the floor and ZOOM_MAX and is not snapped to it.
 const ZOOM_STEPS = [0.5, 1, 2, 4, 8, 16, 32, 64, 128, 256];
 const ZOOM_MAX = ZOOM_STEPS[ZOOM_STEPS.length - 1];
+
+/**
+ * How far below the fit scale the floor sits, as a divisor of it.
+ *
+ * The floor used to be fit exactly, and on a short run that made − a dead
+ * button. A 26 second clip fits at roughly 41px/s, one press of Fit puts the
+ * zoom there, and every − after it was a no-op behind a control that still
+ * looked pressable. But fit is not a wall, it is a landmark: sitting on it
+ * means the run runs edge to edge with no margin either side, and backing off
+ * from that is something every editor lets you do. Halving it is as far as the
+ * backing off goes, so the run still owns the left half of the strip and can
+ * never be walked out to the two-inch smear the floor exists to prevent, and −
+ * gets there in a press or two and then honestly stops.
+ */
+const ZOOM_FIT_UNDERSHOOT = 2;
+
+/**
+ * The smallest scale anything is allowed to reach, given the fit measurement.
+ *
+ * One function so the −, the pinch and ⌘-scroll all stop in the same place; Fit
+ * is the exception on purpose, because Fit means fit and not a margin below it.
+ * With no measurement yet (the strip is unmounted, or the run has no duration)
+ * the bottom of the ladder is the only bound there is.
+ */
+function zoomFloor(fit: number | null): number {
+  if (fit == null) return ZOOM_STEPS[0];
+  return Math.max(ZOOM_STEPS[0], Math.min(fit / ZOOM_FIT_UNDERSHOOT, ZOOM_MAX));
+}
 
 /** The run's own audio, written by `fetch` (dubbing/fetch.py) long before `mix`. */
 const SOURCE_AUDIO = "source.wav";
@@ -303,14 +331,16 @@ export function EditorPage() {
   /**
    * Zoom, with a floor, and one press that goes to it.
    *
-   * The steps are the ladder; the floor is a measurement. `fit` is the scale at
-   * which the run is exactly as wide as the strip below it the marks are a
-   * smear against the left edge of an otherwise empty lane, which is the one
-   * zoom level that cannot answer a question, and there was no way back to a
-   * useful scale except pressing + and counting. So zoom-out lands on the next
-   * step down *or* on the fit scale, whichever is larger, and Fit goes straight
-   * there. Zoom-in walks the ladder from wherever it is, which is what lets it
-   * climb off a fractional fit value.
+   * The steps are the ladder; the floor is derived from a measurement. `fit` is
+   * the scale at which the run is exactly as wide as the strip, and far below
+   * it the marks are a smear against the left edge of an otherwise empty lane,
+   * which is the one zoom level that cannot answer a question, and there was no
+   * way back to a useful scale except pressing + and counting. So the ladder
+   * stops, but at `zoomFloor(fit)` rather than at fit itself: half the fit
+   * scale, so a short run gets a margin instead of a dead − button. Zoom-out
+   * takes the next step down, or the floor if that step is under it. Fit goes
+   * to fit exactly. Zoom-in walks the ladder from wherever it is, which is what
+   * lets it climb off a fractional fit value.
    *
    * The measurement comes up from the timeline (it owns the container) and is
    * kept in a ref as well as in state: the ref is what the zoom callbacks read,
@@ -327,11 +357,16 @@ export function EditorPage() {
     [total],
   );
 
+  // Step down the ladder, but not below the floor. The old form of this was
+  // `Math.max(step, Math.min(z, floor))`, which at or under the floor evaluates
+  // to `z` and so silently did nothing, which is exactly the state Fit leaves a
+  // short run in.
   const zoomOut = useCallback(() => {
     setZoom((z) => {
-      const step = [...ZOOM_STEPS].reverse().find((s) => s < z - 1e-6) ?? z;
-      const floor = fitRef.current;
-      return floor != null ? Math.max(step, Math.min(z, floor)) : step;
+      const floor = zoomFloor(fitRef.current);
+      if (z <= floor + 1e-6) return z;
+      const step = [...ZOOM_STEPS].reverse().find((s) => s < z - 1e-6) ?? floor;
+      return Math.max(step, floor);
     });
   }, []);
   const zoomIn = useCallback(() => {
@@ -342,14 +377,13 @@ export function EditorPage() {
     if (floor != null) setZoom(floor);
   }, []);
   // The continuous zoom: a multiplicative factor from a pinch or ⌘/Ctrl-scroll
-  // on the strip, clamped to the same floor the − button lands on and to
-  // ZOOM_MAX. Multiplicative because zoom is perceptually a ratio — the same
+  // on the strip, clamped to the same floor the − button stops at and to
+  // ZOOM_MAX. Multiplicative because zoom is perceptually a ratio, so the same
   // gesture should feel the same at 2 px/s and at 200.
   const zoomBy = useCallback((factor: number) => {
     setZoom((z) => {
-      const floor = fitRef.current;
-      const lo = floor != null ? Math.min(floor, ZOOM_MAX) : ZOOM_STEPS[0];
-      return Math.min(ZOOM_MAX, Math.max(lo, z * factor));
+      const floor = zoomFloor(fitRef.current);
+      return Math.min(ZOOM_MAX, Math.max(floor, z * factor));
     });
   }, []);
 
@@ -1166,6 +1200,8 @@ export function EditorPage() {
             busyUids={state.pendingUids}
             pxPerSecond={zoom}
             fitPxPerSecond={fitZoom}
+            minPxPerSecond={zoomFloor(fitZoom)}
+            maxPxPerSecond={ZOOM_MAX}
             matchedUids={matchedUids}
             highlightGap={highlightGap}
             sourcePeaks={sourcePeaks}
