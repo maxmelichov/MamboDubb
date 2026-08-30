@@ -138,6 +138,33 @@ check(
 );
 
 /*
+ * The stage bar's two colourless claims, measured rather than trusted.
+ *
+ * The empty end of the bar is the stages nobody has run, and it is drawn in
+ * `axis` on the chip's `raised` ground. `border` was the obvious pick and is the
+ * wrong one: it is a 1.1:1 difference in light, a track you cannot count. So the
+ * claim worth pinning is the ordering, in both themes, which survives the next
+ * re-pick of either token.
+ *
+ * The second claim is that "done about an older cut" is a texture and not a
+ * shade. Stripes are what makes it legible with the colour taken out, so what
+ * has to ship is the gradient itself.
+ */
+const darkTokens = css.slice(css.indexOf(".theme-dark"));
+check(
+  `the empty stage track outreads a hairline on the chip (${token("axis")} light, ${token("axis", darkTokens)} dark)`,
+  [css, darkTokens].every(
+    (block) =>
+      contrast(token("axis", block), token("raised", block)) >
+      contrast(token("border", block), token("raised", block)),
+  ),
+);
+check(
+  "a stale stage is marked by a texture, so it reads in greyscale",
+  /stage-hatch[^}]*repeating-linear-gradient/.test(css),
+);
+
+/*
  * The one claim about `request()` this mode can make.
  *
  * `VITE_USE_FIXTURES=1` is inlined as a literal, so every `if (USE_FIXTURES)
@@ -2727,6 +2754,40 @@ check(
 // there is no picture rather than showing an empty rectangle.
 check("the empty preview explains itself", /there is no video/.test(root.textContent));
 check("the preview shows the pipeline position", /stages done/.test(root.textContent));
+/*
+ * …and it shows it as one tube, not as nine loose dots.
+ *
+ * Nine separated marks read as nine unrelated facts. The run is one thing
+ * moving through one pipeline, so the nine are the segments of a single rounded
+ * bar: `rounded-full` on a clipping parent rounds the two ends and leaves the
+ * eight inner joins square, which is the whole difference between a bar and a
+ * row of pills. jsdom has no layout, so what is worth asserting is the
+ * structure that produces it and never the geometry.
+ */
+const stageTrack = () => document.querySelector("[data-stage-track]");
+const stageSegments = () => [...stageTrack().querySelectorAll("[data-stage-segment]")];
+check(
+  "the nine stages are one connected bar",
+  /rounded-full/.test(stageTrack().className) &&
+    /overflow-hidden/.test(stageTrack().className) &&
+    !/\bgap-/.test(stageTrack().className),
+);
+check(
+  "…cut into nine equal segments, still countable by a hairline",
+  stageSegments().length === 9 &&
+    stageSegments().every((seg, i) => /flex-1/.test(seg.className) && /border-l/.test(seg.className) === (i > 0)),
+);
+/*
+ * The empty tail of the bar is `axis`, carried by the bar itself: a
+ * border-coloured track is a 1.1:1 difference from the chip it sits in, which
+ * is a track nobody can count. It is asserted here because "no fill" is drawn
+ * by leaving a segment blank, so the only thing standing between an unrun stage
+ * and an invisible one is that one class on the parent.
+ */
+check(
+  "…on a track light enough to count the stages nobody has run",
+  /bg-axis/.test(stageTrack().className),
+);
 
 /*
  * What the transport is on, said in the DOM.
@@ -2784,12 +2845,21 @@ check(
 );
 /*
  * The three stages a render re-runs are drawn hollow done, but done about
- * something else. A ring rather than a lighter fill, so the difference is shape
- * and survives greyscale and colour-blindness.
+ * something else. A texture rather than a lighter fill, so the difference is
+ * not a hue and survives greyscale and colour-blindness. It was a ring while
+ * the stages were dots; joined into one bar there is no outside for a ring to
+ * sit on, so the same fact is carried by stripes over the chip's own ground.
  */
+const staleSegments = () => [...document.querySelectorAll('[title$="from the last render"]')];
 check(
   "timeline, mix and report are drawn hollow, not simply done",
-  [...document.querySelectorAll('[title$="from the last render"]')].length === 3,
+  staleSegments().length === 3,
+);
+check(
+  "…by a texture, so the fact survives with the colour taken out",
+  staleSegments().every(
+    (seg) => /stage-hatch/.test(seg.className) && !/bg-primary\b/.test(seg.className),
+  ),
 );
 check(
   "the output lane is labelled as the last render",
@@ -2905,9 +2975,17 @@ check(
   "…and the stage track says the last stages are being rebuilt, not lost",
   /rebuilding the last \d+ stages/.test(root.textContent),
 );
+const pendingSegments = () =>
+  [...document.querySelectorAll('[title$="waiting its turn in this rebuild"]')];
 check(
-  "…with the waiting stages ringed rather than blank",
-  [...document.querySelectorAll('[title$="waiting its turn in this rebuild"]')].length > 0,
+  "…with the waiting stages hatched rather than blank",
+  pendingSegments().length > 0,
+);
+check(
+  "…in the same texture as a stale stage, in the quieter ink",
+  pendingSegments().every(
+    (seg) => /stage-hatch/.test(seg.className) && /--hatch-ink:var\(--color-secondary\)/.test(seg.className),
+  ),
 );
 /*
  * Cancelling is an ending, not a pause.

@@ -125,14 +125,14 @@ export function RunRow({
 
           {/* Position: the phrase, then the map. The chip is the sentence
               ("Running translate") and the track is the same fact as a shape,
-              its dots a step up from the card-grid size now that a row has the
-              room — the whole point of switching to rows. */}
+              its bar a step up from the card-grid size now that a row has the
+              room, which is the whole point of switching to rows. */}
           <span className="flex shrink-0 flex-wrap items-center gap-3">
             <Badge tone={tone}>{summary.label}</Badge>
             <StageTrack
               stages={project.stages}
               showLabel={false}
-              className="gap-1.5 px-2.5 py-1.5 [&>span[aria-hidden]]:h-2 [&>span[aria-hidden]]:w-2"
+              className="gap-1.5 px-2.5 py-1.5 [&>[data-stage-track]]:h-2.5 [&>[data-stage-track]]:w-24"
             />
           </span>
 

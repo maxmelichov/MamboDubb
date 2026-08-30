@@ -191,9 +191,10 @@ export function PreviewPlaceholder({
             /*
               A render, a re-voice or a re-translate rebuilds the end of a run
               that already reached the end. It clears the marks of the stages it
-              is about to redo before it redoes them, so those dots go dark at
-              once — the same picture as a run that never got that far. A first
-              `run` is the one job for which the dark dots are the truth.
+              is about to redo before it redoes them, so those segments empty
+              out at once, which is the same picture as a run that never got
+              that far. A first `run` is the one job for which the empty end of
+              the bar is the truth.
             */
             rebuilding={working && job?.kind !== "run"}
           />

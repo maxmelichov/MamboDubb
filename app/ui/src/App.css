@@ -496,6 +496,34 @@ body {
   );
 }
 
+/*
+ * A stage that has a result behind it which this run is not, or not yet, making
+ * a claim about: stale output on the projects card, and the stages a rebuild
+ * has still to redo. Inside the joined stage bar there is no outside left for
+ * the ring that used to say this, so the channel is texture instead: stripes
+ * over the chip's own ground, which reads as "half there" in greyscale and
+ * under every colour-vision deficiency, where a lighter fill would only read as
+ * a lighter fill. `--hatch-ink` is set per segment by the caller, so one rule
+ * serves both weights.
+ *
+ * 1.5px of ink in a 3px period puts three or four stripes across a segment of
+ * the bar, which is the least that still reads as texture and not as noise.
+ */
+.stage-hatch {
+  background-color: var(--color-raised);
+  background-image: repeating-linear-gradient(
+    135deg,
+    var(--hatch-ink, var(--color-primary)) 0 1.5px,
+    transparent 1.5px 3px
+  );
+}
+
+@media (forced-colors: active) {
+  .stage-hatch {
+    forced-color-adjust: none;
+  }
+}
+
 /* Scrollbars are ours, not the platform's `color-scheme` already points the
    fallback ones the right way, and these keep them quiet on top of that. Both
    rules resolve from `--color-muted`, so they follow the theme. */
