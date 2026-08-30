@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import sys
+import tempfile
 import threading
 import time
 from contextlib import contextmanager
@@ -1527,6 +1528,138 @@ def test_stderr_progress_parsing(line, expected):
 ])
 def test_stderr_non_progress_lines_pass_through(line):
     assert runner_mod.parse_stderr(line) is None
+
+
+# ---------------------------------------------------------------------------
+# what the job log is allowed to look like
+# ---------------------------------------------------------------------------
+#
+# The user-facing half of the same issue the tts ladder answers: a stage that
+# repeats itself, or a child that dies, must not fill the panel with the same
+# sentence or with Python frames. These pin the literal shape, because a
+# regression in either is invisible until somebody files the log again.
+
+def collapsed(lines: list[str]) -> list[str]:
+    seen: list[dict] = []
+    runs = runner_mod.LineRuns(seen.append)
+    for line in lines:
+        runs.offer(line)
+    runs.flush()
+    return [f["message"] for f in seen]
+
+
+def test_a_repeated_log_line_reaches_the_ui_once_with_its_count():
+    assert collapsed(["tts: seg 5 failed", "tts: seg 5 failed", "tts: seg 5 failed",
+                      "tts: seg 6 failed"]) == ["tts: seg 5 failed  (x3)",
+                                                "tts: seg 6 failed"]
+
+
+def test_a_line_that_did_not_repeat_carries_no_count():
+    """A count on every line would be noise, and "(x1)" is not information."""
+    assert collapsed(["one", "two"]) == ["one", "two"]
+
+
+def test_the_last_line_of_a_run_is_not_stranded_by_the_hold():
+    """Repeats are held so the count arrives on the frame the user reads. The
+    price is that the final line of a run has nothing after it to release it,
+    which is what `flush` is for; without it the log would lose its last line."""
+    assert collapsed(["same", "same"]) == ["same  (x2)"]
+
+
+def test_a_stage_frame_releases_whatever_was_being_held():
+    """Progress is parsed out before the collapser sees it, so a held line must
+    not sit behind a burst of stage events and arrive out of order."""
+    seen: list[dict] = []
+    runs = runner_mod.LineRuns(seen.append)
+    runs.offer("  tts: seg 5 failed")
+    runs.flush()
+    assert [f["message"] for f in seen] == ["  tts: seg 5 failed"]
+
+
+def test_the_ui_log_never_shows_a_traceback_but_the_server_log_still_does(capfd):
+    """The child fences its stack trace; the runner keeps it and shows the
+    sentence. A user with no checkout cannot act on `File "...", line 812`."""
+    from dubbing_app.jobs import Job
+
+    child = f'''
+import json, sys
+json.loads(sys.stdin.readline())
+print("  tts: 1/2", file=sys.stderr, flush=True)
+print({runner_mod.TRACEBACK_OPEN!r}, file=sys.stderr, flush=True)
+print("Traceback (most recent call last):", file=sys.stderr, flush=True)
+print('  File "/Users/someone/dubbing/tts.py", line 812, in run', file=sys.stderr,
+      flush=True)
+print("RuntimeError: boom", file=sys.stderr, flush=True)
+print({runner_mod.TRACEBACK_CLOSE!r}, file=sys.stderr, flush=True)
+print(json.dumps({{"type": "result", "ok": False, "error": "the dub could not finish"}}),
+      flush=True)
+raise SystemExit(1)
+'''
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, "fenced_worker.py").write_text(child, encoding="utf-8")
+        runner = runner_mod.SubprocessRunner(cwd=Path(tmp), module="fenced_worker")
+        seen: list[dict] = []
+        job = Job(id="jt", kind="render", project=NAME, payload={"workdir": tmp})
+        with pytest.raises(RuntimeError, match="the dub could not finish"):
+            runner.run(job, seen.append)
+
+    logged = " ".join(f["message"] for f in seen if f["type"] == "log")
+    assert "Traceback" not in logged and "line 812" not in logged
+    assert runner_mod.TRACEBACK_OPEN not in logged
+    # …and it is still on the server's own stderr, in full.
+    assert "line 812" in capfd.readouterr().err
+
+
+def test_a_pipeline_refusal_reaches_the_ui_as_the_sentence_it_raised(monkeypatch, capsys):
+    """`dubbing.cli` refuses a bad request with `SystemExit("--transcript file
+    needs --captions ...")`. SystemExit is not an Exception, so that sentence
+    used to escape the child's handler: no result frame, a traceback, and a UI
+    that said "job process exited 1" over three lines of Python frames."""
+    from dubbing_app import worker
+
+    monkeypatch.setattr(worker, "execute", lambda spec: (_ for _ in ()).throw(
+        SystemExit("--transcript file needs --captions <file.srt|.vtt|.json3>")))
+    assert worker.main(['{"kind": "run", "workdir": "/tmp", "payload": {}}']) == 1
+
+    frames = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
+    result = [f for f in frames if f["type"] == "result"][-1]
+    assert result["ok"] is False
+    assert result["error"] == "--transcript file needs --captions <file.srt|.vtt|.json3>"
+    assert "Traceback" not in result["error"]
+    # …and the same sentence is in the log, so it is readable while the job runs.
+    assert any(f["type"] == "log" and f["level"] == "error"
+               and f["message"].startswith("--transcript file") for f in frames)
+
+
+def test_a_bare_exit_status_is_not_passed_off_as_a_message(monkeypatch, capsys):
+    """`SystemExit(2)` carries a status, not a sentence, and "2" is not one."""
+    from dubbing_app import worker
+
+    monkeypatch.setattr(worker, "execute", lambda spec: (_ for _ in ()).throw(SystemExit(2)))
+    assert worker.main(['{"kind": "run", "workdir": "/tmp", "payload": {}}']) == 1
+    frames = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
+    assert [f for f in frames if f["type"] == "result"][-1]["error"] == (
+        "the pipeline stopped (exit 2)")
+
+
+def test_a_dropped_frame_warning_is_the_level_the_ui_actually_paints():
+    """The one warning the bus emits spelled its level "warning"; the UI matches
+    "warn" and painted it the same grey as an ordinary line for its whole life."""
+    assert events.log_event("x", level="warn")["level"] == "warn"
+    source = (Path(__file__).resolve().parents[1] / "dubbing_app" / "events.py").read_text()
+    assert 'level="warning"' not in source
+
+
+@pytest.mark.parametrize("raw,shown", [
+    # A colour code is not text, and a `<pre>` prints it rather than obeying it.
+    ("\x1b[32m==>\x1b[0m Downloading ffmpeg", "==> Downloading ffmpeg"),
+    # A progress bar redraws its line; the row a user would have seen is the last.
+    ("  1%|# | 2/200\r 50%|##### | 100/200\r100%|##########| 200/200",
+     "100%|##########| 200/200"),
+    ("plain output", "plain output"),
+])
+def test_the_install_tail_shows_the_line_a_terminal_would_have(raw, shown):
+    assert install_mod.readable(raw) == shown
 
 
 # ---------------------------------------------------------------------------

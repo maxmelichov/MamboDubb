@@ -2738,8 +2738,12 @@ class _SliceEngine:
 
     def __init__(self, workdir, *a, **kw):
         self.workdir, self.cut = workdir, []
+        self.faults = tts.Repeats()
 
     def build_speaker_refs(self):
+        pass
+
+    def flush_faults(self):
         pass
 
     def keep_clip(self, seg):

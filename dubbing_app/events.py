@@ -5,7 +5,7 @@ Frames, per docs/APP_ARCHITECTURE.md:
     {"type":"stage","stage":"tts","status":"running","progress":0.42,"message":"clip 31/74"}
     {"type":"segment","uid":"...","field":"tts","status":"done"}
     {"type":"job","id":"...","status":"queued|running|done|failed","error":null}
-    {"type":"log","level":"info","message":"..."}
+    {"type":"log","level":"debug|info|warn|error","message":"..."}
 
 Plus `{"type":"heartbeat"}` every 15 s a keepalive, not an event, so proxies
 and sleeping laptops do not silently drop the stream.
@@ -125,8 +125,12 @@ async def stream(sub: Subscription, *, prelude: list[dict[str, Any]] | None = No
                 yield encode({"type": "heartbeat", "t": round(time.time(), 3)})
                 continue
             if sub.dropped:
+                # "warn", not "warning": the UI colours a log line by matching
+                # this string (`LogEvent` in app/ui/src/lib/types.ts), and the
+                # one frame that ever used the long spelling was painted the same
+                # grey as an ordinary info line for its whole life.
                 yield encode(log_event(f"dropped {sub.dropped} frames (client too slow)",
-                                       level="warning"))
+                                       level="warn"))
                 sub.dropped = 0
             yield encode(event)
     except asyncio.CancelledError:

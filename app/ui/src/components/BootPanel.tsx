@@ -28,7 +28,10 @@
  * tail names the real cause (the runner appends `[start error] ...` to the
  * ring on rejection), and Try again re-invokes `start_server` then reloads
  * the page reloading is what resets the seam's cached null, and the
- * now-running server makes the second boot a warm one.
+ * now-running server makes the second boot a warm one. That same `[start error]`
+ * line is what `diagnoseStartFailure` reads to decide which instruction the
+ * panel gives, because "try again" is only advice for some of the ways a start
+ * can fail and is a dead end for the rest.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -60,6 +63,77 @@ function getInvoke(): Promise<Invoke | null> {
 
 /** How long a boot may stay invisible. Warm launches finish inside this. */
 const GRACE_MS = 600;
+
+/** What the panel says under the headline, and whether Try again is any use. */
+type Diagnosis = { advice: string; retryHelps: boolean };
+
+/**
+ * The runner's reason, turned into an instruction that is true of *this* failure.
+ *
+ * The panel used to say the same paragraph whatever had happened: "usually the
+ * one-time component download stopping part way, or a workspace the app cannot
+ * read or write", and under the button, unconditionally, "Nothing already
+ * downloaded is lost; setup resumes where it stopped". Neither sentence is true
+ * of the most common first-run failure, which is that `uv` is not installed:
+ * there is no download to resume, and Try again produces the identical error
+ * for as long as the user is willing to press it. Telling someone to repeat a
+ * gesture that cannot work is the same fault this project has already shipped
+ * once, in the install screen, and it is worth not shipping twice.
+ *
+ * The reason is read off the ring's last `[start error] ...` line, which is the
+ * one thing `ensure_server` guarantees is there on a rejection (runner/mod.rs).
+ * Matched on the phrases those errors are actually built from; anything
+ * unrecognised falls through to a paragraph that promises nothing beyond
+ * pointing at the log, because a wrong instruction costs more than none.
+ */
+export function diagnoseStartFailure(log: string): Diagnosis {
+  const marker = log.lastIndexOf("[start error]");
+  const reason = marker < 0 ? "" : log.slice(marker + "[start error]".length).trim();
+  const head = reason.split("\n")[0] ?? "";
+
+  if (/uv was not found/i.test(head)) {
+    return {
+      advice:
+        "The app cannot find uv, the tool it builds its Python environment with. " +
+        "Install uv (on a Mac: brew install uv), then start the app again. Try " +
+        "again will give the same error until uv is there.",
+      retryHelps: false,
+    };
+  }
+  if (/workspace not found|does not look like|no bundled workspace payload|no resource dir/i.test(head)) {
+    return {
+      advice:
+        "The app's workspace is missing or incomplete, so there is nothing to " +
+        "start from. Reinstalling the app restores it. Try again will report the " +
+        "same thing until it is back.",
+      retryHelps: false,
+    };
+  }
+  if (/failed to provision|failed to refresh|failed to write|failed to read payload|failed to hash/i.test(head)) {
+    return {
+      advice:
+        "The app could not finish setting up its workspace on disk. That is " +
+        "almost always a full disk or a folder it is not allowed to write to. " +
+        "Free some space, then try again.",
+      retryHelps: true,
+    };
+  }
+  if (reason) {
+    return {
+      advice:
+        "The engine started and stopped before it was ready. The last lines of " +
+        "its log below say why. Try again picks the setup up where it stopped " +
+        "rather than starting it over.",
+      retryHelps: true,
+    };
+  }
+  return {
+    advice:
+      "The engine did not start, and it did not say why. The log below is " +
+      "everything that was captured; please include it in a bug report.",
+    retryHelps: false,
+  };
+}
 
 /** m:ss, because "247 seconds" is a number and "4:07" is a wait. */
 function formatElapsed(seconds: number): string {
@@ -138,6 +212,8 @@ export function BootPanel({ failed }: { failed: boolean }) {
     }
   };
 
+  const diagnosis = diagnoseStartFailure(log);
+
   if (!visible) {
     // The grace window: not a black void, the theme's own plane, so a boot
     // that resolves quickly still never shows a foreign colour.
@@ -160,9 +236,7 @@ export function BootPanel({ failed }: { failed: boolean }) {
                   The dubbing engine could not start
                 </p>
                 <p className="mt-1.5 max-w-lg text-[13px] leading-relaxed text-secondary">
-                  The log below names the cause. Usually it is the one-time component
-                  download stopping part way, or a workspace the app cannot read or
-                  write. Try again resumes rather than restarts.
+                  {diagnosis.advice}
                 </p>
               </>
             ) : (
@@ -203,7 +277,9 @@ export function BootPanel({ failed }: { failed: boolean }) {
                   {retrying ? "Starting…" : "Try again"}
                 </Button>
                 <span className="text-[12px] leading-relaxed text-muted">
-                  Nothing already downloaded is lost; setup resumes where it stopped.
+                  {diagnosis.retryHelps
+                    ? "Nothing already downloaded is lost; setup resumes where it stopped."
+                    : "Try again once you have done the above; on its own it will report the same thing."}
                 </span>
               </div>
             )}

@@ -50,6 +50,20 @@ const KIND_LABEL: Record<Job["kind"], string> = {
 const LOG_TAIL = 15;
 
 /**
+ * `HH:MM:SS` for a log frame, or blank space the same width when it has no `t`.
+ *
+ * Blank rather than absent: a column that appears and disappears line by line
+ * makes the messages beside it jump, and a missing timestamp is not worth that.
+ */
+function clockOf(line: LogEvent): string {
+  if (typeof line.t !== "number" || !Number.isFinite(line.t)) return "";
+  const at = new Date(line.t * 1000);
+  return [at.getHours(), at.getMinutes(), at.getSeconds()]
+    .map((n) => String(n).padStart(2, "0"))
+    .join(":");
+}
+
+/**
  * How long a finished job's strip stays up.
  *
  * The strip used to vanish on the frame the job ended, which meant the *only*
@@ -503,7 +517,7 @@ function QueuePanel({
               <li
                 key={i}
                 className={cn(
-                  "truncate",
+                  "flex gap-2",
                   line.level === "error"
                     ? "text-critical"
                     : line.level === "warn"
@@ -512,7 +526,17 @@ function QueuePanel({
                 )}
                 title={line.message}
               >
-                {line.message}
+                {/*
+                  The clock, because fifteen lines with no time on them cannot
+                  say which of them are about the failure the user is looking at
+                  and which were already there. Local wall clock, not elapsed:
+                  the question is "did this happen when I pressed the button",
+                  and the answer is on the user's own clock.
+                */}
+                <span className="w-[4.6em] shrink-0 tabular-nums opacity-60">
+                  {clockOf(line)}
+                </span>
+                <span className="min-w-0 truncate">{line.message}</span>
               </li>
             ))}
           </ul>

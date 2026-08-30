@@ -197,7 +197,11 @@ class _StubEngine:
     def __init__(self, m, workdir, **kw):
         self.workdir = workdir
         self.retried: list[int] = []
+        self.faults = tts.Repeats()
         (workdir / "clips").mkdir(parents=True, exist_ok=True)
+
+    def flush_faults(self):
+        pass
 
     def build_speaker_refs(self):
         pass
@@ -444,3 +448,142 @@ def test_a_greedy_re_roll_samples_because_the_seed_is_inert():
     assert tts.reseeds(7, greedy=True)[1][1] is False
     assert tts.reseeds(7, greedy=False)[1][0] != 7
     assert tts.reseeds(7, greedy=False)[0] == (7, False)
+
+
+# ------------------------------------- one fault, said once, not once per attempt
+#
+# The log a user filed as an issue was four identical lines per segment and then
+# the same four for the next segment: one broken import, printed until it filled
+# the panel, with the fact that nothing at all could be synthesised nowhere in
+# it. These pin the shape that replaced it. A regression here is invisible until
+# somebody files the same issue again, so the assertions are on the literal text.
+
+def always_raising(eng, fake, exc):
+    def always(speak, ref, out, *, seed, greedy, **kw):
+        raise exc
+
+    fake.generate = always
+    return eng
+
+
+def test_a_ladder_that_raises_every_rung_says_it_once_with_the_count(
+        tmp_path, monkeypatch, capsys):
+    eng, fake = engine(tmp_path, monkeypatch, [], dur=4.0)
+    always_raising(eng, fake, ModuleNotFoundError("No module named 'qwen_tts.core.models'"))
+
+    assert eng.clip_for(seg(), "hello world") is None
+    lines = [ln for ln in capsys.readouterr().err.splitlines() if ln.strip()]
+
+    assert len(lines) == 1, lines
+    said = lines[0]
+    # The attempt count is on the line, so four retries of one problem cannot be
+    # mistaken for four problems.
+    assert f"{len(eng.rungs(seg(), eng._plan(seg(), 'hello world'))) * tts.GENERATE_TRIES}" \
+        " attempt(s)" in said
+    # The original exception text survives verbatim, for the bug report.
+    assert "ModuleNotFoundError: No module named 'qwen_tts.core.models'" in said
+    # …and it is followed by something to do about it.
+    assert "git submodule update --init third_party/Qwen3-TTS" in said
+    # The per-attempt lines are gone.
+    assert "generate failed" not in said and "decode crashed" not in said
+
+
+def test_the_same_fault_on_the_next_line_is_counted_not_repeated(
+        tmp_path, monkeypatch, capsys):
+    eng, fake = engine(tmp_path, monkeypatch, [], dur=4.0)
+    always_raising(eng, fake, ModuleNotFoundError("No module named 'qwen_tts.core.models'"))
+
+    for seg_id in (5, 6, 7):
+        assert eng.clip_for(seg(id=seg_id, uid=f"u{seg_id}"), "hello world") is None
+    eng.flush_faults()
+    lines = [ln for ln in capsys.readouterr().err.splitlines() if ln.strip()]
+
+    assert len(lines) == 2, lines
+    assert lines[0].startswith("  tts: seg 5 could not be voiced.")
+    assert "seg 6" not in lines[0] and "seg 7" not in lines[0]
+    # The lines it also took down are named, once, at the end.
+    assert lines[1] == ("  tts: the same fault took 2 more line(s), which keep their "
+                        "original audio (ModuleNotFoundError: No module named "
+                        "'qwen_tts.core.models'); segments 6, 7")
+
+
+def test_one_line_taken_down_alone_gets_no_summary(tmp_path, monkeypatch, capsys):
+    eng, fake = engine(tmp_path, monkeypatch, [], dur=4.0)
+    always_raising(eng, fake, IndexError("index out of range in self"))
+    eng.clip_for(seg(), "hello world")
+    capsys.readouterr()
+
+    eng.flush_faults()
+    assert capsys.readouterr().err == ""
+
+
+def test_two_different_faults_are_both_announced(tmp_path, monkeypatch, capsys):
+    """Collapsing is per cause. Two exceptions are two problems, and hiding the
+    second one behind the first is the failure this whole change is against."""
+    eng, fake = engine(tmp_path, monkeypatch, [], dur=4.0)
+    always_raising(eng, fake, ModuleNotFoundError("no qwen_tts"))
+    eng.clip_for(seg(id=1, uid="u1"), "hello world")
+    always_raising(eng, fake, MemoryError("out of memory"))
+    eng.clip_for(seg(id=2, uid="u2"), "hello world")
+
+    said = capsys.readouterr().err
+    assert "seg 1 could not be voiced" in said and "no qwen_tts" in said
+    assert "seg 2 could not be voiced" in said and "out of memory" in said
+
+
+def test_a_synthesis_fault_reaches_report_json_not_only_the_scrollback(
+        tmp_path, monkeypatch):
+    """stderr scrolls past; `m["health"]` is what report.run prints as `degraded`.
+
+    This is the other half of collapsing: what is said once has to be findable
+    afterwards, and the run's own report is where a user looks.
+    """
+    eng, fake = engine(tmp_path, monkeypatch, [], dur=4.0)
+    always_raising(eng, fake, ModuleNotFoundError("No module named 'qwen_tts'"))
+    eng.clip_for(seg(), "hello world")
+
+    assert eng.m["health"]["tts.generate"] == ("ModuleNotFoundError: No module "
+                                               "named 'qwen_tts'")
+    assert "tts.generate" in tts.HEALTH_KEYS      # so a clean re-run clears it
+
+
+def test_a_line_that_failed_on_its_takes_still_speaks_for_itself(
+        tmp_path, monkeypatch, capsys):
+    """The fallback line is only suppressed where something else already said it.
+
+    A segment whose takes were simply bad is a fact about that one line, so it
+    keeps its own line in the log; only the segments an exception took down are
+    covered by the fault summary.
+    """
+    eng, _fake = engine(tmp_path, monkeypatch, [0.0, 0.0, 0.0, 0.0], dur=4.0)
+    segment = dict(seg(), text_en="hello world", keep=False, keep_reason=None)
+    tts._retry_pass(eng, [segment])
+
+    assert "  tts: seg 27 unusable → keep original" in capsys.readouterr().err
+    assert segment["keep_reason"] == "tts_failed"
+
+
+def test_the_remedy_for_a_missing_module_is_the_install_and_never_a_retry():
+    """An instruction that is wrong costs more than no instruction: this project
+    has already shipped a message telling a user to redo an install that had
+    just succeeded. Nothing here tells anyone to try the same thing again."""
+    missing = tts.explain_generate_failure("ModuleNotFoundError: No module named 'x'")
+    assert "Reinstall the app" in missing and "uv sync" in missing
+    assert "again" not in missing
+
+    memory = tts.explain_generate_failure("MemoryError: out of memory")
+    assert "Close other" in memory and "resumes rather than restarts" in memory
+
+    # An unknown cause promises nothing it cannot deliver.
+    plain = tts.explain_generate_failure("ValueError: something odd")
+    assert "keeps its original audio" in plain and "The rest of the run continues." in plain
+
+
+def test_repeats_never_announces_one_segment_twice_for_one_cause():
+    runs = tts.Repeats()
+    assert runs.first("boom", 5) is True
+    assert runs.first("boom", 5) is False         # a later rung on the same line
+    assert runs.first("boom", 6) is False         # a later line, counted
+    assert runs.hit(6) and not runs.hit(9)
+    assert runs.rest() == [("boom", [6])]
+    assert runs.rest() == []                      # and it is only said once

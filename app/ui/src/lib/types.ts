@@ -458,6 +458,14 @@ export type LogEvent = {
   type: "log";
   level: "debug" | "info" | "warn" | "error";
   message: string;
+  /**
+   * When the server published it, epoch seconds. Every frame off the bus carries
+   * one (`EventBus.publish` stamps it); the type says optional because a fixture
+   * or an old client can hand one over without. The log panel shows it, which is
+   * how a reader tells the lines that belong to the failure from the ones that
+   * were already on screen when it happened.
+   */
+  t?: number;
 };
 
 /** A heartbeat keeps proxies and sleeping laptops from dropping the stream. */

@@ -152,7 +152,81 @@ NO_ASR = "no-asr"
 
 # What this stage records in `m["health"]` when it runs degraded, and therefore
 # what a fresh run of it clears (see `run`). Read by `report.run`.
-HEALTH_KEYS = ("tts.verify_asr", "tts.speaker_embeddings")
+HEALTH_KEYS = ("tts.verify_asr", "tts.speaker_embeddings", "tts.generate")
+
+
+class Repeats:
+    """Counts how far one cause spread, and answers whether it is news yet.
+
+    The retry ladder makes up to `GENERATE_TRIES` decodes on each of up to four
+    rungs, and a cause like a missing module fails every one of them the same
+    way, on every segment in the run. Printing each attempt is what turned one
+    broken install into the log a user filed as issue #47: four identical lines
+    per segment, then the same four for the next segment, with the actual news,
+    that nothing at all can be synthesised, nowhere in it. A reader could not
+    tell four retries of one problem from four different problems.
+
+    So a cause is printed in full the first time it is seen and counted after
+    that. `rest` hands back what was counted, once, at the end of the stage.
+    Nothing is lost: the first line carries the exception text verbatim, the
+    summary names every segment the same cause took down, and `note_degraded`
+    puts it in report.json where a bug report can find it.
+    """
+
+    def __init__(self) -> None:
+        self.seen: dict[str, list[int]] = {}
+
+    def first(self, cause: str, seg_id: int) -> bool:
+        """Record that `cause` hit `seg_id`. True only for a cause's first line.
+
+        A later rung on the same segment answers False, so one segment is never
+        announced twice for one cause.
+        """
+        ids = self.seen.setdefault(cause, [])
+        if seg_id in ids:
+            return False
+        ids.append(seg_id)
+        return len(ids) == 1
+
+    def hit(self, seg_id: int) -> bool:
+        """Whether some cause here has already spoken for this segment."""
+        return any(seg_id in ids for ids in self.seen.values())
+
+    def rest(self) -> list[tuple[str, list[int]]]:
+        """Every cause that spread past the one line it was reported on, and clear."""
+        out = [(cause, ids[1:]) for cause, ids in self.seen.items() if len(ids) > 1]
+        self.seen.clear()
+        return out
+
+
+def explain_generate_failure(cause: str) -> str:
+    """The one sentence a non-developer can act on, for a synthesis that raised.
+
+    `cause` is `"<ExceptionType>: <message>"`, kept verbatim in the caller's line
+    so a bug report still carries the original text. This adds what the original
+    text never says: whether the run can recover, and what to do if it cannot.
+
+    The known causes are matched on the exception's class name, and every branch
+    has to be an instruction that is actually true. An earlier bug in this project
+    told a user to redo an install that had just succeeded; a wrong instruction
+    costs more than no instruction, which is why the fallback promises nothing
+    beyond what the pipeline will do next.
+    """
+    kind = cause.split(":", 1)[0]
+    if kind in ("ModuleNotFoundError", "ImportError"):
+        return ("The voice-cloning package is not importable in this workspace, so "
+                "no line can be voiced and every one of them keeps its original "
+                "audio. Reinstall the app, or in a checkout run "
+                "`git submodule update --init third_party/Qwen3-TTS` and `uv sync`.")
+    if kind in ("OutOfMemoryError", "MemoryError") or "out of memory" in cause.lower():
+        return ("The machine ran out of memory while synthesising. Close other "
+                "applications and run the tts stage again; finished clips are "
+                "cached, so it resumes rather than restarts.")
+    if kind in ("FileNotFoundError", "OSError"):
+        return ("A file the synthesiser needed was not there. Check the Setup "
+                "screen for a red row, then run the tts stage again.")
+    return ("The synthesiser raised on every attempt at this line, so it keeps its "
+            "original audio. The rest of the run continues.")
 
 CLONE_MIN_SEC_PER_WORD = 0.18   # faster than this is chipmunk garble
 CLONE_MAX_SEC_PER_WORD = 0.95   # slower than this is a stall/drawl
@@ -1151,6 +1225,8 @@ class Engine:
         self._ref_hash: dict[str, str] = {}          # canonical ref path → content hash
         self._match_cache: dict[tuple, bool] = {}    # (span, reference path) → same voice?
         self._own_win: dict[Any, tuple[float, float] | None] = {}   # segment → its own window
+        # Synthesis failures, one line per cause rather than one per attempt.
+        self.faults = Repeats()
 
     # -- lazy resources ----------------------------------------------------
     @property
@@ -1856,7 +1932,11 @@ class Engine:
 
         Returns (clip, meta, verdict). `verdict` is None when the clip was just
         generated and still needs verifying; a dict when it was cached; and
-        {"failed": True} when generation raised. Isolating this from verification
+        `{"failed": True, "tries": n, "error": "<Type>: <message>"}` when
+        generation raised on every try. It says nothing on stderr about that:
+        this is one rung, and a cause that fails one rung fails all of them, so
+        the reporting belongs to `clip_for` and to `Repeats`, which between them
+        say it once per segment and once per run. Isolating this from verification
         is what lets the pipeline in `run` verify one clip while the GPU makes the
         next the seed/cache scheme is identical to the sequential path.
 
@@ -1906,11 +1986,13 @@ class Engine:
                 break
             except Exception as exc:
                 if attempt + 1 >= GENERATE_TRIES:
-                    print(f"  tts: seg {seg_id} generate failed ({exc})",
-                          file=sys.stderr)
-                    return clip, meta, {"failed": True}
-                print(f"  tts: seg {seg_id} decode crashed ({exc}) re-rolling",
-                      file=sys.stderr)
+                    # Not printed here. One rung is one of up to four on this
+                    # segment and one of hundreds in the run, and under a
+                    # systemic cause every one of them says the same sentence.
+                    # The cause travels back to `clip_for`, which says it once
+                    # per segment, and to `Repeats`, which says it once per run.
+                    return clip, meta, {"failed": True, "tries": attempt + 1,
+                                        "error": f"{type(exc).__name__}: {exc}"}
         # Both ends, for the same reason: the file that leaves here is the line
         # and nothing else. The timeline measures the *file*, so a trailing hush
         # is compressed as if it were words: the speech pays the speed for
@@ -2006,10 +2088,17 @@ class Engine:
         best_rank = (False, -1.0)
         best_take: tuple[int, Path, Path, dict[str, Any]] | None = None
 
+        # What the rungs that raised said, so a segment no rung could voice is
+        # reported once, with its total attempt count, instead of once a rung.
+        raised: list[str] = []
+        tries = 0
+
         for attempt, (a_path, a_key, a_greedy) in enumerate(self.rungs(seg, plan)):
             clip, meta, verdict = self._attempt(seg["id"], speak, a_path, a_key,
                                                 base_seed, a_greedy, opts, tgt, synth)
             if verdict is not None and verdict.get("failed"):
+                raised.append(str(verdict.get("error") or "unknown error"))
+                tries += int(verdict.get("tries") or 1)
                 continue
             if verdict is None:
                 verdict = self._verify_and_store(clip, meta, speak, tgt, src)
@@ -2085,7 +2174,45 @@ class Engine:
             if better is not None:
                 return dict(self._record(clip, better, attempt, opts, text_en),
                             verify="accepted")
+        if raised:
+            self.note_generate_fault(seg["id"], raised, tries)
         return None
+
+    def note_generate_fault(self, seg_id: int, raised: list[str], tries: int) -> None:
+        """Say once, per cause, that synthesis raised its way through a segment.
+
+        The ladder can raise the same exception ten times on one line, and under
+        a cause that is not about this line at all (a package that will not
+        import, a card with no memory left) it raises it that many times on every
+        line in the run. That is one fault, and it is reported as one: the first
+        segment it takes down gets a full line naming the attempt count, the
+        verbatim exception and the remedy, and `flush_faults` counts the rest.
+
+        Distinct causes are each announced, because two different exceptions are
+        two different problems and collapsing them would hide the second one.
+        """
+        for cause in dict.fromkeys(raised):        # distinct, in the order they hit
+            if not self.faults.first(cause, seg_id):
+                continue
+            self.note_degraded("tts.generate", cause)
+            print(f"  tts: seg {seg_id} could not be voiced. "
+                  f"{tries} attempt(s), all of them {cause}. "
+                  f"{explain_generate_failure(cause)}", file=sys.stderr)
+
+    def flush_faults(self) -> None:
+        """One line per cause for every segment after the one that reported it.
+
+        The detail is not dropped, it is moved: the segment ids are here, the
+        exception text is on the line above and in `report.json`'s `degraded`
+        block, and every one of these lines is a line the log used to print in
+        full for each segment.
+        """
+        for cause, spread in self.faults.rest():
+            shown = ", ".join(str(i) for i in spread[:12])
+            more = f", +{len(spread) - 12} more" if len(spread) > 12 else ""
+            print(f"  tts: the same fault took {len(spread)} more line(s), which keep "
+                  f"their original audio ({cause}); segments {shown}{more}",
+                  file=sys.stderr)
 
     def _in_sentences(self, seg: dict[str, Any], plan: Plan, text_en: str,
                       best: dict[str, Any] | None,
@@ -2234,6 +2361,10 @@ class Engine:
         return rec
 
     def close(self) -> None:
+        # Whatever this engine collapsed has to be said before it goes away: the
+        # timeline's resynth pass and the app's re-voice both hold an engine the
+        # tts stage never sees, and a counted fault nobody flushes is silence.
+        self.flush_faults()
         if self._synth is not None:
             self._synth.free()
             self._synth = None
@@ -2664,12 +2795,21 @@ def _retry_pass(engine: Engine, retry: list[dict[str, Any]]) -> None:
 
     Needs the GPU again, so it runs after the pipelined pass rather than stalling
     it. A segment the ladder cannot voice keeps its original audio never silent.
+
+    The fallback is announced here only when nothing else has spoken for this
+    segment. A segment the synthesiser *raised* on already has a line from
+    `note_generate_fault` that says it keeps its original audio, and printing
+    this one under it is the second half of the log a user filed against: the
+    same event, said twice, for every line in the run. A segment that failed on
+    its takes rather than on an exception still gets its own line, because that
+    really is a fact about that one line and about no other.
     """
     for seg in retry:
         record = engine.clip_for(seg, seg["text_en"])
         if record is None:
             seg["keep"], seg["keep_reason"] = True, "tts_failed"
-            print(f"  tts: seg {seg['id']} unusable → keep original", file=sys.stderr)
+            if not engine.faults.hit(seg["id"]):
+                print(f"  tts: seg {seg['id']} unusable → keep original", file=sys.stderr)
         else:
             seg["tts"] = record
 
@@ -2696,6 +2836,7 @@ def run(m: dict[str, Any], workdir: Path, *, save: Callable[[], None] | None = N
 
     todo = pending(m["segments"], workdir)
     _retry_pass(engine, _first_pass(engine, todo, workdir, save))
+    engine.flush_faults()
     if save:
         save()
 

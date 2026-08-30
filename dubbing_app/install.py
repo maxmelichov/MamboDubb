@@ -77,6 +77,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -161,6 +162,32 @@ DIARIZATION_BUNDLE_ROOTS = (Path("/Applications"), Path.home() / "Applications")
 # The file every candidate source has to carry: it is both the proof that the
 # directory is the weights and the manifest the copy is checked against.
 DIARIZATION_SUMS = "SHA256SUMS"
+
+# Terminal control sequences, which the Setup screen is not a terminal for. A
+# package manager draws its progress with colour codes and by rewriting the line
+# it is on, and neither survives the trip: the escapes reach the panel as
+# `[32m` glued to the word after them, and the rewrites reach it as one
+# `\r`-joined line the width of the whole download.
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]")
+
+
+def readable(text: str) -> str:
+    """One package-manager line as a person would have seen it in a terminal.
+
+    Two things a terminal does that a `<pre>` does not. It interprets the colour
+    escapes instead of printing them, so they are dropped. And it obeys the
+    carriage returns a progress bar redraws itself with, which means the line a
+    user would have been looking at is the *last* segment, not all forty of them
+    end to end: `pip`'s download bar arrives here as a single line thousands of
+    characters wide, and the tail row it lands in is unreadable and pushes the
+    real output off the panel.
+
+    Nothing informative is lost. Every earlier segment of a redrawn line is a
+    stale copy of the one kept, which is the whole point of redrawing it.
+    """
+    text = _ANSI.sub("", text).replace("\x08", "")
+    # `\r\n` is a line ending, not a redraw; only a bare `\r` rewinds the line.
+    return text.replace("\r\n", "\n").rsplit("\r", 1)[-1].rstrip()
 
 
 def demucs_argv() -> tuple[str, ...]:
@@ -823,7 +850,7 @@ class Installer:
 
     def _line(self, text: str) -> None:
         with self._lock:
-            self._tail.append(text)
+            self._tail.append(readable(text))
 
     def _finish(self, id_: str, ok: bool, error: str | None) -> None:
         """Record the verdict and re-probe, because the exit code is a claim

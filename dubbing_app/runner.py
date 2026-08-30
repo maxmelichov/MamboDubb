@@ -24,7 +24,12 @@ rule wearing different hats:
   docs/APP_ARCHITECTURE.md rules out.
 
 Everything unparsed on stderr still reaches the UI as a `log` frame, so nothing
-is lost.
+is lost. Two things are reshaped on the way, and neither drops anything: an
+identical line repeated back to back arrives as one frame that names the count
+(`LineRuns`), and a traceback the child fenced for the purpose stays in this
+process's own stderr instead of being painted into the user's job log. The raw
+lines are printed here either way, so `journalctl`, a terminal, or whoever is
+reading the server's output still sees exactly what the child wrote.
 """
 
 from __future__ import annotations
@@ -50,6 +55,49 @@ _STAGE_RE = re.compile(r"^\[(\w+)\](?:\s+(up to date|done in [\d.]+s))?$")
 _COUNT_RE = re.compile(r"^\s+(\w+):\s+(\d+)/(\d+)$")
 
 TERM_GRACE = 8.0
+
+# The fence `dubbing_app.worker` prints a traceback inside. Declared here rather
+# than there because this module is imported by the server on startup and
+# `worker` is not: the server must not pay for `ops`' imports to know two strings.
+TRACEBACK_OPEN = "--- traceback, for a bug report ---"
+TRACEBACK_CLOSE = "--- end of traceback ---"
+
+
+class LineRuns:
+    """Turns a run of identical log lines into one frame that says how many.
+
+    The last line of defence against the log a user filed as an issue: four
+    identical lines per segment, then the same four again for the next one. The
+    pipeline's own stages are being fixed where the repetition is made (see
+    `dubbing/tts.py`), but this catches the same shape wherever else it turns up,
+    including in stages nobody has looked at yet.
+
+    A repeated line is held rather than sent, so the count is on the frame the
+    user reads instead of arriving after it. That means the *last* line of a run
+    is delayed until something different happens or the stream ends, which
+    `flush` guarantees. Nothing is dropped: a line that repeats once is still one
+    line, and the raw text is printed to this process's stderr regardless.
+    """
+
+    def __init__(self, emit: Any) -> None:
+        self.emit = emit
+        self.held: str | None = None
+        self.count = 0
+
+    def offer(self, line: str) -> None:
+        if line == self.held:
+            self.count += 1
+            return
+        self.flush()
+        self.held, self.count = line, 1
+
+    def flush(self) -> None:
+        if self.held is None:
+            return
+        line, count = self.held, self.count
+        self.held, self.count = None, 0
+        self.emit(log_event(line if count == 1 else f"{line}  (x{count})"))
+
 
 # Windows has no `subprocess.CREATE_NEW_PROCESS_GROUP` attribute off Windows, so
 # the value is spelled out — the tests choose the platform, not the host.
@@ -237,13 +285,36 @@ class SubprocessRunner:
 
     @staticmethod
     def _pump_stderr(proc: subprocess.Popen, emit: Emit, errors: list[str]) -> None:
+        """Every stderr line: to this process's log raw, to the UI readable.
+
+        `errors` is the tail `_outcome` quotes when a child dies without saying
+        why, so traceback frames are kept out of it too: three lines of `File
+        "...", line 812` is the least informative possible answer to "what went
+        wrong", and the sentence that *is* the answer is the line above them.
+        """
         assert proc.stderr is not None
+        runs = LineRuns(emit)
+        in_traceback = False
         for raw in proc.stderr:
             line = raw.rstrip("\n")
             if not line.strip():
                 continue
+            print(line, file=sys.stderr)          # the server's own log, raw
+            if line.strip() == TRACEBACK_OPEN:
+                runs.flush()
+                in_traceback = True
+                continue
+            if line.strip() == TRACEBACK_CLOSE:
+                in_traceback = False
+                continue
+            if in_traceback:
+                continue
             errors.append(line.strip())
             del errors[:-50]
-            print(line, file=sys.stderr)          # the server's own log, too
             event = parse_stderr(line)
-            emit(event if event else log_event(line[:500]))
+            if event:
+                runs.flush()
+                emit(event)
+            else:
+                runs.offer(line[:500])
+        runs.flush()

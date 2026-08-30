@@ -10,6 +10,14 @@ process boundary that keeps every model out of the server.
 
 Exit status is still authoritative: a non-zero exit is a failed job whatever was
 printed.
+
+**A traceback is for the developer, not for the log panel.** Every line this
+process writes to stderr is forwarded to the UI's job log by `dubbing_app.runner`,
+so an unhandled exception used to paint eleven lines of Python frames over a
+screen whose reader has no checkout to look them up in. The traceback is still
+printed, in full, between `TRACEBACK_OPEN` and `TRACEBACK_CLOSE`; the runner
+keeps those lines for the server's own log and shows the user the one sentence
+that says what failed instead.
 """
 
 from __future__ import annotations
@@ -25,6 +33,12 @@ from dubbing import manifest, tools
 
 from . import ops
 
+# The fence a traceback is printed inside is the parent's, not a second copy of
+# it: `dubbing_app.runner` keeps everything between these two lines out of the
+# UI's job log and in the server's own, which is the only place a stack trace is
+# any use, and a fence spelled twice is a fence that drifts.
+from .runner import TRACEBACK_CLOSE, TRACEBACK_OPEN
+
 
 def emit(event: dict[str, Any]) -> None:
     print(json.dumps(event, ensure_ascii=False), flush=True)
@@ -32,6 +46,13 @@ def emit(event: dict[str, Any]) -> None:
 
 def log(message: str, level: str = "info") -> None:
     emit({"type": "log", "level": level, "message": message})
+
+
+def print_traceback(exc: BaseException) -> None:
+    """The full stack, fenced so the runner can route it to the right reader."""
+    print(TRACEBACK_OPEN, file=sys.stderr, flush=True)
+    traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
+    print(TRACEBACK_CLOSE, file=sys.stderr, flush=True)
 
 
 _ABSENT = object()
@@ -199,8 +220,25 @@ def main(argv: list[str] | None = None) -> int:
         pass
     try:
         data = execute(spec)
+    except SystemExit as exc:
+        # `dubbing.cli` refuses a request it cannot honour by raising SystemExit
+        # with the sentence that explains it ("--transcript file needs
+        # --captions ..."). SystemExit is not an Exception, so that sentence used
+        # to escape this handler: no result frame, a traceback on stderr, and a
+        # UI that reported "job process exited 1" followed by three lines of
+        # Python frames. The sentence *is* the message; it is what the user sees.
+        if exc.code in (0, None):
+            emit({"type": "result", "ok": True, "data": None})
+            return 0
+        # `SystemExit(2)` carries a status, not a sentence, and "2" is not a
+        # message; only a string code is one.
+        said = exc.code.strip() if isinstance(exc.code, str) else ""
+        message = said or f"the pipeline stopped (exit {exc.code})"
+        log(message, "error")
+        emit({"type": "result", "ok": False, "error": message})
+        return 1
     except Exception as exc:
-        traceback.print_exc(file=sys.stderr)
+        print_traceback(exc)
         emit({"type": "result", "ok": False, "error": f"{type(exc).__name__}: {exc}"})
         return 1
     emit({"type": "result", "ok": True, "data": data})
