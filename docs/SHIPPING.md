@@ -99,10 +99,10 @@ into the real working directory here, and `.env` exists. Preflight only reads
 `git ls-files`, so untracked local symlinks are invisible to it. Only a tracked
 one is a failure.
 
-**The interpreter for tests is overridable.** Preflight uses
-`/Users/maxm/Documents/MamboRambo-folder/DubbingQwen/.venv/bin/python` by
-default and skips the check with a reason if that path is absent. Set
-`MAMBODUBB_TEST_PYTHON` to point it somewhere else.
+**The interpreter for tests is overridable.** Preflight uses the checkout's own
+`.venv/bin/python` by default, the one `uv sync` makes, and skips the check with
+a reason if that path is absent. Set `MAMBODUBB_TEST_PYTHON` to point it
+somewhere else.
 
 **Release freshness needs `gh` and network.** Without either, that check prints
 SKIP or WARN and never blocks the push.

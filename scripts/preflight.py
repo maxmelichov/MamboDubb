@@ -25,13 +25,16 @@ ROOT = Path(__file__).resolve().parent.parent
 
 EM_DASH = "—"
 
-# The interpreter that has the test dependencies installed. Overridable so the
-# gate is not welded to one machine.
+# The interpreter that has the test dependencies installed.
+#
+# The checkout's own `.venv` is the default because it is the one `uv sync`
+# makes and the only one that exists on a machine that is not this author's.
+# It used to default to an absolute path under a particular home directory,
+# which put a username and somebody's folder layout in a public repository and
+# made the check unrunnable for everyone else. `MAMBODUBB_TEST_PYTHON` still
+# overrides it, which is what a machine keeping its environment elsewhere sets.
 TEST_PYTHON = Path(
-    os.environ.get(
-        "MAMBODUBB_TEST_PYTHON",
-        "/Users/maxm/Documents/MamboRambo-folder/DubbingQwen/.venv/bin/python",
-    )
+    os.environ.get("MAMBODUBB_TEST_PYTHON", str(ROOT / ".venv" / "bin" / "python"))
 )
 
 # Tests that assume no local weights are on disk. They fail in any checkout
