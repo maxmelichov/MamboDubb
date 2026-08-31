@@ -1,8 +1,22 @@
 # MamboDubb on macOS, Windows and Linux
 
-**The short version: the only installer that exists is the macOS one, and `install.sh`
-is how you use it. Windows and Linux have no downloadable installer at all. Running from
-source works on all three today, and on Windows it is the better tested path.**
+**The short version: the only *bundle* that exists is the macOS one, and `install.sh`
+is how you use it. Windows and Linux have no downloadable `.exe`, `.msi`, `.deb` or
+AppImage, and cannot get one until the account-level Actions block below is lifted.
+What they have instead is a one-command install of the source: `install-server.sh` on
+Linux, `install-server.ps1` on Windows. Both end with the full studio serving on
+`http://127.0.0.1:4400`, which is the same editor the Mac app wraps.**
+
+| Platform | The one command | What you get |
+|---|---|---|
+| macOS (arm64) | `curl -fsSL https://github.com/maxmelichov/MamboDubb/releases/latest/download/install.sh \| sh` | the desktop app in `/Applications` |
+| Linux (and macOS) | `curl -fsSL https://raw.githubusercontent.com/maxmelichov/MamboDubb/main/install-server.sh \| sh` | the editor at 127.0.0.1:4400 |
+| Windows | `powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/maxmelichov/MamboDubb/main/install-server.ps1 \| iex"` | the editor at 127.0.0.1:4400 |
+
+The two source installers are fetched from `raw.githubusercontent.com` and not from a
+release asset, deliberately: they install the *source*, so pinning them to a release
+would mean uploading a new copy of each on every tag for no benefit. What they install
+is pinned, to the tag of the latest release.
 
 The desktop shell is not Mac-only *in the code*. The Rust shell, the payload staging
 script and `tauri.conf.json` are per-platform correct, and
@@ -36,6 +50,7 @@ than pretending otherwise.
 | First-run provisioning | ✅ verified by hand | ❓ unverified | ❓ unverified |
 | `uv sync` in the provisioned workspace | ✅ verified | ❓ unverified | ❓ unverified |
 | Headless pipeline and studio from source | ✅ | ✅ this is the path, see [WINDOWS.md](WINDOWS.md) | ✅ this is the path (CUDA) |
+| **One-command source install** | ✅ `install-server.sh` | ⚠️ `install-server.ps1`, reviewed but never run on Windows | ✅ `install-server.sh`, run end to end in `ubuntu:22.04` |
 | Signed / notarized | ⚠️ ad-hoc signed only, see [RELEASING.md](RELEASING.md) | n/a | n/a |
 
 ✅ verified · ❓ needs a real machine and an artifact to test · ❌ has not happened
@@ -57,6 +72,14 @@ exactly two assets, both built by hand on a Mac:
 The `.dmg` is attached because `install.sh` downloads it; it is not meant to be
 downloaded by hand, and the README no longer offers it that way. Windows and Linux
 users run from source: [SERVER.md](SERVER.md), [WINDOWS.md](WINDOWS.md).
+
+**From the next release there is a third asset, `mambodubb-ui-dist.tar.gz`**: the
+built `app/ui/dist`, so the two source installers can put a working editor in place
+without asking anyone to install Node and pnpm. `scripts/release_dmg.py` packs it
+next to the `.dmg` on every run, including `--finish-unsigned`, so it cannot be
+forgotten; upload it alongside the other two. v0.5.0 predates it, and both
+installers handle that by building the UI from a private Node they download into
+`.tools/` inside the checkout, which is slower but needs nothing on the machine.
 
 Were Actions enabled, pushing a `v*` tag would run `build-desktop.yml`, whose last step
 uploads every bundle it produces to that tag's release with `gh release upload
@@ -94,10 +117,31 @@ just works needs Developer ID signing and notarization through
 
 ### Windows
 
-There is no installer to download. [WINDOWS.md](WINDOWS.md) and the from-source path are
-the route, and the tested one.
+There is no bundle to download. The install is the source, in one command:
 
-If the build ever runs, it produces an NSIS `-setup.exe` (per-user, no admin prompt) and
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/maxmelichov/MamboDubb/main/install-server.ps1 | iex"
+```
+
+`install-server.ps1` installs `git`, `ffmpeg` and `sox` through the winget ids
+`dubbing/tools.py` names, clones the latest release tag with its submodule into
+`%USERPROFILE%\MamboDubb`, downloads `uv` from GitHub with its published SHA-256
+verified, runs `uv sync --extra app`, puts the built web UI in `app\ui\dist`, and
+serves on 4400. It reads nothing from the keyboard. What it deliberately leaves to
+you is the CUDA `torch` swap, which it prints rather than choosing a CUDA version
+on your behalf ([WINDOWS.md](WINDOWS.md#cuda-wheels)).
+
+**That script has never been run on Windows.** No machine here can run it, and this
+document does not pretend otherwise. What has been done: it parses clean under
+PowerShell 7.6 and PSScriptAnalyzer reports nothing above informational, and every
+step of it except the winget block, the `uv` download and the Node download has been
+executed on a POSIX host with `$env:OS` spoofed to `Windows_NT`, which covers the
+release-tag lookup, the clone with submodule, `uv sync --extra app`, the prebuilt-UI
+unpack, and the fallback UI build. The untested parts are the Windows-only ones.
+[WINDOWS.md](WINDOWS.md) has the same steps by hand for anyone who would rather
+watch them happen.
+
+If the bundle build ever runs, it produces an NSIS `-setup.exe` (per-user, no admin prompt) and
 an `.msi`, both unsigned, so **SmartScreen** would show "Windows protected your PC" on
 first run: click **More info → Run anyway**. Some corporate policies block unsigned
 installers outright, and there is no workaround short of code signing (open item below).
@@ -115,8 +159,35 @@ the detailed guide and it applies to the packaged app too.
 
 ### Linux
 
-There is no `.deb` and no AppImage to download; running from source is the route. The
-rest of this section describes what the build would produce if it ran.
+There is no `.deb` and no AppImage to download. The install is the source, in one
+command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/maxmelichov/MamboDubb/main/install-server.sh | sh
+```
+
+`install-server.sh` detects the distro's package manager, clones the latest release
+tag with its submodule into `~/MamboDubb`, downloads `uv` from GitHub with its
+published SHA-256 verified, runs `uv sync --extra app`, puts the built web UI in
+`app/ui/dist`, and serves on 4400. It never reads stdin, so it is safe in a pipe.
+
+`ffmpeg`, `sox` and `git` are the one place it has to be careful. It installs them
+itself only where the package manager needs no password, which means root or a
+`sudo` that already answers `sudo -n true`; otherwise it prints the exact line for
+that distro and carries on, because a hidden password prompt behind a pipe is a
+hang and not an install. That is the same rule `dubbing/tools.py` applies to the
+app's Setup button, and it has to be the same rule, or the installer and the app
+disagree about the same machine. `git` is the exception that stops the run: without
+it there is no way to get `third_party/Qwen3-TTS`, and `pyproject.toml` pins that
+submodule as a path dependency, so a checkout without it can never `uv sync`.
+
+This has been run end to end in a clean `ubuntu:22.04` container: package install,
+clone with submodule, `uv` install with its checksum verified, `uv sync --extra app`,
+both routes to a built UI, and the server answering `/health` and serving
+`index.html` on 4400. Models were not downloaded; that is Setup's 25 GB and no part
+of the install.
+
+The rest of this section describes what the *bundle* build would produce if it ran.
 
 The `.deb` would be the better install on Debian/Ubuntu:
 
@@ -182,8 +253,10 @@ The provisioned workspace lives in `~/.local/share/MamboDubb/workspace`.
    and a five-minute video takes hours. On a CPU-only machine of any OS the app *works*
    and is unusably slow for anything but a short clip. The app does not currently warn
    about this at setup time.
-3. **No Windows or Linux installer exists, because CI has never run.** Lifting the
-   account-level Actions block is what unblocks everything else here. After that they
+3. **No Windows or Linux *bundle* exists, because CI has never run.** The source
+   installers above close the gap for users, but a `.exe` and a `.deb` are still the
+   thing most people expect, and lifting the account-level Actions block is what
+   unblocks everything else here. After that they
    still need a real machine to verify: the installer completes; the app
    window opens (WebView2 / WebKitGTK); first-run provisioning writes the workspace to
    the local data dir; `uv sync` completes there (~10 GB, and the Qwen3-TTS editable
@@ -191,9 +264,14 @@ The provisioned workspace lives in `~/.local/share/MamboDubb/workspace`.
    button; the file dialogs and "reveal in file manager".
 4. **The AppImage bundles no `libwebkit2gtk`.** It is an AppImage in name only, and still
    depends on the host's WebKitGTK.
-5. **`translator/` is a separate venv** with its own CUDA story on Linux/Windows; the
+5. **`install-server.ps1` has never run on Windows.** It is reviewed, parsed and
+   analyzer-clean, and most of it has been executed on a spoofed host, but the
+   winget block, the `uv` zip download and the Node zip download are Windows-only
+   code paths that nothing here can exercise. First Windows machine to touch this
+   repo should run it and report back.
+6. **`translator/` is a separate venv** with its own CUDA story on Linux/Windows; the
    desktop shell does not provision or manage it.
-6. **Bundle size.** The uv sidecar is 35 to 59 MB depending on target, and the payload adds
+7. **Bundle size.** The uv sidecar is 35 to 59 MB depending on target, and the payload adds
    ~44 MB: ~11 MB of source and 31 MB of bundled diarization weights (`third_party/
    pyannote-speaker-diarization-community-1`, CC-BY-4.0, shipped so a fresh install
    tells speakers apart with no Hugging Face account). Nothing is stripped.

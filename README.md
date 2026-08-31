@@ -16,36 +16,41 @@ Give it a video file or a YouTube link. It transcribes, translates, speaks every
 
 ## Install
 
-**Mac (Apple Silicon):**
+One command per platform. Paste it and wait.
+
+**Mac (Apple Silicon)** gives you the desktop app in `/Applications`:
 
 ```bash
 curl -fsSL https://github.com/maxmelichov/MamboDubb/releases/latest/download/install.sh | sh
 ```
 
-That one line is the install, and it is the only route with no Gatekeeper dialog anywhere in it: nothing here is notarized, and `curl` is what sets no quarantine bit. The script fetches the app from the latest release, clears quarantine, ad-hoc-signs the bundle so macOS will open it, and puts it in `/Applications`.
+It is the only route with no Gatekeeper dialog anywhere in it: nothing here is notarized, and `curl` is what sets no quarantine bit. The script fetches the app from the latest release, clears quarantine, ad-hoc-signs the bundle so macOS will open it, installs it, and launches it.
 
-**Windows, Linux, or a Mac that would rather run the source:**
-
-There is no installer to download for Windows or Linux. Building one needs a CI pipeline that is not running on this account, so rather than point you at a file that is not there, here is the route that works today on all three:
+**Linux**, or a Mac that would rather run the server than the app, gives you the editor at `http://127.0.0.1:4400`:
 
 ```bash
-git clone --recurse-submodules https://github.com/maxmelichov/MamboDubb.git
-cd MamboDubb && uv sync
-cd app/ui && pnpm install && pnpm build && cd ../..
-uv run mambodubb --port 4400          # editor at http://127.0.0.1:4400
+curl -fsSL https://raw.githubusercontent.com/maxmelichov/MamboDubb/main/install-server.sh | sh
 ```
 
-That is the whole studio, not a reduced version of it: the desktop app is a thin shell over this same server, so a browser gets the identical editor. Build the UI once; after that the last line is the whole startup.
+**Windows** gives you the same editor at `http://127.0.0.1:4400`:
 
-On Windows, install the CUDA build of PyTorch explicitly, because PyPI's default wheel is CPU-only there and every model would otherwise run on the CPU:
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/maxmelichov/MamboDubb/main/install-server.ps1 | iex"
+```
+
+There is no `.exe`, no `.msi`, no `.deb` and no AppImage to download, and there will not be one until GitHub Actions is re-enabled on the account that owns this repo ([docs/CROSS_PLATFORM.md](docs/CROSS_PLATFORM.md) has the details). So the two commands above are the from-source route with the work taken out of it: they fetch the source at the latest release tag with its submodule, install `uv`, resolve the Python side, put the built web UI in place, install `ffmpeg` and `sox` where they can, and start the server on port 4400. The checkout lands in `MamboDubb` in your home directory, and rerunning the command updates it.
+
+What you get in the browser is the whole studio and not a reduced version of it: the desktop app is a thin shell over this same server, so all three commands lead to the same editor.
+
+Then open **Setup** and press **Install everything**. That is where the models come from, about 25 GB of them, and none of it is downloaded before you press the button. It resumes where it left off if you interrupt it. The button carries the total in GB before you press it, and each row keeps its own button if you would rather take one thing at a time.
+
+On Windows, an NVIDIA card also wants the CUDA build of PyTorch installed explicitly, because PyPI's default wheel is CPU-only there and every model would otherwise run on the CPU. The Windows installer reminds you of it when it finishes:
 
 ```powershell
 uv pip install --index-url https://download.pytorch.org/whl/cu124 torch torchaudio
 ```
 
-An NVIDIA GPU is what you want on either OS, and WSL2 is the smoother path on Windows if you have it. Details: [docs/SERVER.md](docs/SERVER.md), [docs/WINDOWS.md](docs/WINDOWS.md), [docs/CROSS_PLATFORM.md](docs/CROSS_PLATFORM.md).
-
-Then open **Setup** in the app and press **Install everything**. It downloads every model the app can fetch, the optional extras included, and every row goes green. The button carries the total in GB before you press it, and each row keeps its own button if you would rather take one thing at a time.
+WSL2 is the smoother path on Windows if you have it. Details: [docs/SERVER.md](docs/SERVER.md), [docs/WINDOWS.md](docs/WINDOWS.md), [docs/CROSS_PLATFORM.md](docs/CROSS_PLATFORM.md).
 
 ## What you need
 

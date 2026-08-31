@@ -219,6 +219,73 @@ def check_installer() -> None:
 
 
 # --------------------------------------------------------------------------
+# d2. The two from-source installers.
+# --------------------------------------------------------------------------
+
+POSIX_INSTALLER = "install-server.sh"
+PS_INSTALLER = "install-server.ps1"
+# The release asset both installers download, and the one release_dmg.py packs.
+# A rename in either place is silent: the installer just 404s and falls back to
+# building the UI from source, which works, so nobody notices until someone
+# wonders why every install takes an extra three minutes.
+UI_ASSET_NAME = "mambodubb-ui-dist.tar.gz"
+
+
+def check_source_installers() -> None:
+    """Windows and Linux install by pasting one of these into a shell.
+
+    Both are consumed through a pipe, which rules out one thing above all others:
+    reading stdin. A `read` in the POSIX one eats the rest of its own script, and
+    a `Read-Host` in the PowerShell one waits forever on a console that is busy
+    feeding it. `sh -n` catches the rest of what a syntax check can catch. The
+    PowerShell side gets no parser here, because this machine has no pwsh, so it
+    is checked for the two settings that turn a silent half-install into a stop.
+    """
+    posix = ROOT / POSIX_INSTALLER
+    powershell = ROOT / PS_INSTALLER
+    for path in (posix, powershell):
+        if not path.exists():
+            record(FAIL, "source-installers", f"{path.name} missing")
+            return
+
+    proc = run(["sh", "-n", str(posix)])
+    if proc.returncode != 0:
+        first = (proc.stderr.strip().splitlines() or ["syntax error"])[0]
+        record(FAIL, "source-installers", f"sh -n {POSIX_INSTALLER}: {first}")
+        return
+
+    sh_text = posix.read_text(encoding="utf-8")
+    reads = [
+        line.strip()
+        for line in sh_text.splitlines()
+        if re.match(r"^\s*read\s", line) and not line.lstrip().startswith("#")
+    ]
+    if reads:
+        record(FAIL, "source-installers", f"{POSIX_INSTALLER} reads stdin: {reads[0]!r}")
+        return
+
+    ps_text = powershell.read_text(encoding="utf-8")
+    if "Read-Host" in ps_text:
+        record(FAIL, "source-installers", f"{PS_INSTALLER} calls Read-Host; it is piped into iex")
+        return
+    for needed in ("Set-StrictMode", "$ErrorActionPreference = 'Stop'"):
+        if needed not in ps_text:
+            record(FAIL, "source-installers", f"{PS_INSTALLER} does not set {needed}")
+            return
+
+    release = (ROOT / "scripts" / "release_dmg.py").read_text(encoding="utf-8")
+    for rel, text in ((POSIX_INSTALLER, sh_text), (PS_INSTALLER, ps_text),
+                      ("scripts/release_dmg.py", release)):
+        if UI_ASSET_NAME not in text:
+            record(FAIL, "source-installers",
+                   f"{rel} no longer names {UI_ASSET_NAME}; the prebuilt UI asset is orphaned")
+            return
+
+    record(PASS, "source-installers",
+           f"sh -n clean, neither reads stdin, both agree on {UI_ASSET_NAME}")
+
+
+# --------------------------------------------------------------------------
 # e. No em dashes in user-facing text.
 # --------------------------------------------------------------------------
 #
@@ -233,8 +300,11 @@ def check_installer() -> None:
 #      stop new em dashes, not to demand a repo-wide rewrite before the next
 #      push. Clearing the WARN backlog is its own task.
 
-SCOPE_SUFFIXES = (".md", ".sh", ".ts", ".tsx", ".py", ".css")
-SCOPE_ROOTS = ("README.md", "install.sh", "docs", "app/ui/src", "dubbing_app", "dubbing")
+# .sh and .ps1 are scanned whole, comments included, the way install.sh always
+# has been: an installer is read by the people it fails on, so its prose counts.
+SCOPE_SUFFIXES = (".md", ".sh", ".ps1", ".ts", ".tsx", ".py", ".css")
+SCOPE_ROOTS = ("README.md", "install.sh", "install-server.sh", "install-server.ps1",
+               "docs", "app/ui/src", "dubbing_app", "dubbing")
 COMMENT_PREFIXES = ("//", "*", "/*", "#")
 CODE_LIKE = (".ts", ".tsx", ".py", ".css")
 # An em dash alone in a string is a placeholder glyph for an empty value, not
@@ -467,6 +537,16 @@ def check_release_assets() -> None:
     remote_sh = digests.get("install.sh")
     if installer.exists() and remote_sh and remote_sh != sha256(installer):
         notes.append(f"install.sh differs from the {tag} asset")
+    # The prebuilt UI. Its absence is not fatal to anything (both source
+    # installers fall back to building it), so this is a note and not a red, but
+    # a release without it makes every Windows and Linux install minutes slower.
+    local_ui = (ROOT / DMG_DIR / UI_ASSET_NAME)
+    if local_ui.is_file():
+        remote_ui = digests.get(UI_ASSET_NAME)
+        if not remote_ui:
+            notes.append(f"{UI_ASSET_NAME} is not on {tag}")
+        elif remote_ui != sha256(local_ui):
+            notes.append(f"{UI_ASSET_NAME} differs from the {tag} asset")
     if notes:
         record(
             WARN,
@@ -509,6 +589,7 @@ CHECKS = (
     check_tracked_links,
     check_payload,
     check_installer,
+    check_source_installers,
     check_em_dashes,
     check_tests,
     check_typecheck,

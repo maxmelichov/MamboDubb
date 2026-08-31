@@ -19,6 +19,35 @@ worker there instead of vLLM, which is slower per line.
 
 ---
 
+## 0. The one command
+
+Everything in sections 1 to 3 is what `install-server.ps1` does for you:
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/maxmelichov/MamboDubb/main/install-server.ps1 | iex"
+```
+
+It installs `git`, `ffmpeg` and `sox` through winget (the same three ids as
+below, because `dubbing/tools.py` owns that table and the Setup screen reads the
+same one), clones the latest release tag with its submodule into
+`%USERPROFILE%\MamboDubb`, downloads `uv` from GitHub with its published SHA-256
+checked, runs `uv sync --extra app`, puts the built web UI in `app\ui\dist`
+without needing Node on the machine, and starts the server. Rerunning it updates
+an existing checkout in place. It reads nothing from the keyboard, so it is safe
+to leave alone.
+
+It does **not** install the CUDA wheels: PyPI's default `torch` is CPU-only on
+Windows and swapping it is section 2's `uv pip install`, which the script prints
+for you when it finishes rather than choosing a CUDA version on your behalf.
+
+Nothing above downloads a model. That is **Setup → Install everything** on first
+run, about 25 GB, and it resumes if you interrupt it.
+
+The rest of this page is what to do when you want the steps by hand, and the
+reference for everything that behaves differently on Windows.
+
+---
+
 ## 1. Prerequisites
 
 ```powershell
@@ -42,7 +71,7 @@ Python comes from `uv` (3.12), so no separate Python install is needed.
 ```powershell
 git clone --recurse-submodules https://github.com/maxmelichov/MamboDubb.git
 cd MamboDubb
-uv sync
+uv sync --extra app
 copy .env.example .env      # nothing in it is required; diarization ships with the app
 ```
 
@@ -84,6 +113,12 @@ cd app\ui; pnpm install; pnpm build; cd ..\..
 uv run mambodubb --port 4400        # → http://127.0.0.1:4400
 ```
 
+Node is only needed for that first line, and only when the release you installed
+carries no prebuilt `mambodubb-ui-dist.tar.gz`. Section 0's script handles both
+cases without touching your PATH: it unpacks the release asset when there is one,
+and otherwise puts a private Node under `.tools\` inside the checkout and builds
+with that.
+
 ## 4. What is different on Windows
 
 | | Behaviour |
@@ -122,8 +157,14 @@ the whole of [docs/setup.md](setup.md) reads literally.
 wsl --install -d Ubuntu
 ```
 
-Then inside Ubuntu: install `uv`, `ffmpeg`, `sox`, clone the repo **into the
-Linux filesystem** (`~/MamboDubb`, not `/mnt/c/...`, because the 9p mount makes every
-stage several times slower), and follow the Linux instructions. The server binds
-inside WSL; open `http://127.0.0.1:4400` from Windows as usual (WSL2 forwards
-loopback).
+Then inside Ubuntu, the Linux one-liner does the rest, and its default install
+directory is already the right one:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/maxmelichov/MamboDubb/main/install-server.sh | sh
+```
+
+Keep the checkout **in the Linux filesystem** (`~/MamboDubb`, which is where that
+script puts it, and not `/mnt/c/...`, because the 9p mount makes every stage
+several times slower). The server binds inside WSL; open `http://127.0.0.1:4400`
+from Windows as usual (WSL2 forwards loopback).

@@ -50,6 +50,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 from pathlib import Path
 
@@ -61,6 +62,15 @@ SRC_TAURI = ROOT / "app" / "desktop" / "src-tauri"
 SUBMODULE = ROOT / "third_party" / "Qwen3-TTS"
 INSTALL_SH = ROOT / "install.sh"
 DMG_HELPER_NAME = "Install MamboDubb.command"
+
+# The prebuilt web UI, attached to the release so the Windows and Linux
+# installers do not have to put Node and pnpm on a user's machine to get a
+# browser editor. It is produced here rather than by hand because the build has
+# already happened by this point: `build_desktop.cmd_build` builds app/ui/dist
+# on its way to the .app, so packing it is free and forgetting it is the only
+# way it can go missing from a release.
+UI_DIST = ROOT / "app" / "ui" / "dist"
+UI_ASSET_NAME = "mambodubb-ui-dist.tar.gz"
 
 # Tauri reads these itself during `tauri build`; the split matters because the first
 # alone signs without notarizing, which on current macOS still gets the app blocked
@@ -198,6 +208,42 @@ def inject_signed_app_and_helper(app: Path, dmg: Path) -> None:
         shutil.move(str(rebuilt), str(dmg))
 
 
+def pack_ui_dist(dest_dir: Path) -> Path | None:
+    """Write mambodubb-ui-dist.tar.gz next to the .dmg, or say why it could not.
+
+    The archive holds the *contents* of app/ui/dist at its top level, not a
+    wrapping directory: the installers untar it straight into the checkout's
+    own app/ui/dist, which is where the server looks by default, so a wrapper
+    would put index.html one level too deep and the server would quietly serve
+    the API alone.
+
+    Names are sorted and the entries stripped of uid/gid so two releases built
+    from the same commit produce the same bytes, which is what makes preflight's
+    digest comparison against the uploaded asset mean anything.
+    """
+    if not (UI_DIST / "index.html").is_file():
+        print(f"warning: {UI_DIST} has no index.html; skipping {UI_ASSET_NAME}")
+        return None
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    out = dest_dir / UI_ASSET_NAME
+    if DRY_RUN:
+        print(f"+ (dry-run) pack {UI_DIST} -> {out}")
+        return out
+    print(f"+ pack {UI_DIST} -> {out}", flush=True)
+    members = sorted(p for p in UI_DIST.rglob("*") if p.is_file())
+
+    def scrub(info: tarfile.TarInfo) -> tarfile.TarInfo:
+        info.uid = info.gid = 0
+        info.uname = info.gname = ""
+        info.mtime = 0
+        return info
+
+    with tarfile.open(out, "w:gz") as tar:
+        for member in members:
+            tar.add(member, arcname=str(member.relative_to(UI_DIST)), filter=scrub)
+    return out
+
+
 def finish_unsigned(app: Path, dmg: Path) -> None:
     """Make an unsigned Tauri .dmg installable on a Mac that is not this one."""
     adhoc_sign(app)
@@ -253,9 +299,13 @@ def main(argv: list[str] | None = None) -> int:
         app, dmg = artifact_paths()
         if DRY_RUN:
             print(f"+ (dry-run) ad-hoc-sign {app} and inject {DMG_HELPER_NAME} into {dmg}")
+            pack_ui_dist(dmg.parent)
             return 0
         finish_unsigned(app, dmg)
+        ui = pack_ui_dist(dmg.parent)
         print(f"\nunsigned artifact: {dmg}")
+        if ui:
+            print(f"web UI asset:      {ui}")
         print(f"(ad-hoc signed; {DMG_HELPER_NAME} inside; install.sh is the download path)")
         return 0
 
@@ -308,7 +358,13 @@ def main(argv: list[str] | None = None) -> int:
     elif not DRY_RUN:
         finish_unsigned(app, dmg)
 
+    ui = pack_ui_dist(dmg.parent)
+
     print(f"\nrelease artifact: {dmg}")
+    if ui:
+        print(f"web UI asset:     {ui}")
+    print("upload both, plus install.sh: the two installers that run from source"
+          " read the web UI asset off the release.")
     if not signing:
         print(f"(unsigned, ad-hoc signed, {DMG_HELPER_NAME} inside)")
     return 0

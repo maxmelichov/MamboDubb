@@ -7,9 +7,35 @@ cd app/ui && pnpm install && pnpm build && cd ../..   # build the UI once
 uv run mambodubb --port 4400                          # -> http://127.0.0.1:4400
 ```
 
-`--outputs` picks the run directory root (default `outputs/`); pass `--ui-dir ""` to serve the API alone.
+`--outputs` picks the run directory root (default `outputs/`); `--ui-dir` picks the
+directory the built UI is served from (default `app/ui/dist`), and passing it an
+empty string serves the API alone.
 
-On Windows and Linux this is not just an option, it is the way in: no installer is built for either OS. Clone with `--recurse-submodules`, `uv sync`, then the two lines above. Windows has extra steps around CUDA wheels in [WINDOWS.md](WINDOWS.md); the state of packaging is in [CROSS_PLATFORM.md](CROSS_PLATFORM.md).
+On Windows and Linux this is not just an option, it is the way in: no installer is
+built for either OS. You do not have to do the steps above by hand, though. One
+command does the whole of it, Node and pnpm included:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/maxmelichov/MamboDubb/main/install-server.sh | sh
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/maxmelichov/MamboDubb/main/install-server.ps1 | iex"
+```
+
+Both fetch the source at the latest release tag with its submodule, install `uv`,
+run `uv sync --extra app`, put the built web UI in `app/ui/dist`, and serve on port
+4400. The web UI comes off the release as `mambodubb-ui-dist.tar.gz` where that
+asset exists, and is built from a Node the installer provisions under `.tools/`
+where it does not, so neither script needs Node on the machine beforehand.
+
+By hand, the same thing is: clone with `--recurse-submodules`, `uv sync --extra app`,
+then the two lines above. The extra is belt and braces rather than strictly
+required today: `fastapi`, `uvicorn`, `httpx` and `python-multipart` currently
+arrive as transitive dependencies of `gradio` underneath `qwen-tts`, which is not
+a promise anyone made. Windows has extra steps around CUDA wheels in
+[WINDOWS.md](WINDOWS.md); the state of packaging is in
+[CROSS_PLATFORM.md](CROSS_PLATFORM.md).
 
 ## Security model
 

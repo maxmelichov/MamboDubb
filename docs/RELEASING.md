@@ -137,5 +137,22 @@ re-quarantine locally with `xattr -w com.apple.quarantine "0083;;;" <dmg>`), mou
 drag to Applications, launch from Finder. It must open with no dialog beyond the
 standard first-run confirmation: never "damaged", never "could not verify".
 
-Then attach the .dmg to the GitHub release; the README's install link points at
-`releases/latest`.
+Then attach **three** files to the GitHub release; the README's install link points
+at `releases/latest`.
+
+```bash
+BUNDLE=app/desktop/src-tauri/target/release/bundle/dmg
+gh release upload <tag> --clobber \
+    "$BUNDLE"/MamboDubb_*.dmg \
+    "$BUNDLE/mambodubb-ui-dist.tar.gz" \
+    install.sh
+```
+
+`mambodubb-ui-dist.tar.gz` is the built `app/ui/dist`, packed by `release_dmg.py`
+next to the .dmg on every run. It is what lets `install-server.sh` and
+`install-server.ps1` put a working editor on a Windows or Linux machine without
+asking anyone to install Node and pnpm ([CROSS_PLATFORM.md](CROSS_PLATFORM.md)).
+Leaving it off does not break those installers, but it makes every one of them
+download a private Node and build the UI instead, which is minutes rather than
+seconds. Preflight's `release-assets` check warns when the uploaded copy does not
+match the local one.
