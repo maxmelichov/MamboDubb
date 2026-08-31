@@ -46,9 +46,16 @@ Four rules shape this module, each of them a refusal:
   Hebrew G2P ends up: it fetches its own weights from inside a package this
   environment either has or does not, and `uv sync` is the fix.
 
-  Two ids are in neither table and have a button anyway, because their fix is
-  not a snapshot. Diarization's weights shipped with the app, so the button
-  copies them back from the payload (or restores them from the checkout) and
+  Three ids are in neither table and have a button anyway, because their fix is
+  not a snapshot. `uv` is the third and the newest: no distribution packages
+  it, and on a Mac with no brew or a Windows with no winget there is no manager
+  to drive either, so the button downloads astral's own release build for this
+  machine and checks it against the SHA-256 published beside it
+  (`install_uv`). It used to say uv could not be installed from here at all, on
+  the argument below about package managers, which is an argument about brew
+  and winget and about nothing else. uv is neither of them.
+
+  Diarization's weights shipped with the app, so the button copies them back from the payload (or restores them from the checkout) and
   verifies the copy against SHA256SUMS; the gated upstream repo is never reached
   for, and no route here can ask the user for a Hugging Face account. Demucs
   fetches `htdemucs_ft` itself the first time a stems run asks for it, so the
@@ -77,6 +84,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -144,6 +152,12 @@ STATIC_FFMPEG_SPEC = "static-ffmpeg==3.0"
 # into the repo and staged into the desktop payload. It verifies that copy against the
 # SHA256SUMS that travels beside it.
 DIARIZATION_ID = "model.diarization"
+# The tool that builds this project's environment, and the one row here whose
+# install is neither a package manager nor a wheel: astral publishes a static
+# binary per platform under a stable release URL with a `.sha256` beside it.
+# `uv_release_route` decides when that is the route; `install_uv` is the route.
+UV_ID = "uv"
+UV_RELEASES = "https://github.com/astral-sh/uv/releases"
 # The stem-separation weights, which are the one install here that is neither a
 # package manager nor a snapshot: demucs fetches them itself the first time a
 # `stems` run asks for the model, so the button just asks first. See
@@ -247,6 +261,186 @@ def static_route(id_: str) -> bool:
     return True
 
 
+def uv_release_route(id_: str) -> bool:
+    """True when the button installs `uv` from its official release archive
+    rather than by driving a package manager.
+
+    Same shape as `static_route` and the same one question, "is there a
+    package manager here this app is allowed to drive?", with a different
+    answer per platform: Homebrew on a Mac that has it, winget on a Windows that has it,
+    and the release archive on the machines that have neither, which is every
+    Linux (no distribution packages uv at all, so unlike ffmpeg there is not
+    even a `sudo apt-get` line to print).
+
+    The package manager is preferred wherever it exists, for the reason it is
+    preferred for ffmpeg: it also delivers the next upgrade, and a binary this
+    app drops in a directory is a binary this app has to remember to update.
+    """
+    if id_ != UV_ID:
+        return False
+    argv = INSTALLERS.get(id_)
+    return argv is None or shutil.which(argv[0]) is None
+
+
+def uv_triple() -> str | None:
+    """The release asset triple for this machine, or None when astral publishes
+    no build for it (a 32-bit Windows, a riscv Linux). None is what turns the
+    button off rather than a download that 404s."""
+    machine = platform.machine().lower()
+    arm = machine in ("arm64", "aarch64")
+    key = tools.platform_key()
+    if key == "darwin":
+        return "aarch64-apple-darwin" if arm else "x86_64-apple-darwin"
+    if key == "win32":
+        if machine not in ("amd64", "x86_64", "arm64", "aarch64"):
+            return None
+        return f"{'aarch64' if arm else 'x86_64'}-pc-windows-msvc"
+    if machine not in ("x86_64", "amd64", "arm64", "aarch64"):
+        return None
+    return f"{'aarch64' if arm else 'x86_64'}-unknown-linux-gnu"
+
+
+def uv_install_dir() -> Path:
+    """Where the button puts uv: the per-user `~/.local/bin`.
+
+    Not the workspace's `tools/bin`, which is where the static ffmpeg goes, and
+    the difference is which chains already look there. `tools/bin` is a
+    convention only `dubbing.tools.resolve_tool` knows, and uv is not resolved
+    through it: uv is found by `setup.find_uv` and by `workspace.rs`'s
+    `find_uv`, both of which end at `~/.local/bin` and `~/.cargo/bin`. Putting
+    it anywhere else would mean teaching a Rust binary a new location and
+    shipping a new shell before the button worked, so the button writes where
+    both sides already look, which is also where uv's own installer,
+    `install-server.sh` and `install-server.ps1` all put it, so a machine ends
+    up with one uv however it was installed rather than two that disagree.
+
+    It is outside the workspace, which is a real cost: deleting the workspace no
+    longer deletes everything the app added. It is the right cost. uv is a
+    user-level tool that outlives any one checkout, and a second private copy of
+    a 35 MB binary per workspace is the thing a user would actually resent.
+    """
+    home = _uv_home()
+    if home is None:
+        raise RuntimeError("neither HOME nor USERPROFILE is set, so there is no "
+                           "per-user bin directory to install uv into")
+    return home / ".local" / "bin"
+
+
+def _uv_home() -> Path | None:
+    from . import setup
+
+    return setup.uv_home()
+
+
+def download(url: str, timeout: float = 180.0) -> bytes:
+    """Fetch `url`. Module-level, like `snapshot_download`, so a test swaps the
+    whole thing and no bytes cross the network."""
+    import urllib.request
+
+    # Always an https://github.com literal built from a triple this module
+    # validated against its own table; nothing here comes from a request.
+    with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310
+        return response.read()
+
+
+def install_uv(log: Callable[[str], None]) -> Path:
+    """Put the official `uv` build for this machine in `~/.local/bin`, after
+    checking it against the checksum astral publishes beside it.
+
+    The release archive, and deliberately not `curl -LsSf https://astral.sh/uv/
+    install.sh | sh` (or the `irm … | iex` spelling of the same thing). Three
+    reasons, and the repo already made this call twice before this button
+    existed: `install-server.sh`, `install-server.ps1` and
+    `scripts/stage_desktop_payload.py` all fetch `astral-sh/uv` releases and
+    verify the published `.sha256`.
+
+    * **There is something to verify.** A piped script is whatever the URL
+      served at the moment it was read, and nothing downstream can check it. An
+      archive has a checksum published beside it, so a corrupted or truncated
+      transfer is caught before a binary is written rather than after it fails
+      to run. The checksum travels from the same host as the archive, so it
+      proves the transfer and not the publisher, which is exactly the guarantee
+      astral's own installer gives itself.
+    * **There is no shell to pipe into.** This runs inside a GUI app with no
+      terminal. On Windows the official line is `powershell -ExecutionPolicy
+      ByPass -c "irm … | iex"`, and spawning a policy-bypassing PowerShell out
+      of a desktop app is both a worse thing to do and a thing some managed
+      machines refuse, which would be a button that fails for reasons this app
+      cannot explain.
+    * **It is one code path.** The archive route is the same six steps on all
+      three platforms, which is what lets the Linux machine that has no package
+      manager at all get the same button as the other two.
+
+    The extracted binary is written to a `.incoming` sibling and renamed into
+    place only after it is whole, so an interrupted download leaves the old uv
+    (or no uv) rather than a truncated one that every later run would try to
+    execute.
+    """
+    triple = uv_triple()
+    if triple is None:
+        raise RuntimeError(
+            f"astral publishes no uv build for {platform.machine()} on "
+            f"{sys.platform}; install uv by hand from https://docs.astral.sh/uv/")
+    suffix = ".zip" if triple.endswith("windows-msvc") else ".tar.gz"
+    asset = f"uv-{triple}{suffix}"
+    base = f"{UV_RELEASES}/latest/download"
+    log(f"downloading {base}/{asset}")
+    blob = download(f"{base}/{asset}")
+
+    import hashlib
+
+    published = download(f"{base}/{asset}.sha256").decode("utf-8", "replace").split()
+    digest = hashlib.sha256(blob).hexdigest()
+    if not published or published[0].lower() != digest:
+        raise RuntimeError(
+            f"{asset} does not match its published checksum (got {digest}, "
+            f"expected {published[0] if published else '<none>'}), so it was not "
+            "installed")
+    log(f"checksum verified against {asset}.sha256")
+
+    wanted = "uv.exe" if suffix == ".zip" else "uv"
+    payload = _uv_from_archive(blob, suffix, wanted, asset)
+
+    bin_dir = uv_install_dir()
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    target = bin_dir / wanted
+    staging = bin_dir / f"{wanted}.incoming"
+    staging.write_bytes(payload)
+    staging.chmod(staging.stat().st_mode | 0o755)
+    staging.replace(target)
+    log(f"installed {target}")
+    return target
+
+
+def _uv_from_archive(blob: bytes, suffix: str, wanted: str, asset: str) -> bytes:
+    """The one binary out of the release archive, by basename. Named by
+    basename rather than by full path because astral has moved it between a
+    flat archive and a `uv-<triple>/` directory before now, and a hardcoded
+    path would turn that into a button that stopped working."""
+    import io
+
+    if suffix == ".zip":
+        import zipfile
+
+        with zipfile.ZipFile(io.BytesIO(blob)) as archive:
+            member = next((n for n in archive.namelist()
+                           if n.rsplit("/", 1)[-1] == wanted), None)
+            if member is None:
+                raise RuntimeError(f"no {wanted} inside {asset}")
+            return archive.read(member)
+    import tarfile
+
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as archive:
+        member = next((m for m in archive.getmembers()
+                       if m.isfile() and m.name.rsplit("/", 1)[-1] == wanted), None)
+        if member is None:
+            raise RuntimeError(f"no {wanted} inside {asset}")
+        extracted = archive.extractfile(member)
+        if extracted is None:
+            raise RuntimeError(f"could not read {wanted} out of {asset}")
+        return extracted.read()
+
+
 def diarization_target() -> Path:
     """Where the weights belong: the pipeline's own constant, never a copy."""
     from dubbing import segments
@@ -301,7 +495,15 @@ def diarization_source() -> tuple[str, Path] | None:
 def diarization_command() -> str | None:
     """The line a user would type to do by hand what the button does, or None
     when there is nothing on this machine to restore from. The Setup row carries
-    it, so a machine with no button still has an answer instead of a red row."""
+    it, so a machine with no button still has an answer instead of a red row.
+
+    The copy line is spelled for the shell that will read it. `cp -R` is a
+    sentence a PowerShell prompt answers with "cp : A positional parameter
+    cannot be found", which is the worst kind of instruction: it looks like
+    help, it is confidently wrong, and the user has no way to tell which of the
+    two of you is mistaken. `git` is spelled the same everywhere, so the other
+    branch needs no such split.
+    """
     source = diarization_source()
     if source is None:
         return None
@@ -309,6 +511,8 @@ def diarization_command() -> str | None:
     target = diarization_target()
     if kind == "git":
         return f"git -C {where} checkout -- {target.relative_to(where)}"
+    if tools.platform_key() == "win32":
+        return f'robocopy "{where}" "{target}" /E'
     return f"cp -R {where}/. {target}"
 
 
@@ -325,8 +529,9 @@ def diarization_route() -> str | None:
 
 def installable(id_: str) -> bool:
     """Can the app install `id_` by itself? The tools it has an argv for, the
-    ones it can fetch a static build of, the diarization weights when this
-    machine still carries the copy they shipped in, and the Demucs cache, which
+    ones it can fetch a static build of, `uv` from its official release archive
+    where no package manager here publishes it, the diarization weights when
+    this machine still carries the copy they shipped in, and the Demucs cache, which
     is always yes: the fetch is demucs's own and needs nothing from this machine
     but a network. Read by `setup.report` and
     `setup.probe` so the flag that puts a button on a row and the code behind
@@ -336,6 +541,11 @@ def installable(id_: str) -> bool:
         return diarization_source() is not None
     if id_ == DEMUCS_ID:
         return True
+    if uv_release_route(id_):
+        # Only when astral has a build for this machine and there is a home
+        # directory to put it in. A button whose download would 404, or whose
+        # destination does not resolve, is worse than the sentence naming the URL.
+        return uv_triple() is not None and _uv_home() is not None
     return id_ in INSTALLERS or static_route(id_)
 
 
@@ -353,6 +563,19 @@ def route(id_: str) -> str | None:
                 "the first stems run would fill anyway")
     if static_route(id_):
         return "as a static build into the workspace (tools/bin), with no package manager needed"
+    if uv_release_route(id_):
+        if not installable(id_):
+            return None
+        # It says where, because `~/.local/bin` is on PATH by default on
+        # neither Windows nor a bare Linux login shell. The app itself does not
+        # care (`setup.find_uv` and the shell's own lookup both end there), and
+        # a user who wants `uv` at a prompt does, so the sentence has to say so
+        # rather than let them discover it.
+        return (f"by downloading the official uv build for this machine from "
+                f"{UV_RELEASES}, checking it against the SHA-256 astral publishes "
+                f"beside it, and putting it in {uv_install_dir()}, which this app "
+                "looks in. Add that directory to PATH yourself to use uv in a "
+                "terminal")
     argv = INSTALLERS.get(id_)
     if argv is None:
         return None
@@ -568,8 +791,10 @@ class Installer:
 
         A platform whose package manager cannot run unattended contributes no
         recipes at all (Linux: `sudo apt-get` wants a password), so ffmpeg
-        arrives here with no argv and still has a route. Then the two ids whose
-        fix is neither a manager nor a snapshot, and last the hub downloads.
+        arrives here with no argv and still has a route. So does uv, which on
+        Linux has no recipe on any table because no distribution packages it.
+        Then the two ids whose fix is neither a manager nor a snapshot, and last
+        the hub downloads.
         An id in none of those is the 400 that names what the app does install.
         """
         if static_route(id_):
@@ -580,6 +805,14 @@ class Installer:
                 id_, f"# no package manager here can install {id_} unattended, "
                      f"so installing a static ffmpeg/ffprobe build into "
                      f"{tools.tools_bin()}")
+        if uv_release_route(id_) and installable(id_):
+            # Every Linux, plus the Mac with no brew and the Windows with no
+            # winget. Nothing about this needs a package manager or a password.
+            return self._begin(
+                id_, [f"# no package manager here can install uv, so downloading "
+                      f"the official build from {UV_RELEASES} and verifying its "
+                      f"published SHA-256"],
+                target=self._run_uv, args=(id_,))
         if id_ == DEMUCS_ID:
             # A subprocess like the package managers, and for the same reason:
             # it imports torch and demucs, which the server process spends its
@@ -613,6 +846,14 @@ class Installer:
             return self._start_static(
                 id_, f"# {manager} is not on this machine, so installing a "
                      f"static ffmpeg/ffprobe build into {tools.tools_bin()}")
+        if uv_release_route(id_) and installable(id_):
+            # A brewless Mac or a wingetless Windows: the recipe is in the
+            # table but its manager is not here, and uv needs neither.
+            return self._begin(
+                id_, [f"# {manager} is not on this machine, so downloading the "
+                      f"official uv build from {UV_RELEASES} and verifying its "
+                      f"published SHA-256"],
+                target=self._run_uv, args=(id_,))
         template = MANAGERS.get(manager,
                                 "`{manager}` is not on PATH: install `{command}` by hand.")
         raise invalid(template.format(tool=id_, command=" ".join(argv), manager=manager))
@@ -814,6 +1055,20 @@ class Installer:
             self._line(error)
         self._finish(id_, ok, error)
 
+    def _run_uv(self, id_: str) -> None:
+        """The worker behind the uv row on a machine with no package manager to
+        drive. No timeout: it is one 35 MB download, and there is no prompt to
+        hang on. Looked up as a module global so a test's monkeypatch is what
+        runs and no binary ever lands in a real home directory."""
+        ok, error = False, None
+        try:
+            install_uv(self._line)
+            ok = True
+        except Exception as exc:                       # network, checksum, disk
+            error = f"{type(exc).__name__}: {exc}"
+            self._line(error)
+        self._finish(id_, ok, error)
+
     def _run_static(self, id_: str) -> None:
         """The brewless worker: fetch the pinned static build and copy its two
         binaries into `tools.tools_bin()`, where `resolve_tool` finds them
@@ -886,6 +1141,18 @@ class Installer:
                 error = error or (f"`{' '.join(self.recipes.get(id_, ()))}` succeeded but "
                                   f"{id_} is still not there. Restart the app so it picks "
                                   "up the new PATH.")
+            elif id_ == UV_ID:
+                # Neither of the two sentences below fits: nothing was downloaded
+                # from a hub, and there is no package manager whose PATH is at
+                # issue. The binary was written to a path this app chose and the
+                # probe that looks there disagreed, which is a bug in one of the
+                # two and nothing the user can fix by pressing anything again.
+                error = error or (
+                    f"uv was written to {uv_install_dir()} and verified against its "
+                    "published checksum, and the check still says it is not there. "
+                    "That is a disagreement between the installer and the probe, not "
+                    "an unfinished install: pressing this again would download the "
+                    "same binary and get the same answer. Please report it")
             else:
                 said = str(check.get("detail") or "").strip()
                 error = error or (
@@ -1094,8 +1361,9 @@ class InstallQueue:
 
 
 __all__ = ["DEMUCS_ID", "DIARIZATION_ID", "INSTALLERS", "Installer", "InstallQueue",
-           "demucs_argv",
+           "UV_ID", "UV_RELEASES", "demucs_argv", "download",
            "diarization_command", "diarization_route", "diarization_source",
            "diarization_target", "fetch_static_ffmpeg", "installable",
-           "manual_command", "restore_diarization", "route", "snapshot_download",
-           "static_route", "verify_diarization"]
+           "install_uv", "manual_command", "restore_diarization", "route",
+           "snapshot_download", "static_route", "uv_install_dir",
+           "uv_release_route", "uv_triple", "verify_diarization"]

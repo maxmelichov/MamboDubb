@@ -50,9 +50,13 @@ speaker in the video collapsed into one) on the same row as a Korean TTS
 checkpoint a Hebrew→English run will never open. Three grades, and the third is
 what makes the first two mean anything:
 
-* ``blocking`` the run **fails** without it. The command-line tools, the
-  translator, the default TTS checkpoint and the English verifier. Exactly the
-  ``required`` set, and `required` is derived from this so the two cannot drift.
+* ``blocking`` the run **fails** without it. `ffmpeg`, the translator, the
+  default TTS checkpoint and the English verifier. Exactly the ``required``
+  set, and `required` is derived from this so the two cannot drift. It is a
+  short list on purpose: `sox` and `uv` are both command-line tools this
+  project cannot be developed without and neither of them stops a dub, so
+  neither is blocking, and reading "the command-line tools" as a category was
+  how uv came to be REQUIRED on machines it was already running.
 * ``degrades`` the run **works and is worse**. No language-ID model means
   foreign speech is never detected; no diarization weights mean every character
   in the video is dubbed in one voice. Nothing here stops a run, and nothing here
@@ -285,7 +289,8 @@ def dir_size(path: Path) -> int:
 # an install without re-running (and re-`stat`ing) the whole model report. A row
 # is (label, exe, why) with an optional fourth element, the severity — blocking
 # when absent, because "a run dies partway through without it" is this file's
-# definition and it is true of ffmpeg and uv.
+# definition. Of the three rows here it is true of exactly one, ffmpeg; sox and
+# uv both say so in their own comments below, and both carry the grade to match.
 TOOLS: dict[str, tuple[str, ...]] = {
     "ffmpeg": ("ffmpeg", "ffmpeg", "every stage shells out to it for audio and video"),
     # Downgraded from blocking after reading what actually runs: the only sox
@@ -297,45 +302,176 @@ TOOLS: dict[str, tuple[str, ...]] = {
     "sox": ("SoX", "sox", "nothing the shipped pipeline runs needs it. Only "
             "qwen_tts's 25Hz tokenizer would, and this pipeline loads 12Hz "
             "checkpoints", OPTIONAL),
-    # Not installable from here `install.MANAGERS` says the same thing about
-    # Homebrew: the tool that installs the dependencies cannot be one of them.
-    # And it names no stage (see `BLOCKING_STAGE`): a server that is already
-    # running has its environment, and `runner.SubprocessRunner` spawns the job
-    # child with `sys.executable`, not with `uv`. What breaks without it is
-    # repairing or updating that environment which is why it blocks and why
-    # claiming it kills a particular stage would be the same dishonesty this
-    # grading exists to remove.
-    "uv": ("uv", "uv", "the pipeline's dependencies are installed and pinned with it "
-                       "(`uv sync`), and every command in AGENTS.md starts with it. "
-                       "Get it from https://docs.astral.sh/uv/"),
+    # Two things about this row used to be wrong, and the second one was wrong
+    # in the way this whole grading scheme exists to prevent.
+    #
+    # It said it was not installable from here, borrowing `install.MANAGERS`'s
+    # argument that the tool that installs the tools cannot itself be installed
+    # from here. That argument is about *package managers*: Homebrew and winget
+    # are the thing the button drives, so a button that drives them to install
+    # themselves has nowhere to stand. uv is not that. It is one static binary
+    # with an official signed release per platform, astral publishes a `.sha256`
+    # beside every archive, and `install-server.sh`, `install-server.ps1` and
+    # `scripts/stage_desktop_payload.py` in this same repo all already download
+    # and verify it that way. The button now does the same
+    # (`install.uv_release_route`), and there is no circularity: installing uv
+    # needs no uv. The one place the order matters is the other direction,
+    # `install.fetch_static_ffmpeg`, which uses uv to put the static-ffmpeg
+    # wheel in this venv, and that is an argument for the button existing
+    # rather than against it.
+    #
+    # And it was BLOCKING, which was untrue on every machine that read it. This
+    # file defines blocking as "the run **fails** without it", and no run fails:
+    # the server is already up in its own environment, and
+    # `runner.SubprocessRunner` spawns every job child with `sys.executable`,
+    # never with uv. Nothing shells out to it during a dub. The old comment said
+    # exactly that and then graded it blocking anyway, which is how a desktop
+    # user whose app was *launched by* the bundled uv came to be shown REQUIRED
+    # and MISSING beside a machine that dubs perfectly.
+    #
+    # OPTIONAL, then, and by this file's own rule rather than by taste.
+    # `degrades` means the run works and is worse, and a run without uv is not
+    # worse, it is identical. `optional` means irrelevant until you ask for it,
+    # and what asks for it is repairing or updating the environment (`uv sync`),
+    # every command in AGENTS.md, and the brewless static-ffmpeg route. Those
+    # are real, they are named below, and none of them is a dub.
+    "uv": ("uv", "uv", "no stage of a dub shells out to it, because this server is "
+                       "already running in its environment and every job child is "
+                       "spawned with the same interpreter. What needs it is repairing or "
+                       "updating that environment (`uv sync`), and every command in "
+                       "AGENTS.md. Get it from https://docs.astral.sh/uv/",
+           OPTIONAL),
 }
 
 
-# `uv` discovery, kept byte-for-byte in step with `find_uv()` in the shell's
-# `workspace.rs`: same env override, same literal paths, same order. Two
-# different rules for the same tool is exactly the bug this exists to close —
-# the Rust side found uv, started this server with it, and the server then
-# reported the tool that launched it as missing and required.
+# `uv` discovery, kept in step with `find_uv()` in the shell's `workspace.rs`:
+# same env override, same literal paths *per platform*, same PATH rule, same
+# home-relative tail, same order. Two different rules for the same tool is
+# exactly the bug this exists to close: the Rust side found uv, started this
+# server with it, and the server then reported the tool that launched it as
+# missing and required.
+#
+# It had drifted, and it had drifted in the one direction nobody here could
+# see: every literal below was a macOS path and the home-relative tail was
+# spelled `uv` with no suffix, so a Windows machine with uv installed exactly
+# where its own installer puts it (`%USERPROFILE%\.local\bin\uv.exe`) had a red
+# row and a working uv. A Mac-only fallback list is not a fallback list; it is
+# a fallback list for the machine the author was sitting at.
 UV_PATH_ENV = "DUBSTUDIO_UV_PATH"
-UV_FALLBACKS = ("/opt/homebrew/bin/uv", "/usr/local/bin/uv")
+
+# Absolute paths worth probing before PATH, per platform, copied from
+# `workspace.rs`'s three `UV_FALLBACKS` constants. Windows genuinely has none:
+# winget and uv's own installer both land on PATH or in the per-user
+# `.local\bin` the tail of `find_uv` checks, so an empty tuple there is the
+# answer rather than a gap.
+UV_FALLBACKS: dict[str, tuple[str, ...]] = {
+    "darwin": ("/opt/homebrew/bin/uv", "/usr/local/bin/uv"),
+    "linux": ("/usr/local/bin/uv", "/usr/bin/uv",
+              "/home/linuxbrew/.linuxbrew/bin/uv"),
+    "win32": (),
+}
 
 
-def find_uv() -> str | None:
-    """Where `uv` actually is, not just where PATH says. A Finder-launched .app
-    inherits almost none of the user's shell PATH on macOS, and uv's own
-    installer puts the binary in `~/.local/bin` — which is why `shutil.which`
-    alone answers "missing" on a machine where uv is running the server."""
+def uv_exe(platform: str | None = None) -> str:
+    """The binary's name, which is the only part of this lookup spelled
+    differently per platform (`workspace.rs`: `UV_EXE`)."""
+    from dubbing import tools as tool_recipes
+
+    return "uv.exe" if tool_recipes.platform_key(platform) == "win32" else "uv"
+
+
+def uv_fallbacks(platform: str | None = None) -> tuple[str, ...]:
+    from dubbing import tools as tool_recipes
+
+    return UV_FALLBACKS[tool_recipes.platform_key(platform)]
+
+
+def uv_home(env: dict[str, str] | None = None) -> Path | None:
+    """The user's home directory, resolved the way `workspace.rs` resolves it:
+    `HOME`, then `USERPROFILE`.
+
+    Not `Path.home()`, and the difference is the whole point. Python's
+    `expanduser` reads `USERPROFILE` on Windows and `HOME` everywhere else, so
+    the two agree on every real machine. The Rust side reads `HOME` *first* on
+    all three, which is what a Git-Bash or MSYS shell sets. Asking
+    the same two variables in the same order is what makes "the shell and the
+    server look in the same place" a fact rather than a hope. None when neither
+    is set, exactly as the Rust returns None: a home-relative guess with no
+    home is not a path.
+    """
+    environ = os.environ if env is None else env
+    raw = environ.get("HOME")
+    if raw is None:
+        raw = environ.get("USERPROFILE")
+    return Path(raw) if raw else None
+
+
+def uv_on_path(exe: str, env: dict[str, str] | None = None) -> str | None:
+    """`which`, near enough, and near enough to `workspace.rs`'s `find_in_path`.
+
+    Written out rather than handed to `shutil.which` because the two disagree
+    on Windows in the direction that matters: `shutil.which("uv")` appends the
+    PATHEXT suffixes and never tries the bare name, and `shutil.which("uv.exe")`
+    never tries anything else, while the Rust tries `uv.exe` then `uv` inside
+    each directory in turn. A Git-Bash-style extensionless shim is worth
+    finding, and a directory holding both must resolve the same way on both
+    sides or the shell and the server disagree about which uv this machine has.
+    """
+    environ = os.environ if env is None else env
+    raw = environ.get("PATH")
+    if not raw:
+        return None
+    bare = exe[:-4] if exe.endswith(".exe") else exe
+    names = (exe,) if bare == exe else (exe, bare)
+    for directory in raw.split(os.pathsep):
+        if not directory:
+            continue
+        for name in names:
+            candidate = Path(directory) / name
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
+def find_uv(platform: str | None = None) -> str | None:
+    """Where `uv` actually is, not just where PATH says.
+
+    Five rungs, the same five and in the same order as `workspace.rs`:
+
+    1. `DUBSTUDIO_UV_PATH`. On a packaged install this is not a courtesy, it is
+       *the* answer: every bundle ships uv as a Tauri `externalBin` sidecar next
+       to the app binary, and `runner/process.rs` hands the resolved path down
+       on the server's environment when it spawns it. The Rust side's second
+       rung resolves that sidecar from `current_exe`, and this process cannot:
+       its `sys.executable` is the venv's Python, nowhere near the shell. So
+       the env var is how the sidecar reaches Python, and it is why a desktop
+       user has uv by construction and should never see this row red.
+    2. (the sidecar, which is rung 1 here; see above)
+    3. this platform's literal install paths, `uv_fallbacks()`.
+    4. PATH, `.exe` first on Windows.
+    5. `~/.local/bin` and `~/.cargo/bin`, where uv's own installer and
+       `cargo install uv` put it. A GUI process inherits almost none of the
+       user's shell PATH (a Finder-launched .app, a Start menu shortcut), so
+       these two literals catch the most common standalone install there is:
+       the one `install-server.sh` and `install-server.ps1` perform.
+    """
     override = (os.environ.get(UV_PATH_ENV) or "").strip()
     if override and Path(override).is_file():
         return override
-    for candidate in UV_FALLBACKS:
+    for candidate in uv_fallbacks(platform):
         if Path(candidate).is_file():
             return candidate
-    found = shutil.which("uv")
+    exe = uv_exe(platform)
+    found = uv_on_path(exe)
     if found:
         return found
-    local = Path.home() / ".local" / "bin" / "uv"
-    return str(local) if local.is_file() else None
+    home = uv_home()
+    if home is None:
+        return None
+    for candidate in (home / ".local" / "bin" / exe, home / ".cargo" / "bin" / exe):
+        if candidate.is_file():
+            return str(candidate)
+    return None
 
 
 def tool(id_: str, label: str, exe: str, why: str,
@@ -347,16 +483,24 @@ def tool(id_: str, label: str, exe: str, why: str,
     The one exception is `uv`, which gets `find_uv()`'s fuller chain (above).
 
     A missing row carries **this platform's** install command, because that is
-    the only actionable half of "not on PATH" and the row is where a user with
-    no button looks for it (`dubbing.tools`; the Setup screen's button exists
-    only where that command can run unattended). Where there *is* a button, the
-    row also says which route pressing it takes — `via Homebrew`, or the static
-    build into the workspace — because a button that might run a package
-    manager or might download a binary is a button nobody can trust."""
+    the only actionable half of "it is not here" and the row is where a user
+    with no button looks for it (`dubbing.tools`; the Setup screen's button
+    exists only where that command can run unattended). A platform with no
+    command still gets the button's sentence when there is a route that is not
+    a package manager at all, which is the Linux uv row: no apt package exists,
+    so there is nothing to type, and the button downloads the official release
+    instead. Where there *is* a button, the row also says which route pressing
+    it takes, `via Homebrew` or the static build into the workspace, because
+    a button that might run a package manager or might download a binary is a
+    button nobody can trust."""
     from dubbing import tools as tool_recipes
 
     found = find_uv() if exe == "uv" else tool_recipes.resolve_tool(exe)
-    detail = found or f"{exe} not on PATH: {why}"
+    # "not on PATH" for the tools whose probe is PATH and two overrides of it.
+    # uv's probe is five rungs of which PATH is one, so naming PATH there would
+    # send a user to check the one place that was least likely to be the answer.
+    missing = "not found" if exe == "uv" else "not on PATH"
+    detail = found or f"{exe} {missing}: {why}"
     if not found:
         command = tool_recipes.command(id_)
         if command:
@@ -1084,19 +1228,37 @@ def g2p_check() -> dict[str, Any]:
                  detail, severity=OPTIONAL, path=str(hebrew.G2P_DIR), bytes=size)
 
 
+def default_cache_home() -> Path:
+    """The base directory the two caches below default under: `XDG_CACHE_HOME`
+    when it is set, otherwise `~/.cache`.
+
+    Both `huggingface_hub` and `torch.hub` read that variable, on every
+    platform, and neither of them was being asked. That is a Linux bug and only
+    a Linux one: nothing sets `XDG_CACHE_HOME` on a stock Mac or Windows, so
+    the two rows agreed with the libraries there and disagreed on exactly the
+    distributions that set it (and on any machine whose user set it to move
+    tens of gigabytes off a small root volume). The failure was the quiet kind
+    this file keeps warning about: a model genuinely on disk, reported missing,
+    with a Download button that would fetch it into the directory the check was
+    already refusing to look in.
+    """
+    xdg = (os.environ.get("XDG_CACHE_HOME") or "").strip()
+    return Path(xdg) if xdg else Path.home() / ".cache"
+
+
 def hf_hub_cache() -> Path:
     """Where huggingface_hub keeps models, resolved the way the library does:
     `HF_HUB_CACHE` wins, then `HF_HOME` (cache lives under its `hub/`), then
-    the default. Restating the library's rule here is the price of rule one —
-    importing huggingface_hub just to ask a path would pull it into every
-    `GET /api/setup`."""
+    `XDG_CACHE_HOME`, then `~/.cache`. Restating the library's rule here is the
+    price of rule one: importing huggingface_hub just to ask a path would pull
+    it into every `GET /api/setup`."""
     hub_cache = (os.environ.get("HF_HUB_CACHE") or "").strip()
     if hub_cache:
         return Path(hub_cache)
     hf_home = (os.environ.get("HF_HOME") or "").strip()
     if hf_home:
         return Path(hf_home) / "hub"
-    return Path.home() / ".cache" / "huggingface" / "hub"
+    return default_cache_home() / "huggingface" / "hub"
 
 
 def hf_cache_repo(hub: str) -> Path | None:
@@ -1123,7 +1285,11 @@ def _demucs_cache() -> Path | None:
     torch hub cache, 4.x fetches from the Hugging Face Hub into the HF cache as
     `models--adefossez--*` (with the payload under `blobs/`).
     """
-    torch_cache = Path(os.environ.get("TORCH_HOME") or (Path.home() / ".cache" / "torch")) / "hub"
+    # `TORCH_HOME`, else `XDG_CACHE_HOME/torch`, else `~/.cache/torch`, which is
+    # `torch.hub._get_torch_home()` restated for the same reason `hf_hub_cache`
+    # restates its library's rule: asking torch would import torch.
+    torch_cache = Path(os.environ.get("TORCH_HOME")
+                       or (default_cache_home() / "torch")) / "hub"
     if torch_cache.is_dir() and any(torch_cache.rglob("*.th")):
         return torch_cache
     hf_cache = hf_hub_cache()
@@ -1195,11 +1361,16 @@ BLOCKING_STAGE: dict[str, str] = {
 def blocking_stage(id_: str) -> str | None:
     """The stage a missing blocking check kills, or None when there isn't one.
 
-    `None` is a real answer, not a gap to be filled: `uv` blocks nothing about
-    this project is installed or updated without it but a server that is
-    already running does not shell out to it (`runner.SubprocessRunner` uses
-    `sys.executable`), so naming a stage it kills would be a guess dressed as a
-    fact. A client that shows the stage must be prepared not to have one.
+    `None` is a real answer and not a gap to be filled, and the row that taught
+    that lesson has since been regraded rather than answered. `uv` was blocking
+    with no stage, on the reasoning that nothing about this project is installed
+    or updated without it while a server that is already running never shells
+    out to it (`runner.SubprocessRunner` uses `sys.executable`). The second half
+    of that sentence is the whole argument against the first: a check that kills
+    no stage is not blocking, so uv is `optional` now and the question does not
+    arise for it. What survives is the shape. A client that shows the stage must
+    still be prepared not to have one, because the alternative is a future
+    blocking row inventing a stage it does not really break.
     """
     if id_ in BLOCKING_STAGE:
         return BLOCKING_STAGE[id_]
@@ -1288,7 +1459,9 @@ def install_plan(report_: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 __all__ = ["report", "probe", "install_plan", "git_commit", "human_bytes", "dir_size", "env_path",
-           "env_file_value", "find_uv", "gpu_memory_bytes", "hf_hub_cache",
+           "env_file_value", "find_uv", "uv_exe", "uv_fallbacks", "uv_home",
+           "uv_on_path", "UV_FALLBACKS", "UV_PATH_ENV", "default_cache_home",
+           "gpu_memory_bytes", "hf_hub_cache",
            "hf_cache_repo", "diarization_repair", "index_shards", "model_ready",
            "fetch_in_flight", "record_install", "install_recorded", "INSTALL_RECEIPT",
            "low_vram_check", "low_vram_env_key", "low_vram_state", "model_downloads",

@@ -54,10 +54,26 @@ def test_an_unknown_platform_is_treated_as_a_posix_box_not_as_a_hole():
 def test_only_the_managers_that_run_unattended_get_a_button():
     """`sudo apt-get` asks for a password on a terminal the app does not have;
     a spinner in front of a hidden prompt is a hang, not an install."""
-    assert set(tools.auto_installers(MAC)) == {"ffmpeg", "sox"}
-    assert set(tools.auto_installers(WINDOWS)) == {"ffmpeg", "sox"}
+    assert set(tools.auto_installers(MAC)) == {"ffmpeg", "sox", "uv"}
+    assert set(tools.auto_installers(WINDOWS)) == {"ffmpeg", "sox", "uv"}
     assert tools.auto_installers(LINUX) == {}
     assert tools.unattended("ffmpeg", WINDOWS) and not tools.unattended("ffmpeg", LINUX)
+
+
+def test_linux_is_told_nothing_about_installing_uv_because_there_is_nothing_true():
+    """The one recipe that is deliberately missing rather than merely absent.
+
+    brew and winget both publish uv, so `brew install uv` and `winget install
+    --id astral-sh.uv` are lines a user can actually type. No Debian or Ubuntu
+    does, so a `sudo apt-get install -y uv` line here would be a sentence the
+    Setup screen printed and no machine on earth could run. Silence is the
+    honest row, and the button on Linux comes from the release archive instead,
+    which needs no package manager at all.
+    """
+    assert tools.command("uv", MAC) == "brew install uv"
+    assert tools.command("uv", WINDOWS).startswith("winget install --id astral-sh.uv -e")
+    assert tools.command("uv", LINUX) is None
+    assert tools.install_hint("uv", LINUX) == ""
 
 
 def test_the_module_table_is_this_machines_row():
@@ -388,3 +404,339 @@ def test_subprocess_has_the_windows_flag_spelled_out_off_windows():
     if that ever drifts, a job child spawns without its own group."""
     assert runner_mod.CREATE_NEW_PROCESS_GROUP == getattr(
         subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+
+
+# ---------------------------------------------------------------------------
+# uv discovery, which was Mac-only and therefore wrong on two platforms
+# ---------------------------------------------------------------------------
+# `setup.find_uv` is the one probe that does not go through `resolve_tool`, and
+# it is the one that had drifted: two hardcoded Homebrew paths, and a last
+# resort that spelled the binary `uv` with no suffix. On Windows uv installs to
+# `%USERPROFILE%\.local\bin\uv.exe`, which that chain looked straight past, so
+# a machine with uv installed exactly where its own installer puts it reported
+# the tool missing. These tests are the only place that behaviour can be pinned
+# from here, so they pin all three platforms rather than only the broken one.
+
+
+def _isolate_uv_env(monkeypatch, home):
+    """A machine with nothing on PATH, no override, no uv at any of the literal
+    install paths, and `home` for a home.
+
+    The literal paths are emptied rather than left alone because the machine
+    running this suite very probably has `/opt/homebrew/bin/uv` on it, and a
+    chain that answers from rung three never reaches the rung under test. What
+    those lists contain is asserted separately, where it is the subject.
+    """
+    from dubbing_app import setup as setup_mod
+
+    monkeypatch.delenv(setup_mod.UV_PATH_ENV, raising=False)
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("USERPROFILE", raising=False)
+    for key in setup_mod.UV_FALLBACKS:
+        monkeypatch.setitem(setup_mod.UV_FALLBACKS, key, ())
+    return setup_mod
+
+
+def test_windows_finds_the_uv_its_own_installer_wrote(tmp_path, monkeypatch):
+    """The reported bug, in one assertion.
+
+    `install-server.ps1` and uv's official installer both write
+    `%USERPROFILE%\\.local\\bin\\uv.exe`, and neither of them puts that directory
+    on a GUI process's PATH. The old chain probed two Homebrew paths that do not
+    exist on Windows and then a suffixless `~/.local/bin/uv`, so the row said
+    MISSING and REQUIRED on a machine whose uv was installed correctly.
+    """
+    setup_mod = _isolate_uv_env(monkeypatch, tmp_path / "home")
+    local = tmp_path / "home" / ".local" / "bin"
+    local.mkdir(parents=True)
+
+    # The suffixless spelling is not what Windows has, and must not answer.
+    (local / "uv").write_text("not the binary\n")
+    assert setup_mod.find_uv(WINDOWS) is None
+
+    (local / "uv.exe").write_text("MZ\n")
+    assert setup_mod.find_uv(WINDOWS) == str(local / "uv.exe")
+    # And the same tree on the other two, where the suffixless name is right.
+    assert setup_mod.find_uv(MAC) == str(local / "uv")
+    assert setup_mod.find_uv(LINUX) == str(local / "uv")
+
+
+def test_a_cargo_install_is_found_on_every_platform(tmp_path, monkeypatch):
+    """`cargo install uv` lands in `~/.cargo/bin`, which the shell's chain has
+    checked all along and this one had never heard of."""
+    setup_mod = _isolate_uv_env(monkeypatch, tmp_path / "home")
+    cargo = tmp_path / "home" / ".cargo" / "bin"
+    cargo.mkdir(parents=True)
+    for platform_key, exe in ((MAC, "uv"), (LINUX, "uv"), (WINDOWS, "uv.exe")):
+        (cargo / exe).write_text("x\n")
+        assert setup_mod.find_uv(platform_key) == str(cargo / exe), platform_key
+
+
+def test_each_platform_probes_its_own_absolute_paths_and_no_others():
+    """A Mac path list on a Linux box finds nothing and says "missing"; the
+    reverse would find a `/usr/bin/uv` that a Mac does not have. The lists are
+    `workspace.rs`'s three, verbatim."""
+    from dubbing_app import setup as setup_mod
+
+    assert setup_mod.uv_fallbacks(MAC) == ("/opt/homebrew/bin/uv", "/usr/local/bin/uv")
+    assert setup_mod.uv_fallbacks(LINUX) == ("/usr/local/bin/uv", "/usr/bin/uv",
+                                             "/home/linuxbrew/.linuxbrew/bin/uv")
+    # Empty on purpose rather than unfinished: winget and uv's installer both
+    # land on PATH or in the per-user `.local\bin` the tail of the chain checks.
+    assert setup_mod.uv_fallbacks(WINDOWS) == ()
+    assert setup_mod.uv_exe(WINDOWS) == "uv.exe"
+    assert setup_mod.uv_exe(MAC) == setup_mod.uv_exe(LINUX) == "uv"
+
+
+def test_the_path_search_tries_the_exe_spelling_first(tmp_path, monkeypatch):
+    """`shutil.which("uv")` appends PATHEXT and never tries the bare name;
+    `shutil.which("uv.exe")` never tries anything else. The shell tries both,
+    in that order, inside each directory, so this does too. Otherwise the two
+    sides can disagree about which uv a machine has."""
+    from dubbing_app import setup as setup_mod
+
+    first, second = tmp_path / "a", tmp_path / "b"
+    first.mkdir()
+    second.mkdir()
+    monkeypatch.setenv("PATH", f"{first}{__import__('os').pathsep}{second}")
+    (first / "uv").write_text("shim\n")
+    (first / "uv.exe").write_text("MZ\n")
+    assert setup_mod.uv_on_path("uv.exe") == str(first / "uv.exe")
+    # A Git-Bash-style extensionless shim is still worth finding when it is the
+    # only thing there, which is why the bare name is tried at all.
+    (first / "uv.exe").unlink()
+    assert setup_mod.uv_on_path("uv.exe") == str(first / "uv")
+
+
+def test_the_home_directory_is_read_the_way_the_shell_reads_it(monkeypatch):
+    """`HOME`, then `USERPROFILE`, which is not what `Path.home()` does.
+
+    Python's `expanduser` reads `USERPROFILE` on Windows and `HOME` everywhere
+    else; `workspace.rs` reads `HOME` first on all three, because that is what a
+    Git-Bash or MSYS shell sets. Asking the same two variables in the same order
+    is what makes "the shell and the server look in the same place" a fact.
+    """
+    from dubbing_app import setup as setup_mod
+
+    monkeypatch.setenv("HOME", "/h")
+    monkeypatch.setenv("USERPROFILE", r"C:\Users\x")
+    assert setup_mod.uv_home() == __import__("pathlib").Path("/h")
+    monkeypatch.delenv("HOME")
+    assert setup_mod.uv_home() == __import__("pathlib").Path(r"C:\Users\x")
+    monkeypatch.delenv("USERPROFILE")
+    # None rather than a guess: a home-relative path with no home is not a path,
+    # and `Path.home()` would raise or invent one.
+    assert setup_mod.uv_home() is None
+
+
+def test_the_bundled_sidecar_reaches_the_server_as_the_override(tmp_path, monkeypatch):
+    """Every desktop bundle ships uv as a Tauri `externalBin` sidecar beside the
+    app binary, and `runner/process.rs` passes the resolved path down on the
+    child's environment. This process cannot resolve it any other way, because
+    its `sys.executable` is the venv's Python, so the override is not a
+    courtesy here: it is how a desktop install is green at all."""
+    from dubbing_app import setup as setup_mod
+
+    sidecar = tmp_path / "MamboDubb.app" / "Contents" / "MacOS" / "uv"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text("x\n")
+    monkeypatch.setenv(setup_mod.UV_PATH_ENV, str(sidecar))
+    for platform_key in (MAC, WINDOWS, LINUX):
+        assert setup_mod.find_uv(platform_key) == str(sidecar)
+
+
+def test_a_missing_uv_is_not_a_reason_a_machine_cannot_dub(tmp_path, monkeypatch):
+    """The row is `optional`, and that is the file's own rule applied rather
+    than a softening.
+
+    Blocking means "the run fails without it". No run fails: this server is
+    already up in its environment, and `runner.SubprocessRunner` spawns every
+    job child with `sys.executable`. Graded blocking, it told a desktop user
+    whose app had been launched *by* the bundled uv that something REQUIRED was
+    MISSING, which is the exact dishonesty the three grades exist to remove.
+    """
+    from dubbing_app import setup as setup_mod
+
+    monkeypatch.setattr(setup_mod, "find_uv", lambda *a, **k: None)
+    before = setup_mod.report(tmp_path)
+    row = next(c for c in before["checks"] if c["id"] == "uv")
+    assert row["ok"] is False
+    assert row["severity"] == setup_mod.OPTIONAL and row["required"] is False
+    assert "stage" not in row
+    # The verdict is the conjunction of the required rows, so uv cannot move it.
+    assert before["ok"] == setup_mod.report(tmp_path)["ok"]
+    # And the sentence says what is actually lost, without claiming a dub fails.
+    assert "uv not found" in row["detail"]
+    assert "uv sync" in row["detail"]
+
+
+def test_the_uv_button_exists_on_every_platform_and_says_which_route(monkeypatch):
+    """A REQUIRED row with no button was the complaint; an OPTIONAL row with no
+    button would still be a row a user can do nothing about. Package manager
+    where there is one to drive, the official release archive where there is
+    not, which is every Linux and any Mac or Windows without brew or winget."""
+    from dubbing_app import install as inst
+
+    monkeypatch.setattr(inst.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(inst, "INSTALLERS", tools.auto_installers(MAC))
+    assert inst.route("uv") == "via Homebrew"
+    monkeypatch.setattr(inst, "INSTALLERS", tools.auto_installers(WINDOWS))
+    assert inst.route("uv") == "via winget"
+
+    # No manager at all: the release archive, named, with its checksum promise
+    # and the directory it lands in, because `~/.local/bin` is on PATH by
+    # default on neither Windows nor a bare Linux login shell.
+    monkeypatch.setattr(inst.shutil, "which", lambda name: None)
+    monkeypatch.setattr(inst, "INSTALLERS", tools.auto_installers(LINUX))
+    assert inst.installable("uv") is True
+    route = inst.route("uv")
+    assert "astral-sh/uv" in route and "SHA-256" in route
+    assert str(inst.uv_install_dir()) in route
+    # And it is the release route, not a package manager, that would run.
+    assert inst.uv_release_route("uv") is True
+    assert inst.uv_release_route("ffmpeg") is False
+
+
+def test_the_uv_button_downloads_verifies_and_only_then_writes(tmp_path, monkeypatch):
+    """Astral publishes a `.sha256` beside every archive, so a truncated or
+    corrupted transfer is caught before a binary is written rather than after it
+    fails to run. That is the whole reason this route is the release archive and
+    not `curl … | sh`: a piped script leaves nothing to check.
+
+    No network: `download` is a module global exactly so a test replaces it.
+    """
+    import hashlib
+    import io
+    import tarfile
+
+    from dubbing_app import install as inst
+
+    payload = b"#!/bin/sh\necho uv\n"
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as archive:
+        info = tarfile.TarInfo("uv-x86_64-unknown-linux-gnu/uv")
+        info.size = len(payload)
+        archive.addfile(info, io.BytesIO(payload))
+    blob = buf.getvalue()
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("USERPROFILE", raising=False)
+    monkeypatch.setattr(inst, "uv_triple", lambda: "x86_64-unknown-linux-gnu")
+
+    def fake_download(url, timeout=180.0):
+        assert url.startswith(inst.UV_RELEASES), url
+        if url.endswith(".sha256"):
+            return f"{hashlib.sha256(blob).hexdigest()}  uv.tar.gz\n".encode()
+        return blob
+
+    monkeypatch.setattr(inst, "download", fake_download)
+    lines: list[str] = []
+    target = inst.install_uv(lines.append)
+    assert target == home / ".local" / "bin" / "uv"
+    assert target.read_bytes() == payload
+    assert any("checksum verified" in line for line in lines)
+    # Nothing is left behind half-written next to it.
+    assert not (target.parent / "uv.incoming").exists()
+
+    # A checksum that does not match is a refusal, and it refuses *before* the
+    # binary is written: the old one on disk is still the one that runs.
+    target.write_bytes(b"the previous uv\n")
+    monkeypatch.setattr(inst, "download",
+                        lambda url, timeout=180.0: b"0" * 64 if url.endswith(".sha256")
+                        else blob)
+    with pytest.raises(RuntimeError, match="published checksum"):
+        inst.install_uv(lines.append)
+    assert target.read_bytes() == b"the previous uv\n"
+
+
+def test_the_diarization_restore_line_is_for_the_shell_that_will_read_it(monkeypatch):
+    """`cp -R` at a PowerShell prompt answers "a positional parameter cannot be
+    found", which is the worst kind of instruction: it looks like help, it is
+    confidently wrong, and the user cannot tell which of the two of you is
+    mistaken. `git` is spelled the same everywhere, so only the copy branch
+    splits."""
+    from pathlib import Path
+
+    from dubbing_app import install as inst
+
+    monkeypatch.setattr(inst, "diarization_source",
+                        lambda: ("copy", Path("/src/weights")))
+    monkeypatch.setattr(inst, "diarization_target", lambda: Path("/dst/weights"))
+    monkeypatch.setattr(inst.tools, "platform_key", lambda *a: WINDOWS)
+    assert inst.diarization_command().startswith("robocopy ")
+    monkeypatch.setattr(inst.tools, "platform_key", lambda *a: MAC)
+    assert inst.diarization_command().startswith("cp -R ")
+
+
+def test_the_caches_are_resolved_the_way_their_libraries_resolve_them(tmp_path, monkeypatch):
+    """`XDG_CACHE_HOME` moves both the Hugging Face and the torch cache, on
+    every platform, and neither row was asking. A Linux-only bug, and the quiet
+    kind: a model genuinely on disk reported missing, with a Download button
+    that would fetch it into the directory the check refused to look in."""
+    from dubbing_app import setup as setup_mod
+
+    monkeypatch.delenv("HF_HUB_CACHE", raising=False)
+    monkeypatch.delenv("HF_HOME", raising=False)
+    monkeypatch.delenv("TORCH_HOME", raising=False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    assert setup_mod.default_cache_home() == tmp_path / "xdg"
+    assert setup_mod.hf_hub_cache() == tmp_path / "xdg" / "huggingface" / "hub"
+
+    # A `.th` under the torch hub cache is a demucs 3.x install, and the row has
+    # to see it wherever XDG_CACHE_HOME says it lives.
+    hub = tmp_path / "xdg" / "torch" / "hub" / "checkpoints"
+    hub.mkdir(parents=True)
+    (hub / "htdemucs_ft.th").write_bytes(b"x" * 32)
+    assert setup_mod.demucs_check()["ok"] is True
+
+    # The explicit variables still win over it, exactly as in both libraries.
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "explicit"))
+    assert setup_mod.hf_hub_cache() == tmp_path / "explicit"
+
+
+def test_the_python_uv_chain_still_matches_the_rust_one_it_claims_to():
+    """The parity claim, checked against the Rust source instead of asserted in
+    a comment.
+
+    `setup.find_uv` says it is kept in step with `find_uv()` in the shell's
+    `workspace.rs`, and for a long time it was not: the Rust grew per-platform
+    lists, a `.exe` spelling and a `~/.cargo/bin` rung while the Python kept two
+    Homebrew paths. Nobody noticed because the drift is invisible from a Mac.
+    Reading the constants out of the .rs file is the only check that stays true
+    without a Rust toolchain here, and it fails the moment either side moves.
+    """
+    import re
+    from pathlib import Path
+
+    from dubbing_app import setup as setup_mod
+
+    source = Path(__file__).resolve().parents[1] / (
+        "app/desktop/src-tauri/src/workspace.rs")
+    if not source.is_file():                 # a payload-only checkout
+        pytest.skip("the desktop shell's source is not in this tree")
+    rs = source.read_text(encoding="utf-8")
+
+    def rust_fallbacks(cfg: str) -> tuple[str, ...]:
+        block = re.search(
+            r'#\[cfg\(target_os = "%s"\)\]\s*\nconst UV_FALLBACKS: &\[&str\] = &\[(.*?)\];'
+            % cfg, rs, re.S)
+        assert block, f"no UV_FALLBACKS for {cfg} in workspace.rs"
+        return tuple(re.findall(r'"([^"]+)"', block.group(1)))
+
+    assert rust_fallbacks("macos") == setup_mod.uv_fallbacks(MAC)
+    assert rust_fallbacks("linux") == setup_mod.uv_fallbacks(LINUX)
+    # Windows falls to the catch-all arm, which is empty on both sides.
+    assert re.search(r'#\[cfg\(not\(any\(target_os = "macos", target_os = "linux"\)\)\)\]'
+                     r'\s*\nconst UV_FALLBACKS: &\[&str\] = &\[\];', rs)
+    assert setup_mod.uv_fallbacks(WINDOWS) == ()
+
+    # The same env var, the same binary name, and the same home-relative tail in
+    # the same order.
+    assert re.search(r'pub const UV_PATH_ENV: &str = "%s"' % setup_mod.UV_PATH_ENV, rs)
+    assert '"uv.exe"' in rs and setup_mod.uv_exe(WINDOWS) == "uv.exe"
+    assert re.findall(r'home\.join\("(\.[a-z]+)"\)\.join\("bin"\)', rs) == [".local", ".cargo"]
+    # And the home directory itself: HOME first, USERPROFILE second, on all three.
+    assert 'env::var_os("HOME")' in rs and 'var_os("USERPROFILE")' in rs

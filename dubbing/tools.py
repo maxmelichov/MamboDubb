@@ -3,7 +3,12 @@ installs them.
 
 `ffmpeg` and `sox` are the same two dependencies on every platform and three
 different sentences: `brew install ffmpeg` on a Mac, a `winget` id on Windows,
-`sudo apt-get install` on Linux. The table lives here rather than in
+`sudo apt-get install` on Linux. `uv` is here too, and it is the one tool with
+a *missing* row rather than three: no distribution ships it in apt, so Linux
+gets no line at all instead of a `sudo apt-get install uv` that would fail on
+every machine that read it. What Linux gets instead is the route
+`dubbing_app/install.py` calls `uv_release_route`, which needs no package
+manager anywhere. The table lives here rather than in
 `dubbing_app/install.py` because both sides need it and neither owns it: the
 headless pipeline's "ffmpeg not found" line and the app's install button must
 name the same command, or one of them is lying about this machine.
@@ -37,16 +42,27 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOLS_DIR_ENV = "DUBSTUDIO_TOOLS_DIR"
 
 # platform key → tool id → the argv that installs it.
+#
+# `uv` is deliberately absent from the Linux row. Homebrew and winget both
+# publish it, so `brew install uv` and `winget install --id astral-sh.uv` are
+# real lines a user can type; Debian and Ubuntu do not, so `sudo apt-get install
+# uv` would be a sentence this screen printed and no machine could run. A row
+# with no command is honest about that, and the button on Linux comes from
+# somewhere else entirely (`install.uv_release_route`, the official release
+# archive, which needs no package manager and no password on any platform).
 RECIPES: dict[str, dict[str, tuple[str, ...]]] = {
     "darwin": {
         "ffmpeg": ("brew", "install", "ffmpeg"),
         "sox": ("brew", "install", "sox"),
+        "uv": ("brew", "install", "uv"),
     },
     "win32": {
         "ffmpeg": ("winget", "install", "--id", "Gyan.FFmpeg", "-e",
                    "--accept-source-agreements", "--accept-package-agreements"),
         "sox": ("winget", "install", "--id", "ChrisBagwell.SoX", "-e",
                 "--accept-source-agreements", "--accept-package-agreements"),
+        "uv": ("winget", "install", "--id", "astral-sh.uv", "-e",
+               "--accept-source-agreements", "--accept-package-agreements"),
     },
     "linux": {
         "ffmpeg": ("sudo", "apt-get", "install", "-y", "ffmpeg"),

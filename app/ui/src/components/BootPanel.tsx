@@ -95,8 +95,9 @@ export function diagnoseStartFailure(log: string): Diagnosis {
     return {
       advice:
         "The app cannot find uv, the tool it builds its Python environment with. " +
-        "Install uv (on a Mac: brew install uv), then start the app again. Try " +
-        "again will give the same error until uv is there.",
+        "Install uv (on a Mac: brew install uv; on Windows: winget install " +
+        "--id astral-sh.uv; anywhere: https://docs.astral.sh/uv/), then start the " +
+        "app again. Try again will give the same error until uv is there.",
       retryHelps: false,
     };
   }

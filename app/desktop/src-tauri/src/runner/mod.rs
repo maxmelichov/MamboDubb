@@ -127,8 +127,19 @@ fn start_fresh(app: &tauri::AppHandle, state: &RunnerState) -> Result<ServerInfo
 
 fn describe_not_ready(report: &crate::workspace::WorkspaceReport) -> String {
     if !report.uv_found {
+        // The command is the one this machine can actually run. "brew install
+        // uv" was the whole sentence for a while, which at a PowerShell prompt
+        // is advice for somebody else's computer, and on Linux is advice for a
+        // package manager most users do not have.
+        let by_hand = if cfg!(target_os = "windows") {
+            "winget install --id astral-sh.uv -e"
+        } else if cfg!(target_os = "macos") {
+            "brew install uv"
+        } else {
+            "see https://docs.astral.sh/uv/"
+        };
         return format!(
-            "uv was not found. Install it (brew install uv) or set {} to its path.",
+            "uv was not found. Install it ({by_hand}) or set {} to its path.",
             crate::workspace::UV_PATH_ENV
         );
     }

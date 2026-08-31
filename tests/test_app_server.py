@@ -2350,7 +2350,7 @@ def test_setup_grades_every_check_and_required_is_derived_from_it(client):
     by_id = {c["id"]: c["severity"] for c in checks}
     from dubbing import tts
 
-    assert by_id["ffmpeg"] == by_id["uv"] == "blocking"
+    assert by_id["ffmpeg"] == "blocking"
     assert by_id["model.translate"] == by_id["model.asr.en"] == "blocking"
     assert by_id[f"model.tts.{tts.DEFAULT_TTS_MODEL}"] == "blocking"
     # The run works and is worse: a third language nobody noticed, or every
@@ -2366,7 +2366,14 @@ def test_setup_grades_every_check_and_required_is_derived_from_it(client):
     # No credential row appears in any grade: `hf_token` used to sit here, first
     # as `degrades` and then as `optional`, because diarization loaded a gated
     # repo. It does not any more, so the row is gone rather than demoted.
-    for optional in ("sox", "model.asr.he",
+    # Irrelevant until asked for, and `uv` is here on the same evidence sox is.
+    # It was blocking for months while its own comment explained that no stage
+    # shells out to it: the server is already running in its environment and
+    # every job child is spawned with `sys.executable`. So a desktop user whose
+    # app had been *launched by* the bundled uv sidecar was shown REQUIRED and
+    # MISSING beside a machine that dubs perfectly, which is precisely the lie
+    # this three-way grading exists to stop telling.
+    for optional in ("sox", "uv", "model.asr.he",
                      "model.asr.tgt", "model.tts.he", "model.g2p.he", "model.demucs",
                      "disk"):
         assert by_id[optional] == "optional", optional
@@ -2406,17 +2413,24 @@ def test_setup_absent_optional_tool_changes_nothing_about_readiness(monkeypatch,
 def test_setup_names_the_stage_a_blocking_check_would_kill(client):
     """"Runs will fail" is true and useless. The screen offers "Skip anyway —
     runs will fail at fetch", and only the server knows which stage that is."""
+    from dubbing_app import setup as setup_mod
+
     checks = {c["id"]: c for c in client.get("/api/setup").json()["checks"]}
     assert checks["ffmpeg"]["stage"] == "fetch"
     assert checks["model.translate"]["stage"] == "translate"
     assert checks["model.asr.en"]["stage"] == "tts"
     # Only where it means something: a stage on an optional row reads as urgency.
     assert "stage" not in checks["disk"] and "stage" not in checks["model.demucs"]
-    # And `None` is an honest answer for a blocking check with no stage to name:
-    # `uv` is how this project's environment is built, but a running server
-    # spawns its job child with `sys.executable` and never shells out to it, so
-    # picking a stage for it would be a guess dressed as a fact.
-    assert checks["uv"]["severity"] == "blocking" and checks["uv"]["stage"] is None
+    # `uv` used to be the example here: blocking, with `stage: None`, on the
+    # reasoning that the environment is built with it while a running server
+    # spawns its job child with `sys.executable` and never shells out to it. The
+    # second half of that reasoning is the argument against the first, so the row
+    # is optional now and carries no stage at all, like every other row that
+    # kills nothing.
+    assert checks["uv"]["severity"] == "optional" and "stage" not in checks["uv"]
+    # `None` stays a legal answer for a blocking row all the same, so a future
+    # one is never pushed into inventing a stage it does not really break.
+    assert setup_mod.blocking_stage("uv") is None
 
 
 def test_setup_asks_for_no_credential_anywhere_and_still_diarizes(client, monkeypatch):
@@ -2759,27 +2773,42 @@ def test_every_row_carries_a_state_and_ok_is_derived_from_it(client):
 def test_setup_uv_probe_mirrors_the_shells_fallback_chain(tmp_path, monkeypatch):
     """The shell's `find_uv()` found uv and started this server with it, and the
     server's bare `shutil.which` then reported the tool missing and required.
-    The Python probe honours the same override and the same off-PATH homes."""
+    The Python probe honours the same override and the same off-PATH homes.
+
+    The override is the rung that matters most and the one that is easiest to
+    mistake for a courtesy. Every desktop bundle ships uv as a Tauri sidecar
+    next to the app binary, `runner/process.rs` resolves it and hands the path
+    down on the child's environment, and this process could not find it any
+    other way: `sys.executable` is the venv's Python, nowhere near the shell.
+    """
     from dubbing_app import setup as setup_mod
 
     fake = tmp_path / "uv"
     fake.write_text("#!/bin/sh\n")
     monkeypatch.setenv("DUBSTUDIO_UV_PATH", str(fake))
     assert setup_mod.find_uv() == str(fake)
+    # And the row that reads it is green, which is the whole point: a desktop
+    # user is never shown a missing uv for the uv that launched them.
+    assert setup_mod.tool("uv", *setup_mod.TOOLS["uv"])["ok"] is True
 
-    # Off PATH entirely (a Finder-launched .app): the `~/.local/bin` that uv's
-    # own installer uses still answers. A dangling override is ignored, not
-    # trusted, and the literal Homebrew paths are emptied so a machine that has
-    # uv installed there cannot make this pass for the wrong reason.
+    # Off PATH entirely (a Finder-launched .app, a Start menu shortcut): the
+    # `~/.local/bin` that uv's own installer, `install-server.sh` and
+    # `install-server.ps1` all use still answers. A dangling override is
+    # ignored, not trusted, and PATH is emptied so a machine that has uv
+    # installed there cannot make this pass for the wrong reason.
     monkeypatch.setenv("DUBSTUDIO_UV_PATH", str(tmp_path / "gone"))
-    monkeypatch.setattr(setup_mod, "UV_FALLBACKS", ())
-    monkeypatch.setattr(setup_mod.shutil, "which", lambda exe: None)
+    monkeypatch.setenv("PATH", "")
     home = tmp_path / "home"
     local = home / ".local" / "bin"
     local.mkdir(parents=True)
     (local / "uv").write_text("#!/bin/sh\n")
-    monkeypatch.setattr(setup_mod.Path, "home", lambda: home)
-    assert setup_mod.find_uv() == str(local / "uv")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("USERPROFILE", raising=False)
+    # The Mac literals are the ones this machine might really have, and the
+    # platform argument is what lets the assertion be about the chain rather
+    # than about whoever is running the suite.
+    monkeypatch.setitem(setup_mod.UV_FALLBACKS, "linux", ())
+    assert setup_mod.find_uv("linux") == str(local / "uv")
 
 
 def test_setup_demucs_passes_from_the_hf_cache(tmp_path, monkeypatch):

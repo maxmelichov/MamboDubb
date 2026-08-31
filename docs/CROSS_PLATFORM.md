@@ -218,6 +218,21 @@ The provisioned workspace lives in `~/.local/share/MamboDubb/workspace`.
   macOS, `/usr/{local/,}bin` and linuxbrew on Linux, nothing on Windows), then `PATH`
   (`.exe` first there), then `~/.local/bin` and `~/.cargo/bin`. The home directory is
   `HOME` **or `USERPROFILE`**, because a Windows GUI process only ever gets the latter.
+- **`dubbing_app/setup.py`**: `find_uv()` is the same chain, minus the sidecar rung,
+  which it cannot resolve (its `sys.executable` is the venv's Python, nowhere near the
+  shell) and does not need to: `runner/process.rs` hands the resolved sidecar down as
+  `DUBSTUDIO_UV_PATH`, which is rung one. The two are held in step by a test that reads
+  the constants straight out of `workspace.rs`
+  (`tests/test_windows_portability.py::test_the_python_uv_chain_still_matches_the_rust_one_it_claims_to`).
+  The uv row is `optional`: no stage of a dub shells out to uv, so a missing one is
+  never a reason a machine cannot dub. Its Install button is `brew` or `winget` where
+  either exists, and otherwise the official `astral-sh/uv` release archive with its
+  published SHA-256 verified, unpacked into `~/.local/bin`, which is the same route and
+  the same
+  destination as `install-server.sh` and `install-server.ps1`, so a machine ends up with
+  one uv however it was installed.
+- **The caches**: `hf_hub_cache()` and the Demucs probe resolve `XDG_CACHE_HOME` before
+  `~/.cache`, because `huggingface_hub` and `torch.hub` both do, on every platform.
 - **`provision.rs`**: the writable workspace copy goes under the platform's *local*
   data dir (see the Windows note above). Copies force owner-write on every file,
   because the source sits inside a read-only bundle.
