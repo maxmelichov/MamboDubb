@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import sys
 import tempfile
 import threading
@@ -2811,6 +2812,51 @@ def test_setup_uv_probe_mirrors_the_shells_fallback_chain(tmp_path, monkeypatch)
     assert setup_mod.find_uv("linux") == str(local / "uv")
 
 
+def demucs_bag():
+    """The signatures the `htdemucs_ft` bag is actually made of.
+
+    Read from the same place the check reads them, because a fixture that made
+    up its own names would be testing the fixture: what these tests are about is
+    that the row insists on *these four* files and not on any file that happens
+    to end in `.th`.
+    """
+    from dubbing import stems
+    from dubbing_app import setup as setup_mod
+
+    signatures = setup_mod.demucs_signatures(stems.MODEL)
+    assert signatures, "demucs must be installed for these tests to mean anything"
+    return signatures
+
+
+def a_demucs_torch_cache(root: Path, *, missing: int = 0) -> Path:
+    """A torch hub cache holding the bag, less `missing` of its models."""
+    checkpoints = root / "hub" / "checkpoints"
+    checkpoints.mkdir(parents=True, exist_ok=True)
+    bag = demucs_bag()
+    for sig in bag[: len(bag) - missing]:
+        (checkpoints / f"{sig}-deadbeef.th").write_bytes(b"x" * 32)
+    return root / "hub"
+
+
+def a_demucs_hf_cache(root: Path, *, name: str = "HTDemucs-ft",
+                      missing: int = 0, signatures=None) -> Path:
+    """An HF cache holding a demucs bag, in the layout `hf_hub_download` leaves.
+
+    `signatures` defaults to the `htdemucs_ft` bag; pass another list to stand
+    in for a different model in the same namespace, which is the case that used
+    to be read as this one.
+    """
+    repo = root / f"models--adefossez--{name}"
+    blobs, snapshot = repo / "blobs", repo / "snapshots" / "abc123"
+    blobs.mkdir(parents=True, exist_ok=True)
+    snapshot.mkdir(parents=True, exist_ok=True)
+    bag = tuple(signatures) if signatures is not None else demucs_bag()
+    for sig in bag[: len(bag) - missing]:
+        (blobs / sig).write_bytes(b"x" * 256)
+        (snapshot / f"{sig}.safetensors").write_bytes(b"x" * 256)
+    return repo
+
+
 def test_setup_demucs_passes_from_the_hf_cache(tmp_path, monkeypatch):
     """demucs 4.x fetches `htdemucs_ft` from the Hub into the HF cache, not the
     torch hub cache; probing only the latter made this a row that could never
@@ -2824,10 +2870,70 @@ def test_setup_demucs_passes_from_the_hf_cache(tmp_path, monkeypatch):
     monkeypatch.setenv("HF_HUB_CACHE", str(hub))
     # An empty `blobs/` is an interrupted fetch, not a model.
     assert setup_mod.demucs_check()["ok"] is False
-    (blobs / "0a1b").write_bytes(b"x" * 1024)
+    a_demucs_hf_cache(hub)
     row = setup_mod.demucs_check()
-    assert row["ok"] is True and row["bytes"] == 1024
+    assert row["ok"] is True and row["bytes"] > 0
     assert "HTDemucs-ft" in row["path"]
+
+
+def test_the_demucs_row_wants_this_bag_and_not_any_file_ending_in_th(tmp_path,
+                                                                    monkeypatch):
+    """A row that goes green on weights the stems stage cannot open.
+
+    The test used to be "some `.th` exists under the torch hub cache" and "some
+    `models--adefossez--*` repo has blobs". Both are true of machines that have
+    never held `htdemucs_ft`: any torch project leaves `.th` files there, and
+    anyone who has run plain `htdemucs` has `models--adefossez--HTDemucs`, which
+    is a different bag in a differently named repo. The row went green, and the
+    user got the silent mid-run download this row's button exists to prevent.
+    """
+    from dubbing_app import setup as setup_mod
+
+    torch_home = tmp_path / "torch"
+    monkeypatch.setenv("TORCH_HOME", str(torch_home))
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hf"))
+
+    # Somebody else's checkpoint, which is what silero-vad and half of torchaudio
+    # leave in this directory.
+    stranger = torch_home / "hub" / "checkpoints"
+    stranger.mkdir(parents=True)
+    (stranger / "silero_vad.th").write_bytes(b"x" * 4096)
+    assert setup_mod.demucs_check()["ok"] is False
+
+    # The base htdemucs bag, one model called `955717e8`, is not the fine-tuned
+    # one, and lives in the same `models--adefossez--*` namespace.
+    a_demucs_hf_cache(tmp_path / "hf", name="HTDemucs", signatures=["955717e8"])
+    assert setup_mod.demucs_check()["ok"] is False
+
+    # Three of the four is still a download in the middle of the next dub.
+    a_demucs_torch_cache(torch_home, missing=1)
+    assert setup_mod.demucs_check()["ok"] is False
+
+    # All four, and only then.
+    a_demucs_torch_cache(torch_home)
+    assert setup_mod.demucs_check()["ok"] is True
+
+
+def test_the_demucs_row_still_answers_when_the_bag_cannot_be_read(tmp_path,
+                                                                 monkeypatch):
+    """A machine that cannot name the signatures falls back to the loose test.
+
+    Deliberately, and it is the lesser of two lies. Without demucs installed
+    (or with a future demucs that keeps its bags elsewhere) an exact check can
+    only ever say no, which would leave a row that is red on a machine whose
+    weights are there, with a button that "succeeds" and changes nothing: the
+    loop this file has been round before.
+    """
+    from dubbing_app import setup as setup_mod
+
+    monkeypatch.setattr(setup_mod, "demucs_signatures", lambda model: None)
+    torch_home = tmp_path / "torch"
+    monkeypatch.setenv("TORCH_HOME", str(torch_home))
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hf"))
+    checkpoints = torch_home / "hub" / "checkpoints"
+    checkpoints.mkdir(parents=True)
+    (checkpoints / "whatever.th").write_bytes(b"x" * 32)
+    assert setup_mod.demucs_check()["ok"] is True
 
     # `HF_HOME` alone resolves the way huggingface_hub does: cache under `hub/`.
     monkeypatch.delenv("HF_HUB_CACHE")
@@ -2933,6 +3039,21 @@ def test_every_failing_model_row_carries_the_command_that_fixes_it(client, tmp_p
         built = setup_mod.model(id_, id_, Path(spec["path"]).parent / "nothing-here",
                                 hub=spec["hub"], hub_bytes=spec["bytes"])
         assert f"`uv run hf download {spec['hub']} --local-dir " in built["detail"]
+
+
+def test_the_one_row_with_no_button_says_where_to_run_its_command(monkeypatch):
+    """`model.g2p.he` is a package, not a download, so its whole answer is a
+    command. `uv sync` run in whatever directory a terminal happened to open in
+    resolves somebody else's project, so the directory is part of the
+    instruction rather than decoration."""
+    from dubbing import hebrew
+    from dubbing_app import setup as setup_mod
+
+    monkeypatch.setattr(hebrew, "g2p_ready", lambda: False)
+    row = setup_mod.g2p_check()
+    assert row["ok"] is False
+    assert install_mod.installable(row["id"]) is False   # no button, so no route
+    assert f"`uv sync` in {setup_mod.REPO_ROOT}" in row["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -3275,6 +3396,208 @@ def test_install_that_succeeds_but_changes_nothing_is_not_success():
     assert inst.wait(10.0)
     status = inst.status()
     assert status["ok"] is False and "still not there" in status["error"]
+
+
+def test_a_worker_that_complained_about_a_thing_that_is_there_is_not_a_failure():
+    """The re-probe overrules the exit code in *both* directions.
+
+    winget answers non-zero for "this is already installed" (this repo's own
+    `install-server.ps1` has a paragraph about it), so a Windows machine whose
+    ffmpeg was installed but not on the server's PATH had a red row and a button
+    that ran winget, was told the package was already there, and reported a
+    failure for a tool sitting on the disk. Pressing it again did the same. The
+    check is the one looking at this machine; when it says the row is green, the
+    row is green, and the worker's complaint stays in the tail to be read.
+    """
+    inst = install_mod.Installer(
+        lambda id_: {"id": id_, "ok": True, "label": "ffmpeg",
+                     "detail": "C:\\ffmpeg\\bin\\ffmpeg.exe"},
+        recipes={"ffmpeg": ("/bin/sh", "-c", "echo already installed; exit 1")})
+    inst.start("ffmpeg")
+    assert inst.wait(10.0)
+    status = inst.status()
+    assert status["ok"] is True and status["error"] is None
+    assert any("already installed" in line for line in status["tail"])
+    assert any("not a failure" in line for line in status["tail"])
+
+
+def test_a_static_ffmpeg_that_does_not_take_never_blames_a_brew_that_never_ran(
+        monkeypatch):
+    """The failure sentence follows the route, not the recipe table.
+
+    A Mac with no Homebrew installs ffmpeg by the static route while `recipes`
+    still holds `brew install ffmpeg`, so keying the message off that table named
+    a command nobody ran and offered a restart that could not have helped:
+    `tools.resolve_tool` reads `tools/bin` before PATH, so nothing about a new
+    process changes the answer.
+    """
+    from dubbing import tools as tool_recipes
+
+    inst = install_mod.Installer(
+        lambda id_: {"id": id_, "ok": False, "label": "ffmpeg",
+                     "detail": "ffmpeg not on PATH"},
+        recipes={"ffmpeg": ("brew", "install", "ffmpeg")})
+    monkeypatch.setattr(install_mod, "fetch_static_ffmpeg",
+                        lambda log: ("/nowhere/ffmpeg", "/nowhere/ffprobe"))
+    monkeypatch.setattr(install_mod.shutil, "copy2", lambda *a, **k: None)
+    inst._run_static("ffmpeg")
+    status = inst.status()
+    assert status["ok"] is False
+    assert "brew" not in status["error"]
+    assert "Restart" not in status["error"]
+    assert str(tool_recipes.tools_bin()) in status["error"]
+
+
+def test_a_package_manager_that_hangs_says_it_was_the_timeout(monkeypatch):
+    """"exited -9" names neither the cause nor anything to do about it."""
+    monkeypatch.setattr(install_mod, "TIMEOUT", 0.2)
+    inst = install_mod.Installer(lambda id_: None,
+                                 recipes={"ffmpeg": ("/bin/sh", "-c", "sleep 30")})
+    inst.start("ffmpeg")
+    assert inst.wait(20.0)
+    status = inst.status()
+    assert status["ok"] is False
+    assert "still running after" in status["error"]
+    assert "terminal" in status["error"]
+
+
+def test_a_row_whose_package_manager_is_absent_has_no_button_to_press(monkeypatch):
+    """`installable` and `route` have to be the same answer.
+
+    `INSTALLERS` is what this *platform* installs with, and it says `brew install
+    sox` on every Mac including the ones with no Homebrew. Answering yes off that
+    table put a button on the sox row of a factory-state Mac whose POST was a
+    400, and "install everything" queued the same row and recorded the refusal
+    as a failure. ffmpeg and uv keep their buttons there, because both have a
+    route that needs no manager at all.
+    """
+    real = install_mod.shutil.which
+    monkeypatch.setattr(install_mod.shutil, "which",
+                        lambda name, *a, **k: None if name in ("brew", "winget")
+                        else real(name, *a, **k))
+    monkeypatch.setattr(install_mod, "INSTALLERS",
+                        {"ffmpeg": ("brew", "install", "ffmpeg"),
+                         "sox": ("brew", "install", "sox"),
+                         "uv": ("brew", "install", "uv")})
+    assert install_mod.route("sox") is None
+    assert install_mod.installable("sox") is False
+    # And the two that do have a manager-free route keep theirs.
+    assert install_mod.installable("ffmpeg") is True
+    assert install_mod.installable("uv") is True
+
+    # The refusal is still the one to show a user who gets here another way.
+    inst = install_mod.Installer(lambda id_: None,
+                                 recipes={"sox": ("brew", "install", "sox")})
+    with pytest.raises(Exception) as exc:
+        inst.start("sox")
+    assert "brew.sh" in str(exc.value)
+
+
+def test_the_plan_installs_uv_before_the_row_that_installs_itself_with_uv(
+        monkeypatch):
+    """Grade order is right about urgency and silent about dependency.
+
+    The static ffmpeg route puts the `static-ffmpeg` wheel in this environment
+    with uv, and uv's own row is `optional` because no dub shells out to it. So
+    on a Linux machine missing both, "install everything" ran the blocking row
+    first, watched it die on "fix the uv row first", installed uv a minute later,
+    and left a red ffmpeg row with no hint that pressing again would help.
+    """
+    from dubbing_app import setup as setup_mod
+
+    rows = [{"id": "ffmpeg", "label": "ffmpeg", "ok": False, "installable": True,
+             "severity": setup_mod.BLOCKING},
+            {"id": "model.lid", "label": "lid", "ok": False, "installable": True,
+             "severity": setup_mod.DEGRADES},
+            {"id": "uv", "label": "uv", "ok": False, "installable": True,
+             "severity": setup_mod.OPTIONAL}]
+    monkeypatch.setattr(install_mod, "static_route", lambda id_: id_ == "ffmpeg")
+    assert [r["id"] for r in setup_mod.install_plan({"checks": rows})] == [
+        "uv", "ffmpeg", "model.lid"]
+    # Where ffmpeg comes from a package manager instead, nothing depends on uv
+    # and grade order is the whole answer.
+    monkeypatch.setattr(install_mod, "static_route", lambda id_: False)
+    assert [r["id"] for r in setup_mod.install_plan({"checks": rows})] == [
+        "ffmpeg", "model.lid", "uv"]
+
+
+def test_a_queue_item_waits_out_the_slot_instead_of_recording_a_failure(
+        monkeypatch):
+    """A row's own Install button, pressed between two queue items, took the one
+    slot; the queue read the 409 as that item having failed and stepped past it.
+    A user who fixed one row by hand while "install everything" ran silently lost
+    a different row from the queue."""
+    slot = install_mod.Installer(lambda id_: {"id": id_, "ok": True, "label": id_,
+                                              "detail": "there"},
+                                 recipes={"a": ("/bin/sh", "-c", "true"),
+                                          "b": ("/bin/sh", "-c", "true")})
+    queue = install_mod.InstallQueue(slot)
+    calls = []
+    real_start = slot.start
+
+    def start(id_):
+        calls.append(id_)
+        if calls.count(id_) == 1 and id_ == "b":
+            raise install_mod.busy("an install is already running (a)")
+        return real_start(id_)
+
+    monkeypatch.setattr(install_mod, "SLOT_POLL", 0.05)
+    monkeypatch.setattr(slot, "start", start)
+    queue.start([{"id": "a", "label": "a", "bytes": 0},
+                 {"id": "b", "label": "b", "bytes": 0}])
+    assert queue.wait(20.0)
+    body = queue.status()["queue"]
+    assert body["failed"] == [] and body["pos"] == 2
+    assert calls.count("b") == 2                    # refused once, then run
+
+
+def test_a_queue_item_that_can_never_run_is_not_waited_on():
+    """A 400 is not a 409: an id with no route at all is recorded and stepped
+    over at once, or the queue would sit out its whole slot budget on it."""
+    slot = install_mod.Installer(lambda id_: None, recipes={})
+    queue = install_mod.InstallQueue(slot)
+    started = time.time()
+    queue.start([{"id": "nonsense", "label": "nonsense", "bytes": 0}])
+    assert queue.wait(20.0)
+    assert queue.status()["queue"]["failed"] == ["nonsense"]
+    assert time.time() - started < 10.0
+
+
+def test_the_vram_probe_is_asked_once_and_not_three_times_per_poll(monkeypatch,
+                                                                  outputs):
+    """`report()` asks the low-VRAM question three times, and off a Mac each
+    answer spawns `nvidia-smi` with a ten-second timeout. The Setup screen polls
+    every two seconds. Rule one of `setup.py` is that the report answers in
+    milliseconds and can be polled; caching the one number that cannot change
+    while the process runs is what makes that true on the machines that have a
+    GPU to ask about at all."""
+    from dubbing_app import setup as setup_mod
+
+    # The multiplier, which is what makes the cache worth having: `report` builds
+    # `model_downloads()` once itself and once through `model_checks()`, and asks
+    # `low_vram_check` a third time.
+    asked = []
+    real_state = setup_mod.low_vram_state
+    monkeypatch.setattr(setup_mod, "low_vram_state",
+                        lambda *a, **k: (asked.append(1), real_state(*a, **k))[1])
+    setup_mod.report(outputs)
+    assert len(asked) == 3
+
+    # And the cache: however often it is asked, the subprocess is looked up once.
+    monkeypatch.undo()
+    monkeypatch.setattr(setup_mod, "_vram", None)
+    which = shutil.which
+    spawns = []
+    monkeypatch.setattr(
+        setup_mod.shutil, "which",
+        lambda name, *a, **k: (spawns.append(name), None)[1]
+        if name == "nvidia-smi" else which(name, *a, **k))
+    for _ in range(5):
+        setup_mod.gpu_memory_bytes()
+    assert spawns == ["nvidia-smi"]
+    # A caller that really wants to look again still can.
+    setup_mod.gpu_memory_bytes(refresh=True)
+    assert spawns == ["nvidia-smi", "nvidia-smi"]
 
 
 def test_install_status_is_empty_before_anything_runs(client):
@@ -3991,9 +4314,12 @@ def test_demucs_has_a_button_that_runs_the_fetch_a_stems_run_would(client, monke
     # And it goes through the one slot like every other install. The argv is
     # swapped for a stub that writes the weights the probe looks for, because
     # the real one downloads 300 MB from the internet.
-    monkeypatch.setattr(install_mod, "demucs_argv",
-                        lambda: ("/bin/sh", "-c",
-                                 f"echo fetching; printf x > {torch_hub / 'htdemucs_ft.th'}"))
+    monkeypatch.setattr(
+        install_mod, "demucs_argv",
+        lambda: ("/bin/sh", "-c", "echo fetching; " + "; ".join(
+            f"printf x > {torch_hub / 'checkpoints' / (sig + '-deadbeef.th')}"
+            for sig in demucs_bag())))
+    (torch_hub / "checkpoints").mkdir(parents=True, exist_ok=True)
     assert client.post("/api/setup/install",
                        json={"id": install_mod.DEMUCS_ID}).status_code == 202
     assert client.app.state.installer.wait(30.0)

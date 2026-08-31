@@ -97,7 +97,7 @@ from typing import Any, Callable
 
 from dubbing import tools
 
-from .errors import busy, invalid
+from .errors import ApiError, busy, invalid
 
 # id → the argv to run, for *this* platform. The only executable strings in this
 # feature, and still a hardcoded table — `dubbing.tools` picks the row for the
@@ -137,7 +137,29 @@ TAIL_LINES = 200
 # nothing anyway — `snapshot_download` resumes from the partial files.
 TIMEOUT = 1800.0
 
+# How long a queued item waits for the one slot when a row's own Install button
+# has taken it, and how often it looks. Five minutes is longer than any tool
+# install and shorter than a large download, which is the right shape: the thing
+# actually worth waiting out is a `brew` or a restore, and a queue stuck behind
+# somebody's hand-started 9.7 GB fetch should get on with the rest of the list.
+SLOT_WAIT = 300.0
+SLOT_POLL = 1.0
+
 Probe = Callable[[str], dict[str, Any] | None]
+
+# Which of the six routes an install actually took, recorded when the slot is
+# claimed and read when it is released.
+#
+# It exists because `_finish` used to guess, and guessed from the wrong table. A
+# row can have a `brew install` recipe *and* be installed by the static-build
+# route (a Mac with no Homebrew is exactly that machine), so "is this id in
+# `recipes`?" answered "package manager" for an install no package manager
+# touched, and the failure sentence then named a command that never ran and
+# offered a restart that could not have helped. What the message has to be about
+# is what was done, and the only place that is known for certain is where it was
+# decided.
+MANAGER, STATIC, UV_ROUTE, RESTORE, DOWNLOAD, DEMUCS_ROUTE = (
+    "manager", "static", "uv", "restore", "download", "demucs")
 
 # The one wheel the brewless route installs, pinned: its job is to hand over a
 # known ffmpeg build, and "whatever version resolved today" is not a known
@@ -202,6 +224,81 @@ def readable(text: str) -> str:
     text = _ANSI.sub("", text).replace("\x08", "")
     # `\r\n` is a line ending, not a redraw; only a bare `\r` rewinds the line.
     return text.replace("\r\n", "\n").rsplit("\r", 1)[-1].rstrip()
+
+
+def registry_path_entries() -> list[str]:
+    """Every directory this machine's *persisted* PATH names, on Windows.
+
+    Empty on every other platform, and that is the whole of the platform
+    difference: a Mac or a Linux process inherits the PATH its parent had, and
+    `server.widen_path` already adds the Homebrew prefixes a GUI-launched app
+    would otherwise miss. Windows keeps PATH in the registry and hands each new
+    process a copy, so a `winget install` that just put `ffmpeg.exe` somewhere
+    is invisible to a process that started before it. `install-server.ps1`
+    rebuilds PATH from the registry for that exact reason and says so; this is
+    the same rebuild, for the server that runs the buttons.
+
+    Both hives, user then machine, which is the order Windows composes them in.
+    A key that will not open is skipped rather than raised on: a PATH we could
+    not widen is the state we were already in.
+    """
+    if sys.platform != "win32":
+        return []
+    import winreg
+
+    hives = ((winreg.HKEY_CURRENT_USER, "Environment"),
+             (winreg.HKEY_LOCAL_MACHINE,
+              r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"))
+    found: list[str] = []
+    for root, key in hives:
+        try:
+            with winreg.OpenKey(root, key) as handle:
+                value, _ = winreg.QueryValueEx(handle, "Path")
+        except OSError:
+            continue
+        found += [part for part in
+                  os.path.expandvars(str(value)).split(os.pathsep) if part]
+    return found
+
+
+def refresh_path(env: dict[str, str] | None = None,
+                 entries: list[str] | None = None) -> str:
+    """Append to `env`'s PATH the directories this machine has gained since the
+    process started, and answer the new PATH.
+
+    Why it exists: `Installer._finish` re-probes rather than trusting a package
+    manager's exit code, and on Windows that re-probe could never succeed. winget
+    installs a tool and adds its directory to the registry PATH, which reaches
+    processes started *afterwards*; the server was started before, so
+    `shutil.which("ffmpeg")` kept saying no and every winget row ended in
+    "succeeded but it is still not there, restart the app". The install had
+    worked. Only the lookup was stale, and a restart is a poor answer to a
+    problem the process can fix in a millisecond.
+
+    `entries` is injectable so the merge can be tested off Windows, where there
+    is no registry to read and `registry_path_entries` answers with nothing.
+    Every entry is `is_dir()`-guarded for the reason `server.widen_path` guards
+    its own: PATH is read by every child this process ever spawns, and filling
+    it with directories that do not exist is a cost paid on every lookup for a
+    guess that was wrong.
+    """
+    environ = os.environ if env is None else env
+    incoming = registry_path_entries() if entries is None else list(entries)
+    parts = [part for part in environ.get("PATH", "").split(os.pathsep) if part]
+    seen = {os.path.normcase(part.rstrip("\\/")) for part in parts}
+    for entry in incoming:
+        key = os.path.normcase(entry.rstrip("\\/"))
+        if not key or key in seen:
+            continue
+        try:
+            if not Path(entry).is_dir():
+                continue
+        except OSError:
+            continue
+        seen.add(key)
+        parts.append(entry)
+    environ["PATH"] = os.pathsep.join(parts)
+    return environ["PATH"]
 
 
 def demucs_argv() -> tuple[str, ...]:
@@ -546,7 +643,24 @@ def installable(id_: str) -> bool:
         # directory to put it in. A button whose download would 404, or whose
         # destination does not resolve, is worse than the sentence naming the URL.
         return uv_triple() is not None and _uv_home() is not None
-    return id_ in INSTALLERS or static_route(id_)
+    argv = INSTALLERS.get(id_)
+    # **Having a recipe is not having the manager.** `INSTALLERS` is a table of
+    # what this *platform* installs with, built at import from
+    # `tools.auto_installers()`, and it says `brew install sox` on every Mac
+    # including the ones with no Homebrew. Answering yes off that table put an
+    # Install button on the `sox` row of a factory-state Mac (and of a Windows
+    # with no winget), and pressing it was exactly the 400 the docstring above
+    # forbids: `_start_without_manager` has no static build and no release
+    # archive to fall back to for sox, so all it can do is refuse. "Install
+    # everything" queued that row too, and recorded the refusal as a failure.
+    # `route()` had this right from the start and asked whether the manager is
+    # on the machine; the flag that draws the button and the sentence under it
+    # have to be the same answer, so this asks the same question. Per call
+    # rather than at table-build time, so a brew installed while the app is open
+    # turns the button on at the next poll.
+    if argv is not None and shutil.which(argv[0]) is not None:
+        return True
+    return static_route(id_)
 
 
 def route(id_: str) -> str | None:
@@ -754,6 +868,9 @@ class Installer:
         self._check: dict[str, Any] | None = None
         self._started: float | None = None
         self._finished: float | None = None
+        # Which route the slot is running (see the constants above). Set when it
+        # is claimed, read by `_finish` when it is released.
+        self._route: str | None = None
         # Set only while the slot holds a model download: where the bytes land
         # and how many are expected. `status()` reads the directory's size off
         # disk each poll — hf's tqdm has nowhere to draw, and the filesystem is
@@ -783,7 +900,7 @@ class Installer:
         manager = argv[0]
         if shutil.which(manager) is None:
             return self._start_without_manager(id_, tuple(argv), manager)
-        return self._begin(id_, ["$ " + " ".join(argv)],
+        return self._begin(id_, ["$ " + " ".join(argv)], route=MANAGER,
                            target=self._run, args=(id_, tuple(argv)))
 
     def _start_without_recipe(self, id_: str) -> dict[str, Any]:
@@ -812,7 +929,7 @@ class Installer:
                 id_, [f"# no package manager here can install uv, so downloading "
                       f"the official build from {UV_RELEASES} and verifying its "
                       f"published SHA-256"],
-                target=self._run_uv, args=(id_,))
+                route=UV_ROUTE, target=self._run_uv, args=(id_,))
         if id_ == DEMUCS_ID:
             # A subprocess like the package managers, and for the same reason:
             # it imports torch and demucs, which the server process spends its
@@ -822,14 +939,14 @@ class Installer:
                 id_, ["$ " + " ".join(demucs),
                       "fetching the stem-separation weights into the cache the "
                       "first stems run would fill anyway"],
-                target=self._run, args=(id_, demucs))
+                route=DEMUCS_ROUTE, target=self._run, args=(id_, demucs))
         if id_ == DIARIZATION_ID and installable(id_):
             source = diarization_source()
             assert source is not None            # installable() just said so
             return self._begin(
                 id_, [f"# restoring the bundled diarization weights from "
                       f"{source[1]}, and verifying them against {DIARIZATION_SUMS}"],
-                target=self._run_restore, args=(id_,))
+                route=RESTORE, target=self._run_restore, args=(id_,))
         spec = self.downloads.get(id_)
         if spec is None:
             raise invalid(self._refusal(id_))
@@ -853,7 +970,7 @@ class Installer:
                 id_, [f"# {manager} is not on this machine, so downloading the "
                       f"official uv build from {UV_RELEASES} and verifying its "
                       f"published SHA-256"],
-                target=self._run_uv, args=(id_,))
+                route=UV_ROUTE, target=self._run_uv, args=(id_,))
         template = MANAGERS.get(manager,
                                 "`{manager}` is not on PATH: install `{command}` by hand.")
         raise invalid(template.format(tool=id_, command=" ".join(argv), manager=manager))
@@ -861,7 +978,8 @@ class Installer:
     def _start_static(self, id_: str, why: str) -> dict[str, Any]:
         """Claim the slot for the pinned static ffmpeg build. `why` is the line
         the tail opens with, naming which of the two ways we got here."""
-        return self._begin(id_, [why], target=self._run_static, args=(id_,))
+        return self._begin(id_, [why], route=STATIC, target=self._run_static,
+                           args=(id_,))
 
     def _start_download(self, id_: str, spec: dict[str, Any]) -> dict[str, Any]:
         """Claim the slot for a hub snapshot. Same slot as the tools — the
@@ -874,11 +992,12 @@ class Installer:
         lines = [f"$ snapshot_download({hub!r}, local_dir={str(local_dir)!r})",
                  (f"downloading ~{setup.human_bytes(total)}; " if total else "downloading; ")
                  + "partial files are kept, so an interrupted download resumes where it stopped"]
-        return self._begin(id_, lines, target=self._run_download,
+        return self._begin(id_, lines, route=DOWNLOAD, target=self._run_download,
                            args=(id_, hub, local_dir), dl_dir=local_dir, dl_total=total)
 
-    def _begin(self, id_: str, lines: list[str], *, target: Callable[..., None],
-               args: tuple, dl_dir: Path | None = None,
+    def _begin(self, id_: str, lines: list[str], *, route: str,
+               target: Callable[..., None], args: tuple,
+               dl_dir: Path | None = None,
                dl_total: int | None = None) -> dict[str, Any]:
         with self._lock:
             if self._running:
@@ -891,6 +1010,7 @@ class Installer:
             self._check = None
             self._started = time.time()
             self._finished = None
+            self._route = route
             self._dl_dir = dl_dir
             self._dl_total = dl_total
             self._tail.clear()
@@ -939,6 +1059,7 @@ class Installer:
             self._check = None
             self._started = None
             self._finished = None
+            self._route = None
             self._dl_dir = None
             self._dl_total = None
             self._tail.clear()
@@ -989,7 +1110,18 @@ class Installer:
         except OSError as exc:
             self._finish(id_, False, f"{type(exc).__name__}: {exc}")
             return
-        killer = threading.Timer(TIMEOUT, self._kill, args=(proc,))
+        # The timer says so, rather than only doing it. A killed child exits with
+        # a signal, so the sentence a user was shown for a package manager that
+        # hung for half an hour was "`brew install ffmpeg` exited -9", which
+        # names neither the cause nor anything to do about it. The one fact that
+        # explains that number is held here and nowhere else.
+        timed_out = threading.Event()
+
+        def expire() -> None:
+            timed_out.set()
+            self._kill(proc)
+
+        killer = threading.Timer(TIMEOUT, expire)
         killer.daemon = True
         killer.start()
         try:
@@ -1003,6 +1135,18 @@ class Installer:
             error = f"{type(exc).__name__}: {exc}"
         finally:
             killer.cancel()
+        if timed_out.is_set():
+            ok = False
+            error = (f"`{' '.join(argv)}` was still running after "
+                     f"{TIMEOUT / 60:.0f} minutes and was stopped, so the one "
+                     "install slot is free again. It was most likely waiting for "
+                     "something this app cannot answer: run it in a terminal to "
+                     "see what it wants.")
+        # Before the re-probe, and only for the route where it changes the
+        # answer: on Windows a package manager puts its binary on the PATH new
+        # processes get, and the check below runs in this one. See `refresh_path`.
+        if self._route == MANAGER:
+            refresh_path()
         self._finish(id_, ok, error)
 
     def _run_download(self, id_: str, hub: str, local_dir: Path) -> None:
@@ -1107,27 +1251,85 @@ class Installer:
         with self._lock:
             self._tail.append(readable(text))
 
+    def _disagreement(self, id_: str, check: dict[str, Any]) -> str:
+        """The sentence for a worker that succeeded and a check that says no,
+        chosen by the route that ran. See `_finish`."""
+        said = str(check.get("detail") or "").strip()
+        if self._route == MANAGER:
+            argv = " ".join(self.recipes.get(id_, ()))
+            return (f"`{argv}` succeeded but {id_} is still not there. Restart the "
+                    "app so it picks up the new PATH.")
+        if self._route == STATIC:
+            # No PATH is involved: `tools.resolve_tool` reads `tools/bin` before
+            # it reads PATH, so a restart changes nothing and offering one would
+            # send the user round a loop with no exit.
+            return (f"the static {id_} build was written to {tools.tools_bin()} and "
+                    "the check still says it is not there. Restarting will not "
+                    "change that, because that directory is read before PATH is: "
+                    "it is a disagreement between the installer and the probe. "
+                    "Please report it"
+                    + (f". The check says: {said}" if said else "."))
+        if self._route == UV_ROUTE:
+            # Nothing was downloaded from a hub and no package manager's PATH is
+            # at issue. The binary was written where this app chose and the probe
+            # that looks there disagreed, which nothing the user presses can fix.
+            return (f"uv was written to {uv_install_dir()} and verified against its "
+                    "published checksum, and the check still says it is not there. "
+                    "That is a disagreement between the installer and the probe, not "
+                    "an unfinished install: pressing this again would download the "
+                    "same binary and get the same answer. Please report it")
+        if self._route == RESTORE:
+            return (f"the diarization weights were copied to {diarization_target()} "
+                    f"and every file matched {DIARIZATION_SUMS}, and the check still "
+                    "says they are not there. Restoring them again would copy the "
+                    "same verified files and get the same answer. Please report it"
+                    + (f". The check says: {said}" if said else "."))
+        if self._route == DEMUCS_ROUTE:
+            return (f"the {id_} fetch reported the weights ready and the check still "
+                    "says the cache is empty. The two are looking at different "
+                    "directories, which is a bug here and not an unfinished "
+                    "download. Please report it"
+                    + (f". The check says: {said}" if said else "."))
+        return (f"the download of {id_} finished, and its check still says it is "
+                "not there. That is a bug in the check, not an unfinished "
+                "download: running the install again would repeat a download "
+                "that already succeeded, and get the same answer. Please report "
+                "it" + (f". The check says: {said}" if said else "."))
+
     def _finish(self, id_: str, ok: bool, error: str | None) -> None:
         """Record the verdict and re-probe, because the exit code is a claim
-        about the package manager, not about this machine's PATH.
+        about the package manager, not about this machine.
 
-        Both branches below have one shape between them, a worker that said yes
-        and a check that says no, and they part company on whether repeating the work could
-        possibly help. For a tool it can: `brew install` puts a binary somewhere
-        the app's own PATH will only pick up on the next launch, so "restart"
-        is a real instruction with a real outcome.
+        The re-probe is the authority in **both** directions, and for one day it
+        was only allowed to overrule a success. Overruling a failure is the half
+        that was missing, and it is the half a Windows user meets first: winget
+        answers non-zero for "this is already installed", which this repo's own
+        `install-server.ps1` has a paragraph about. A machine whose ffmpeg was
+        installed but not on the server's PATH therefore had a red row, and a
+        button that ran winget, got "already installed", and reported a failure
+        for a tool that was sitting right there. Pressing it again did the same
+        thing. If the row is green when the worker stops, the machine has what it
+        needed, and no exit code gets to say otherwise; the worker's own
+        complaint stays in the tail, where a curious user can still read it.
 
-        For a download it cannot, and this used to say otherwise. "Start the
-        install again and it resumes what is missing" was written for a torn-off
-        fetch, but the fetch is not torn off: it is the one that just reported
-        `download complete`, which is the only way to reach this line. Told to
-        try again, the user got another successful download, another red row and
-        the same sentence, forever. That is not an install failure being
-        reported, it is the check disagreeing with the installer, and the two
-        cannot both be right about a directory they are both looking at. So the
-        message names the disagreement, quotes what the check said so the bug is
-        reportable, and stops: no gesture is offered, because there is no gesture
-        that would change the answer. An app that asks a user to repeat something
+        The other direction, a worker that said yes and a check that says no,
+        picks its sentence by **which route ran** rather than by which table the
+        id happens to appear in (`_disagreement`, one sentence per route). That distinction is not academic: a
+        Mac with no Homebrew installs ffmpeg by the static route while `recipes`
+        still holds `brew install ffmpeg`, so keying off the table produced a
+        failure message naming a command nobody ran and offering a restart that
+        could not have helped, since `tools/bin` is found without PATH at all.
+
+        Where repeating the work could genuinely help, it is offered. A package
+        manager can put a binary somewhere only a new process will see, so a
+        restart is a real instruction with a real outcome. Where it could not, it
+        is not offered, and this is the rule that was bought the hard way: "start
+        the install again and it resumes what is missing" was written for a
+        torn-off fetch, but the fetch that reaches this line is the one that just
+        said `download complete`. Told to try again, the user got another
+        successful download, another red row and the same sentence, forever. So
+        the message names the disagreement, quotes what the check said so the bug
+        is reportable, and stops. An app that asks a user to repeat something
         that already worked has stopped telling them the truth.
         """
         check = None
@@ -1135,32 +1337,17 @@ class Installer:
             check = self._probe(id_)
         except Exception as exc:                      # a probe must never strand the slot
             error = error or f"could not re-check {id_}: {type(exc).__name__}: {exc}"
-        if ok and check is not None and not check.get("ok"):
+        fresh = check is not None and bool(check.get("ok"))
+        if fresh and not ok:
+            # The worker complained and the machine has the thing anyway. Keep
+            # what it said in the tail and stop calling this a failure.
+            self._line(f"the installer was unhappy ({error or 'no reason given'}), "
+                       f"but the re-check found {id_} on this machine, so it is "
+                       "installed and this is not a failure")
+            ok, error = True, None
+        elif ok and check is not None and not fresh:
             ok = False
-            if id_ in self.recipes:
-                error = error or (f"`{' '.join(self.recipes.get(id_, ()))}` succeeded but "
-                                  f"{id_} is still not there. Restart the app so it picks "
-                                  "up the new PATH.")
-            elif id_ == UV_ID:
-                # Neither of the two sentences below fits: nothing was downloaded
-                # from a hub, and there is no package manager whose PATH is at
-                # issue. The binary was written to a path this app chose and the
-                # probe that looks there disagreed, which is a bug in one of the
-                # two and nothing the user can fix by pressing anything again.
-                error = error or (
-                    f"uv was written to {uv_install_dir()} and verified against its "
-                    "published checksum, and the check still says it is not there. "
-                    "That is a disagreement between the installer and the probe, not "
-                    "an unfinished install: pressing this again would download the "
-                    "same binary and get the same answer. Please report it")
-            else:
-                said = str(check.get("detail") or "").strip()
-                error = error or (
-                    f"the download of {id_} finished, and its check still says it is "
-                    "not there. That is a bug in the check, not an unfinished "
-                    "download: running the install again would repeat a download "
-                    "that already succeeded, and get the same answer. Please report "
-                    "it" + (f". The check says: {said}" if said else "."))
+            error = error or self._disagreement(id_, check)
         with self._lock:
             self._running = False
             self._ok = ok
@@ -1342,10 +1529,11 @@ class InstallQueue:
         or a worker that exited with `ok: False`. The reason is already in the
         slot's own `error` and in that row's re-probe; the queue only has to
         remember *which* ones so the header can say so at the end."""
-        try:
-            self._installer.start(id_)
-        except Exception:                        # a 400/409 raised as an HTTPException
-            self._fail(id_)
+        if not self._claim(id_):
+            with self._lock:
+                cancelled = self._cancelled
+            if not cancelled:
+                self._fail(id_)
             return
         # A join loop rather than one long join: `wait` takes the thread as it
         # was, and a poll of `status()` must never be the thing that blocks.
@@ -1353,6 +1541,42 @@ class InstallQueue:
             pass
         if self._installer.status().get("ok") is not True:
             self._fail(id_)
+
+    def _claim(self, id_: str) -> bool:
+        """Take the one slot for `id_`, waiting out anyone else who has it.
+
+        "Anyone else" is one thing: a row's own Install button, pressed in the
+        gap between two queue items. That press wins the slot fairly, and it is
+        over in a moment, but the queue used to read the resulting 409 as this
+        item having failed and step past it, so a user who fixed one row by hand
+        while "install everything" ran silently lost a different row from the
+        queue, with nothing to say why. Waiting is the whole fix, and it is safe
+        because the thing being waited for is the same one-at-a-time slot that
+        would have run this item anyway.
+
+        Bounded, because an unbounded wait is a queue that never ends: a slot
+        held by a nine-gigabyte download is not something to sit behind forever,
+        and after `SLOT_WAIT` this item is recorded as failed like any other and
+        the queue moves on. Cancel is honoured while waiting; an item never
+        started because the user cancelled is not a failure and is not recorded
+        as one.
+        """
+        deadline = time.time() + SLOT_WAIT
+        while True:
+            try:
+                self._installer.start(id_)
+                return True
+            except ApiError as exc:
+                if exc.code != "busy":
+                    return False             # a 400: no route for this id at all
+            except Exception:
+                return False
+            with self._lock:
+                if self._cancelled:
+                    return False
+            if time.time() >= deadline:
+                return False
+            time.sleep(SLOT_POLL)
 
     def _fail(self, id_: str) -> None:
         with self._lock:
@@ -1366,4 +1590,6 @@ __all__ = ["DEMUCS_ID", "DIARIZATION_ID", "INSTALLERS", "Installer", "InstallQue
            "diarization_target", "fetch_static_ffmpeg", "installable",
            "install_uv", "manual_command", "restore_diarization", "route",
            "snapshot_download", "static_route", "uv_install_dir",
-           "uv_release_route", "uv_triple", "verify_diarization"]
+           "uv_release_route", "uv_triple", "verify_diarization",
+           "refresh_path", "registry_path_entries", "MANAGER", "STATIC",
+           "UV_ROUTE", "RESTORE", "DOWNLOAD", "DEMUCS_ROUTE"]

@@ -882,7 +882,10 @@ def env_file_value(path: Path, key: str) -> str | None:
     return found
 
 
-def gpu_memory_bytes() -> int:
+_vram: int | None = None
+
+
+def gpu_memory_bytes(*, refresh: bool = False) -> int:
     """Total VRAM on the first NVIDIA GPU, or 0 when there is none to ask.
 
     Asked of `nvidia-smi` rather than of torch, and that is the module's first
@@ -891,21 +894,40 @@ def gpu_memory_bytes() -> int:
     resident memory on every machine, including the Macs that have no CUDA at
     all. The run itself still asks torch (`dubbing.translate._total_vram`);
     this is the cheap version for a screen.
+
+    Read once and cached, exactly as `git_commit` is, and for a sharper version
+    of the same reason. How much VRAM is soldered to this machine cannot change
+    while the process runs, and asking costs a subprocess with a ten-second
+    timeout. One `report()` asks three times (`model_downloads` is built by
+    `report` and again by `model_checks`, and `low_vram_check` asks a third
+    time), the Setup screen polls every two seconds, and every one of those
+    spawns is on the machines that have a GPU to ask about, which is to say
+    every Windows and Linux user and none of the Macs anybody here tests on. A
+    driver busy with a job answers `nvidia-smi` in seconds rather than
+    milliseconds, and three of those per poll is a checklist that stalls
+    precisely while the thing it is describing is under load. Rule one of this
+    module says the report answers in milliseconds and can be polled; a cache is
+    what makes that true off a Mac.
     """
+    global _vram
+    if _vram is not None and not refresh:
+        return _vram
+    _vram = 0
     exe = shutil.which("nvidia-smi")
     if not exe:
-        return 0
+        return _vram
     try:
         out = subprocess.run([exe, "--query-gpu=memory.total",
                               "--format=csv,noheader,nounits"],
                              capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
-        return 0
+        return _vram
     first = (out.stdout or "").strip().splitlines()
     try:
-        return int(float(first[0].strip())) * 1024**2      # nvidia-smi reports MiB
+        _vram = int(float(first[0].strip())) * 1024**2     # nvidia-smi reports MiB
     except (IndexError, ValueError):
-        return 0
+        _vram = 0
+    return _vram
 
 
 def low_vram_env_key() -> str:
@@ -1217,8 +1239,11 @@ def g2p_check() -> dict[str, Any]:
     local = hebrew.G2P_FILE.is_file()
     size = dir_size(hebrew.G2P_DIR) if local else 0
     if not hebrew.g2p_ready():
-        detail = (f"{hebrew.G2P_PACKAGE} is not installed: run `uv sync`; "
-                  "without it Hebrew is unavailable as a target")
+        # The directory is part of the instruction, not decoration: this row has
+        # no button, so the whole of its answer is a command, and `uv sync` run
+        # anywhere else resolves somebody else's project.
+        detail = (f"{hebrew.G2P_PACKAGE} is not installed: run `uv sync` in "
+                  f"{REPO_ROOT}; without it Hebrew is unavailable as a target")
     elif local:
         detail = f"{human_bytes(size)} in {hebrew.G2P_DIR}"
     else:
@@ -1278,26 +1303,116 @@ def hf_cache_repo(hub: str) -> Path | None:
     return None
 
 
+def demucs_signatures(model: str) -> tuple[str, ...] | None:
+    """Every weight file the `model` bag is made of, by signature, or None when
+    this machine cannot say.
+
+    A demucs bag is not one checkpoint, it is a list of them: `htdemucs_ft` is
+    four fine-tuned models averaged, and the list of four is written down beside
+    the code that loads them, in `demucs/remote/<model>.yaml`
+    (`models: ['f7e0c4bc', 'd12395a8', '92cfc3b6', '04573f0d']`). That file is
+    the only exact answer to "are the weights here", and it is a text file the
+    installed package already carries, so reading it costs nothing.
+
+    Read out of the package directory rather than by importing demucs, which is
+    rule one of this module: `demucs.pretrained` pulls in torch, and a
+    `GET /api/setup` must not. `find_spec` locates a top-level package without
+    executing it.
+
+    None means the question cannot be answered here at all (demucs is not
+    installed, or a future version keeps its bags somewhere else). That is a
+    real answer and the caller treats it as one: a permanently red row on a
+    machine whose weights are genuinely present would be worse than the looser
+    check it replaces, because the button would then "succeed" forever and the
+    row would never move.
+    """
+    import importlib.util
+
+    try:
+        spec = importlib.util.find_spec("demucs")
+    except (ImportError, ValueError):
+        return None
+    roots = list(getattr(spec, "submodule_search_locations", None) or ()) if spec else []
+    for root in roots:
+        manifest = Path(root) / "remote" / f"{model}.yaml"
+        try:
+            text = manifest.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        import re
+
+        line = next((ln for ln in text.splitlines()
+                     if ln.strip().startswith("models:")), None)
+        if line is None:
+            continue
+        found = tuple(dict.fromkeys(re.findall(r"[0-9a-f]{8}", line)))
+        if found:
+            return found
+    return None
+
+
+def _holds_every_signature(root: Path, signatures: tuple[str, ...],
+                           suffix: str) -> bool:
+    """Does `root` carry a file for every signature in the bag?
+
+    The two caches spell the same signature two ways: the torch hub cache names
+    a checkpoint `<sig>-<contenthash>.th`, the Hugging Face snapshot names it
+    `<sig>.safetensors`. Both start with the signature and end with the suffix,
+    which is the whole of the match. Every one of them, because a bag missing
+    one model is a bag demucs will re-download the moment a stems run asks for
+    it, which is the download this row exists to have happened already.
+    """
+    try:
+        names = {entry.name for entry in root.rglob(f"*{suffix}")}
+    except OSError:
+        return False
+    return all(any(name.startswith(sig) for name in names) for sig in signatures)
+
+
 def _demucs_cache() -> Path | None:
     """The cache holding the Demucs weights, or None when neither has them.
 
     Two caches, because demucs changed homes: 3.x keeps `.th` weights under the
     torch hub cache, 4.x fetches from the Hugging Face Hub into the HF cache as
     `models--adefossez--*` (with the payload under `blobs/`).
+
+    **Any weights is not these weights**, and that was the whole test here until
+    it was caught lying twice on one machine. "Some `.th` file exists under the
+    torch hub cache" is true of a checkout that has ever run silero-vad, and
+    "some `models--adefossez--*` repo has blobs" is true of anyone who has ever
+    run plain `htdemucs`, whose repo is `models--adefossez--HTDemucs` while
+    `htdemucs_ft`'s is `models--adefossez--HTDemucs-ft`. Both certified the row
+    green on weights the stems stage cannot open, which bought the user exactly
+    the thing this row's button exists to prevent: a silent multi-hundred-
+    megabyte download in the middle of a dub, from a screen that had just said
+    the download was done. `demucs_signatures` turns the question back into an
+    exact one, and only where it cannot be answered does the loose test remain.
     """
+    from dubbing import stems
+
+    signatures = demucs_signatures(stems.MODEL)
     # `TORCH_HOME`, else `XDG_CACHE_HOME/torch`, else `~/.cache/torch`, which is
     # `torch.hub._get_torch_home()` restated for the same reason `hf_hub_cache`
     # restates its library's rule: asking torch would import torch.
     torch_cache = Path(os.environ.get("TORCH_HOME")
                        or (default_cache_home() / "torch")) / "hub"
-    if torch_cache.is_dir() and any(torch_cache.rglob("*.th")):
-        return torch_cache
+    if torch_cache.is_dir():
+        if (_holds_every_signature(torch_cache, signatures, ".th")
+                if signatures else any(torch_cache.rglob("*.th"))):
+            return torch_cache
     hf_cache = hf_hub_cache()
     if hf_cache.is_dir():
         for repo in sorted(hf_cache.glob("models--adefossez--*")):
             blobs = repo / "blobs"
-            if blobs.is_dir() and any(blobs.iterdir()):
-                return repo
+            if not (blobs.is_dir() and any(blobs.iterdir())):
+                continue
+            # The snapshot names each file by signature; the blobs are named by
+            # content hash, so the snapshot tree is the one to read. Its entries
+            # are symlinks into `blobs/`, which `rglob` lists by name either way.
+            if signatures and not _holds_every_signature(
+                    repo / "snapshots", signatures, ".safetensors"):
+                continue
+            return repo
     return None
 
 
@@ -1448,12 +1563,30 @@ def install_plan(report_: dict[str, Any]) -> list[dict[str, Any]]:
     (0 for a tool, since a `brew` is seconds and has no denominator), which is
     what lets the button price itself before it is pressed.
     """
+    from .install import static_route
+
     rank = {BLOCKING: 0, DEGRADES: 1, OPTIONAL: 2}
     rows = [c for c in report_.get("checks", ())
             if not c.get("ok") and c.get("installable") and c.get("severity") in rank]
+    # One row installs another, and grade order gets that backwards. The static
+    # ffmpeg route (`install.static_route`: every Linux, plus a brewless Mac and
+    # a wingetless Windows) puts the `static-ffmpeg` wheel in this environment
+    # with uv, and uv is the tool whose own row is `optional` because no dub
+    # shells out to it. So on the one machine that needs both, the plan ran the
+    # blocking row first, watched it die on "fix the uv row first", installed uv
+    # a minute later, and left the user with a red ffmpeg row and no reason to
+    # think pressing the same button again would do anything different. Grade
+    # order is right about urgency and silent about dependency; where the two
+    # disagree the dependency wins, because a row installed in the wrong order
+    # is not installed at all.
+    needs_uv = any(static_route(str(c["id"])) for c in rows)
+
+    def order(c: dict[str, Any]) -> int:
+        return -1 if needs_uv and c["id"] == "uv" else rank[c["severity"]]
+
     # Stable, so within a grade the plan keeps the report's order — which is the
     # order the screen lists them in, and the order the user is reading.
-    rows.sort(key=lambda c: rank[c["severity"]])
+    rows.sort(key=order)
     return [{"id": c["id"], "label": c["label"],
              "bytes": int(c.get("download_bytes") or 0)} for c in rows]
 
@@ -1461,7 +1594,7 @@ def install_plan(report_: dict[str, Any]) -> list[dict[str, Any]]:
 __all__ = ["report", "probe", "install_plan", "git_commit", "human_bytes", "dir_size", "env_path",
            "env_file_value", "find_uv", "uv_exe", "uv_fallbacks", "uv_home",
            "uv_on_path", "UV_FALLBACKS", "UV_PATH_ENV", "default_cache_home",
-           "gpu_memory_bytes", "hf_hub_cache",
+           "gpu_memory_bytes", "hf_hub_cache", "demucs_signatures", "demucs_check",
            "hf_cache_repo", "diarization_repair", "index_shards", "model_ready",
            "fetch_in_flight", "record_install", "install_recorded", "INSTALL_RECEIPT",
            "low_vram_check", "low_vram_env_key", "low_vram_state", "model_downloads",

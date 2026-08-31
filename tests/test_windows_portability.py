@@ -15,8 +15,10 @@ discovered on a real Windows machine, each of them silent rather than loud:
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -685,11 +687,16 @@ def test_the_caches_are_resolved_the_way_their_libraries_resolve_them(tmp_path, 
     assert setup_mod.default_cache_home() == tmp_path / "xdg"
     assert setup_mod.hf_hub_cache() == tmp_path / "xdg" / "huggingface" / "hub"
 
-    # A `.th` under the torch hub cache is a demucs 3.x install, and the row has
-    # to see it wherever XDG_CACHE_HOME says it lives.
+    # The bag's `.th` files under the torch hub cache are a demucs 3.x install,
+    # and the row has to see them wherever XDG_CACHE_HOME says they live. Named
+    # by their real signatures, because the row wants this bag rather than any
+    # file ending in `.th`.
+    from dubbing import stems
+
     hub = tmp_path / "xdg" / "torch" / "hub" / "checkpoints"
     hub.mkdir(parents=True)
-    (hub / "htdemucs_ft.th").write_bytes(b"x" * 32)
+    for sig in setup_mod.demucs_signatures(stems.MODEL) or ():
+        (hub / f"{sig}-deadbeef.th").write_bytes(b"x" * 32)
     assert setup_mod.demucs_check()["ok"] is True
 
     # The explicit variables still win over it, exactly as in both libraries.
@@ -740,3 +747,67 @@ def test_the_python_uv_chain_still_matches_the_rust_one_it_claims_to():
     assert re.findall(r'home\.join\("(\.[a-z]+)"\)\.join\("bin"\)', rs) == [".local", ".cargo"]
     # And the home directory itself: HOME first, USERPROFILE second, on all three.
     assert 'env::var_os("HOME")' in rs and 'var_os("USERPROFILE")' in rs
+
+
+# ---------------------------------------------------------------------------
+# the stale PATH after a winget install, which made every Windows tool row end
+# in "restart the app" for an install that had already worked
+# ---------------------------------------------------------------------------
+
+def test_a_winget_install_is_seen_without_restarting_the_app(tmp_path, monkeypatch):
+    """Windows keeps PATH in the registry and hands each process a copy, so a
+    tool winget installed a second ago is invisible to a server that started
+    before it. `install-server.ps1` rebuilds PATH from the registry for exactly
+    this reason; the button has to do the same, or every re-probe says the tool
+    is missing and every row ends in a restart nobody should need.
+
+    The registry read itself is Windows-only and unrunnable here; the merge is
+    not, so `entries` is injectable and this is the merge.
+    """
+    gained = tmp_path / "WinGet" / "Links"
+    gained.mkdir(parents=True)
+    env = {"PATH": os.pathsep.join([str(tmp_path / "already")])}
+    (tmp_path / "already").mkdir()
+
+    install_mod.refresh_path(env, [str(gained)])
+    assert env["PATH"].split(os.pathsep) == [str(tmp_path / "already"), str(gained)]
+
+    # Idempotent, including across the trailing separator Windows writes.
+    install_mod.refresh_path(env, [str(gained) + os.sep, str(gained)])
+    assert env["PATH"].count(str(gained)) == 1
+
+    # A directory that is not there is not worth putting on the PATH of every
+    # child this process will ever spawn, which is `server.widen_path`'s rule.
+    install_mod.refresh_path(env, [str(tmp_path / "ghost")])
+    assert "ghost" not in env["PATH"]
+
+    # And off Windows there is no registry to read, so this is a no-op rather
+    # than a guess.
+    if sys.platform != "win32":
+        assert install_mod.registry_path_entries() == []
+
+
+def test_the_manager_route_refreshes_path_before_it_re_probes(monkeypatch):
+    """The refresh has to land between the child exiting and the check running,
+    or the check is still looking at the PATH the process started with."""
+    order = []
+    monkeypatch.setattr(install_mod, "refresh_path",
+                        lambda *a, **k: order.append("refresh"))
+    inst = install_mod.Installer(
+        lambda id_: (order.append("probe"),
+                     {"id": id_, "ok": True, "label": id_, "detail": "there"})[1],
+        recipes={"ffmpeg": ("/bin/sh", "-c", "true")})
+    inst.start("ffmpeg")
+    assert inst.wait(10.0)
+    assert order == ["refresh", "probe"]
+
+    # The routes that write where PATH is not consulted do not pay for it.
+    order.clear()
+    inst2 = install_mod.Installer(
+        lambda id_: (order.append("probe"),
+                     {"id": id_, "ok": True, "label": id_, "detail": "there"})[1])
+    monkeypatch.setattr(install_mod, "restore_diarization", lambda log: None)
+    monkeypatch.setattr(install_mod, "diarization_source", lambda: ("copy", Path(".")))
+    inst2.start(install_mod.DIARIZATION_ID)
+    assert inst2.wait(10.0)
+    assert order == ["probe"]
