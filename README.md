@@ -12,6 +12,27 @@
 
 ---
 
+<!--
+  A still that links to the film, rather than a video tag. GitHub only plays
+  video from its own attachment CDN, which nothing on a command line can write
+  to, so a <video src="..."> pointing at this repository renders as an empty
+  box. The poster is a real frame from the film, at the moment the product is
+  visibly doing its job, and clicking it opens the 53 second cut from the
+  release, where the file is already hosted for the site.
+-->
+<p align="center">
+  <a href="https://github.com/maxmelichov/MamboDubb/releases/latest/download/mambodubb-demo-web.mp4">
+    <img src="docs/assets/mambodubb-demo-poster.jpg" alt="One Hebrew news clip, dubbed into English and into Russian, each speaker keeping their own voice" width="640">
+  </a>
+</p>
+
+<p align="center">
+  <b><a href="https://github.com/maxmelichov/MamboDubb/releases/latest/download/mambodubb-demo-web.mp4">Watch the 53 second demo</a></b><br>
+  <sub>One Hebrew interview, three speakers, dubbed into English and into Russian. Music, no narration.</sub>
+</p>
+
+---
+
 Give it a video file or a YouTube link. It transcribes, translates, speaks every line **in the original speaker's own voice**, and mixes the new speech back over the original music at the original timing. Nothing is uploaded anywhere. No account, no API key.
 
 ## Install
