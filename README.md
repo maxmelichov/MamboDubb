@@ -22,45 +22,30 @@ Give it a video file or a YouTube link. It transcribes, translates, speaks every
 curl -fsSL https://github.com/maxmelichov/MamboDubb/releases/latest/download/install.sh | sh
 ```
 
-That one line is the install. If you downloaded the `.dmg` instead, it still needs the script: macOS refuses both the double-click on **Install MamboDubb** inside it and the drag to Applications, because the app is not notarized. Mount the `.dmg` and run `sh "/Volumes/MamboDubb/Install MamboDubb.command"` in Terminal, or click through the refusal once and press **Open Anyway** in System Settings > Privacy & Security.
+That one line is the install, and it is the only route with no Gatekeeper dialog anywhere in it: nothing here is notarized, and `curl` is what sets no quarantine bit. The script fetches the app from the latest release, clears quarantine, ad-hoc-signs the bundle so macOS will open it, and puts it in `/Applications`.
 
-**Windows (x64):**
+**Windows, Linux, or a Mac that would rather run the source:**
 
-```powershell
-$exe = "$env:TEMP\MamboDubb_0.5.0_x64-setup.exe"; Invoke-WebRequest https://github.com/maxmelichov/MamboDubb/releases/latest/download/MamboDubb_0.5.0_x64-setup.exe -OutFile $exe; Start-Process $exe
-```
-
-The installer is unsigned, so SmartScreen shows "Windows protected your PC": click **More info**, then **Run anyway**. If your machine prefers an MSI, take [MamboDubb_0.5.0_x64_en-US.msi](https://github.com/maxmelichov/MamboDubb/releases/latest/download/MamboDubb_0.5.0_x64_en-US.msi) instead.
-
-**Linux (x64, Debian/Ubuntu, glibc 2.35+):**
-
-```bash
-curl -LO https://github.com/maxmelichov/MamboDubb/releases/latest/download/MamboDubb_0.5.0_amd64.deb
-sudo apt install ./MamboDubb_0.5.0_amd64.deb
-```
-
-Or the AppImage, which needs the executable bit the download does not preserve:
-
-```bash
-curl -LO https://github.com/maxmelichov/MamboDubb/releases/latest/download/MamboDubb_0.5.0_amd64.AppImage
-chmod +x MamboDubb_0.5.0_amd64.AppImage
-./MamboDubb_0.5.0_amd64.AppImage
-```
-
-Both are unsigned CI builds, and the first run provisions about 10 GB into `%LOCALAPPDATA%\MamboDubb\workspace` or `~/.local/share/MamboDubb/workspace`; an NVIDIA GPU is what you want on either OS. Details: [docs/CROSS_PLATFORM.md](docs/CROSS_PLATFORM.md), [docs/WINDOWS.md](docs/WINDOWS.md).
-
-Then open **Setup** in the app and press **Install everything**. It downloads every model the app can fetch, the optional extras included, and every row goes green. The button carries the total in GB before you press it, and each row keeps its own button if you would rather take one thing at a time.
-
-**Rather run from source?** ([Windows notes](docs/WINDOWS.md))
+There is no installer to download for Windows or Linux. Building one needs a CI pipeline that is not running on this account, so rather than point you at a file that is not there, here is the route that works today on all three:
 
 ```bash
 git clone --recurse-submodules https://github.com/maxmelichov/MamboDubb.git
 cd MamboDubb && uv sync
 cd app/ui && pnpm install && pnpm build && cd ../..
-uv run mambodubb          # editor at http://127.0.0.1:4400
+uv run mambodubb --port 4400          # editor at http://127.0.0.1:4400
 ```
 
-More on the server: [docs/SERVER.md](docs/SERVER.md).
+That is the whole studio, not a reduced version of it: the desktop app is a thin shell over this same server, so a browser gets the identical editor. Build the UI once; after that the last line is the whole startup.
+
+On Windows, install the CUDA build of PyTorch explicitly, because PyPI's default wheel is CPU-only there and every model would otherwise run on the CPU:
+
+```powershell
+uv pip install --index-url https://download.pytorch.org/whl/cu124 torch torchaudio
+```
+
+An NVIDIA GPU is what you want on either OS, and WSL2 is the smoother path on Windows if you have it. Details: [docs/SERVER.md](docs/SERVER.md), [docs/WINDOWS.md](docs/WINDOWS.md), [docs/CROSS_PLATFORM.md](docs/CROSS_PLATFORM.md).
+
+Then open **Setup** in the app and press **Install everything**. It downloads every model the app can fetch, the optional extras included, and every row goes green. The button carries the total in GB before you press it, and each row keeps its own button if you would rather take one thing at a time.
 
 ## What you need
 

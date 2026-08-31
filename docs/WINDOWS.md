@@ -3,11 +3,12 @@
 Both halves, the headless pipeline (`python -m dubbing`) and the studio server
 (`mambodubb`), run on native Windows 10/11 with an NVIDIA GPU.
 
-This page is the **run-from-source** guide. From v0.4.0 on the releases page also
-carries a `-setup.exe` and an `.msi` (see [CROSS_PLATFORM.md](CROSS_PLATFORM.md)
-and the [README](../README.md#install)), but nobody has run those on a real
-Windows machine yet, so this is the tested way in. Everything below applies to
-the packaged app too, because it provisions and runs this same source tree.
+This page is the **run-from-source** guide, and on Windows that is the only way
+in: the releases page carries no `-setup.exe` and no `.msi`. The workflow that
+would build them has never run, because Actions is disabled on the account
+(details in [CROSS_PLATFORM.md](CROSS_PLATFORM.md)). If that changes, everything
+below still applies to the packaged app, because it provisions and runs this
+same source tree.
 
 You end up with the full studio in a browser at `http://127.0.0.1:4400`, the same
 editor the Mac app wraps.

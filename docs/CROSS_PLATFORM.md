@@ -1,16 +1,22 @@
 # MamboDubb on macOS, Windows and Linux
 
-**The short version: all three platforms have an installer on the releases page from
-v0.4.0 on. Running from source still works everywhere, and on Windows it is the better
-tested path.**
+**The short version: the only installer that exists is the macOS one, and `install.sh`
+is how you use it. Windows and Linux have no downloadable installer at all. Running from
+source works on all three today, and on Windows it is the better tested path.**
 
 The desktop shell is not Mac-only *in the code*. The Rust shell, the payload staging
 script and `tauri.conf.json` are per-platform correct, and
-[`.github/workflows/build-desktop.yml`](../.github/workflows/build-desktop.yml) builds
-installers for all three on GitHub's runners. On a `v*` tag that workflow now uploads
-every bundle it produces to the matching release, so the releases page carries the Mac
-`.dmg` and `install.sh`, the Windows `-setup.exe` and `.msi`, and the Linux `.deb` and
-`.AppImage`.
+[`.github/workflows/build-desktop.yml`](../.github/workflows/build-desktop.yml) is
+written to build installers for all three on GitHub's runners.
+
+That workflow has never run. GitHub Actions is disabled at the account level, not per
+repository: a manual `gh workflow run` is refused with HTTP 422 "Actions has been
+disabled for this user", and the account has zero workflow runs of any kind. The
+workflow file is present and valid in the `v0.5.0` tag, and the repository's own Actions
+permissions report as enabled, so nothing in this repo needs changing. Only the account
+owner can lift the block. Until that happens no `.exe`, `.msi`, `.deb` or `.AppImage`
+is produced or attached to any release, and this document describes what those bundles
+*would* be, not something you can download.
 
 **Read the status table before you trust anything below it.** Everything here was
 written and reviewed on an Apple Silicon Mac. What that machine can prove is that the
@@ -25,8 +31,8 @@ than pretending otherwise.
 |---|---|---|---|
 | Rust shell compiles | ✅ locally | ❌ never built | ❌ never built |
 | Unit tests pass | ✅ locally (37) | ❌ never run | ❌ never run |
-| Installer produced | ✅ `.dmg` (+ `.app`), on releases | ✅ `-setup.exe`, `.msi`, on releases | ✅ `.deb`, `.AppImage`, on releases |
-| Installer **launches** | ✅ verified by hand | ❓ nothing to launch | ❓ nothing to launch |
+| Installer produced | ✅ `.dmg` (+ `.app`), on releases | ❌ CI has never run | ❌ CI has never run |
+| Installer **launches** | ✅ verified by hand | ❌ nothing to launch | ❌ nothing to launch |
 | First-run provisioning | ✅ verified by hand | ❓ unverified | ❓ unverified |
 | `uv sync` in the provisioned workspace | ✅ verified | ❓ unverified | ❓ unverified |
 | Headless pipeline and studio from source | ✅ | ✅ this is the path, see [WINDOWS.md](WINDOWS.md) | ✅ this is the path (CUDA) |
@@ -38,43 +44,25 @@ Intel Macs are **not** in the matrix: `macos-latest` is Apple Silicon, so the `.
 arm64-only. Staging supports `--target x86_64-apple-darwin`, so adding an Intel (or
 universal) row is a matrix entry away when someone has a machine to test it on.
 
-## Getting the installers
+## What the release actually carries
 
-From v0.4.0 on, the [latest release](https://github.com/maxmelichov/MamboDubb/releases/latest)
-carries every bundle the build produces:
+The [v0.5.0 release](https://github.com/maxmelichov/MamboDubb/releases/tag/v0.5.0) has
+exactly two assets, both built by hand on a Mac:
 
-| OS | Assets |
+| Asset | For |
 |---|---|
-| macOS (arm64) | `MamboDubb_<version>_aarch64.dmg`, `install.sh` |
-| Windows (x64) | `MamboDubb_<version>_x64-setup.exe`, `MamboDubb_<version>_x64_en-US.msi` |
-| Linux (x64) | `MamboDubb_<version>_amd64.deb`, `MamboDubb_<version>_amd64.AppImage` |
+| `install.sh` | The macOS install. Fetches the `.dmg` below and does the rest. |
+| `MamboDubb_0.5.0_aarch64.dmg` | The macOS bundle `install.sh` installs. |
 
-Pushing a `v*` tag runs `build-desktop.yml`, and its last step uploads those files to the
-release for that tag with `gh release upload --clobber`, creating the release first if it
-does not exist. Copy-paste install lines for all three are in the
-[README](../README.md#install); the per-OS notes below say what each one runs into.
+The `.dmg` is attached because `install.sh` downloads it; it is not meant to be
+downloaded by hand, and the README no longer offers it that way. Windows and Linux
+users run from source: [SERVER.md](SERVER.md), [WINDOWS.md](WINDOWS.md).
 
-The artifact route stays for builds that are not a tag: a `workflow_dispatch` run on a
-branch attaches `mambodubb-macos-aarch64`, `mambodubb-windows-x86_64` and
-`mambodubb-linux-x86_64` as `.zip` artifacts that expire after 30 days. Nothing is
-uploaded to a release from those runs.
-
-Running from source still works on every OS and is the fallback whenever a bundle
-misbehaves:
-
-```bash
-git clone --recurse-submodules https://github.com/maxmelichov/MamboDubb.git
-cd MamboDubb && uv sync
-cd app/ui && pnpm install && pnpm build && cd ../..
-uv run mambodubb          # the full editor at http://127.0.0.1:4400
-```
-
-That is the same server the desktop app wraps, so you get the whole studio in a browser.
-Windows has extra steps, mostly around CUDA wheels: [WINDOWS.md](WINDOWS.md), and WSL2
-is the easier road. An NVIDIA GPU is what you want on either OS; `translate.load()`
-switches from MLX to the CUDA worker in `translator/` on its own.
-
-## Per-OS install notes
+Were Actions enabled, pushing a `v*` tag would run `build-desktop.yml`, whose last step
+uploads every bundle it produces to that tag's release with `gh release upload
+--clobber`, and a `workflow_dispatch` run on a branch would attach
+`mambodubb-macos-aarch64`, `mambodubb-windows-x86_64` and `mambodubb-linux-x86_64` as
+30-day `.zip` artifacts. Neither has ever happened.
 
 ### macOS
 
@@ -106,13 +94,13 @@ just works needs Developer ID signing and notarization through
 
 ### Windows
 
-The release carries an installer, but nobody has run it on a real Windows machine yet, so
-[WINDOWS.md](WINDOWS.md) and the from-source path remain the tested route.
+There is no installer to download. [WINDOWS.md](WINDOWS.md) and the from-source path are
+the route, and the tested one.
 
-Install from the NSIS `-setup.exe` (per-user, no admin prompt) or the `.msi`. Both are
-unsigned, so **SmartScreen** shows "Windows protected your PC" on first run: click
-**More info → Run anyway**. Some corporate policies block unsigned installers
-outright, and there is no workaround short of code signing (open item below).
+If the build ever runs, it produces an NSIS `-setup.exe` (per-user, no admin prompt) and
+an `.msi`, both unsigned, so **SmartScreen** would show "Windows protected your PC" on
+first run: click **More info → Run anyway**. Some corporate policies block unsigned
+installers outright, and there is no workaround short of code signing (open item below).
 
 WebView2 is present on every Windows 10 1803+ and Windows 11 machine. The installer is
 configured with `downloadBootstrapper`, so on the rare machine without it, it is fetched
@@ -127,10 +115,10 @@ the detailed guide and it applies to the packaged app too.
 
 ### Linux
 
-The release carries both a `.deb` and an AppImage; neither has been launched on a real
-Linux machine yet, so running from source is still the fallback.
+There is no `.deb` and no AppImage to download; running from source is the route. The
+rest of this section describes what the build would produce if it ran.
 
-The `.deb` is the better install on Debian/Ubuntu:
+The `.deb` would be the better install on Debian/Ubuntu:
 
 ```bash
 sudo apt install ./MamboDubb_*_amd64.deb
@@ -186,7 +174,7 @@ The provisioned workspace lives in `~/.local/share/MamboDubb/workspace`.
    ([RELEASING.md](RELEASING.md)) that CI does not run. The workflow has a loud
    `TODO(signing)` where the env vars go. Windows has no certificate at all, so
    SmartScreen will warn on every build until someone buys an OV/EV cert. Linux
-   packages are conventionally unsigned; the `.deb`/`.AppImage` are fine as-is.
+   packages are conventionally unsigned; the `.deb`/`.AppImage` would be fine as-is.
 2. **Inference speed off a GPU.** The pipeline picks CUDA if it is there, then MPS, then
    CPU. A Windows or Linux box with an NVIDIA card is the good case, but PyPI's default
    `torch` wheel is **CPU-only on Windows**, so a Windows user must install the CUDA
@@ -194,8 +182,9 @@ The provisioned workspace lives in `~/.local/share/MamboDubb/workspace`.
    and a five-minute video takes hours. On a CPU-only machine of any OS the app *works*
    and is unusably slow for anything but a short clip. The app does not currently warn
    about this at setup time.
-3. **Nobody has run the Windows or Linux installers.** CI builds and attaches them, but
-   the ❓ rows above still need a real machine: the installer completes; the app
+3. **No Windows or Linux installer exists, because CI has never run.** Lifting the
+   account-level Actions block is what unblocks everything else here. After that they
+   still need a real machine to verify: the installer completes; the app
    window opens (WebView2 / WebKitGTK); first-run provisioning writes the workspace to
    the local data dir; `uv sync` completes there (~10 GB, and the Qwen3-TTS editable
    install is the fragile part); `ffmpeg`/`sox` detection and the Setup screen's install
