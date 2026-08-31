@@ -23,13 +23,14 @@
   original, then the same speaker in English, then in Russian. No audio, so
   the dubbed line on screen is what carries it, which is also what the film is
   demonstrating. 640px and 12fps holds it under 4 MB.
+
+  The film itself is not offered as a file anywhere. It played here as a link
+  to an mp4 on the release for a while, and a link that hands somebody a
+  download before they have seen anything is a worse demo than the thing
+  playing in front of them. The full cut with sound lives on the site.
 -->
 <p align="center">
   <img src="docs/assets/mambodubb-demo.gif" alt="One Hebrew news clip playing in the original, then dubbed into English and into Russian, each speaker keeping their own voice" width="640">
-</p>
-
-<p align="center">
-  <b><a href="https://github.com/maxmelichov/MamboDubb/releases/latest/download/mambodubb-demo-web.mp4">Watch the full 53 seconds, with sound</a></b>
 </p>
 
 ---
