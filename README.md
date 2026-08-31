@@ -13,22 +13,23 @@
 ---
 
 <!--
-  A still that links to the film, rather than a video tag. GitHub only plays
-  video from its own attachment CDN, which nothing on a command line can write
-  to, so a <video src="..."> pointing at this repository renders as an empty
-  box. The poster is a real frame from the film, at the moment the product is
-  visibly doing its job, and clicking it opens the 53 second cut from the
-  release, where the file is already hosted for the site.
+  An animated GIF, because a README cannot play video. GitHub renders <video>
+  only from its own attachment CDN, which nothing on a command line can write
+  to, so a video tag pointing at this repository draws an empty box and a link
+  to an mp4 makes the reader download a file before they can see anything.
+  A GIF plays where it sits, which is the only version of this that works.
+
+  Thirteen seconds cut from the 53 second film: the tail of the Hebrew
+  original, then the same speaker in English, then in Russian. No audio, so
+  the dubbed line on screen is what carries it, which is also what the film is
+  demonstrating. 640px and 12fps holds it under 4 MB.
 -->
 <p align="center">
-  <a href="https://github.com/maxmelichov/MamboDubb/releases/latest/download/mambodubb-demo-web.mp4">
-    <img src="docs/assets/mambodubb-demo-poster.jpg" alt="One Hebrew news clip, dubbed into English and into Russian, each speaker keeping their own voice" width="640">
-  </a>
+  <img src="docs/assets/mambodubb-demo.gif" alt="One Hebrew news clip playing in the original, then dubbed into English and into Russian, each speaker keeping their own voice" width="640">
 </p>
 
 <p align="center">
-  <b><a href="https://github.com/maxmelichov/MamboDubb/releases/latest/download/mambodubb-demo-web.mp4">Watch the 53 second demo</a></b><br>
-  <sub>One Hebrew interview, three speakers, dubbed into English and into Russian. Music, no narration.</sub>
+  <b><a href="https://github.com/maxmelichov/MamboDubb/releases/latest/download/mambodubb-demo-web.mp4">Watch the full 53 seconds, with sound</a></b>
 </p>
 
 ---
