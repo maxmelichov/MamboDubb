@@ -27,24 +27,24 @@ That one line is the install. If you downloaded the `.dmg` instead, it still nee
 **Windows (x64):**
 
 ```powershell
-$exe = "$env:TEMP\MamboDubb_0.4.0_x64-setup.exe"; Invoke-WebRequest https://github.com/maxmelichov/MamboDubb/releases/latest/download/MamboDubb_0.4.0_x64-setup.exe -OutFile $exe; Start-Process $exe
+$exe = "$env:TEMP\MamboDubb_0.5.0_x64-setup.exe"; Invoke-WebRequest https://github.com/maxmelichov/MamboDubb/releases/latest/download/MamboDubb_0.5.0_x64-setup.exe -OutFile $exe; Start-Process $exe
 ```
 
-The installer is unsigned, so SmartScreen shows "Windows protected your PC": click **More info**, then **Run anyway**. If your machine prefers an MSI, take [MamboDubb_0.4.0_x64_en-US.msi](https://github.com/maxmelichov/MamboDubb/releases/latest/download/MamboDubb_0.4.0_x64_en-US.msi) instead.
+The installer is unsigned, so SmartScreen shows "Windows protected your PC": click **More info**, then **Run anyway**. If your machine prefers an MSI, take [MamboDubb_0.5.0_x64_en-US.msi](https://github.com/maxmelichov/MamboDubb/releases/latest/download/MamboDubb_0.5.0_x64_en-US.msi) instead.
 
 **Linux (x64, Debian/Ubuntu, glibc 2.35+):**
 
 ```bash
-curl -LO https://github.com/maxmelichov/MamboDubb/releases/latest/download/MamboDubb_0.4.0_amd64.deb
-sudo apt install ./MamboDubb_0.4.0_amd64.deb
+curl -LO https://github.com/maxmelichov/MamboDubb/releases/latest/download/MamboDubb_0.5.0_amd64.deb
+sudo apt install ./MamboDubb_0.5.0_amd64.deb
 ```
 
 Or the AppImage, which needs the executable bit the download does not preserve:
 
 ```bash
-curl -LO https://github.com/maxmelichov/MamboDubb/releases/latest/download/MamboDubb_0.4.0_amd64.AppImage
-chmod +x MamboDubb_0.4.0_amd64.AppImage
-./MamboDubb_0.4.0_amd64.AppImage
+curl -LO https://github.com/maxmelichov/MamboDubb/releases/latest/download/MamboDubb_0.5.0_amd64.AppImage
+chmod +x MamboDubb_0.5.0_amd64.AppImage
+./MamboDubb_0.5.0_amd64.AppImage
 ```
 
 Both are unsigned CI builds, and the first run provisions about 10 GB into `%LOCALAPPDATA%\MamboDubb\workspace` or `~/.local/share/MamboDubb/workspace`; an NVIDIA GPU is what you want on either OS. Details: [docs/CROSS_PLATFORM.md](docs/CROSS_PLATFORM.md), [docs/WINDOWS.md](docs/WINDOWS.md).
