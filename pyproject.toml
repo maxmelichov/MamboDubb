@@ -59,6 +59,50 @@ app = [
     "httpx>=0.27",
     "python-multipart>=0.0.9",
 ]
+# GPU support on Windows. Everything a machine with an NVIDIA card needs and a
+# default `uv sync` does not give it.
+#
+# Two separate failures, one extra, because a user hits both in the same run.
+#
+# 1. **torch.** PyPI publishes a CUDA `torch` wheel for Linux and a CPU-only one
+#    for Windows. So a Windows user with a perfectly good card gets a pipeline
+#    where Demucs, pyannote, the speaker embeddings and TTS all run on the CPU,
+#    silently, because nothing about that is an error. A real one spent sixteen
+#    hours on the stem separation of a single video. The `[[tool.uv.index]]`
+#    below is where the CUDA build lives; PyPI does not carry it.
+# 2. **CTranslate2.** faster-whisper runs on CTranslate2, whose Windows wheel
+#    bundles neither cuBLAS nor cuDNN: it dlopens `cublas64_12.dll` by name at
+#    the first forward pass and reports "not found or cannot be loaded" when
+#    nothing in the process has made that name resolvable. On Linux the question
+#    never comes up, because the CUDA `torch` there drags the whole nvidia stack
+#    in as a dependency. The two wheels below put that stack back. They unpack
+#    to `site-packages\nvidia\{cublas,cudnn}\bin`, which `dubbing.nvlibs`
+#    hands to `os.add_dll_directory`.
+#
+# `cu12` and `cu126`, not `cu13`: the DLL CTranslate2 4.x asks for is versioned
+# into its name, and the name it asks for is cublas64_**12**.dll. A cu13 wheel
+# installs cublas64_13.dll, which is a different file answering a different
+# question, and a cu130 torch would bundle that one. Picking the CUDA 12 line
+# for both is what makes one install serve the ASR and everything else at once.
+#
+# An extra rather than plain dependencies because this is well over three
+# gigabytes and a Windows machine with no NVIDIA card has no use for any of it.
+# `install-server.ps1` asks for the extra when `nvidia-smi` says there is a
+# card. Every line is markered as well as extra'd, so `--extra cuda` on a Mac or
+# a Linux box resolves to nothing at all rather than to a download: uv's own
+# `uv sync --extra cuda` on macOS audits and installs zero packages.
+#
+# It has to be declared here rather than run as a `uv pip install` afterwards.
+# `uv run` re-syncs the environment to the lockfile before it runs anything, and
+# a pip-installed torch whose version string is `2.13.0+cu126` does not match
+# the locked `2.13.0`, so the very next `uv run mambodubb` would quietly put the
+# CPU wheel back. The advice this repo used to print had exactly that hole.
+cuda = [
+    "torch>=2.4.0 ; sys_platform == 'win32'",
+    "torchaudio ; sys_platform == 'win32'",
+    "nvidia-cublas-cu12>=12.4 ; sys_platform == 'win32'",
+    "nvidia-cudnn-cu12>=9 ; sys_platform == 'win32'",
+]
 
 [project.scripts]
 dub = "dubbing.cli:main"
@@ -87,7 +131,27 @@ override-dependencies = [
     "nvidia-cudnn-cu13>=9.24 ; sys_platform == 'linux'",
 ]
 
+# Where the CUDA torch wheels live. `explicit = true` means nothing resolves
+# from here unless a source below names it, so PyPI stays the index for the
+# other two hundred packages and for torch itself everywhere but the Windows
+# `cuda` extra.
+#
+# cu126 rather than the cu124 this repo used to print: download.pytorch.org has
+# no cu124 build of the torch this project locks, so the old advice installed
+# nothing or installed something years old. cu126 also happens to be the line
+# that bundles cublas64_12.dll, which is the file CTranslate2 goes looking for.
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
 [tool.uv.sources]
+# Gated on both the extra and the platform, so uv locks two torches: the PyPI
+# one for everybody, and the cu126 one for Windows-with-`--extra cuda`. uv works
+# out the conflict itself and records it in uv.lock; no `[tool.uv] conflicts`
+# block is needed because only one of the two variants is ever selectable.
+torch = [{ index = "pytorch-cu126", extra = "cuda", marker = "sys_platform == 'win32'" }]
+torchaudio = [{ index = "pytorch-cu126", extra = "cuda", marker = "sys_platform == 'win32'" }]
 qwen-tts = { path = "third_party/Qwen3-TTS", editable = true }
 mlx-lm = { git = "https://github.com/ml-explore/mlx-lm", rev = "cf10f962b7a20e63a6df43dbf0faf06070153d40" }
 

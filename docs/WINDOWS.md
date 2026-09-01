@@ -36,9 +36,12 @@ without needing Node on the machine, and starts the server. Rerunning it updates
 an existing checkout in place. It reads nothing from the keyboard, so it is safe
 to leave alone.
 
-It does **not** install the CUDA wheels: PyPI's default `torch` is CPU-only on
-Windows and swapping it is section 2's `uv pip install`, which the script prints
-for you when it finishes rather than choosing a CUDA version on your behalf.
+If `nvidia-smi` is on the machine it also syncs the `cuda` extra, which is the
+CUDA build of `torch` plus the cuBLAS and cuDNN wheels CTranslate2 needs. Without
+that, every model runs on the CPU and nothing says so (see [CUDA
+wheels](#cuda-wheels)). The script prints whether `torch.cuda.is_available()`
+came back true, so a GPU install that did not take is visible at the end of the
+install rather than at the end of a sixteen-hour dub.
 
 Nothing above downloads a model. That is **Setup → Install everything** on first
 run, about 25 GB, and it resumes if you interrupt it.
@@ -71,7 +74,7 @@ Python comes from `uv` (3.12), so no separate Python install is needed.
 ```powershell
 git clone --recurse-submodules https://github.com/maxmelichov/MamboDubb.git
 cd MamboDubb
-uv sync --extra app
+uv sync --extra app --extra cuda      # drop `--extra cuda` if there is no NVIDIA card
 copy .env.example .env      # nothing in it is required; diarization ships with the app
 ```
 
@@ -82,21 +85,47 @@ be a Python project" if you cloned without `--recurse-submodules`
 ### CUDA wheels
 
 PyPI's default `torch` wheel is **CPU-only on Windows** (on Linux it is a CUDA
-build). Install the CUDA build explicitly, or every model runs on the CPU and a
-five-minute video takes hours:
+build). Nothing about that is an error: the pipeline runs, every model loads,
+and a video that should take twenty minutes takes most of a day. One real run
+spent 57576 seconds, which is sixteen hours, on stem separation alone.
+
+The `cuda` extra is the fix, and it is one flag:
 
 ```powershell
-uv pip install --index-url https://download.pytorch.org/whl/cu124 torch torchaudio
+uv sync --extra app --extra cuda
 ```
+
+It installs two things that fail for two different reasons:
+
+* **The CUDA build of `torch`** (cu126, from `download.pytorch.org`), which is
+  what Demucs, pyannote, the speaker-embedding model and Qwen3-TTS all run on.
+  This is the one that costs the sixteen hours.
+* **`nvidia-cublas-cu12` and `nvidia-cudnn-cu12`**, which are for
+  faster-whisper. It runs on CTranslate2, whose Windows wheel bundles neither:
+  it loads `cublas64_12.dll` by name at the first forward pass, and without
+  these wheels the ASR reports `cuda unusable (Library cublas64_12.dll is not
+  found or cannot be loaded)` and drops to the CPU. Installing CUDA system wide
+  does **not** fix that, because since Python 3.8 the loader no longer searches
+  `PATH` for an extension module's dependent DLLs; `dubbing/nvlibs.py` is what
+  registers the wheel directories with `os.add_dll_directory` at startup.
+
+Use `uv sync --extra app --extra cuda` every time, not a bare `uv sync`: a plain
+sync removes the extra's packages again. For the same reason, do not install the
+CUDA torch with `uv pip install`, because `uv run` re-syncs the environment to the
+lockfile before it runs anything, so a pip-installed `2.13.0+cu126` is replaced
+by the locked CPU `2.13.0` at the very next launch. (This page used to recommend
+exactly that, with a `cu124` index that has no build of this project's torch.)
 
 Do the same inside the translator's own venv (`translator/`), which holds the
-12B translation model:
+12B translation model and is not part of the root project:
 
 ```powershell
-uv pip install --project translator --index-url https://download.pytorch.org/whl/cu124 torch
+uv pip install --project translator --index-url https://download.pytorch.org/whl/cu126 torch
 ```
 
-Check with `uv run python -c "import torch; print(torch.cuda.is_available())"`.
+Check with `uv run python -c "import torch; print(torch.cuda.is_available())"`,
+or open **Setup** in the studio: the **GPU acceleration** row says which torch
+build is installed, and appears only on machines that have an NVIDIA driver.
 
 ## 3. Run it
 

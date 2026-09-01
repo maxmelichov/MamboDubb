@@ -811,3 +811,179 @@ def test_the_manager_route_refreshes_path_before_it_re_probes(monkeypatch):
     inst2.start(install_mod.DIARIZATION_ID)
     assert inst2.wait(10.0)
     assert order == ["probe"]
+
+
+# ---------------------------------------------------------------------------
+# the GPU that was there all along
+# ---------------------------------------------------------------------------
+#
+# A real Windows user with an NVIDIA card ran a dub in which stem separation
+# took 57576 seconds, which is sixteen hours, because PyPI's `torch` wheel is a CUDA
+# build on Linux and a CPU-only build on Windows, and nothing anywhere said so.
+# The ASR was the only stage that noticed, and all it said was "cuda unusable
+# (Library cublas64_12.dll is not found or cannot be loaded) falling back to
+# cpu", which names a DLL nobody has ever installed on purpose.
+#
+# None of this can be run for real here: there is no Windows machine and no
+# NVIDIA GPU. What is testable is every decision made *before* the DLL is
+# loaded, and that is what these cover: which directories get registered, what
+# the fallback message tells the user to do, that the whole thing is inert on a
+# Mac, and that the detection cannot mistake a CPU-only torch for a CUDA one.
+
+from dubbing import nvlibs                                            # noqa: E402
+from dubbing_app import setup as setup_mod                            # noqa: E402
+
+
+def _fake_torch(tmp_path: Path, cuda: str | None) -> Path:
+    """A `torch/version.py` of the shape the real build script writes."""
+    d = tmp_path / "torch"
+    d.mkdir(parents=True, exist_ok=True)
+    literal = f"'{cuda}'" if cuda else "None"
+    (d / "version.py").write_text(
+        "__version__ = '2.13.0'\ndebug = False\n"
+        f"cuda: Optional[str] = {literal}\ngit_version = 'abc'\n", encoding="utf-8")
+    return d
+
+
+def test_a_cpu_only_torch_is_told_apart_from_a_cuda_one_without_importing_it(tmp_path):
+    """The Setup screen asks this on every poll, so it may not import torch.
+
+    The answer is a literal in a generated file, so reading the file is both
+    cheaper and exactly as true as importing half a gigabyte to ask.
+    """
+    assert nvlibs.torch_cuda_build(_fake_torch(tmp_path / "cpu", None)) is None
+    assert nvlibs.torch_cuda_build(_fake_torch(tmp_path / "gpu", "12.6")) == "12.6"
+    # No torch at all reads as no CUDA, not as a crash.
+    assert nvlibs.torch_cuda_build(tmp_path / "nothing") is None
+
+
+def test_the_asr_fallback_names_the_fix_for_the_platform_it_is_on(monkeypatch):
+    """"falling back to cpu" is a diagnosis. A user needs a prescription."""
+    monkeypatch.setattr(sys, "platform", WINDOWS)
+    win = nvlibs.cuda_hint()
+    assert "--extra cuda" in win and "WINDOWS.md" in win
+
+    # Linux gets a CUDA torch from PyPI, so the only thing that can be missing
+    # there is the CUDA 12 cuBLAS that CTranslate2 wants and torch's CUDA 13
+    # stack does not provide. Different fix, so a different sentence.
+    monkeypatch.setattr(sys, "platform", LINUX)
+    lin = nvlibs.cuda_hint()
+    assert "nvidia-cublas-cu12" in lin and "--extra cuda" not in lin
+
+    # And on a Mac there is no CUDA to repair. Silence rather than an
+    # instruction that would send a Mac user shopping for a graphics card.
+    monkeypatch.setattr(sys, "platform", MAC)
+    assert nvlibs.cuda_hint() == ""
+
+
+def test_the_dll_directories_are_the_wheel_ones_and_torchs_own(tmp_path, monkeypatch):
+    """PATH is not searched for an extension module's dependent DLLs on 3.8+.
+
+    So the directories have to be named. There are three sources and they are
+    not interchangeable: `nvidia/*/bin` is where the cuBLAS and cuDNN wheels
+    unpack, `nvidia/*/lib` is how a few of them spell the same thing, and
+    `torch/lib` is where a CUDA torch wheel drops its own copies.
+    """
+    site = tmp_path / "site-packages"
+    for rel in ("nvidia/cublas/bin", "nvidia/cudnn/bin", "nvidia/cusparse/lib",
+                "torch/lib"):
+        (site / rel).mkdir(parents=True)
+    fake_nvidia = type(sys)("nvidia")
+    fake_nvidia.__path__ = [str(site / "nvidia")]
+    monkeypatch.setitem(sys.modules, "nvidia", fake_nvidia)
+    monkeypatch.setattr(nvlibs, "_torch_dir", lambda: site / "torch")
+
+    found = {str(p) for p in nvlibs.windows_dll_dirs()}
+    assert found == {str(site / rel) for rel in
+                     ("nvidia/cublas/bin", "nvidia/cudnn/bin", "nvidia/cusparse/lib",
+                      "torch/lib")}
+
+
+def test_preload_is_a_no_op_off_linux_and_windows(monkeypatch):
+    """It runs at import of `dubbing/__main__.py` on every platform, so on a Mac
+    it has to do nothing at all rather than nothing much."""
+    monkeypatch.setattr(sys, "platform", MAC)
+    called = []
+    monkeypatch.setattr(nvlibs, "windows_dll_dirs", lambda: called.append(1) or [])
+    nvlibs.preload()                       # must not raise, must not look
+    assert called == []
+
+
+def test_the_gpu_warning_fires_only_on_the_machine_it_is_about(monkeypatch, capsys):
+    """A card, a driver, and a torch that cannot use either. Nothing else."""
+    monkeypatch.setattr(sys, "platform", WINDOWS)
+    monkeypatch.setattr(nvlibs, "nvidia_smi", lambda: r"C:\Windows\nvidia-smi.exe")
+    monkeypatch.setattr(nvlibs, "_torch_dir", lambda: Path("/torch"))
+    monkeypatch.setattr(nvlibs, "torch_cuda_build", lambda *_a: None)
+    assert nvlibs.warn_if_gpu_unused(once=False) is not None
+    printed = capsys.readouterr().err
+    assert "CPU-only" in printed and "--extra cuda" in printed
+
+    # A CUDA torch on the same machine: nothing to say.
+    monkeypatch.setattr(nvlibs, "torch_cuda_build", lambda *_a: "12.6")
+    assert nvlibs.warn_if_gpu_unused(once=False) is None
+
+    # No driver: no card, so a CPU-only torch is the correct install and
+    # warning about it would be telling every CPU box it is broken.
+    monkeypatch.setattr(nvlibs, "torch_cuda_build", lambda *_a: None)
+    monkeypatch.setattr(nvlibs, "nvidia_smi", lambda: None)
+    assert nvlibs.warn_if_gpu_unused(once=False) is None
+
+    # And a Mac is never asked, driver or not, because MPS is the GPU there.
+    monkeypatch.setattr(sys, "platform", MAC)
+    monkeypatch.setattr(nvlibs, "nvidia_smi", lambda: "/usr/bin/nvidia-smi")
+    assert nvlibs.warn_if_gpu_unused(once=False) is None
+
+
+def test_the_setup_row_appears_only_where_there_is_a_card_to_talk_about(monkeypatch):
+    """A permanently grey "not applicable" row is a line nobody needs twice."""
+    monkeypatch.setattr(sys, "platform", MAC)
+    assert setup_mod.gpu_check() is None
+
+    monkeypatch.setattr(sys, "platform", WINDOWS)
+    monkeypatch.setattr(nvlibs, "nvidia_smi", lambda: None)
+    assert setup_mod.gpu_check() is None
+
+    monkeypatch.setattr(nvlibs, "nvidia_smi", lambda: r"C:\nvidia-smi.exe")
+    monkeypatch.setattr(setup_mod, "gpu_memory_bytes", lambda **_k: 12 * 1024**3)
+
+    monkeypatch.setattr(nvlibs, "torch_cuda_build", lambda *_a: None)
+    bad = setup_mod.gpu_check()
+    assert bad["id"] == "gpu" and bad["ok"] is False
+    # Degrades, not blocking: the run does finish. And not optional either,
+    # which is the grade for something somebody chose.
+    assert bad["severity"] == setup_mod.DEGRADES and bad["required"] is False
+    assert "CPU-only" in bad["detail"] and "--extra cuda" in bad["detail"]
+
+    monkeypatch.setattr(nvlibs, "torch_cuda_build", lambda *_a: "12.6")
+    good = setup_mod.gpu_check()
+    assert good["ok"] is True and "12.6" in good["detail"]
+
+
+def test_the_installer_asks_for_the_cuda_extra_and_the_lock_can_answer():
+    """The two halves of the fix have to agree, and they live in two files.
+
+    `install-server.ps1` adds `--extra cuda` when `nvidia-smi` is there;
+    `pyproject.toml` is where that extra has to exist, with the CUDA torch (for
+    demucs and everything else torch drives) and the cuBLAS/cuDNN wheels (for
+    CTranslate2, which bundles neither). A rename on either side is a Windows
+    install that quietly resolves to the CPU wheels again.
+    """
+    root = Path(__file__).resolve().parents[1]
+    ps1 = (root / "install-server.ps1").read_text(encoding="utf-8")
+    assert "nvidia-smi" in ps1 and "'--extra', 'cuda'" in ps1
+    # And it must not print the advice it used to print: cu124 has no build of
+    # the torch this project locks, and `uv pip install` is undone by the next
+    # `uv run`, which re-syncs the venv to the lockfile.
+    assert "cu124" not in ps1
+    printed = [ln for ln in ps1.splitlines() if ln.strip().startswith("Info ")]
+    assert not [ln for ln in printed if "pip install" in ln]
+
+    pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert "\ncuda = [" in pyproject
+    for pkg in ("torch", "torchaudio", "nvidia-cublas-cu12", "nvidia-cudnn-cu12"):
+        assert f'"{pkg}' in pyproject.split("\ncuda = [")[1].split("]")[0]
+    # Every line of the extra is markered to Windows as well, so `--extra cuda`
+    # on a Mac or a Linux box resolves to nothing rather than to a download.
+    body = pyproject.split("\ncuda = [")[1].split("]")[0]
+    assert body.count("sys_platform == 'win32'") == 4

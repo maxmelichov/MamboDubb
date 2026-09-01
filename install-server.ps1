@@ -241,9 +241,51 @@ try {
     # else's dependency tree and not a promise. The `app` extra is where this
     # server's own dependencies are declared, and asking for it by name is what
     # keeps the install working on the day gradio drops one of them.
+    # `--extra cuda` on top, when there is a card to use it. PyPI's `torch` wheel
+    # is a CUDA build on Linux and a CPU-only build on Windows, so without this
+    # every model runs on the CPU on a machine that has a GPU: one real user's
+    # stem separation took sixteen hours, and nothing in the log said why,
+    # because a CPU-only torch is not an error anywhere. The extra also carries
+    # the cuBLAS and cuDNN wheels CTranslate2 needs and does not bundle.
+    #
+    # `nvidia-smi` is the probe for the same reason `dubbing_app/setup.py` uses
+    # it: it ships with the driver, it is on PATH on every machine that has one,
+    # and asking it costs nothing next to importing torch to find out. A card
+    # with no driver is not a card this software can use either way.
+    #
+    # This script used to print the CUDA swap as advice and leave it to the
+    # user. Two things were wrong with that: the version it named no longer
+    # exists on download.pytorch.org, and `uv pip install` is undone by the next
+    # `uv run`, which re-syncs the venv to the lockfile. The extra is in the
+    # lockfile, so it survives.
+    $Extras = @('--extra', 'app')
+    $HasNvidia = Have 'nvidia-smi'
+    if ($HasNvidia) {
+        Info 'NVIDIA driver found; including the CUDA wheels (a few GB more)'
+        $Extras += @('--extra', 'cuda')
+    }
+    else {
+        Info 'No nvidia-smi on this machine, so the CPU-only wheels are the right ones.'
+    }
+
     Info 'Resolving Python dependencies (several GB the first time)'
-    & $Uv sync --extra app
+    & $Uv sync @Extras
     if ($LASTEXITCODE -ne 0) { Die 'uv sync failed' }
+
+    # Say out loud whether it worked. A GPU install that silently did not take
+    # is the exact failure this whole block exists to end, so it is not allowed
+    # to end in a guess.
+    if ($HasNvidia) {
+        $cudaOk = & $Uv run python -c "import torch; print(torch.cuda.is_available())" 2>$null
+        if ("$cudaOk".Trim() -eq 'True') {
+            Info 'CUDA is available to torch.'
+        }
+        else {
+            Info 'warning: nvidia-smi is present but torch still reports no CUDA device.'
+            Info '  Usually a driver too old for CUDA 12.6. Update the NVIDIA driver and'
+            Info "  rerun this script; docs\WINDOWS.md has the details."
+        }
+    }
 
     # -----------------------------------------------------------------------
     # The web UI.
@@ -350,11 +392,12 @@ try {
     Info 'Start it again later with:'
     Info "    cd $Dir; & `"$Uv`" run mambodubb --port $Port"
     Info ''
-    Info 'With an NVIDIA card, install the CUDA build of PyTorch as well, because'
-    Info "PyPI's default wheel is CPU-only on Windows and every model would run on"
-    Info 'the CPU:'
-    Info "    & `"$Uv`" pip install --index-url https://download.pytorch.org/whl/cu124 torch torchaudio"
-    Info ''
+    if ($HasNvidia) {
+        Info 'The CUDA wheels are installed. If you ever run a plain `uv sync`, it'
+        Info 'will remove them again; the line that keeps them is:'
+        Info "    & `"$Uv`" sync --extra app --extra cuda"
+        Info ''
+    }
     Info 'First run: open Setup in the editor and press Install everything. That is'
     Info 'about 25 GB of models, and it resumes where it left off if you interrupt it.'
     Info ''

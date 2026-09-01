@@ -126,10 +126,12 @@ powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/max
 `install-server.ps1` installs `git`, `ffmpeg` and `sox` through the winget ids
 `dubbing/tools.py` names, clones the latest release tag with its submodule into
 `%USERPROFILE%\MamboDubb`, downloads `uv` from GitHub with its published SHA-256
-verified, runs `uv sync --extra app`, puts the built web UI in `app\ui\dist`, and
-serves on 4400. It reads nothing from the keyboard. What it deliberately leaves to
-you is the CUDA `torch` swap, which it prints rather than choosing a CUDA version
-on your behalf ([WINDOWS.md](WINDOWS.md#cuda-wheels)).
+verified, runs `uv sync --extra app` (plus `--extra cuda` when `nvidia-smi` says
+there is a card), puts the built web UI in `app\ui\dist`, and serves on 4400. It
+reads nothing from the keyboard. It used to print the CUDA `torch` swap as advice
+and leave it to you; that advice named an index with no build of this project's
+torch, and `uv pip install` was undone by the next `uv run` anyway, so the CUDA
+wheels are a declared extra now ([WINDOWS.md](WINDOWS.md#cuda-wheels)).
 
 **That script has never been run on Windows.** No machine here can run it, and this
 document does not pretend otherwise. What has been done: it parses clean under
@@ -252,7 +254,13 @@ The provisioned workspace lives in `~/.local/share/MamboDubb/workspace`.
   command per OS (`brew` / `winget` / `apt-get`), resolves tools with a `.exe` suffix on
   Windows, and forces UTF-8 stdio there. `pyproject.toml` markers keep `mlx-lm` on macOS
   only. Device selection is `cuda` → `mps` → `cpu` everywhere it appears
-  (`dubbing/segments.py`, `dubbing/tts.py`); there is no hard MPS assumption.
+  (`dubbing/segments.py`, `dubbing/tts.py`); there is no hard MPS assumption. Loading
+  the CUDA libraries is `dubbing/nvlibs.py`, which is one module for three platforms:
+  Linux preloads the wheel's cuDNN by absolute path so a mismatched system copy cannot
+  answer, and Windows hands the wheel directories to `os.add_dll_directory` because
+  since Python 3.8 the loader does not search `PATH` for an extension module's
+  dependent DLLs. That second one is why a Windows box with CUDA installed system wide
+  still reported `Library cublas64_12.dll is not found or cannot be loaded`.
 
 ## Open items
 
@@ -263,11 +271,14 @@ The provisioned workspace lives in `~/.local/share/MamboDubb/workspace`.
    packages are conventionally unsigned; the `.deb`/`.AppImage` would be fine as-is.
 2. **Inference speed off a GPU.** The pipeline picks CUDA if it is there, then MPS, then
    CPU. A Windows or Linux box with an NVIDIA card is the good case, but PyPI's default
-   `torch` wheel is **CPU-only on Windows**, so a Windows user must install the CUDA
-   build explicitly ([WINDOWS.md](WINDOWS.md#cuda-wheels)) or every model runs on the CPU
-   and a five-minute video takes hours. On a CPU-only machine of any OS the app *works*
-   and is unusably slow for anything but a short clip. The app does not currently warn
-   about this at setup time.
+   `torch` wheel is **CPU-only on Windows**, so the CUDA build comes from the `cuda`
+   extra ([WINDOWS.md](WINDOWS.md#cuda-wheels)) and without it every model runs on the
+   CPU: one real run spent sixteen hours on stem separation alone. On a CPU-only machine
+   of any OS the app *works* and is unusably slow for anything but a short clip. The
+   silence is fixed in three places now: `install-server.ps1` syncs the extra when
+   `nvidia-smi` is present and says whether CUDA came back available, the run prints a
+   warning at startup and again at the stem stage when the driver is there and torch is
+   a CPU build, and Setup carries a **GPU acceleration** row on machines with a driver.
 3. **No Windows or Linux *bundle* exists, because CI has never run.** The source
    installers above close the gap for users, but a `.exe` and a `.deb` are still the
    thing most people expect, and lifting the account-level Actions block is what

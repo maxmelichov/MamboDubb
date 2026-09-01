@@ -35,7 +35,7 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
-from . import script
+from . import nvlibs, script
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 # Hebrew keeps its dedicated fine-tune; every other source reads with the
@@ -357,48 +357,20 @@ def _cuda_usable() -> bool:
         return False
 
 
-def _cudnn_on_path() -> None:
-    """Make the nvidia-cudnn wheel's libs findable before CTranslate2 dlopens them.
+def _cuda_libs_on_path() -> None:
+    """Register the CUDA library directories before CTranslate2 dlopens them.
 
-    The cuDNN that ships alongside torch lives inside the `nvidia.cudnn` package,
-    which is not on the default library search path. Preload its libraries and
-    prepend the dir to LD_LIBRARY_PATH; harmless no-op when the wheel is absent.
+    Delegates to `dubbing.nvlibs`, which is where this now lives for all three
+    platforms and both loaders. It used to be a second, cuDNN-only copy here,
+    and that is exactly why a real Windows user got "Library cublas64_12.dll is
+    not found or cannot be loaded": cuBLAS is a different wheel in a different
+    directory, and a function named after cuDNN never looked at it.
 
-    Windows is the same problem with different spelling: the DLLs sit in
-    `nvidia/cudnn/bin`, `LD_LIBRARY_PATH` means nothing, and since 3.8 a DLL
-    directory has to be declared with `os.add_dll_directory`. Same intent, so it
-    lives here rather than in a second half-copy of this function elsewhere.
+    Still called here even though `dubbing/__main__.py` has already done it at
+    startup, because the studio server imports this module without going through
+    `__main__` at all. Registering a directory twice is harmless.
     """
-    try:
-        import ctypes
-        import glob
-        import os
-
-        import nvidia.cudnn
-
-        # A namespace package: __file__ is None, __path__ holds the real dir.
-        pkg_dir = next(iter(nvidia.cudnn.__path__), None)
-        if pkg_dir is None:
-            return
-        if sys.platform == "win32":
-            for sub in ("bin", "lib"):
-                d = Path(pkg_dir).resolve() / sub
-                if d.is_dir():
-                    os.add_dll_directory(str(d))
-            return
-        lib = Path(pkg_dir).resolve() / "lib"
-        if not lib.is_dir():
-            return
-        current = os.environ.get("LD_LIBRARY_PATH", "")
-        if str(lib) not in current.split(":"):
-            os.environ["LD_LIBRARY_PATH"] = f"{lib}:{current}" if current else str(lib)
-        for so in sorted(glob.glob(str(lib / "libcudnn*.so.*"))):
-            try:
-                ctypes.CDLL(so, mode=ctypes.RTLD_GLOBAL)
-            except OSError:
-                pass
-    except Exception:
-        pass
+    nvlibs.preload()
 
 
 def load_whisper(model_path: str, *, label: str = "ASR",
@@ -416,7 +388,7 @@ def load_whisper(model_path: str, *, label: str = "ASR",
 
     if _cuda_usable():
         try:
-            _cudnn_on_path()
+            _cuda_libs_on_path()
             model = WhisperModel(model_path, device="cuda", compute_type="float16")
             import numpy as np
 
@@ -426,8 +398,16 @@ def load_whisper(model_path: str, *, label: str = "ASR",
             print(f"  {label}: {model_path} (cuda, float16)", file=sys.stderr)
             return model
         except Exception as exc:
-            print(f"  {label}: cuda unusable ({exc}) falling back to cpu",
-                  file=sys.stderr)
+            # The old line stopped at "falling back to cpu", which tells a user
+            # what happened and leaves them with nowhere to go: the missing
+            # library is named by CTranslate2, not by us, and "cublas64_12.dll"
+            # is not a thing anybody knows how to install. The hint names the
+            # command for this platform, and is empty on macOS where CUDA was
+            # never on offer and pretending otherwise would be a lie.
+            hint = nvlibs.cuda_hint()
+            tail = f" To fix it, {hint}." if hint else ""
+            print(f"  {label}: cuda unusable ({exc}) falling back to cpu."
+                  f"{tail}", file=sys.stderr)
     kwargs: dict[str, Any] = {"cpu_threads": cpu_threads} if cpu_threads else {}
     model = WhisperModel(model_path, device="cpu", compute_type="auto", **kwargs)
     print(f"  {label}: {model_path} (cpu)", file=sys.stderr)

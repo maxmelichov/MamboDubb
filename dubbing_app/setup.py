@@ -1000,6 +1000,49 @@ def low_vram_check(env_file: Path | None = None) -> dict[str, Any]:
                  severity=OPTIONAL, enabled=enabled, source=source, path=str(path))
 
 
+def gpu_check() -> dict[str, Any] | None:
+    """Whether this machine's torch can actually use the card it has.
+
+    Returns None, and so shows no row at all, unless there is an NVIDIA driver
+    here. That is the whole rule: on a Mac and on a box with no card there is
+    nothing to be disappointed about, and a permanently grey "GPU acceleration:
+    not applicable" row is a line every user reads once and nobody ever needs.
+
+    It earns its place on the machines where it does appear because the failure
+    it names is otherwise invisible. PyPI's `torch` is a CUDA build on Linux and
+    a CPU-only build on Windows, so a Windows user who ran a plain `uv sync`
+    gets a pipeline where every model runs on the CPU and *nothing raises*:
+    there is no exception, no red stage, no failed run, only a dub that takes
+    sixteen hours instead of twenty minutes. Setup is the screen where somebody
+    goes to ask "is this machine ready", and until now it could answer yes to a
+    machine that was about to waste their day.
+
+    `severity=DEGRADES` rather than blocking: the run does finish. It is also
+    not `optional`, which is the grade for a setting somebody chose; nobody
+    chose this.
+
+    Asked of the filesystem, never of torch. Rule one of this module is that the
+    report answers in milliseconds and can be polled, and importing torch in the
+    server process to read one boolean would cost half a gigabyte resident on
+    every poll (see `gpu_memory_bytes`). `nvlibs.torch_cuda_build` reads the
+    answer out of `torch/version.py` as text instead.
+    """
+    from dubbing import nvlibs
+
+    if sys.platform == "darwin" or not nvlibs.nvidia_smi():
+        return None
+    build = nvlibs.torch_cuda_build()
+    vram = gpu_memory_bytes()
+    card = f"{human_bytes(vram)} of VRAM" if vram else "an NVIDIA driver"
+    if build is None:
+        detail = (f"{card} is here, but the installed torch is a CPU-only build, "
+                  f"so every model runs on the CPU. {nvlibs.cuda_hint()}")
+        return check("gpu", "GPU acceleration", False, detail, severity=DEGRADES)
+    return check("gpu", "GPU acceleration", True,
+                 f"{card}, and torch is the CUDA {build} build",
+                 severity=DEGRADES)
+
+
 def disk_check(outputs: Path) -> dict[str, Any]:
     """Free space where runs are written. Informational: the number matters more
     than the verdict, and "enough" depends on how long the video is."""
@@ -1504,6 +1547,12 @@ def report(outputs: Path) -> dict[str, Any]:
     # Last, beside the other row about this machine rather than about a file:
     # it is the only one that is a choice, and it reads as a footnote to the
     # model list above it, which is what it is.
+    # The two rows about this machine rather than about a file, in that order:
+    # whether the card is usable at all, and then which translator weights fit
+    # on it. The second reads as a footnote to the first, which is what it is.
+    gpu = gpu_check()
+    if gpu is not None:
+        checks.append(gpu)
     checks.append(low_vram_check())
     for c in checks:
         c["installable"] = installable(c["id"]) or c["id"] in downloads
@@ -1594,7 +1643,7 @@ def install_plan(report_: dict[str, Any]) -> list[dict[str, Any]]:
 __all__ = ["report", "probe", "install_plan", "git_commit", "human_bytes", "dir_size", "env_path",
            "env_file_value", "find_uv", "uv_exe", "uv_fallbacks", "uv_home",
            "uv_on_path", "UV_FALLBACKS", "UV_PATH_ENV", "default_cache_home",
-           "gpu_memory_bytes", "hf_hub_cache", "demucs_signatures", "demucs_check",
+           "gpu_check", "gpu_memory_bytes", "hf_hub_cache", "demucs_signatures", "demucs_check",
            "hf_cache_repo", "diarization_repair", "index_shards", "model_ready",
            "fetch_in_flight", "record_install", "install_recorded", "INSTALL_RECEIPT",
            "low_vram_check", "low_vram_env_key", "low_vram_state", "model_downloads",

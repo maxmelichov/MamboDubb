@@ -209,7 +209,7 @@ def _picked(monkeypatch, fake):
     fake.calls = []
     monkeypatch.setattr(faster_whisper, "WhisperModel", fake)
     monkeypatch.setattr(transcript, "_cuda_usable", lambda: True)
-    monkeypatch.setattr(transcript, "_cudnn_on_path", lambda: None)
+    monkeypatch.setattr(transcript, "_cuda_libs_on_path", lambda: None)
     return fake
 
 

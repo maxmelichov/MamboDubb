@@ -25,7 +25,15 @@ def run(m: dict[str, Any], workdir: Path) -> None:
     stems.mkdir(parents=True, exist_ok=True)
     scratch = workdir / "_demucs"
 
-    print(f"  stems: demucs {MODEL} on {source.name} (slow, cached)", file=sys.stderr)
+    # The device is named because this is the stage where getting it wrong is
+    # expensive enough to be worth a line of log: the same separation is minutes
+    # on a GPU and most of a day on a CPU, and the run that made this comment
+    # necessary spent sixteen hours here without printing anything a reader
+    # could have used to tell which one was happening.
+    device = nvlibs.torch_device()
+    print(f"  stems: demucs {MODEL} on {source.name} ({device}, slow, cached)",
+          file=sys.stderr)
+    nvlibs.warn_if_gpu_unused()
     subprocess.run(
         [sys.executable, "-m", "demucs", "--two-stems=vocals", "-n", MODEL,
          "-o", str(scratch), str(source)],
