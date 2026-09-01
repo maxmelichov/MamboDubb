@@ -694,7 +694,17 @@ def _model_location(path: Path, hub: str, hub_cached: bool,
     """
     present = path.is_dir() and any(path.iterdir())
     where = path
-    if not present and hub and hub_cached:
+    # The cache can only stand in for the local directory when the loader would
+    # actually reach the cache. Every loader picks its source the same way,
+    # `str(local) if local.is_dir() else hub` (translate.py, tts.py,
+    # transcript.py), so an existing directory wins even when it is empty: the
+    # hub id is never consulted and the library is handed a directory with
+    # nothing in it. Consulting the cache for that case turned an empty
+    # `models/<dir>` plus an unrelated cached copy into a READY row for a load
+    # that could not succeed, which is a worse answer than the red row it
+    # replaced.
+    empty_local_dir_wins = path.is_dir()
+    if not present and hub and hub_cached and not empty_local_dir_wins:
         cached = hf_cache_repo(hub)
         if cached is not None:
             present, where = True, cached
@@ -1334,14 +1344,26 @@ def hf_cache_repo(hub: str) -> Path | None:
     bytes of it. The second of the two places `model()` looks, and the one a
     hub-id load actually fills.
 
-    "Holds it" is `blobs/` with something in it, not merely the directory
-    existing: an interrupted or metadata-only fetch leaves the `models--*` shell
-    behind, and calling that present would be the opposite failure to the one
-    this exists to fix.
+    "Holds it" is `blobs/` with a *finished* blob in it, not merely the
+    directory existing and not merely something being in it. Two different
+    failures sit either side of this line:
+
+    * An interrupted or metadata-only fetch leaves the `models--*` shell behind,
+      so the directory existing proves nothing.
+    * `huggingface_hub` writes every download in progress into that same
+      `blobs/` as `<etag>.incomplete`, opened for append before the first byte
+      arrives (`file_download.py`, `incomplete_path`). So "something is in
+      blobs/" is true from the moment a download starts, and a 9.7 GB translator
+      that died at one percent used to answer this call with a repo, flip its
+      BLOCKING row green, and let Setup call the machine ready for a run that
+      then failed at translate. An empty `blobs/` is not the state that needs
+      catching; a `blobs/` holding nothing but partials is.
     """
     repo = hf_hub_cache() / f"models--{hub.replace('/', '--')}"
     blobs = repo / "blobs"
-    if repo.is_dir() and blobs.is_dir() and any(blobs.iterdir()):
+    if not (repo.is_dir() and blobs.is_dir()):
+        return None
+    if any(b.suffix != ".incomplete" for b in blobs.iterdir()):
         return repo
     return None
 

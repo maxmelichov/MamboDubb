@@ -987,3 +987,158 @@ def test_the_installer_asks_for_the_cuda_extra_and_the_lock_can_answer():
     # on a Mac or a Linux box resolves to nothing rather than to a download.
     body = pyproject.split("\ncuda = [")[1].split("]")[0]
     assert body.count("sys_platform == 'win32'") == 4
+
+
+# --- Setup's two "ready" lies, both found by review ---------------------------
+
+
+def _hf_repo(cache, hub, *blobs):
+    """A Hugging Face cache repo holding exactly `blobs`, by file name."""
+    repo = cache / f"models--{hub.replace('/', '--')}"
+    (repo / "blobs").mkdir(parents=True)
+    for name in blobs:
+        (repo / "blobs" / name).write_bytes(b"x" * 16)
+    return repo
+
+
+def test_a_download_still_running_is_not_a_model_in_the_cache(tmp_path, monkeypatch):
+    """`huggingface_hub` opens `<etag>.incomplete` in blobs/ before the first
+    byte lands, so "blobs/ has something in it" is true one percent into a 9.7 GB
+    fetch. Counting that as present is how Setup called a machine ready for a run
+    that then died at translate."""
+    from dubbing_app import setup
+
+    monkeypatch.setattr(setup, "hf_hub_cache", lambda: tmp_path)
+    _hf_repo(tmp_path, "org/model", "abc123.incomplete")
+    assert setup.hf_cache_repo("org/model") is None
+
+
+def test_a_finished_blob_beside_a_partial_still_counts(tmp_path, monkeypatch):
+    """The other side of the same line: a repo part-way through its second file
+    has real bytes on disk, and `model_ready`'s size floor is what grades those.
+    Refusing the repo outright would swap one wrong answer for another."""
+    from dubbing_app import setup
+
+    monkeypatch.setattr(setup, "hf_hub_cache", lambda: tmp_path)
+    repo = _hf_repo(tmp_path, "org/model", "done1", "abc123.incomplete")
+    assert setup.hf_cache_repo("org/model") == repo
+
+
+def test_an_empty_models_dir_is_not_rescued_by_the_cache(tmp_path, monkeypatch):
+    """Every loader is `str(local) if local.is_dir() else hub`, so an empty
+    directory wins over the hub id and the library is handed nothing. A cached
+    copy cannot save that load, so it must not turn the row green either."""
+    from dubbing_app import setup
+
+    monkeypatch.setattr(setup, "hf_hub_cache", lambda: tmp_path / "hf")
+    (tmp_path / "hf").mkdir()
+    _hf_repo(tmp_path / "hf", "org/model", "done1")
+    empty = tmp_path / "models" / "model"
+    empty.mkdir(parents=True)
+
+    where, size, state = setup._model_location(
+        empty, "org/model", True, 0)
+    assert state == setup.MISSING
+    assert where == empty
+
+
+def test_a_missing_models_dir_is_still_rescued_by_the_cache(tmp_path, monkeypatch):
+    """The case the fallback exists for is untouched: no local directory at all
+    means the loader does reach the hub id, and the cache is where that lands."""
+    from dubbing_app import setup
+
+    monkeypatch.setattr(setup, "hf_hub_cache", lambda: tmp_path / "hf")
+    (tmp_path / "hf").mkdir()
+    repo = _hf_repo(tmp_path / "hf", "org/model", "done1")
+
+    where, size, state = setup._model_location(
+        tmp_path / "models" / "model", "org/model", True, 0)
+    assert where == repo
+    assert state != setup.MISSING
+
+
+def test_the_installer_never_runs_uv_without_the_extras_it_synced():
+    """A bare `uv run` is a re-sync without the extra, and the torch the lock
+    names without `--extra cuda` is the CPU wheel.
+
+    The first cut of the installer synced with the extras and then ran two
+    bare `uv run`s: one to *check* that CUDA had taken, one to start the
+    server. Either would have put the CPU torch back, and the check would then
+    have reported the very failure it had just caused. So every `uv run` in
+    the script either carries the extras it synced or says `--no-sync`.
+    """
+    root = Path(__file__).resolve().parents[1]
+    ps1 = (root / "install-server.ps1").read_text(encoding="utf-8")
+    runs = [ln for ln in ps1.splitlines()
+            if "$Uv" in ln and " run " in ln and not ln.strip().startswith("#")]
+    assert runs, "expected the installer to run uv at least once"
+    for ln in runs:
+        assert "@Extras" in ln or "--no-sync" in ln or "$Extras" in ln, ln
+    # And the translator venv, which has its own torch, is synced with the
+    # same extra rather than left for the first translate stage to create.
+    assert "--project (Join-Path $Dir 'translator')" in ps1
+    assert "@TranslatorExtras" in ps1
+
+
+def test_the_stem_stage_names_a_device_without_loading_torch_to_ask(monkeypatch):
+    """The stems process spawns a demucs child that loads torch itself. The
+    parent naming the device by importing torch too would keep a second copy
+    resident for the whole separation, on the machines with the least memory."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_torch(name, *args, **kwargs):
+        if name == "torch" or name.startswith("torch."):
+            raise AssertionError("torch_device imported torch")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_torch)
+
+    monkeypatch.setattr(sys, "platform", MAC)
+    monkeypatch.setattr(nvlibs.platform, "machine", lambda: "arm64")
+    assert nvlibs.torch_device() == "mps"
+    monkeypatch.setattr(nvlibs.platform, "machine", lambda: "x86_64")
+    assert nvlibs.torch_device() == "cpu"
+
+    monkeypatch.setattr(sys, "platform", WINDOWS)
+    monkeypatch.setattr(nvlibs, "nvidia_smi", lambda: r"C:\Windows\System32\nvidia-smi.exe")
+    monkeypatch.setattr(nvlibs, "torch_cuda_build", lambda *_a: "12.6")
+    assert nvlibs.torch_device() == "cuda"
+    # A driver with a CPU-only torch is the sixteen-hour case, and it says cpu.
+    monkeypatch.setattr(nvlibs, "torch_cuda_build", lambda *_a: None)
+    assert nvlibs.torch_device() == "cpu"
+    monkeypatch.setattr(nvlibs, "nvidia_smi", lambda: None)
+    monkeypatch.setattr(nvlibs, "torch_cuda_build", lambda *_a: "12.6")
+    assert nvlibs.torch_device() == "cpu"
+
+
+def test_the_translator_launch_line_carries_the_cuda_extra_on_a_windows_card(monkeypatch):
+    """The translator venv has its own torch, CPU-only from PyPI on Windows.
+    The flag follows the machine, because its job is to change the venv."""
+    from dubbing import translate
+
+    monkeypatch.setattr(translate, "_vllm_installed", lambda: False)
+    monkeypatch.setattr(translate, "_lowvram_extra", lambda low: False)
+
+    monkeypatch.setattr(sys, "platform", WINDOWS)
+    monkeypatch.setattr(nvlibs, "nvidia_smi", lambda: r"C:\Windows\System32\nvidia-smi.exe")
+    cmd = translate._worker_cmd("transformers")
+    assert cmd[cmd.index("--extra") + 1] == "cuda"
+
+    # No card: no flag, no three-gigabyte download for nothing.
+    monkeypatch.setattr(nvlibs, "nvidia_smi", lambda: None)
+    assert "--extra" not in translate._worker_cmd("transformers")
+    # Linux gets a CUDA torch from PyPI already; the extra resolves to nothing
+    # there and the line does not carry it.
+    monkeypatch.setattr(sys, "platform", LINUX)
+    monkeypatch.setattr(nvlibs, "nvidia_smi", lambda: "/usr/bin/nvidia-smi")
+    assert "--extra" not in translate._worker_cmd("transformers")
+
+    # And the extra it names has to exist in the translator's own pyproject,
+    # markered to Windows, from the same CUDA 12 index as the root project.
+    root = Path(__file__).resolve().parents[1]
+    toml = (root / "translator" / "pyproject.toml").read_text(encoding="utf-8")
+    body = toml.split("\ncuda = [")[1].split("]")[0]
+    assert '"torch' in body and "sys_platform == 'win32'" in body
+    assert "download.pytorch.org/whl/cu126" in toml
