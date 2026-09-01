@@ -109,21 +109,25 @@ It installs two things that fail for two different reasons:
   `PATH` for an extension module's dependent DLLs; `dubbing/nvlibs.py` is what
   registers the wheel directories with `os.add_dll_directory` at startup.
 
-Use `uv sync --extra app --extra cuda` every time, not a bare `uv sync`: a plain
-sync removes the extra's packages again. For the same reason, do not install the
-CUDA torch with `uv pip install`, because `uv run` re-syncs the environment to the
-lockfile before it runs anything, so a pip-installed `2.13.0+cu126` is replaced
-by the locked CPU `2.13.0` at the very next launch. (This page used to recommend
-exactly that, with a `cu124` index that has no build of this project's torch.)
+Keep `--extra app --extra cuda` on every `uv sync` **and every `uv run`**. A bare
+one syncs to the lockfile as if the extra had never been asked for, and removes
+what it brought: the CUDA `torchaudio` and the cuBLAS and cuDNN wheels the speech
+recogniser loads. For the same reason, do not add anything with `uv pip install`
+and expect it to last: `uv run` re-syncs the environment to the lockfile before
+it runs anything, and whatever the lock does not name is removed at the next
+launch. (This page used to recommend exactly that for torch, with a `cu124` index
+that has no build of this project's torch.)
 
-Do the same inside the translator's own venv (`translator/`), which holds the
-12B translation model and is not part of the root project:
+The translator has its own venv (`translator/`) with its own torch. Its lockfile
+sends Windows to the CUDA build of torch on its own, with no flag to remember:
+the installer syncs it, and a bare `uv run --project translator` gets the card.
+By hand:
 
 ```powershell
-uv pip install --project translator --index-url https://download.pytorch.org/whl/cu126 torch
+uv sync --project translator
 ```
 
-Check with `uv run python -c "import torch; print(torch.cuda.is_available())"`,
+Check with `uv run --no-sync python -c "import torch; print(torch.cuda.is_available())"`,
 or open **Setup** in the studio: the **GPU acceleration** row says which torch
 build is installed, and appears only on machines that have an NVIDIA driver.
 
@@ -139,7 +143,7 @@ The studio server, with the UI built once (Node 20+ and pnpm, via `winget instal
 
 ```powershell
 cd app\ui; pnpm install; pnpm build; cd ..\..
-uv run mambodubb --port 4400        # → http://127.0.0.1:4400
+uv run --extra app --extra cuda mambodubb --port 4400   # → http://127.0.0.1:4400
 ```
 
 Node is only needed for that first line, and only when the release you installed

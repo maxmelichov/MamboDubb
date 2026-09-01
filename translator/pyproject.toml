@@ -50,3 +50,25 @@ vllm = [
 lowvram = [
     "bitsandbytes>=0.45",
 ]
+# Windows: the CUDA build of torch, unconditionally. PyPI's `torch` is CPU-only
+# on Windows, and this venv has its own torch, so nothing the root project does
+# reaches the 12B model that runs here: it would decode on the CPU while every
+# other stage used the card. The source below sends Windows to the PyTorch
+# CUDA 12 index for torch and leaves Linux (where PyPI's torch is already a
+# CUDA build) and macOS (where this worker never runs) on PyPI.
+#
+# A platform marker and not an extra, on purpose. Gating the index on an extra
+# was tried first and uv unified every non-Mac platform onto the CUDA 12 wheel,
+# Linux included, which would have moved the Linux translator off the CUDA 13
+# stack the root project pins for a cuDNN bug. A plain marker forks exactly
+# where it says. The cost is a bigger download on a Windows machine with no
+# NVIDIA card, and that build still runs on the CPU there, so nothing is lost
+# but bandwidth. It also means no launch line has to remember a flag: a bare
+# `uv run --project translator` on Windows gets the CUDA torch.
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu126", marker = "sys_platform == 'win32'" }]

@@ -272,11 +272,26 @@ try {
     & $Uv sync @Extras
     if ($LASTEXITCODE -ne 0) { Die 'uv sync failed' }
 
+    # The translator is a second uv project with a second torch (translator\
+    # pyproject.toml explains why it cannot share the main venv). Its own
+    # lockfile sends Windows to the CUDA build of torch, so no flag is needed
+    # here; it is synced now rather than left for the first translate stage,
+    # which is otherwise where a multi-gigabyte download would land, in the
+    # middle of a run.
+    Info 'Resolving the translator venv (the 12B translation model runs there)'
+    & $Uv sync --project (Join-Path $Dir 'translator')
+    if ($LASTEXITCODE -ne 0) { Die 'uv sync for the translator failed' }
+
     # Say out loud whether it worked. A GPU install that silently did not take
     # is the exact failure this whole block exists to end, so it is not allowed
     # to end in a guess.
     if ($HasNvidia) {
-        $cudaOk = & $Uv run python -c "import torch; print(torch.cuda.is_available())" 2>$null
+        # --no-sync, because a bare `uv run` re-syncs to the lockfile without
+        # the extras that were just installed, and removes what they brought:
+        # the CUDA torchaudio and the cuBLAS and cuDNN wheels the speech
+        # recogniser loads. The check that proves the install took must not be
+        # the thing that takes part of it away.
+        $cudaOk = & $Uv run --no-sync python -c "import torch; print(torch.cuda.is_available())" 2>$null
         if ("$cudaOk".Trim() -eq 'True') {
             Info 'CUDA is available to torch.'
         }
@@ -390,12 +405,12 @@ try {
     Info ''
     Info "Installed in $Dir"
     Info 'Start it again later with:'
-    Info "    cd $Dir; & `"$Uv`" run mambodubb --port $Port"
+    Info "    cd $Dir; & `"$Uv`" run $($Extras -join ' ') mambodubb --port $Port"
     Info ''
     if ($HasNvidia) {
-        Info 'The CUDA wheels are installed. If you ever run a plain `uv sync`, it'
-        Info 'will remove them again; the line that keeps them is:'
-        Info "    & `"$Uv`" sync --extra app --extra cuda"
+        Info 'Keep `--extra app --extra cuda` on every uv sync and uv run. A bare one'
+        Info 'syncs to the lockfile without the extra and removes what it brought: the'
+        Info 'CUDA torchaudio and the cuBLAS and cuDNN wheels the speech recogniser loads.'
         Info ''
     }
     Info 'First run: open Setup in the editor and press Install everything. That is'
@@ -411,7 +426,7 @@ try {
     # browser opened first lands on a connection refused page that reads like a
     # failed install. The address is printed instead, once, and it stays true.
     Info "Starting the studio on http://127.0.0.1:$Port (Ctrl-C to stop)"
-    & $Uv run mambodubb --port $Port
+    & $Uv run @Extras mambodubb --port $Port
 }
 finally {
     Remove-Item $Work -Recurse -Force -ErrorAction SilentlyContinue

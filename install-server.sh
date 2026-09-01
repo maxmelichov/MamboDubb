@@ -271,6 +271,13 @@ info "Using uv at $UV"
 info "Resolving Python dependencies (several GB the first time)"
 "$UV" sync --extra app || die "uv sync failed"
 
+# The translator is a second uv project with its own venv (translator/
+# pyproject.toml says why it cannot share this one). Synced here rather than
+# left for the first translate stage to create, which is otherwise where a
+# multi-gigabyte torch download lands, in the middle of a run.
+info "Resolving the translator venv (the 12B translation model runs there)"
+"$UV" sync --project "$DIR/translator" || die "uv sync for the translator failed"
+
 # ---------------------------------------------------------------------------
 # The web UI.
 # ---------------------------------------------------------------------------

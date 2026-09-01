@@ -67,10 +67,11 @@ What you get in the browser is the whole studio and not a reduced version of it:
 
 Then open **Setup** and press **Install everything**. That is where the models come from, about 25 GB of them, and none of it is downloaded before you press the button. It resumes where it left off if you interrupt it. The button carries the total in GB before you press it, and each row keeps its own button if you would rather take one thing at a time.
 
-On Windows, an NVIDIA card also wants the CUDA build of PyTorch installed explicitly, because PyPI's default wheel is CPU-only there and every model would otherwise run on the CPU. The Windows installer reminds you of it when it finishes:
+On Windows with an NVIDIA card, the installer also puts in the CUDA build of PyTorch and the CUDA libraries the speech recogniser needs, because PyPI's default wheel is CPU-only there and every model would otherwise run on the CPU. It decides by whether `nvidia-smi` is on the machine. If you sync by hand later, keep the extra on the line, because a bare sync removes what the extra brought:
 
 ```powershell
-uv pip install --index-url https://download.pytorch.org/whl/cu124 torch torchaudio
+uv sync --extra app --extra cuda
+uv run --extra app --extra cuda mambodubb --port 4400
 ```
 
 WSL2 is the smoother path on Windows if you have it. Details: [docs/SERVER.md](docs/SERVER.md), [docs/WINDOWS.md](docs/WINDOWS.md), [docs/CROSS_PLATFORM.md](docs/CROSS_PLATFORM.md).

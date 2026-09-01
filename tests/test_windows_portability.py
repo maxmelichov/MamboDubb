@@ -1074,10 +1074,9 @@ def test_the_installer_never_runs_uv_without_the_extras_it_synced():
     assert runs, "expected the installer to run uv at least once"
     for ln in runs:
         assert "@Extras" in ln or "--no-sync" in ln or "$Extras" in ln, ln
-    # And the translator venv, which has its own torch, is synced with the
-    # same extra rather than left for the first translate stage to create.
+    # And the translator venv, which has its own torch, is synced by the
+    # installer rather than left for the first translate stage to create.
     assert "--project (Join-Path $Dir 'translator')" in ps1
-    assert "@TranslatorExtras" in ps1
 
 
 def test_the_stem_stage_names_a_device_without_loading_torch_to_ask(monkeypatch):
@@ -1113,32 +1112,31 @@ def test_the_stem_stage_names_a_device_without_loading_torch_to_ask(monkeypatch)
     assert nvlibs.torch_device() == "cpu"
 
 
-def test_the_translator_launch_line_carries_the_cuda_extra_on_a_windows_card(monkeypatch):
-    """The translator venv has its own torch, CPU-only from PyPI on Windows.
-    The flag follows the machine, because its job is to change the venv."""
+def test_the_translator_venv_sends_windows_to_the_cuda_torch_without_a_flag():
+    """The translator has its own torch, CPU-only from PyPI on Windows.
+
+    The choice lives in its lockfile, as a platform marker on the index source,
+    and not as an extra. An extra was tried first and uv unified Linux onto the
+    CUDA 12 wheel too, off the CUDA 13 stack the root project pins. A marker
+    forks where it says, and a bare `uv run --project translator` on Windows
+    gets the card without any launch line having to remember a flag.
+    """
     from dubbing import translate
 
-    monkeypatch.setattr(translate, "_vllm_installed", lambda: False)
-    monkeypatch.setattr(translate, "_lowvram_extra", lambda low: False)
-
-    monkeypatch.setattr(sys, "platform", WINDOWS)
-    monkeypatch.setattr(nvlibs, "nvidia_smi", lambda: r"C:\Windows\System32\nvidia-smi.exe")
-    cmd = translate._worker_cmd("transformers")
-    assert cmd[cmd.index("--extra") + 1] == "cuda"
-
-    # No card: no flag, no three-gigabyte download for nothing.
-    monkeypatch.setattr(nvlibs, "nvidia_smi", lambda: None)
-    assert "--extra" not in translate._worker_cmd("transformers")
-    # Linux gets a CUDA torch from PyPI already; the extra resolves to nothing
-    # there and the line does not carry it.
-    monkeypatch.setattr(sys, "platform", LINUX)
-    monkeypatch.setattr(nvlibs, "nvidia_smi", lambda: "/usr/bin/nvidia-smi")
-    assert "--extra" not in translate._worker_cmd("transformers")
-
-    # And the extra it names has to exist in the translator's own pyproject,
-    # markered to Windows, from the same CUDA 12 index as the root project.
     root = Path(__file__).resolve().parents[1]
     toml = (root / "translator" / "pyproject.toml").read_text(encoding="utf-8")
-    body = toml.split("\ncuda = [")[1].split("]")[0]
-    assert '"torch' in body and "sys_platform == 'win32'" in body
     assert "download.pytorch.org/whl/cu126" in toml
+    assert "marker = \"sys_platform == 'win32'\"" in toml
+    assert "\ncuda = [" not in toml
+    # The lock agrees: Windows resolves torch from the CUDA index, and nowhere
+    # else does, which is the fork the marker promises.
+    lock = (root / "translator" / "uv.lock").read_text(encoding="utf-8")
+    edges = [ln for ln in lock.splitlines()
+             if ln.strip().startswith('{ name = "torch"') and "download.pytorch.org" in ln]
+    assert edges and all("sys_platform == 'win32'" in ln for ln in edges)
+    assert 'name = "nvidia-cudnn-cu13"' in lock
+
+    # And no launch line carries a cuda flag for it, on any platform.
+    for plat in (WINDOWS, LINUX, MAC):
+        cmd = translate._worker_cmd("transformers")
+        assert "cuda" not in cmd

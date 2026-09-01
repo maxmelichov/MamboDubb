@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import platform
 import re
 import shutil
 import sys
@@ -191,9 +192,16 @@ def cuda_hint() -> str:
         return "run `uv sync --extra app --extra cuda`; see docs/WINDOWS.md"
     # Linux gets a CUDA torch from PyPI by default, so the missing-DLL half of
     # this can only be CTranslate2's: torch's stack is CUDA 13 and CTranslate2
-    # wants the CUDA 12 cuBLAS, which nothing installs on its own.
+    # wants the CUDA 12 cuBLAS, which nothing installs on its own. The launch
+    # flag is part of the instruction, not a footnote: `uv run` syncs the venv
+    # to the lockfile first and removes what the lock does not name, so a pip
+    # install followed by a plain `uv run` is a pip install that lasted one
+    # launch. It is not an extra here the way it is on Windows because the
+    # cuDNN wheels for CUDA 12 and 13 unpack into the same `nvidia/cudnn`
+    # directory, and torch's stack on Linux is the 13 one.
     return ("install the CUDA 12 libraries CTranslate2 needs with "
-            "`uv pip install nvidia-cublas-cu12 nvidia-cudnn-cu12`; "
+            "`uv pip install nvidia-cublas-cu12 nvidia-cudnn-cu12` and start "
+            "with `uv run --no-sync`, or the next launch removes them again; "
             "see docs/CROSS_PLATFORM.md")
 
 
@@ -252,14 +260,18 @@ def torch_device() -> str:
     choice from the same torch and a device this repo forces is a device this
     repo has to keep right on every platform forever. The value of knowing is
     the log line; the sixteen-hour run had no line to read.
-    """
-    try:
-        import torch
 
-        if torch.cuda.is_available():
-            return "cuda"
-        if torch.backends.mps.is_available():
-            return "mps"
-    except Exception:
-        pass
+    Predicted from the filesystem, not asked of torch. The stem stage is the
+    first heavy one, it runs demucs in a child that loads torch itself, and the
+    pipeline process had no torch resident until the stages after it. Importing
+    torch here to read one boolean would keep a second copy of it in memory for
+    the whole of the separation, on the 16 GB Macs the README calls the
+    minimum. The prediction is the same three facts torch would use: an Apple
+    Silicon Mac gets Metal, an NVIDIA driver plus a CUDA build of torch gets the
+    card, and anything else is the CPU.
+    """
+    if sys.platform == "darwin":
+        return "mps" if platform.machine() == "arm64" else "cpu"
+    if nvidia_smi() and torch_cuda_build() is not None:
+        return "cuda"
     return "cpu"
