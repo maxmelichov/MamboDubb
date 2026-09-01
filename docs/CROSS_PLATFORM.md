@@ -226,8 +226,14 @@ The provisioned workspace lives in `~/.local/share/MamboDubb/workspace`.
   `DUBSTUDIO_UV_PATH`, which is rung one. The two are held in step by a test that reads
   the constants straight out of `workspace.rs`
   (`tests/test_windows_portability.py::test_the_python_uv_chain_still_matches_the_rust_one_it_claims_to`).
-  The uv row is `optional`: no stage of a dub shells out to uv, so a missing one is
-  never a reason a machine cannot dub. Its Install button is `brew` or `winget` where
+  The uv row is graded per machine (`setup.uv_row`), because the answer genuinely is.
+  On a Mac the MLX backend loads the translator in the server's own process and no
+  stage of a dub shells out to uv, so the row is `optional` and a missing uv is never
+  a reason that machine cannot dub. On Windows and on Linux the translate stage is
+  `uv run --project translator`, so the row is `blocking` and names the stage it
+  kills: without uv, a dub fetches, separates and transcribes and then dies at
+  translate. `dubbing/tools.py` owns the lookup so both the pipeline and the app can
+  reach it; `setup.find_uv` is a re-export of that one function. Its Install button is `brew` or `winget` where
   either exists, and otherwise the official `astral-sh/uv` release archive with its
   published SHA-256 verified, unpacked into `~/.local/bin`, which is the same route and
   the same

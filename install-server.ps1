@@ -77,10 +77,27 @@ if ($env:OS -ne 'Windows_NT') {
 # in PROCESSOR_ARCHITEW6432, so the second variable wins wherever it is set.
 $arch = $env:PROCESSOR_ARCHITEW6432
 if ([string]::IsNullOrWhiteSpace($arch)) { $arch = $env:PROCESSOR_ARCHITECTURE }
+#
+# x64 only, and ARM64 is refused here rather than four steps later. astral does
+# publish an aarch64 uv and Node does publish an arm64 build, which is why this
+# used to accept it, but the sentence it printed ("x64 and arm64 are the ones
+# with wheels") was about the wrong wheels. The ones that decide are torch's,
+# and uv.lock carries `win_amd64` and nothing else for Windows because
+# download.pytorch.org and PyPI both publish no `win_arm64` torch at all. So the
+# old path installed git, ffmpeg, sox, uv and Node, spent several minutes on it,
+# and then died inside `uv sync` on a resolution error naming a package the user
+# never asked for. Refusing in the first ten seconds, and saying which
+# dependency is the one that cannot be satisfied, is the whole of the fix: there
+# is nothing this script could do differently on that machine.
 switch ($arch) {
     'AMD64' { $UvTriple = 'x86_64-pc-windows-msvc'; $NodeArch = 'x64' }
-    'ARM64' { $UvTriple = 'aarch64-pc-windows-msvc'; $NodeArch = 'arm64' }
-    default { Die "unsupported architecture: $arch (x64 and arm64 are the ones with wheels)" }
+    'ARM64' {
+        Die ("Windows on ARM is not supported: PyTorch publishes no win_arm64 " +
+             "wheel, so the dependency resolution this installer runs cannot " +
+             "succeed on this machine whatever it installs first. An Intel or " +
+             "AMD machine, or an ARM Mac, will work.")
+    }
+    default { Die "unsupported architecture: $arch (x64 is the only one with wheels)" }
 }
 
 # Read after the platform guard, not before: the default install directory is

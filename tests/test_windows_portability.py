@@ -511,6 +511,42 @@ def test_the_path_search_tries_the_exe_spelling_first(tmp_path, monkeypatch):
     assert setup_mod.uv_on_path("uv.exe") == str(first / "uv")
 
 
+def test_the_path_search_honours_pathext_on_windows(tmp_path, monkeypatch):
+    """Scoop, Chocolatey and most corporate wrappers install uv as a `uv.cmd`
+    or `uv.bat` shim. A scan that tried `uv.exe` and `uv` alone walked past a
+    working uv, reported the row not-found, and offered a button whose whole
+    reason for existing is to avoid a second uv that disagrees with the first.
+    `.exe` still wins inside a directory, and the bare name is still last.
+    Keyed off the spelling `uv_exe()` chose, so every branch runs on a Mac."""
+    import os
+
+    from dubbing import tools
+
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    assert tools.path_names("uv.exe") == ("uv.exe", "uv.com", "uv.bat", "uv.cmd", "uv")
+    # No PATHEXT at all falls back to the documented default rather than to
+    # nothing, so the shim is found on a machine that never set the variable.
+    monkeypatch.delenv("PATHEXT")
+    assert "uv.cmd" in tools.path_names("uv.exe")
+    # The POSIX spelling is its own name and nothing else.
+    assert tools.path_names("uv") == ("uv",)
+
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    first, second = tmp_path / "a", tmp_path / "b"
+    first.mkdir()
+    second.mkdir()
+    monkeypatch.setenv("PATH", f"{first}{os.pathsep}{second}")
+    (second / "uv.cmd").write_text("@echo off\n")
+    assert tools.uv_on_path("uv.exe") == str(second / "uv.cmd")
+    # A real .exe in an earlier directory beats the shim in a later one, and a
+    # real .exe beside the shim beats it too: the order is the shell's.
+    (first / "uv.exe").write_text("MZ\n")
+    assert tools.uv_on_path("uv.exe") == str(first / "uv.exe")
+    (first / "uv.exe").unlink()
+    (second / "uv.exe").write_text("MZ\n")
+    assert tools.uv_on_path("uv.exe") == str(second / "uv.exe")
+
+
 def test_the_home_directory_is_read_the_way_the_shell_reads_it(monkeypatch):
     """`HOME`, then `USERPROFILE`, which is not what `Path.home()` does.
 
@@ -548,18 +584,23 @@ def test_the_bundled_sidecar_reaches_the_server_as_the_override(tmp_path, monkey
         assert setup_mod.find_uv(platform_key) == str(sidecar)
 
 
-def test_a_missing_uv_is_not_a_reason_a_machine_cannot_dub(tmp_path, monkeypatch):
-    """The row is `optional`, and that is the file's own rule applied rather
-    than a softening.
+def test_a_missing_uv_is_not_a_reason_a_MAC_cannot_dub(tmp_path, monkeypatch):
+    """On a Mac the row is `optional`, and that is the file's own rule applied
+    rather than a softening.
 
-    Blocking means "the run fails without it". No run fails: this server is
-    already up in its environment, and `runner.SubprocessRunner` spawns every
-    job child with `sys.executable`. Graded blocking, it told a desktop user
-    whose app had been launched *by* the bundled uv that something REQUIRED was
-    MISSING, which is the exact dishonesty the three grades exist to remove.
+    Blocking means "the run fails without it". No run fails *here*: the MLX
+    backend loads the translator in this process, this server is already up in
+    its environment, and `runner.SubprocessRunner` spawns every job child with
+    `sys.executable`. Graded blocking, it told a desktop user whose app had been
+    launched *by* the bundled uv that something REQUIRED was MISSING, which is
+    the exact dishonesty the three grades exist to remove.
+
+    Off a Mac the answer is the other one: see the test below.
     """
+    from dubbing import translate
     from dubbing_app import setup as setup_mod
 
+    monkeypatch.setattr(translate, "shells_out_to_uv", lambda: False)
     monkeypatch.setattr(setup_mod, "find_uv", lambda *a, **k: None)
     before = setup_mod.report(tmp_path)
     row = next(c for c in before["checks"] if c["id"] == "uv")
@@ -1140,3 +1181,611 @@ def test_the_translator_venv_sends_windows_to_the_cuda_torch_without_a_flag():
     for plat in (WINDOWS, LINUX, MAC):
         cmd = translate._worker_cmd("transformers")
         assert "cuda" not in cmd
+
+
+# ---------------------------------------------------------------------------
+# the uv row off a Mac, and the uv the translate stage actually launches
+# ---------------------------------------------------------------------------
+
+def test_the_uv_row_is_blocking_and_names_translate_where_a_dub_needs_uv(tmp_path,
+                                                                        monkeypatch):
+    """The regression this file exists for, in its newest costume.
+
+    `translate._worker_cmd` is `uv run --project translator …`, and on Windows
+    and Linux `_backend()` is never "mlx", so that line *is* the translate
+    stage. Graded optional, the screen showed a grey row, the user started a
+    dub, fetch and stems and transcript all succeeded, and the run died at
+    translate on a FileNotFoundError. A row that kills a stage is blocking, and
+    a blocking row has to name the stage or "runs will fail" is true and
+    useless.
+    """
+    from dubbing import translate
+    from dubbing_app import setup as setup_mod
+
+    monkeypatch.setattr(translate, "shells_out_to_uv", lambda: True)
+    monkeypatch.setattr(setup_mod, "find_uv", lambda *a, **k: None)
+    report = setup_mod.report(tmp_path)
+    row = next(c for c in report["checks"] if c["id"] == "uv")
+    assert row["severity"] == setup_mod.BLOCKING and row["required"] is True
+    assert row["stage"] == "translate"
+    assert "translate" in row["detail"]
+    # And it drags the whole report red, which is the point of "required".
+    assert report["ok"] is False
+    # `probe`, which is what the install button re-reads, agrees with `report`.
+    assert setup_mod.probe("uv")["severity"] == setup_mod.BLOCKING
+    assert setup_mod.probe("uv")["stage"] == "translate"
+
+
+def test_the_backend_and_not_the_platform_decides_whether_uv_is_blocking(monkeypatch):
+    """A Mac with the transformers backend forced needs uv exactly as much as a
+    Windows machine does, and a `sys.platform` test would have called it
+    optional. So the question asked is the backend's."""
+    from dubbing import translate
+
+    monkeypatch.setenv(translate.BACKEND_ENV, "transformers")
+    assert translate.shells_out_to_uv() is True
+    monkeypatch.setenv(translate.BACKEND_ENV, "mlx")
+    assert translate.shells_out_to_uv() is False
+
+
+def test_the_translate_worker_launches_the_uv_this_machine_actually_has(tmp_path,
+                                                                       monkeypatch):
+    """A bare `"uv"` is resolved against PATH and nothing else, and PATH is the
+    one rung of the five a packaged desktop install does not have: the bundle
+    ships uv as a Tauri sidecar and passes its path down as `DUBSTUDIO_UV_PATH`.
+    So the launch line has to go through the same lookup the Setup row and the
+    Rust shell use, or a desktop user gets FileNotFoundError at translate with
+    uv sitting right there."""
+    from dubbing import translate
+
+    sidecar = tmp_path / "MamboDubb.app" / "Contents" / "MacOS" / "uv.exe"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text("MZ\n")
+    monkeypatch.setenv(tools.UV_PATH_ENV, str(sidecar))
+    cmd = translate._worker_cmd("transformers")
+    assert cmd[0] == str(sidecar)
+    assert cmd[1:3] == ["run", "--project"]
+
+
+def test_a_translate_stage_with_no_uv_says_so_instead_of_raising_filenotfound(
+        monkeypatch):
+    """`FileNotFoundError: 'uv'` names a file. This names the stage, the reason
+    and the fix, and it is the same sentence the Setup row carries."""
+    from dubbing import translate
+
+    monkeypatch.setattr(tools, "find_uv", lambda *a, **k: None)
+    with pytest.raises(RuntimeError) as caught:
+        translate._worker_cmd("transformers")
+    said = str(caught.value)
+    assert "translate" in said and "uv run" in said
+    assert "docs.astral.sh/uv" in said
+
+
+# ---------------------------------------------------------------------------
+# PATHEXT: the shims a Windows PATH scan has to see
+# ---------------------------------------------------------------------------
+
+def test_the_uv_path_scan_honours_pathext_so_a_cmd_shim_is_not_invisible(
+        tmp_path, monkeypatch):
+    """Scoop, Chocolatey and most corporate wrappers install uv as a `uv.cmd` or
+    `uv.bat`. A scan that tried exactly `uv.exe` and then `uv` walked past all of
+    them, reported the row not-found, and offered a button that installs a
+    *second* uv, which is the two-uvs-that-disagree outcome
+    `install.uv_install_dir` exists to prevent. `resolve_tool` has honoured
+    PATHEXT all along because it ends at `shutil.which`; this was the one lookup
+    in the repo that did not."""
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    (tmp_path / "uv.cmd").write_text("@echo off\n")
+    assert tools.uv_on_path("uv.exe") == str(tmp_path / "uv.cmd")
+
+    # Order is still astral's build first, whatever else is beside it, because
+    # `workspace.rs` tries `uv.exe` first and the two must not disagree about a
+    # directory holding both.
+    (tmp_path / "uv.exe").write_text("MZ\n")
+    assert tools.uv_on_path("uv.exe") == str(tmp_path / "uv.exe")
+
+    # And the machine that never set PATHEXT gets the documented default, so the
+    # `.cmd` shim is found there too.
+    monkeypatch.delenv("PATHEXT")
+    (tmp_path / "uv.exe").unlink()
+    assert tools.uv_on_path("uv.exe") == str(tmp_path / "uv.cmd")
+    assert "uv.cmd" in tools.path_names("uv.exe")
+
+    # Off Windows the name is the whole answer; nothing is appended to it.
+    assert tools.path_names("uv") == ("uv",)
+
+
+def test_the_uv_lookup_lives_where_both_callers_can_reach_it():
+    """`dubbing.translate` needs it and `dubbing_app.setup` needs it, and the
+    pipeline is not allowed to import the app. One implementation, one spelling
+    of the env var, and `setup.find_uv` still means what it always meant."""
+    from dubbing_app import setup as setup_mod
+
+    assert setup_mod.find_uv is tools.find_uv
+    assert setup_mod.uv_on_path is tools.uv_on_path
+    assert setup_mod.UV_PATH_ENV == tools.UV_PATH_ENV == "DUBSTUDIO_UV_PATH"
+    source = (Path(__file__).resolve().parents[1] / "dubbing" / "translate.py")
+    text = source.read_text(encoding="utf-8")
+    assert "import dubbing_app" not in text and "from dubbing_app" not in text
+
+
+# ---------------------------------------------------------------------------
+# the `cuda` extra actually gates the CUDA torch
+# ---------------------------------------------------------------------------
+
+def _root_base_torch_edges() -> list[str]:
+    """The `torch` edges of the root project's *base* dependencies in the lock.
+
+    The base list, not `[package.optional-dependencies]`, because the base list
+    is where the bug was: an extra's own entries were always platform-markered
+    and always will be, while the plain `torch>=2.4.0` every install pulls in is
+    the one that came back saying cu126 with nothing to stop it.
+    """
+    lock = (Path(__file__).resolve().parents[1] / "uv.lock").read_text(encoding="utf-8")
+    block = lock.split('name = "dubbingqwen"', 1)[1]
+    base = block.split("[package.optional-dependencies]", 1)[0]
+    return [ln.strip() for ln in base.splitlines()
+            if ln.strip().startswith('{ name = "torch')]
+
+
+def test_the_cuda_extra_gates_the_cuda_torch_instead_of_decorating_it():
+    """An extra alone does not gate an index.
+
+    torch is a plain dependency, so uv resolved it once per platform and, with
+    only the cu126 directive to go on, wrote `2.13.0+cu126` into the lock for
+    *every* Windows resolution. `uv export --frozen --extra app` emitted it with
+    no cuda extra requested. Two things followed: a Windows laptop with no
+    NVIDIA card was told by `install-server.ps1` it was getting CPU wheels and
+    then downloaded gigabytes it could never load, and
+    `nvlibs.torch_cuda_build()` reported 12.6 on every Windows machine, so
+    `gpu_check()` and `warn_if_gpu_unused()` could never fire on the one
+    platform they were written for.
+
+    `[tool.uv] conflicts` is what makes uv fork the resolution, and a fork is
+    what lets one lockfile hold two answers.
+    """
+    root = Path(__file__).resolve().parents[1]
+    toml = (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert "conflicts = [" in toml
+    assert '[{ extra = "cpu" }, { extra = "cuda" }]' in toml
+
+    # The CPU-only Windows wheel PyPI publishes is in the lock, which is what
+    # the machine with no card downloads. It was not there before this fix.
+    lock = (root / "uv.lock").read_text(encoding="utf-8")
+    assert "torch-2.13.0-cp311-cp311-win_amd64.whl" in lock
+
+    # Every cu126 edge of the base dependency list is gated on the extra *and*
+    # on the platform. That conjunction is the fix: the extra alone let it reach
+    # every Windows install, and the platform alone let it reach a Mac.
+    base = _root_base_torch_edges()
+    cuda_edges = [e for e in base if "download.pytorch.org" in e]
+    assert cuda_edges, base
+    for edge in cuda_edges:
+        assert "extra-11-dubbingqwen-cuda" in edge, edge
+        assert "sys_platform == 'win32'" in edge, edge
+    # And the PyPI edge is what a resolution with no cuda extra reaches, on
+    # Windows as everywhere else.
+    plain = [e for e in base if "pypi.org" in e]
+    assert plain and all("sys_platform != 'win32'" in e
+                         or "extra != 'extra-11-dubbingqwen-cuda'" in e for e in plain), plain
+
+
+@pytest.mark.skipif(tools.find_uv() is None, reason="needs uv to resolve the lock")
+def test_uv_export_puts_the_cuda_torch_behind_the_extra_and_nowhere_else():
+    """The claim above, asked of uv rather than of the file uv wrote.
+
+    Offline: `--frozen` resolves from the lockfile and touches no index.
+    """
+    root = Path(__file__).resolve().parents[1]
+
+    def torch_lines(*extras: str) -> list[str]:
+        out = subprocess.run([tools.find_uv(), "export", "--frozen", *extras],
+                             cwd=str(root), capture_output=True, text=True)
+        assert out.returncode == 0, out.stderr
+        return [ln for ln in out.stdout.splitlines()
+                if ln.startswith(("torch==", "torchaudio=="))]
+
+    plain = torch_lines("--extra", "app")
+    assert plain and not any("+cu126" in ln for ln in plain), plain
+
+    withcuda = torch_lines("--extra", "app", "--extra", "cuda")
+    cuda_lines = [ln for ln in withcuda if "+cu126" in ln]
+    assert cuda_lines, withcuda
+    # And only on Windows: a Mac or a Linux box asking for the extra still gets
+    # the wheel it always had, which is the promise the extra's comment makes.
+    assert all("sys_platform == 'win32'" in ln for ln in cuda_lines), cuda_lines
+    assert any("sys_platform != 'win32'" in ln and "+cu126" not in ln
+               for ln in withcuda), withcuda
+
+
+# ---------------------------------------------------------------------------
+# a failed install cannot be laundered into a success
+# ---------------------------------------------------------------------------
+
+class _Slot:
+    """The two halves of `Installer` these tests drive, without the HTTP."""
+
+    def __init__(self, route, probe_ok=True, probe=None):
+        self.route = route
+        self.probe_ok = probe_ok
+        self.probe = probe
+
+
+def _installer(monkeypatch, route, check):
+    inst = install_mod.Installer.__new__(install_mod.Installer)
+    inst._lock = __import__("threading").Lock()
+    inst._tail = __import__("collections").deque(maxlen=200)
+    inst._route = route
+    inst._probe = lambda id_: check
+    inst._running = True
+    inst._ok = None
+    inst._error = None
+    inst._check = None
+    inst._finished = None
+    return inst
+
+
+def test_a_green_reprobe_cannot_vouch_for_work_it_did_not_look_at():
+    """`_run_static` copies ffmpeg and *then* ffprobe. When the second copy
+    raised, the ffmpeg probe was green, the row went green, and no failure was
+    recorded anywhere; the next dub died in `dubbing.audio` at the first
+    ffprobe call. The override exists for one thing only: a package manager's
+    exit code that lies. It may not speak for anything else."""
+    green = {"id": "ffmpeg", "ok": True, "detail": "/usr/bin/ffmpeg"}
+
+    inst = _installer(None, install_mod.STATIC, green)
+    inst._finish("ffmpeg", False, "OSError: [Errno 28] No space left on device")
+    assert inst._ok is False
+    assert "No space left" in inst._error
+
+    # The case it was written for still works: winget answers non-zero for
+    # "already installed", and the machine has the tool.
+    inst = _installer(None, install_mod.MANAGER, green)
+    inst._finish("ffmpeg", False, "`winget install …` exited 1", exit_code_only=True)
+    assert inst._ok is True and inst._error is None
+
+
+def test_a_thirty_minute_timeout_kill_is_not_laundered_by_a_stale_green_row(
+        monkeypatch):
+    """A child killed at the timeout installed nothing. A row that is green in
+    spite of it is green for some earlier reason with nothing to say about this
+    attempt, and replacing "was still running after 30 minutes" with a success
+    is how a user learns the app cannot be believed."""
+    green = {"id": "ffmpeg", "ok": True, "detail": "/usr/bin/ffmpeg"}
+    inst = _installer(None, install_mod.MANAGER, green)
+    inst._finish("ffmpeg", False, "`brew install ffmpeg` was still running after "
+                 "30 minutes and was stopped", exit_code_only=False)
+    assert inst._ok is False
+    assert "30 minutes" in inst._error
+
+
+def test_the_ffmpeg_row_probes_ffprobe_too(monkeypatch):
+    """There is no ffprobe row anywhere, and there should not be: every route
+    that installs ffmpeg installs both, so a second row would be a second button
+    running the first one's install. What was wrong was the claim: the row said
+    "ffmpeg" and meant it, while `dubbing.audio` shells out to ffprobe for every
+    input file."""
+    from dubbing_app import setup as setup_mod
+
+    assert setup_mod.COMPANIONS["ffmpeg"] == ("ffprobe",)
+    real = tools.resolve_tool
+    monkeypatch.setattr(tools, "resolve_tool",
+                        lambda name: None if name == "ffprobe" else real(name))
+    row = setup_mod.probe("ffmpeg")
+    assert row["ok"] is False
+    assert "ffprobe" in row["detail"]
+    # And it does not claim ffmpeg is missing, because ffmpeg is right there.
+    assert "ffmpeg not on PATH" not in row["detail"]
+
+
+def test_a_message_that_cannot_be_composed_does_not_strand_the_install_slot():
+    """`_disagreement` ran outside the try that protected the re-probe, and it
+    was the last statement before the slot was released. Its RESTORE branch
+    imports `dubbing.segments` and its UV_ROUTE branch calls `uv_install_dir`,
+    which raises when neither HOME nor USERPROFILE is set. The worker thread
+    died with `_running` still true and every install button answered 409 until
+    the app was restarted."""
+    red = {"id": "uv", "ok": False, "detail": "uv not found"}
+    inst = _installer(None, install_mod.UV_ROUTE, red)
+    inst._disagreement = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no HOME"))
+    inst._finish("uv", True, None)
+    assert inst._running is False               # the slot is free, which is the point
+    assert inst._ok is False
+    assert "no HOME" in inst._error
+
+
+# ---------------------------------------------------------------------------
+# the VRAM cache
+# ---------------------------------------------------------------------------
+
+def test_the_vram_cache_is_not_published_before_the_number_is_known(monkeypatch):
+    """`_vram = 0` was written *before* a ten-second `nvidia-smi`, and
+    `_vram is not None` was the "have I read this" flag, so for the whole of
+    those ten seconds a concurrent poll was told this machine has no GPU as a
+    cached fact. `low_vram_check` feeds that straight to
+    `translate.choose_low_vram`, which reads 0 as "no CUDA device" and offers
+    the 9.7 GB bf16 translator to a 12 GB card. `git_commit` keeps a separate
+    read flag for exactly this reason."""
+    from dubbing_app import setup as setup_mod
+
+    monkeypatch.setattr(setup_mod, "_vram", 0)
+    monkeypatch.setattr(setup_mod, "_vram_read", False)
+    seen = []
+
+    def slow_read():
+        seen.append(setup_mod._vram_read)       # what a concurrent poll would see
+        return 12 * 1024**3
+
+    monkeypatch.setattr(setup_mod, "_read_gpu_memory_bytes", slow_read)
+    assert setup_mod.gpu_memory_bytes() == 12 * 1024**3
+    assert seen == [False], "the cache announced an answer it did not have yet"
+
+
+def test_a_driver_that_will_not_answer_is_not_cached_as_zero_forever(monkeypatch):
+    """`out.returncode` was never checked and empty stdout raised IndexError
+    inside the try whose except cached 0, so one bad moment at startup made the
+    whole process believe there was no card until it was restarted."""
+    from dubbing_app import setup as setup_mod
+
+    monkeypatch.setattr(setup_mod.shutil, "which", lambda *_a, **_k: "/usr/bin/nvidia-smi")
+
+    class Out:
+        def __init__(self, code, stdout):
+            self.returncode, self.stdout = code, stdout
+
+    monkeypatch.setattr(setup_mod.subprocess, "run",
+                        lambda *a, **k: Out(9, ""))
+    assert setup_mod._read_gpu_memory_bytes() == 0
+    monkeypatch.setattr(setup_mod.subprocess, "run",
+                        lambda *a, **k: Out(0, ""))
+    assert setup_mod._read_gpu_memory_bytes() == 0
+    monkeypatch.setattr(setup_mod.subprocess, "run",
+                        lambda *a, **k: Out(0, "not a number\n"))
+    assert setup_mod._read_gpu_memory_bytes() == 0
+    monkeypatch.setattr(setup_mod.subprocess, "run",
+                        lambda *a, **k: Out(0, "12288\n"))
+    assert setup_mod._read_gpu_memory_bytes() == 12288 * 1024**2
+
+
+# ---------------------------------------------------------------------------
+# the registry PATH, in the order Windows composes it
+# ---------------------------------------------------------------------------
+
+def test_the_registry_path_is_read_system_first_then_user(monkeypatch):
+    """Windows hands a new process the system PATH with the per-user PATH
+    appended, so a per-user entry is a fallback and never a shadow. Read the
+    other way round, a stale per-user ffmpeg shadowed a good system one, so the
+    server and a fresh cmd.exe disagreed about what this machine has, which is
+    the exact failure `refresh_path` exists to prevent.
+    `install-server.ps1`'s `Update-PathFromRegistry` joins machine then user and
+    always did."""
+    import types
+
+    fake = types.SimpleNamespace(HKEY_CURRENT_USER="HKCU", HKEY_LOCAL_MACHINE="HKLM")
+    # No drive letters in the fixtures: `registry_path_entries` splits on
+    # `os.pathsep`, which is ":" on the machine this test runs on, and a
+    # `C:\...` fixture would be split down the middle by the test harness
+    # rather than by anything the function does wrong.
+    system, user = r"\\SYSTEM\\ffmpeg\\bin", r"\\USER\\old-ffmpeg"
+    values = {("HKLM", r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"):
+              system, ("HKCU", "Environment"): user}
+
+    class Key:
+        def __init__(self, pair):
+            self.pair = pair
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    fake.OpenKey = lambda root, key: Key((root, key))
+    fake.QueryValueEx = lambda handle, name: (values[handle.pair], 1)
+    monkeypatch.setitem(sys.modules, "winreg", fake)
+    monkeypatch.setattr(sys, "platform", WINDOWS)
+
+    # System first, so a stale per-user copy is a fallback and never a shadow.
+    assert install_mod.registry_path_entries() == [system, user]
+
+    # And the shell agrees, in the same order, which is the half of this that
+    # cannot be asserted from Python alone.
+    ps1 = (Path(__file__).resolve().parents[1] / "install-server.ps1").read_text(
+        encoding="utf-8")
+    assert "@($machine, $user)" in ps1
+
+
+# ---------------------------------------------------------------------------
+# Windows on ARM
+# ---------------------------------------------------------------------------
+
+def test_the_windows_installer_refuses_arm64_instead_of_failing_minutes_in():
+    """There is no `win_arm64` torch wheel anywhere: not on PyPI, not on
+    download.pytorch.org, and so not in the lock. The installer used to map
+    ARM64 to a triple and claim both architectures had wheels, then install git,
+    ffmpeg, sox, uv and Node before dying inside `uv sync` on a resolution error
+    naming a package the user never asked for."""
+    root = Path(__file__).resolve().parents[1]
+    ps1 = (root / "install-server.ps1").read_text(encoding="utf-8")
+    arm = ps1[ps1.index("    'ARM64'"):ps1.index("    default {")]
+    assert "Die" in arm
+    assert "win_arm64" in arm
+    assert "aarch64-pc-windows-msvc" not in arm
+    # And the reason it refuses is true: the lock has one Windows wheel family.
+    lock = (root / "uv.lock").read_text(encoding="utf-8")
+    assert "torch-2.13.0-cp311-cp311-win_amd64.whl" in lock
+    assert not [ln for ln in lock.splitlines()
+                if "win_arm64" in ln and "/torch-" in ln]
+
+
+# ---------------------------------------------------------------------------
+# nvlibs: the same libraries in the parent as in the child
+# ---------------------------------------------------------------------------
+
+def test_the_linux_preload_registers_cublas_as_well_as_cudnn(tmp_path, monkeypatch):
+    """cuDNN 9 links cuBLAS, and `preload` filtered `_lib_dirs()` down to the
+    cuDNN directory alone, so `libcudnn_cnn.so.9` resolved `libcublas.so.12`
+    through ldconfig and got whatever system CUDA the machine happened to have,
+    which is the wrong-copy-answers failure this module exists to prevent, one
+    library over. `subprocess_env()` has always put every `nvidia/*/lib` on
+    LD_LIBRARY_PATH, so a demucs child got the wheels' cuBLAS and the parent did
+    not: two answers to one question inside one run."""
+    from dubbing import nvlibs
+
+    cublas = tmp_path / "cublas" / "lib"
+    cudnn = tmp_path / "cudnn" / "lib"
+    for d in (cublas, cudnn):
+        d.mkdir(parents=True)
+    (cublas / "libcublas.so.12").write_text("x")
+    (cudnn / "libcudnn.so.9").write_text("x")
+    (cudnn / "libcudnn_cnn.so.9").write_text("x")
+
+    loaded: list[str] = []
+    monkeypatch.setattr(sys, "platform", LINUX)
+    monkeypatch.setattr(nvlibs, "_lib_dirs", lambda: [cublas, cudnn])
+    monkeypatch.setattr(nvlibs.ctypes, "CDLL",
+                        lambda path, mode=0: loaded.append(path))
+
+    assert nvlibs.preload() == []
+    assert str(cublas / "libcublas.so.12") in loaded
+    # cuBLAS before cuDNN: RTLD_GLOBAL means the earlier load satisfies the
+    # later one's undefined symbols, so the order is the whole point.
+    assert loaded.index(str(cublas / "libcublas.so.12")) < \
+        loaded.index(str(cudnn / "libcudnn.so.9"))
+    # The versioned soname before the sub-libraries it would otherwise dlopen.
+    assert loaded.index(str(cudnn / "libcudnn.so.9")) < \
+        loaded.index(str(cudnn / "libcudnn_cnn.so.9"))
+    # And LD_LIBRARY_PATH for the children names the same two directories, which
+    # is what "the parent and the child agree" means here.
+    monkeypatch.setenv("LD_LIBRARY_PATH", "")
+    assert str(cublas) in nvlibs.subprocess_env()["LD_LIBRARY_PATH"]
+    assert str(cudnn) in nvlibs.subprocess_env()["LD_LIBRARY_PATH"]
+
+
+def test_a_directory_where_nothing_loaded_is_said_out_loud(tmp_path, monkeypatch,
+                                                           capsys):
+    """The CDLL failures were swallowed whole. One stale file among a dozen good
+    ones is not worth a line; a directory where *nothing* loaded is a directory
+    that will not be there when a convolution asks, and the error that arrives
+    then says nothing about this."""
+    from dubbing import nvlibs
+
+    cudnn = tmp_path / "cudnn" / "lib"
+    cudnn.mkdir(parents=True)
+    (cudnn / "libcudnn.so.9").write_text("x")
+
+    def refuse(path, mode=0):
+        raise OSError("wrong ELF class")
+
+    monkeypatch.setattr(sys, "platform", LINUX)
+    monkeypatch.setattr(nvlibs, "_lib_dirs", lambda: [cudnn])
+    monkeypatch.setattr(nvlibs.ctypes, "CDLL", refuse)
+    failed = nvlibs.preload()
+    assert failed == [str(cudnn / "libcudnn.so.9")]
+    assert "cudnn" in capsys.readouterr().err
+
+
+def test_the_job_child_registers_the_cuda_libraries_and_warns_about_a_cpu_torch():
+    """`preload()` and `warn_if_gpu_unused()` were wired into
+    `dubbing/__main__.py` alone, which the desktop app's job child never
+    imports: `runner.SubprocessRunner` spawns `python -m dubbing_app.worker`. So
+    on the desktop app the Windows DLL registration happened only as a side
+    effect of `load_whisper` reaching its CUDA branch, four stages after Demucs
+    had already run on the CPU, and the warning was never printed at all."""
+    source = (Path(__file__).resolve().parents[1] / "dubbing_app" / "worker.py")
+    text = source.read_text(encoding="utf-8")
+    assert "nvlibs.preload()" in text
+    assert "nvlibs.warn_if_gpu_unused()" in text
+    # `preload` at module scope, because a spawned multiprocessing child
+    # re-imports this module and then loads torch; the warning inside `main`,
+    # because it is a sentence for a person and a person wants it once.
+    body = text[text.index("def main("):]
+    assert "nvlibs.warn_if_gpu_unused()" in body
+    assert "nvlibs.preload()" not in body
+
+
+def test_the_cli_warns_once_per_run_and_not_once_per_spawned_worker():
+    """`warn_if_gpu_unused()` sat at module scope in `dubbing/__main__.py`, and
+    spawn re-imports that module as `__mp_main__` for every worker torch and
+    demucs create. The one line whose whole value is being first in the log
+    arrived eight more times, in the middle of the stem separation it was
+    warning about. `preload()` stays outside the guard, because registration
+    genuinely has to happen in every process."""
+    source = (Path(__file__).resolve().parents[1] / "dubbing" / "__main__.py")
+    text = source.read_text(encoding="utf-8")
+    guard = text.index('if __name__ == "__main__":')
+    assert text.index("nvlibs.preload()") < guard
+    assert text.index("nvlibs.warn_if_gpu_unused()") > guard
+
+
+# ---------------------------------------------------------------------------
+# one uv release table, not two
+# ---------------------------------------------------------------------------
+
+def test_the_uv_release_table_exists_once(tmp_path, monkeypatch):
+    """`install.py` and `scripts/stage_desktop_payload.py` each carried a
+    verbatim copy of the triple table, the download, the checksum and the
+    archive unpacking, and they had already drifted about what an unknown triple
+    means. `dubbing/uvrelease.py` is the one copy; the refusal is still each
+    caller's own, which is the one thing they are allowed to differ about."""
+    import stat as stat_mod
+
+    from dubbing import uvrelease
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import stage_desktop_payload as staging
+
+    assert staging.SUPPORTED_TRIPLES is uvrelease.SUPPORTED_TRIPLES
+    assert install_mod.uv_triple() == uvrelease.host_triple()
+    assert install_mod.UV_RELEASES == uvrelease.UV_RELEASES
+    # The stage script no longer owns a copy of any of the four.
+    text = (Path(__file__).resolve().parents[1] / "scripts"
+            / "stage_desktop_payload.py").read_text(encoding="utf-8")
+    assert "hashlib" not in text and "zipfile" not in text and "tarfile" not in text
+
+    # The machines astral publishes nothing for get one answer and two
+    # readings: None here, `SystemExit` there.
+    assert uvrelease.host_triple("linux", "riscv64") is None
+    monkeypatch.setattr(uvrelease, "host_triple", lambda *a, **k: None)
+    with pytest.raises(SystemExit):
+        staging.host_triple()
+    assert stat_mod.S_IXUSR                      # the import is used, and staging needs it
+
+
+def test_the_shared_uv_fetch_verifies_the_checksum_before_it_writes(tmp_path):
+    """One implementation of "download, check, unpack", so a corrupted transfer
+    is caught in one place rather than in two that can drift."""
+    import io
+    import tarfile
+
+    from dubbing import uvrelease
+
+    payload = b"#!/bin/sh\necho uv\n"
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as archive:
+        info = tarfile.TarInfo("uv-x86_64-unknown-linux-gnu/uv")
+        info.size = len(payload)
+        archive.addfile(info, io.BytesIO(payload))
+    blob = buf.getvalue()
+    digest = __import__("hashlib").sha256(blob).hexdigest()
+
+    def fetch(url, timeout=180.0):
+        return f"{digest}  uv.tar.gz\n".encode() if url.endswith(".sha256") else blob
+
+    got = uvrelease.fetch_uv("x86_64-unknown-linux-gnu", fetch=fetch)
+    assert got == payload
+
+    def corrupt(url, timeout=180.0):
+        return b"0" * 64 + b"  uv.tar.gz\n" if url.endswith(".sha256") else blob
+
+    with pytest.raises(RuntimeError) as caught:
+        uvrelease.fetch_uv("x86_64-unknown-linux-gnu", fetch=corrupt)
+    assert "checksum" in str(caught.value)
+
+    # And the write is through an `.incoming` sibling, so an interrupted
+    # download leaves the old uv rather than a truncated one.
+    target = tmp_path / "bin" / "uv"
+    assert uvrelease.write_binary(payload, target) == target
+    assert target.read_bytes() == payload
+    assert not (tmp_path / "bin" / "uv.incoming").exists()

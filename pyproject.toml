@@ -8,7 +8,20 @@ dependencies = [
     # ASR: transcript fallback (ivrit-ai Whisper CT2) + English clone verification
     "faster-whisper>=1.1.0",
     # Translation: TranslateGemma-4B (needs bfloat16 on MPS)
-    "torch>=2.4.0",
+    #
+    # One requirement written as two, and the split is load bearing rather than
+    # cosmetic. Windows is the only platform where this project has two torches
+    # to choose between (see the `cuda` and `cpu` extras below), and uv decides
+    # where a *direct* dependency of this project comes from once per fork of
+    # the resolution, using the markers on the requirement itself. Written as a
+    # single unmarkered `torch>=2.4.0`, the lock came back saying "in the cuda
+    # fork, torch is the cu126 build" with no platform qualifier at all, so
+    # `uv sync --extra cuda` on a Mac tried to install a wheel that exists only
+    # for manylinux and win_amd64. Two complementary markers give uv two edges
+    # to answer separately, and the answer for everything that is not Windows
+    # stops depending on a question only Windows asks.
+    "torch>=2.4.0 ; sys_platform != 'win32'",
+    "torch>=2.4.0 ; sys_platform == 'win32'",
     "transformers>=4.50.0",
     "accelerate>=1.0.0",
     "sentencepiece>=0.2.0",
@@ -103,6 +116,36 @@ cuda = [
     "nvidia-cublas-cu12>=12.4 ; sys_platform == 'win32'",
     "nvidia-cudnn-cu12>=9 ; sys_platform == 'win32'",
 ]
+# The other half of the pair, and it exists so that `cuda` can be an *option*
+# rather than a fact. An extra alone does not gate an index: torch is a plain
+# dependency, so uv resolves it once per platform and, with only one index
+# directive in sight, wrote the cu126 build into the lock for every Windows
+# resolution whether or not anybody asked for `--extra cuda`. A Windows laptop
+# with no NVIDIA card was then told by `install-server.ps1` that it was getting
+# CPU wheels and handed three gigabytes of CUDA torch it could never load, and
+# `nvlibs.torch_cuda_build()` answered "12.6" on every Windows machine, which is
+# the one platform `gpu_check()` and `warn_if_gpu_unused()` were written for: a
+# CPU-only build was undetectable because there was no longer such a thing.
+#
+# What makes the extra real is `[tool.uv] conflicts` below. A declared conflict
+# is what makes uv fork the resolution, and a fork is what lets the same package
+# have two answers in one lockfile. `cpu` names the fork that takes PyPI's
+# `torch-*-win_amd64.whl` (about 122 MB, no CUDA), `cuda` names the fork that
+# takes download.pytorch.org's cu126 build, and a resolution that asks for
+# neither gets `cpu`'s wheel because that is what PyPI serves with no index
+# directive pointing anywhere else. The other half of the fix is the marker
+# split on the base `torch` requirement at the top of this file; neither half
+# works alone, and the comment there says why.
+#
+# Markered to win32 like `cuda` is, so this is not a way to ask for a different
+# torch on a Mac or on Linux: on those two the extra resolves to nothing and the
+# platform's own default wheel is the only one there has ever been. Nobody has
+# to type it, either: it is the name of the default rather than a flag, and
+# `install-server.ps1` passes `--extra cuda` or it passes neither.
+cpu = [
+    "torch>=2.4.0 ; sys_platform == 'win32'",
+    "torchaudio ; sys_platform == 'win32'",
+]
 
 [project.scripts]
 dub = "dubbing.cli:main"
@@ -131,6 +174,14 @@ override-dependencies = [
     "nvidia-cudnn-cu13>=9.24 ; sys_platform == 'linux'",
 ]
 
+# The two Windows torch flavours, declared as mutually exclusive so that uv
+# forks the resolution instead of picking a winner. This is the block whose
+# absence made `--extra cuda` decorative: see the `cpu` extra above for the
+# whole story. Nothing else in this project conflicts with anything.
+conflicts = [
+    [{ extra = "cpu" }, { extra = "cuda" }],
+]
+
 # Where the CUDA torch wheels live. `explicit = true` means nothing resolves
 # from here unless a source below names it, so PyPI stays the index for the
 # other two hundred packages and for torch itself everywhere but the Windows
@@ -147,9 +198,24 @@ explicit = true
 
 [tool.uv.sources]
 # Gated on both the extra and the platform, so uv locks two torches: the PyPI
-# one for everybody, and the cu126 one for Windows-with-`--extra cuda`. uv works
-# out the conflict itself and records it in uv.lock; no `[tool.uv] conflicts`
-# block is needed because only one of the two variants is ever selectable.
+# one for everybody, and the cu126 one for Windows-with-`--extra cuda`.
+#
+# The `extra =` key is only half of that gate, and the half that does nothing on
+# its own. It says *which* fork of the resolution takes this index; it does not
+# create the fork. Without the `conflicts` block above there is one Windows
+# resolution, this directive is the only thing in it with an opinion about where
+# torch comes from, and every Windows install got cu126 including the ones that
+# asked for `--extra app` and nothing else.
+#
+# The `marker` is the other thing that only works in company. On its own it was
+# ignored where it mattered most: the lock came back with `torch==2.13.0+cu126`
+# under `extra == 'cuda'` and *no* `sys_platform` guard, because the root's own
+# unmarkered `torch>=2.4.0` gave uv one edge to answer and one answer to give.
+# Splitting that requirement in two (see `[project] dependencies`) is what lets
+# this marker be honoured. With both in place the Mac and Linux entries in the
+# lock are exactly what they were, package for package and wheel for wheel,
+# which is the test this pair has to pass: nobody outside Windows should be able
+# to tell that any of it is here.
 torch = [{ index = "pytorch-cu126", extra = "cuda", marker = "sys_platform == 'win32'" }]
 torchaudio = [{ index = "pytorch-cu126", extra = "cuda", marker = "sys_platform == 'win32'" }]
 qwen-tts = { path = "third_party/Qwen3-TTS", editable = true }

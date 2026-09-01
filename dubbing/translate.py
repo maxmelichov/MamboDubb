@@ -1218,6 +1218,27 @@ def _backend() -> str:
                           _vllm_available())
 
 
+def shells_out_to_uv() -> bool:
+    """Whether the translate stage launches its model through `uv run`.
+
+    True on every machine but a Mac, which is the fact the Setup screen was
+    missing. MLX loads the translator in this process; both other backends are
+    `translator/worker.py` behind `_worker_cmd`, whose first word is uv. So on
+    Windows and Linux a missing uv is not an inconvenience, it is the translate
+    stage failing after fetch, stems and transcript have already succeeded, and
+    the Setup row has to be allowed to say so.
+
+    Cheap enough to ask on every poll of `GET /api/setup`, which is why it is
+    phrased as the backend question rather than as a platform test: on a Mac
+    `_mlx_available()` answers True without importing anything, and everywhere
+    else `_vllm_available()` is a cached filesystem look. Asking the backend
+    rather than `sys.platform` is also what makes
+    `DUBBING_TRANSLATOR_BACKEND=transformers` on a Mac tell the truth: that
+    machine does need uv, and a platform test would have called it optional.
+    """
+    return _backend() != "mlx"
+
+
 # --------------------------------------------------------------------------
 # low-VRAM mode
 # --------------------------------------------------------------------------
@@ -1392,8 +1413,38 @@ def _worker_cmd(backend: str = "transformers", low_vram: bool = False) -> list[s
     extra = ["--extra", "vllm"] if _vllm_installed() else []
     if _lowvram_extra(low_vram):
         extra += ["--extra", "lowvram"]
-    return ["uv", "run", "--project", str(project), *extra, "python",
+    return [_uv(), "run", "--project", str(project), *extra, "python",
             str(project / script), str(CUDA_MODEL_PATH)]
+
+
+def _uv() -> str:
+    """The uv this machine actually has, as an absolute path.
+
+    A bare `"uv"` was here, and a bare name is only ever resolved against PATH.
+    That is the one rung of five that a packaged desktop install does not have:
+    the bundle ships uv as a Tauri sidecar next to the app binary, `runner/
+    process.rs` passes its resolved path down as `DUBSTUDIO_UV_PATH`, and
+    nothing puts it on PATH at all. So a desktop user with uv present by
+    construction got FileNotFoundError at the translate stage, minutes into a
+    dub that had already fetched the video and separated its stems.
+    `tools.find_uv` is the same five-rung chain the Setup screen's row and the
+    Rust shell both use, so all three now agree about which uv this machine has.
+
+    Refusing here rather than letting Popen raise, because the two sentences are
+    not comparable. `FileNotFoundError: 'uv'` names a file; this names the stage,
+    the reason and the fix, and it is the same sentence the Setup row carries.
+    """
+    from . import tools
+
+    found = tools.find_uv()
+    if found is None:
+        raise RuntimeError(
+            "the translate stage runs its model in the translator venv and "
+            "launches it with `uv run`, and uv is not on this machine "
+            "(checked DUBSTUDIO_UV_PATH, this platform's install paths, PATH "
+            "and ~/.local/bin). Install it from https://docs.astral.sh/uv/, or "
+            "press Install on the Setup screen's uv row")
+    return found
 
 
 def _spare_gpu() -> str | None:

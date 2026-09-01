@@ -17,8 +17,9 @@ machine with CUDA installed system wide, with `cublas64_12.dll` sitting in a
 directory that is on PATH, still fails with "Library cublas64_12.dll is not
 found or cannot be loaded" the moment CTranslate2 asks for it. Registering the
 wheel directories is the fix, and it has to happen in-process before the first
-load, which is why `preload()` runs from `dubbing/__main__.py` rather than from
-whichever stage happens to need CUDA first.
+load, which is why `preload()` runs at the top of each entry point
+(`dubbing/__main__.py` for the CLI, `dubbing_app/worker.py` for the desktop
+app's job child) rather than from whichever stage happens to need CUDA first.
 
 **And the one nobody sees.** PyPI's default `torch` wheel is a CUDA build on
 Linux and a CPU-only build on Windows. A Windows user with a perfectly good card
@@ -27,6 +28,10 @@ four-minute Demucs pass into sixteen hours. Nothing raises, so nothing is
 logged, so the only symptom is that the run is slow. `warn_if_gpu_unused()` is
 the loud line that failure never had, and it is called once at startup rather
 than per stage so that it is the first thing in the log and not the fortieth.
+Both entry points call it, which is not a belt-and-braces: the desktop app runs
+its jobs through `dubbing_app.worker`, which does not import `dubbing.__main__`
+at all, so wiring it into the CLI alone left the users most likely to be on a
+Windows machine with a CPU-only torch as the only ones never told.
 
 Every function here is a no-op that returns something harmless when there is no
 GPU, no wheel or no torch, so Macs and CPU-only boxes pay nothing but the import.
@@ -105,8 +110,37 @@ def windows_dll_dirs() -> list[Path]:
     return dirs
 
 
-def preload() -> None:
-    """Make the wheels' CUDA libraries loadable. Safe to call more than once."""
+# The wheel directories a Linux CUDA load has to be told about, in dependency
+# order, and the glob that names the libraries inside each one.
+#
+# `cublas` is here because cuDNN 9 links it. It was not, and the omission is the
+# kind that only shows up as somebody else's error message: `preload` filtered
+# `_lib_dirs()` down to the cuDNN directory alone, so `libcudnn_cnn.so.9` (whose
+# heuristics call into cuBLAS) resolved `libcublas.so.12` through ldconfig and
+# got whatever system CUDA the machine happened to have, which is the exact
+# wrong-copy-answers failure this module exists to prevent, one library over.
+# `subprocess_env()` has always put *every* `nvidia/*/lib` on LD_LIBRARY_PATH,
+# so a demucs child got the wheels' cuBLAS and the parent process did not: two
+# answers to one question inside one run.
+#
+# Order matters and is the reason this is a tuple and not a set: `RTLD_GLOBAL`
+# means a library loaded here satisfies the next one's undefined symbols, so
+# cuBLAS has to be resident before cuDNN asks for it.
+LINUX_PRELOAD = (("cublas", "libcublas*.so.*"), ("cudnn", "libcudnn*.so.*"))
+
+
+def preload(out=None) -> list[str]:
+    """Make the wheels' CUDA libraries loadable. Safe to call more than once.
+
+    Answers the paths that would not load, which used to be swallowed. Nothing
+    here is worth ending a run over: a machine with no card reaches none of it,
+    and a machine with a card usually has one stale file among a dozen good
+    ones. But a directory where *nothing* loaded is a directory that is not
+    going to be there when CTranslate2 or a convolution asks, and the error that
+    arrives then (CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH, an hour into a run,
+    inside somebody else's stack frame) says nothing about this. One line at
+    startup naming the directory is what that failure never had.
+    """
     if sys.platform == "win32":
         for d in windows_dll_dirs():
             try:
@@ -116,19 +150,32 @@ def preload() -> None:
                 # path the loader will not take. Neither is worth ending a run
                 # that may not need CUDA at all.
                 pass
-        return
+        return []
     if sys.platform != "linux":
-        return
-    for lib_dir in _lib_dirs():
-        if lib_dir.parent.name != "cudnn":
+        return []
+    failed: list[str] = []
+    by_name = {d.parent.name: d for d in _lib_dirs()}
+    for name, pattern in LINUX_PRELOAD:
+        lib_dir = by_name.get(name)
+        if lib_dir is None:
             continue
-        # libcudnn.so.9 first, then the sub-libraries it would otherwise dlopen
-        # by bare soname through ldconfig.
-        for so in sorted(lib_dir.glob("libcudnn*.so.*"), key=lambda p: len(p.name)):
+        # The shortest name first, which is the versioned soname
+        # (`libcudnn.so.9`), then the sub-libraries it would otherwise dlopen by
+        # bare soname through ldconfig.
+        found = sorted(lib_dir.glob(pattern), key=lambda p: len(p.name))
+        loaded = 0
+        for so in found:
             try:
                 ctypes.CDLL(str(so), mode=ctypes.RTLD_GLOBAL)
+                loaded += 1
             except OSError:
-                pass
+                failed.append(str(so))
+        if found and not loaded:
+            print(f"warning: none of the {len(found)} CUDA libraries in {lib_dir} "
+                  f"would load, so anything that needs {name} will fall back to "
+                  f"whatever this machine has installed system wide, or fail",
+                  file=out if out is not None else sys.stderr)
+    return failed
 
 
 def subprocess_env() -> dict[str, str]:
@@ -230,8 +277,9 @@ _warned = False
 def warn_if_gpu_unused(out=None, *, once: bool = True) -> str | None:
     """Print `gpu_unused_reason()` and return what was printed, or None.
 
-    Called from `dubbing/__main__.py` before anything loads, and again from the
-    stem stage, which is where the cost actually lands. The point of the first
+    Called from `dubbing/__main__.py` and from `dubbing_app/worker.py` before
+    anything loads, and again from the stem stage, which is where the cost
+    actually lands. The point of the first
     placement is the log: the user whose sixteen-hour run started this was told
     nothing until the ASR stage, hours in, and then only about the ASR. The
     point of `once` is that saying it twice in one process turns a warning into

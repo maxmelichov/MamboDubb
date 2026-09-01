@@ -2422,16 +2422,41 @@ def test_setup_names_the_stage_a_blocking_check_would_kill(client):
     assert checks["model.asr.en"]["stage"] == "tts"
     # Only where it means something: a stage on an optional row reads as urgency.
     assert "stage" not in checks["disk"] and "stage" not in checks["model.demucs"]
-    # `uv` used to be the example here: blocking, with `stage: None`, on the
-    # reasoning that the environment is built with it while a running server
-    # spawns its job child with `sys.executable` and never shells out to it. The
-    # second half of that reasoning is the argument against the first, so the row
-    # is optional now and carries no stage at all, like every other row that
-    # kills nothing.
+    # `uv` is graded per machine (`setup.uv_row`). This suite runs on a Mac,
+    # where the MLX translator loads in-process and nothing shells out to uv, so
+    # the row is optional and carries no stage, like every other row that kills
+    # nothing here. The off-Mac half of that rule has its own test below.
     assert checks["uv"]["severity"] == "optional" and "stage" not in checks["uv"]
-    # `None` stays a legal answer for a blocking row all the same, so a future
-    # one is never pushed into inventing a stage it does not really break.
-    assert setup_mod.blocking_stage("uv") is None
+    # The table still names the stage uv kills where it is blocking, because
+    # `stage` is only ever attached to a blocking row and so is never read on
+    # the machine where the row is optional.
+    assert setup_mod.blocking_stage("uv") == "translate"
+    # `None` stays a legal answer for a blocking row all the same (`sox` above),
+    # so a future one is never pushed into inventing a stage it does not break.
+
+
+def test_setup_grades_uv_blocking_where_the_translator_is_launched_with_it(
+        client, monkeypatch):
+    """Off a Mac, `translate._worker_cmd` is `uv run --project translator`, so a
+    missing uv is the translate stage dying after fetch, stems and transcript
+    have succeeded. The row said "no stage of a dub shells out to it" on those
+    machines too, which is how a Windows user with a grey optional row lost a
+    run four stages in. The grade follows the backend, not the platform."""
+    from dubbing import translate
+    from dubbing_app import setup as setup_mod
+
+    monkeypatch.setattr(translate, "shells_out_to_uv", lambda: True)
+    row = {c["id"]: c for c in client.get("/api/setup").json()["checks"]}["uv"]
+    assert row["severity"] == setup_mod.BLOCKING and row["required"] is True
+    assert "uv run --project translator" in row["detail"] or row["ok"] is True
+    if not row["ok"]:
+        assert row["stage"] == "translate"
+    # And `probe` agrees with `report` about the same row: both go through
+    # `tool_spec`, so there is no second way for the grade to be decided.
+    probed = setup_mod.probe("uv")
+    assert probed is not None and probed["severity"] == setup_mod.BLOCKING
+    if not probed["ok"]:
+        assert probed["stage"] == "translate"
 
 
 def test_setup_asks_for_no_credential_anywhere_and_still_diarizes(client, monkeypatch):
@@ -3585,7 +3610,7 @@ def test_the_vram_probe_is_asked_once_and_not_three_times_per_poll(monkeypatch,
 
     # And the cache: however often it is asked, the subprocess is looked up once.
     monkeypatch.undo()
-    monkeypatch.setattr(setup_mod, "_vram", None)
+    monkeypatch.setattr(setup_mod, "_vram_read", False)
     which = shutil.which
     spawns = []
     monkeypatch.setattr(

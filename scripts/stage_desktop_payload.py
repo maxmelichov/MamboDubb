@@ -51,13 +51,25 @@ from __future__ import annotations
 
 import argparse
 import os
-import platform
 import shutil
 import stat
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# The uv release table, the checksum and the archive unpacking, imported from
+# the pipeline rather than written out again here. This script and
+# `dubbing_app/install.py` had a verbatim copy each and had already drifted
+# apart about what an unknown triple means, so the shared answer now lives in
+# `dubbing/uvrelease.py` and both call it. The `sys.path` line is what lets a
+# `uv run --script` with no dependencies reach it: `dubbing/uvrelease.py` is
+# stdlib-only and `dubbing/__init__.py` imports nothing at all, so this costs a
+# file read and needs no venv, which matters because this script runs before the
+# workspace it is staging has one.
+sys.path.insert(0, str(ROOT))
+
+from dubbing import uvrelease  # noqa: E402
 SRC_TAURI = ROOT / "app" / "desktop" / "src-tauri"
 PAYLOAD = SRC_TAURI / "payload" / "workspace"
 BINARIES = SRC_TAURI / "binaries"
@@ -136,33 +148,24 @@ def stage_workspace(skip_missing_submodule: bool) -> int:
     return total
 
 
-# Where the official uv builds live. The asset names *are* Rust target triples, which
-# is the happy accident that makes this a one-line mapping to what Tauri wants.
-UV_RELEASES = "https://github.com/astral-sh/uv/releases"
-
-# The triples we know how to bundle for: every one that has both an official uv asset
-# and a Tauri bundle target. Value is the archive extension of the uv asset.
-SUPPORTED_TRIPLES = {
-    "aarch64-apple-darwin": ".tar.gz",
-    "x86_64-apple-darwin": ".tar.gz",
-    "x86_64-unknown-linux-gnu": ".tar.gz",
-    "aarch64-unknown-linux-gnu": ".tar.gz",
-    "x86_64-pc-windows-msvc": ".zip",
-    "aarch64-pc-windows-msvc": ".zip",
-}
+SUPPORTED_TRIPLES = uvrelease.SUPPORTED_TRIPLES
 
 
 def host_triple() -> str:
-    """The Rust triple of the machine running this script."""
-    machine = platform.machine().lower()
-    arm = machine in ("arm64", "aarch64")
-    if sys.platform == "darwin":
-        return "aarch64-apple-darwin" if arm else "x86_64-apple-darwin"
-    if sys.platform.startswith("linux"):
-        return f"{'aarch64' if arm else 'x86_64'}-unknown-linux-gnu"
-    if sys.platform == "win32":
-        return f"{'aarch64' if arm else 'x86_64'}-pc-windows-msvc"
-    raise SystemExit(f"error: unsupported platform for staging: {sys.platform}")
+    """The Rust triple of the machine running this script.
+
+    The lookup is shared (`uvrelease.host_triple`); the refusal is not, and that
+    is the one thing the two callers are allowed to differ about. A machine with
+    no uv release cannot have a bundle staged for it, so here it stops the
+    build, while the app's button merely turns itself off.
+    """
+    triple = uvrelease.host_triple()
+    if triple is None:
+        import platform
+
+        raise SystemExit(f"error: unsupported platform for staging: {sys.platform} "
+                         f"on {platform.machine()}")
+    return triple
 
 
 def find_local_uv() -> Path | None:
@@ -185,14 +188,16 @@ def find_local_uv() -> Path | None:
 
 
 def _download(url: str) -> bytes:
+    """`uvrelease.download`, with this script's own way of failing.
+
+    A staging run is a build step, so a network error is a stopped build with a
+    line naming the URL, not a traceback. The bytes themselves come from the
+    shared fetch so there is one timeout and one code path.
+    """
     import urllib.error
-    import urllib.request
 
     try:
-        # The URL is always an https://github.com literal built from a triple this
-        # script validated against SUPPORTED_TRIPLES; nothing here is user-controlled.
-        with urllib.request.urlopen(url, timeout=180) as response:
-            return response.read()
+        return uvrelease.download(url)
     except urllib.error.HTTPError as err:
         raise SystemExit(f"error: {url} -> HTTP {err.code} {err.reason}") from err
     except OSError as err:
@@ -203,54 +208,19 @@ def download_uv(triple: str, version: str, dest: Path) -> None:
     """Fetch the official uv build for `triple` and unpack its binary to `dest`.
 
     Astral publishes one archive per target under a stable name, plus a `.sha256`
-    sibling, so this needs no API call and no token — and the checksum is verified,
+    sibling, so this needs no API call and no token, and the checksum is verified,
     because an unverified binary is about to be signed into someone's installer.
+    All six of those steps are `uvrelease.fetch_uv`; what is left here is the
+    print, the SystemExit spelling of a failure, and the write.
     """
-    import hashlib
-    import io
-
-    suffix = SUPPORTED_TRIPLES[triple]
-    asset = f"uv-{triple}{suffix}"
-    base = f"{UV_RELEASES}/latest/download" if version == "latest" \
-        else f"{UV_RELEASES}/download/{version}"
-    print(f"downloading {base}/{asset}", flush=True)
-    blob = _download(f"{base}/{asset}")
-
-    expected = _download(f"{base}/{asset}.sha256").decode("utf-8", "replace").split()
-    digest = hashlib.sha256(blob).hexdigest()
-    if not expected or expected[0].lower() != digest:
-        raise SystemExit(
-            f"error: checksum mismatch for {asset}: got {digest}, "
-            f"expected {expected[0] if expected else '<empty>'}"
-        )
-
-    wanted = "uv.exe" if triple.endswith("windows-msvc") else "uv"
-    if suffix == ".zip":
-        import zipfile
-
-        with zipfile.ZipFile(io.BytesIO(blob)) as archive:
-            member = next(
-                (n for n in archive.namelist() if n.rsplit("/", 1)[-1] == wanted), None
-            )
-            if member is None:
-                raise SystemExit(f"error: no {wanted} inside {asset}")
-            payload = archive.read(member)
-    else:
-        import tarfile
-
-        with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as archive:
-            member = next(
-                (m for m in archive.getmembers()
-                 if m.isfile() and m.name.rsplit("/", 1)[-1] == wanted),
-                None,
-            )
-            if member is None:
-                raise SystemExit(f"error: no {wanted} inside {asset}")
-            extracted = archive.extractfile(member)
-            if extracted is None:
-                raise SystemExit(f"error: could not read {wanted} out of {asset}")
-            payload = extracted.read()
-
+    if triple not in SUPPORTED_TRIPLES:
+        raise SystemExit(f"error: no uv release is published for {triple}")
+    try:
+        payload = uvrelease.fetch_uv(triple, version,
+                                     log=lambda line: print(line, flush=True),
+                                     fetch=_download)
+    except RuntimeError as err:
+        raise SystemExit(f"error: {err}") from err
     dest.write_bytes(payload)
 
 

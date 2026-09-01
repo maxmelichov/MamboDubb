@@ -29,15 +29,35 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from dubbing import manifest, tools
+from dubbing import manifest, nvlibs, tools
 
 from . import ops
+
 
 # The fence a traceback is printed inside is the parent's, not a second copy of
 # it: `dubbing_app.runner` keeps everything between these two lines out of the
 # UI's job log and in the server's own, which is the only place a stack trace is
 # any use, and a fence spelled twice is a fence that drifts.
 from .runner import TRACEBACK_CLOSE, TRACEBACK_OPEN
+
+# At import, which in this process is still before anything CUDA: `ops` reaches
+# every stage but imports torch from none of them at module scope, so the first
+# extension module that will ask for cuBLAS has not been loaded yet. And this is
+# the process where it counts. `dubbing/__main__.py` does the same two calls for `python -m
+# dubbing`, and for one commit that was the only place they lived while the
+# desktop app never imports that module at all: `runner.SubprocessRunner` spawns
+# `python -m dubbing_app.worker`. So on the desktop app the Windows CUDA DLL
+# directories were registered only as a side effect of `load_whisper` reaching
+# its CUDA branch, which is the ASR stage, four stages after Demucs has already
+# run on the CPU because nothing told torch where its libraries were. The
+# warning was never printed there at all.
+#
+# Module scope rather than inside `main()`, for `preload`, because a spawned
+# multiprocessing child re-imports this module and then loads torch, and the
+# registration has to be in place in *that* process too. The warning is in
+# `main()` for the mirror-image reason: it is a sentence for a person, and a
+# person wants it once.
+nvlibs.preload()
 
 
 def emit(event: dict[str, Any]) -> None:
@@ -206,6 +226,11 @@ def main(argv: list[str] | None = None) -> int:
     # are UTF-8 whatever this console thinks (the parent sets PYTHONIOENCODING
     # too; a worker started by hand on Windows gets it from here).
     tools.utf8_stdio((sys.stdin, sys.stdout, sys.stderr))
+    # After `utf8_stdio` so the line can be written at all, and before the spec
+    # is read so it is the first thing in this job's log rather than the
+    # fortieth. `runner` forwards stderr to the UI's job log, which is where the
+    # user whose stem separation took sixteen hours was looking.
+    nvlibs.warn_if_gpu_unused()
     raw = (argv[0] if argv else None) or sys.stdin.readline()
     try:
         spec = json.loads(raw)

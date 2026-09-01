@@ -320,26 +320,26 @@ TOOLS: dict[str, tuple[str, ...]] = {
     # wheel in this venv, and that is an argument for the button existing
     # rather than against it.
     #
-    # And it was BLOCKING, which was untrue on every machine that read it. This
-    # file defines blocking as "the run **fails** without it", and no run fails:
-    # the server is already up in its own environment, and
-    # `runner.SubprocessRunner` spawns every job child with `sys.executable`,
-    # never with uv. Nothing shells out to it during a dub. The old comment said
-    # exactly that and then graded it blocking anyway, which is how a desktop
-    # user whose app was *launched by* the bundled uv came to be shown REQUIRED
-    # and MISSING beside a machine that dubs perfectly.
+    # And it was graded, twice, for one machine. First BLOCKING everywhere,
+    # which was untrue on a Mac and made a desktop user whose app was *launched
+    # by* the bundled uv read REQUIRED and MISSING beside a machine that dubs
+    # perfectly. Then OPTIONAL everywhere, with the sentence "no stage of a dub
+    # shells out to it", which is untrue on every machine that is not a Mac:
+    # `translate._worker_cmd` is `uv run --project translator …` and it is how
+    # the translation model is loaded on Windows and on Linux. A user there saw
+    # a grey optional row, started a dub, watched fetch, stems and transcript
+    # succeed, and lost the run at translate.
     #
-    # OPTIONAL, then, and by this file's own rule rather than by taste.
-    # `degrades` means the run works and is worse, and a run without uv is not
-    # worse, it is identical. `optional` means irrelevant until you ask for it,
-    # and what asks for it is repairing or updating the environment (`uv sync`),
-    # every command in AGENTS.md, and the brewless static-ffmpeg route. Those
-    # are real, they are named below, and none of them is a dub.
-    "uv": ("uv", "uv", "no stage of a dub shells out to it, because this server is "
-                       "already running in its environment and every job child is "
-                       "spawned with the same interpreter. What needs it is repairing or "
-                       "updating that environment (`uv sync`), and every command in "
-                       "AGENTS.md. Get it from https://docs.astral.sh/uv/",
+    # So the grade is per machine, which is what it should have been from the
+    # start, and `uv_row` is where that is decided. The entry here is the text
+    # for the machine where the honest answer is `optional`; `uv_row` swaps in
+    # the blocking sentence, and the stage it names, everywhere else.
+    "uv": ("uv", "uv", "no stage of a dub shells out to it on this machine, because "
+                       "the translator runs in-process on MLX and every job child is "
+                       "spawned with the same interpreter as this server. What needs "
+                       "it is repairing or updating that environment (`uv sync`), and "
+                       "every command in AGENTS.md. Get it from "
+                       "https://docs.astral.sh/uv/",
            OPTIONAL),
 }
 
@@ -357,121 +357,87 @@ TOOLS: dict[str, tuple[str, ...]] = {
 # where its own installer puts it (`%USERPROFILE%\.local\bin\uv.exe`) had a red
 # row and a working uv. A Mac-only fallback list is not a fallback list; it is
 # a fallback list for the machine the author was sitting at.
-UV_PATH_ENV = "DUBSTUDIO_UV_PATH"
+#
+# It now lives in `dubbing/tools.py` and is imported here rather than defined
+# here, because a second caller appeared that this module cannot serve:
+# `dubbing.translate` shells out to `uv run --project translator` for every dub
+# on a machine without MLX, and the headless pipeline is not allowed to import
+# the app. Re-exported under the old names so `setup.find_uv` still means what
+# it always meant and there is still one implementation of it.
+from dubbing.tools import (  # noqa: E402
+    UV_FALLBACKS,
+    UV_PATH_ENV,
+    find_uv,
+    uv_exe,
+    uv_fallbacks,
+    uv_home,
+    uv_on_path,
+)
 
-# Absolute paths worth probing before PATH, per platform, copied from
-# `workspace.rs`'s three `UV_FALLBACKS` constants. Windows genuinely has none:
-# winget and uv's own installer both land on PATH or in the per-user
-# `.local\bin` the tail of `find_uv` checks, so an empty tuple there is the
-# answer rather than a gap.
-UV_FALLBACKS: dict[str, tuple[str, ...]] = {
-    "darwin": ("/opt/homebrew/bin/uv", "/usr/local/bin/uv"),
-    "linux": ("/usr/local/bin/uv", "/usr/bin/uv",
-              "/home/linuxbrew/.linuxbrew/bin/uv"),
-    "win32": (),
+
+# Binaries a row installs but does not have a row of its own for, keyed by the
+# row that carries them.
+#
+# `ffprobe` is the only one, and it is here because the app had no way at all to
+# notice it was missing. Every route that installs "ffmpeg" installs both:
+# `brew install ffmpeg`, the Gyan.FFmpeg winget package and the static-ffmpeg
+# wheel all ship the pair, so a second row with its own button would be a second
+# button that runs the first one's install. But `dubbing.audio` shells out to
+# ffprobe for the duration of every input file, and the ffmpeg row probed only
+# ffmpeg, so a half-finished install (the static route copies ffmpeg and *then*
+# ffprobe; the second copy can fail on a full disk or a locked file) left a
+# green row, no failure recorded, and a dub that died at the first probe with
+# nothing on the Setup screen to explain it. One row, both binaries: it is the
+# row's *claim* that was too narrow, not the row.
+COMPANIONS: dict[str, tuple[str, ...]] = {
+    "ffmpeg": ("ffprobe",),
 }
 
 
-def uv_exe(platform: str | None = None) -> str:
-    """The binary's name, which is the only part of this lookup spelled
-    differently per platform (`workspace.rs`: `UV_EXE`)."""
-    from dubbing import tools as tool_recipes
+def uv_row() -> tuple[str, ...]:
+    """The uv row's `(label, exe, why, severity)` for *this* machine.
 
-    return "uv.exe" if tool_recipes.platform_key(platform) == "win32" else "uv"
+    The one row in `TOOLS` whose grade is not a property of the project but of
+    the machine reading it, and the reason is a single line in
+    `dubbing/translate.py`: the CUDA translation worker is launched with
+    `uv run --project translator`. On a Mac the MLX backend loads the translator
+    in this process and that line never runs, so uv really is optional there and
+    a red row would be the false urgency `severity` exists to stop. On Windows
+    and on Linux that line is the translate stage, so a missing uv is a run that
+    dies four stages in and the row has to say so, with the stage named
+    (`BLOCKING_STAGE`) rather than a bare "runs will fail".
 
+    `translate.shells_out_to_uv()` is the question, not `sys.platform`, so that
+    a Mac with `DUBBING_TRANSLATOR_BACKEND=transformers` forced gets the
+    blocking row it has earned.
 
-def uv_fallbacks(platform: str | None = None) -> tuple[str, ...]:
-    from dubbing import tools as tool_recipes
-
-    return UV_FALLBACKS[tool_recipes.platform_key(platform)]
-
-
-def uv_home(env: dict[str, str] | None = None) -> Path | None:
-    """The user's home directory, resolved the way `workspace.rs` resolves it:
-    `HOME`, then `USERPROFILE`.
-
-    Not `Path.home()`, and the difference is the whole point. Python's
-    `expanduser` reads `USERPROFILE` on Windows and `HOME` everywhere else, so
-    the two agree on every real machine. The Rust side reads `HOME` *first* on
-    all three, which is what a Git-Bash or MSYS shell sets. Asking
-    the same two variables in the same order is what makes "the shell and the
-    server look in the same place" a fact rather than a hope. None when neither
-    is set, exactly as the Rust returns None: a home-relative guess with no
-    home is not a path.
+    A tuple in the same shape `TOOLS` holds, so `report` and `probe` both build
+    it through the same `tool()` call as every other row and there is no second
+    way for a tool row to come into existence.
     """
-    environ = os.environ if env is None else env
-    raw = environ.get("HOME")
-    if raw is None:
-        raw = environ.get("USERPROFILE")
-    return Path(raw) if raw else None
+    from dubbing import translate
+
+    label, exe, why, *rest = TOOLS["uv"]
+    if not translate.shells_out_to_uv():
+        return (label, exe, why, *rest)
+    return (label, exe,
+            "the translate stage loads its model in the translator venv and "
+            "launches it with `uv run --project translator`, so without uv a dub "
+            "fetches, separates and transcribes and then dies at translate. "
+            "Repairing or updating this environment (`uv sync`) needs it too, as "
+            "does every command in AGENTS.md. Get it from "
+            "https://docs.astral.sh/uv/",
+            BLOCKING)
 
 
-def uv_on_path(exe: str, env: dict[str, str] | None = None) -> str | None:
-    """`which`, near enough, and near enough to `workspace.rs`'s `find_in_path`.
+def tool_spec(id_: str) -> tuple[str, ...]:
+    """`TOOLS[id_]`, with the rows that are decided per machine decided.
 
-    Written out rather than handed to `shutil.which` because the two disagree
-    on Windows in the direction that matters: `shutil.which("uv")` appends the
-    PATHEXT suffixes and never tries the bare name, and `shutil.which("uv.exe")`
-    never tries anything else, while the Rust tries `uv.exe` then `uv` inside
-    each directory in turn. A Git-Bash-style extensionless shim is worth
-    finding, and a directory holding both must resolve the same way on both
-    sides or the shell and the server disagree about which uv this machine has.
+    One accessor so `report` and `probe` cannot disagree about a row: they used
+    to read `TOOLS` directly, which was fine while every grade was a constant
+    and would have been a silent split the moment one of them stopped being.
     """
-    environ = os.environ if env is None else env
-    raw = environ.get("PATH")
-    if not raw:
-        return None
-    bare = exe[:-4] if exe.endswith(".exe") else exe
-    names = (exe,) if bare == exe else (exe, bare)
-    for directory in raw.split(os.pathsep):
-        if not directory:
-            continue
-        for name in names:
-            candidate = Path(directory) / name
-            if candidate.is_file():
-                return str(candidate)
-    return None
-
-
-def find_uv(platform: str | None = None) -> str | None:
-    """Where `uv` actually is, not just where PATH says.
-
-    Five rungs, the same five and in the same order as `workspace.rs`:
-
-    1. `DUBSTUDIO_UV_PATH`. On a packaged install this is not a courtesy, it is
-       *the* answer: every bundle ships uv as a Tauri `externalBin` sidecar next
-       to the app binary, and `runner/process.rs` hands the resolved path down
-       on the server's environment when it spawns it. The Rust side's second
-       rung resolves that sidecar from `current_exe`, and this process cannot:
-       its `sys.executable` is the venv's Python, nowhere near the shell. So
-       the env var is how the sidecar reaches Python, and it is why a desktop
-       user has uv by construction and should never see this row red.
-    2. (the sidecar, which is rung 1 here; see above)
-    3. this platform's literal install paths, `uv_fallbacks()`.
-    4. PATH, `.exe` first on Windows.
-    5. `~/.local/bin` and `~/.cargo/bin`, where uv's own installer and
-       `cargo install uv` put it. A GUI process inherits almost none of the
-       user's shell PATH (a Finder-launched .app, a Start menu shortcut), so
-       these two literals catch the most common standalone install there is:
-       the one `install-server.sh` and `install-server.ps1` perform.
-    """
-    override = (os.environ.get(UV_PATH_ENV) or "").strip()
-    if override and Path(override).is_file():
-        return override
-    for candidate in uv_fallbacks(platform):
-        if Path(candidate).is_file():
-            return candidate
-    exe = uv_exe(platform)
-    found = uv_on_path(exe)
-    if found:
-        return found
-    home = uv_home()
-    if home is None:
-        return None
-    for candidate in (home / ".local" / "bin" / exe, home / ".cargo" / "bin" / exe):
-        if candidate.is_file():
-            return str(candidate)
-    return None
+    return uv_row() if id_ == "uv" else TOOLS[id_]
 
 
 def tool(id_: str, label: str, exe: str, why: str,
@@ -496,11 +462,30 @@ def tool(id_: str, label: str, exe: str, why: str,
     from dubbing import tools as tool_recipes
 
     found = find_uv() if exe == "uv" else tool_recipes.resolve_tool(exe)
+    # The companions are found the same way and reported as part of this row:
+    # they have no row of their own on purpose (see `COMPANIONS`), so if this
+    # one does not look for them nothing does.
+    absent = [name for name in COMPANIONS.get(id_, ())
+              if tool_recipes.resolve_tool(name) is None]
     # "not on PATH" for the tools whose probe is PATH and two overrides of it.
     # uv's probe is five rungs of which PATH is one, so naming PATH there would
     # send a user to check the one place that was least likely to be the answer.
     missing = "not found" if exe == "uv" else "not on PATH"
     detail = found or f"{exe} {missing}: {why}"
+    if found and absent:
+        # The odd one out, and the reason it gets its own sentence: the tool the
+        # row is named after is right there, so "ffmpeg not on PATH" would be a
+        # lie and a user would spend the next ten minutes proving it wrong. What
+        # is missing is the half nothing else looks for.
+        detail = (f"{found}, but {', '.join(absent)} "
+                  f"{'is' if len(absent) == 1 else 'are'} not on PATH. They are "
+                  f"installed together by every route this app takes, so this is "
+                  f"a torn install rather than a missing package: install "
+                  f"{exe} again")
+        command = tool_recipes.command(id_)
+        if command:
+            detail += f" (`{command}`)"
+        found = None
     if not found:
         command = tool_recipes.command(id_)
         if command:
@@ -526,7 +511,7 @@ def probe(id_: str) -> dict[str, Any] | None:
     """
     from .install import installable
 
-    spec = TOOLS.get(id_)
+    spec = tool_spec(id_) if id_ in TOOLS else None
     if spec is None:
         if id_ not in model_downloads() and not installable(id_):
             return None
@@ -892,7 +877,8 @@ def env_file_value(path: Path, key: str) -> str | None:
     return found
 
 
-_vram: int | None = None
+_vram = 0
+_vram_read = False
 
 
 def gpu_memory_bytes(*, refresh: bool = False) -> int:
@@ -905,8 +891,8 @@ def gpu_memory_bytes(*, refresh: bool = False) -> int:
     all. The run itself still asks torch (`dubbing.translate._total_vram`);
     this is the cheap version for a screen.
 
-    Read once and cached, exactly as `git_commit` is, and for a sharper version
-    of the same reason. How much VRAM is soldered to this machine cannot change
+    Read once and cached, exactly as `git_commit` is, separate read flag and
+    all, and for a sharper version of the same reason. How much VRAM is soldered to this machine cannot change
     while the process runs, and asking costs a subprocess with a ten-second
     timeout. One `report()` asks three times (`model_downloads` is built by
     `report` and again by `model_checks`, and `low_vram_check` asks a third
@@ -919,25 +905,56 @@ def gpu_memory_bytes(*, refresh: bool = False) -> int:
     module says the report answers in milliseconds and can be polled; a cache is
     what makes that true off a Mac.
     """
-    global _vram
-    if _vram is not None and not refresh:
+    global _vram, _vram_read
+    if _vram_read and not refresh:
         return _vram
-    _vram = 0
+    answer = _read_gpu_memory_bytes()
+    _vram, _vram_read = answer, True
+    return answer
+
+
+def _read_gpu_memory_bytes() -> int:
+    """Ask `nvidia-smi`, once, and answer in bytes. 0 for every way of not
+    knowing: no driver, a driver that would not answer, and output that did not
+    parse.
+
+    Split out from `gpu_memory_bytes` so the cache is written **after** the
+    answer exists rather than before. The old shape published `_vram = 0` and
+    then spent up to ten seconds in a subprocess, and `_vram is not None` was
+    the cache's "have I read this" flag, so for the whole of those ten seconds
+    every other thread was told this machine has no GPU as a cached fact. That
+    is not a hypothetical race: the Setup screen polls every two seconds, and
+    `low_vram_check` feeds the number straight to `translate.choose_low_vram`,
+    which reads 0 as "no CUDA device" and offers the 9.7 GB bf16 translator to a
+    12 GB card. `git_commit` in this same file keeps a separate `_commit_read`
+    flag for exactly this reason, and this now follows it.
+
+    `returncode` is checked, which it was not. A driver that errors still exits
+    non-zero with an empty stdout, and reading `[0]` off an empty list raised
+    IndexError inside the `try` whose except cached 0 permanently: one bad
+    moment at startup and the whole process believed there was no card until it
+    was restarted. Now a failure to read is simply not cached as an answer
+    (`gpu_memory_bytes(refresh=True)` is the way back, and it is what the caller
+    that cares about a transient failure would use).
+    """
     exe = shutil.which("nvidia-smi")
     if not exe:
-        return _vram
+        return 0
     try:
         out = subprocess.run([exe, "--query-gpu=memory.total",
                               "--format=csv,noheader,nounits"],
                              capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
-        return _vram
+        return 0
+    if out.returncode != 0:
+        return 0
     first = (out.stdout or "").strip().splitlines()
+    if not first:
+        return 0
     try:
-        _vram = int(float(first[0].strip())) * 1024**2     # nvidia-smi reports MiB
-    except (IndexError, ValueError):
-        _vram = 0
-    return _vram
+        return int(float(first[0].strip())) * 1024**2      # nvidia-smi reports MiB
+    except ValueError:
+        return 0
 
 
 def low_vram_env_key() -> str:
@@ -1530,6 +1547,12 @@ def demucs_check() -> dict[str, Any]:
 # user whether to fix it now or start the fetch and fix it while it downloads.
 BLOCKING_STAGE: dict[str, str] = {
     "ffmpeg": "fetch",          # the first stage that shells out; they all do
+    # uv, on the machines where its row is blocking at all (`uv_row`): the
+    # translation model is loaded by `uv run --project translator`. Listed
+    # unconditionally because `stage` is only ever attached to a row that came
+    # back blocking, so on a Mac, where the uv row is optional, this entry is
+    # never read.
+    "uv": "translate",
     # sox has no entry: its row is OPTIONAL now (see TOOLS) and `stage` is only
     # ever attached to blocking rows — a stage on it would be the false urgency
     # the severity downgrade removed.
@@ -1541,16 +1564,19 @@ BLOCKING_STAGE: dict[str, str] = {
 def blocking_stage(id_: str) -> str | None:
     """The stage a missing blocking check kills, or None when there isn't one.
 
-    `None` is a real answer and not a gap to be filled, and the row that taught
-    that lesson has since been regraded rather than answered. `uv` was blocking
+    `None` is a real answer and not a gap to be filled, and `sox` is the row
+    that shows why: it is optional, nothing it is missing from stops, and
+    inventing a stage for it would be exactly the false urgency the grades exist
+    to remove. A client that shows the stage must be prepared not to have one.
+
+    `uv` is the row that taught the lesson the other way round. It was blocking
     with no stage, on the reasoning that nothing about this project is installed
-    or updated without it while a server that is already running never shells
-    out to it (`runner.SubprocessRunner` uses `sys.executable`). The second half
-    of that sentence is the whole argument against the first: a check that kills
-    no stage is not blocking, so uv is `optional` now and the question does not
-    arise for it. What survives is the shape. A client that shows the stage must
-    still be prepared not to have one, because the alternative is a future
-    blocking row inventing a stage it does not really break.
+    or updated without it; then optional, on the reasoning that a running server
+    never shells out to it (`runner.SubprocessRunner` uses `sys.executable`).
+    Both readings missed the same line: `translate._worker_cmd` is `uv run
+    --project translator`, so off a Mac uv is what loads the translation model.
+    It is blocking there, it names `translate`, and it stays optional on the Mac
+    where the MLX backend makes that line unreachable. See `uv_row`.
     """
     if id_ in BLOCKING_STAGE:
         return BLOCKING_STAGE[id_]
@@ -1563,7 +1589,7 @@ def report(outputs: Path) -> dict[str, Any]:
     from .install import installable
 
     downloads = model_downloads()
-    checks: list[dict[str, Any]] = [tool(id_, *spec) for id_, spec in TOOLS.items()]
+    checks: list[dict[str, Any]] = [tool(id_, *tool_spec(id_)) for id_ in TOOLS]
     checks += model_checks()             # the Demucs cache is the last of those
     checks.append(disk_check(Path(outputs)))
     # Last, beside the other row about this machine rather than about a file:
@@ -1642,8 +1668,9 @@ def install_plan(report_: dict[str, Any]) -> list[dict[str, Any]]:
     # One row installs another, and grade order gets that backwards. The static
     # ffmpeg route (`install.static_route`: every Linux, plus a brewless Mac and
     # a wingetless Windows) puts the `static-ffmpeg` wheel in this environment
-    # with uv, and uv is the tool whose own row is `optional` because no dub
-    # shells out to it. So on the one machine that needs both, the plan ran the
+    # with uv, and on a Mac uv's own row is graded `optional` because the MLX
+    # translator never shells out to it (`uv_row`). So on the one machine that
+    # needs both, the plan ran the
     # blocking row first, watched it die on "fix the uv row first", installed uv
     # a minute later, and left the user with a red ffmpeg row and no reason to
     # think pressing the same button again would do anything different. Grade
@@ -1669,5 +1696,6 @@ __all__ = ["report", "probe", "install_plan", "git_commit", "human_bytes", "dir_
            "hf_cache_repo", "diarization_repair", "index_shards", "model_ready",
            "fetch_in_flight", "record_install", "install_recorded", "INSTALL_RECEIPT",
            "low_vram_check", "low_vram_env_key", "low_vram_state", "model_downloads",
-           "blocking_stage", "TOOLS", "BLOCKING", "DEGRADES", "OPTIONAL", "SEVERITIES",
+           "blocking_stage", "TOOLS", "COMPANIONS", "tool_spec", "uv_row",
+           "BLOCKING", "DEGRADES", "OPTIONAL", "SEVERITIES",
            "MISSING", "INCOMPLETE", "READY", "STATES"]

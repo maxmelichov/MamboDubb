@@ -95,7 +95,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
-from dubbing import tools
+from dubbing import tools, uvrelease
 
 from .errors import ApiError, busy, invalid
 
@@ -179,7 +179,10 @@ DIARIZATION_ID = "model.diarization"
 # binary per platform under a stable release URL with a `.sha256` beside it.
 # `uv_release_route` decides when that is the route; `install_uv` is the route.
 UV_ID = "uv"
-UV_RELEASES = "https://github.com/astral-sh/uv/releases"
+# The releases page, and the triple table, and the checksum, and the archive
+# unpacking: `dubbing.uvrelease`, which `scripts/stage_desktop_payload.py`
+# also imports. This module used to carry its own copy of all four.
+UV_RELEASES = uvrelease.UV_RELEASES
 # The stem-separation weights, which are the one install here that is neither a
 # package manager nor a snapshot: demucs fetches them itself the first time a
 # `stems` run asks for the model, so the button just asks first. See
@@ -238,7 +241,19 @@ def registry_path_entries() -> list[str]:
     rebuilds PATH from the registry for that exact reason and says so; this is
     the same rebuild, for the server that runs the buttons.
 
-    Both hives, user then machine, which is the order Windows composes them in.
+    Both hives, **machine then user**, which is the order Windows composes them
+    in: the session's PATH is the system value with the per-user value appended,
+    which is why a per-user entry can only ever be a fallback and never a
+    shadow. This read had them the other way round, with a docstring asserting
+    that user-first was how Windows did it, and the consequence is the exact
+    failure the function exists to prevent. A machine carrying a stale
+    per-user ffmpeg and a good system one resolved to the stale copy here and to
+    the good one in a fresh cmd.exe, so the server and the user's own terminal
+    disagreed about what this machine has, which is unfalsifiable from the
+    outside and looks like the app being wrong about everything.
+    `install-server.ps1`'s `Update-PathFromRegistry` joins machine and then user
+    and always did; the two halves of one idea now say the same thing.
+
     A key that will not open is skipped rather than raised on: a PATH we could
     not widen is the state we were already in.
     """
@@ -246,9 +261,9 @@ def registry_path_entries() -> list[str]:
         return []
     import winreg
 
-    hives = ((winreg.HKEY_CURRENT_USER, "Environment"),
-             (winreg.HKEY_LOCAL_MACHINE,
-              r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"))
+    hives = ((winreg.HKEY_LOCAL_MACHINE,
+              r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+             (winreg.HKEY_CURRENT_USER, "Environment"))
     found: list[str] = []
     for root, key in hives:
         try:
@@ -382,19 +397,13 @@ def uv_release_route(id_: str) -> bool:
 def uv_triple() -> str | None:
     """The release asset triple for this machine, or None when astral publishes
     no build for it (a 32-bit Windows, a riscv Linux). None is what turns the
-    button off rather than a download that 404s."""
-    machine = platform.machine().lower()
-    arm = machine in ("arm64", "aarch64")
-    key = tools.platform_key()
-    if key == "darwin":
-        return "aarch64-apple-darwin" if arm else "x86_64-apple-darwin"
-    if key == "win32":
-        if machine not in ("amd64", "x86_64", "arm64", "aarch64"):
-            return None
-        return f"{'aarch64' if arm else 'x86_64'}-pc-windows-msvc"
-    if machine not in ("x86_64", "amd64", "arm64", "aarch64"):
-        return None
-    return f"{'aarch64' if arm else 'x86_64'}-unknown-linux-gnu"
+    button off rather than a download that 404s.
+
+    The table and the fold are `dubbing.uvrelease`'s, shared with the desktop
+    staging script; this is only the name the app calls it by, kept because
+    `installable` and the tests both ask for it here.
+    """
+    return uvrelease.host_triple()
 
 
 def uv_install_dir() -> Path:
@@ -424,118 +433,43 @@ def uv_install_dir() -> Path:
 
 
 def _uv_home() -> Path | None:
-    from . import setup
-
-    return setup.uv_home()
+    # `dubbing.tools`, which is where the uv lookup lives now; `setup.uv_home`
+    # is a re-export of this same function, and going through the app to reach
+    # the pipeline's own answer was one hop of indirection with nothing on it.
+    return tools.uv_home()
 
 
 def download(url: str, timeout: float = 180.0) -> bytes:
     """Fetch `url`. Module-level, like `snapshot_download`, so a test swaps the
-    whole thing and no bytes cross the network."""
-    import urllib.request
-
-    # Always an https://github.com literal built from a triple this module
-    # validated against its own table; nothing here comes from a request.
-    with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310
-        return response.read()
+    whole thing and no bytes cross the network; `install_uv` hands it to
+    `uvrelease.fetch_uv` as that function's `fetch`, so the seam the tests
+    already knew about is still the only one."""
+    return uvrelease.download(url, timeout)
 
 
 def install_uv(log: Callable[[str], None]) -> Path:
     """Put the official `uv` build for this machine in `~/.local/bin`, after
     checking it against the checksum astral publishes beside it.
 
-    The release archive, and deliberately not `curl -LsSf https://astral.sh/uv/
-    install.sh | sh` (or the `irm … | iex` spelling of the same thing). Three
-    reasons, and the repo already made this call twice before this button
-    existed: `install-server.sh`, `install-server.ps1` and
-    `scripts/stage_desktop_payload.py` all fetch `astral-sh/uv` releases and
-    verify the published `.sha256`.
+    The fetch, the checksum and the archive are `dubbing.uvrelease`'s, which is
+    the same code `scripts/stage_desktop_payload.py` runs and the same code
+    `install-server.sh` and `install-server.ps1` describe in shell. Why an
+    archive rather than a piped install script is written down there.
 
-    * **There is something to verify.** A piped script is whatever the URL
-      served at the moment it was read, and nothing downstream can check it. An
-      archive has a checksum published beside it, so a corrupted or truncated
-      transfer is caught before a binary is written rather than after it fails
-      to run. The checksum travels from the same host as the archive, so it
-      proves the transfer and not the publisher, which is exactly the guarantee
-      astral's own installer gives itself.
-    * **There is no shell to pipe into.** This runs inside a GUI app with no
-      terminal. On Windows the official line is `powershell -ExecutionPolicy
-      ByPass -c "irm … | iex"`, and spawning a policy-bypassing PowerShell out
-      of a desktop app is both a worse thing to do and a thing some managed
-      machines refuse, which would be a button that fails for reasons this app
-      cannot explain.
-    * **It is one code path.** The archive route is the same six steps on all
-      three platforms, which is what lets the Linux machine that has no package
-      manager at all get the same button as the other two.
-
-    The extracted binary is written to a `.incoming` sibling and renamed into
-    place only after it is whole, so an interrupted download leaves the old uv
-    (or no uv) rather than a truncated one that every later run would try to
-    execute.
+    What is this function's own is the last three lines: where the binary goes
+    (`uv_install_dir`, the directory every uv lookup in this repo already ends
+    at) and the sentence for a machine astral publishes nothing for.
     """
     triple = uv_triple()
     if triple is None:
         raise RuntimeError(
             f"astral publishes no uv build for {platform.machine()} on "
             f"{sys.platform}; install uv by hand from https://docs.astral.sh/uv/")
-    suffix = ".zip" if triple.endswith("windows-msvc") else ".tar.gz"
-    asset = f"uv-{triple}{suffix}"
-    base = f"{UV_RELEASES}/latest/download"
-    log(f"downloading {base}/{asset}")
-    blob = download(f"{base}/{asset}")
-
-    import hashlib
-
-    published = download(f"{base}/{asset}.sha256").decode("utf-8", "replace").split()
-    digest = hashlib.sha256(blob).hexdigest()
-    if not published or published[0].lower() != digest:
-        raise RuntimeError(
-            f"{asset} does not match its published checksum (got {digest}, "
-            f"expected {published[0] if published else '<none>'}), so it was not "
-            "installed")
-    log(f"checksum verified against {asset}.sha256")
-
-    wanted = "uv.exe" if suffix == ".zip" else "uv"
-    payload = _uv_from_archive(blob, suffix, wanted, asset)
-
-    bin_dir = uv_install_dir()
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    target = bin_dir / wanted
-    staging = bin_dir / f"{wanted}.incoming"
-    staging.write_bytes(payload)
-    staging.chmod(staging.stat().st_mode | 0o755)
-    staging.replace(target)
+    payload = uvrelease.fetch_uv(triple, log=log, fetch=download)
+    target = uvrelease.write_binary(payload,
+                                    uv_install_dir() / uvrelease.binary_name(triple))
     log(f"installed {target}")
     return target
-
-
-def _uv_from_archive(blob: bytes, suffix: str, wanted: str, asset: str) -> bytes:
-    """The one binary out of the release archive, by basename. Named by
-    basename rather than by full path because astral has moved it between a
-    flat archive and a `uv-<triple>/` directory before now, and a hardcoded
-    path would turn that into a button that stopped working."""
-    import io
-
-    if suffix == ".zip":
-        import zipfile
-
-        with zipfile.ZipFile(io.BytesIO(blob)) as archive:
-            member = next((n for n in archive.namelist()
-                           if n.rsplit("/", 1)[-1] == wanted), None)
-            if member is None:
-                raise RuntimeError(f"no {wanted} inside {asset}")
-            return archive.read(member)
-    import tarfile
-
-    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as archive:
-        member = next((m for m in archive.getmembers()
-                       if m.isfile() and m.name.rsplit("/", 1)[-1] == wanted), None)
-        if member is None:
-            raise RuntimeError(f"no {wanted} inside {asset}")
-        extracted = archive.extractfile(member)
-        if extracted is None:
-            raise RuntimeError(f"could not read {wanted} out of {asset}")
-        return extracted.read()
 
 
 def diarization_target() -> Path:
@@ -1147,7 +1081,13 @@ class Installer:
         # processes get, and the check below runs in this one. See `refresh_path`.
         if self._route == MANAGER:
             refresh_path()
-        self._finish(id_, ok, error)
+        # This is the one route whose failure is only ever a claim about an exit
+        # code, so it is the one route a green re-probe is allowed to overrule
+        # (see `_finish`). Not after a timeout, though: a child that was killed
+        # at thirty minutes did not finish anything, and a row that is green in
+        # spite of it is green for some earlier reason that has nothing to say
+        # about this attempt.
+        self._finish(id_, ok, error, exit_code_only=not timed_out.is_set())
 
     def _run_download(self, id_: str, hub: str, local_dir: Path) -> None:
         """The worker behind a model install: one `snapshot_download` into the
@@ -1296,7 +1236,8 @@ class Installer:
                 "that already succeeded, and get the same answer. Please report "
                 "it" + (f". The check says: {said}" if said else "."))
 
-    def _finish(self, id_: str, ok: bool, error: str | None) -> None:
+    def _finish(self, id_: str, ok: bool, error: str | None, *,
+                exit_code_only: bool = False) -> None:
         """Record the verdict and re-probe, because the exit code is a claim
         about the package manager, not about this machine.
 
@@ -1308,9 +1249,28 @@ class Installer:
         installed but not on the server's PATH therefore had a red row, and a
         button that ran winget, got "already installed", and reported a failure
         for a tool that was sitting right there. Pressing it again did the same
-        thing. If the row is green when the worker stops, the machine has what it
-        needed, and no exit code gets to say otherwise; the worker's own
-        complaint stays in the tail, where a curious user can still read it.
+        thing.
+
+        **But it may only overrule what it actually checked**, which is
+        `exit_code_only`, and the gap it closes is a real one. A re-probe answers
+        one question about one id. The package-manager route is the only one
+        whose failure is a *claim about the exit code* and nothing else, so it is
+        the only one allowed to be overruled by a green row. Every other route
+        fails because something it did raised, and what raised is not necessarily
+        what the row looks at: `_run_static` copies ffmpeg and then ffprobe, and
+        a machine where the ffprobe copy threw had a green ffmpeg probe, a green
+        row, no failure recorded anywhere, and a dub that died in
+        `dubbing.audio` at the first ffprobe call. (The ffmpeg row now probes
+        ffprobe too, see `setup.COMPANIONS`, which is the other half of that fix;
+        this half is the rule that a probe cannot vouch for work it did not
+        look at.) The same override laundered the thirty-minute timeout kill: the
+        killed child had installed nothing, the row happened to be green from an
+        earlier attempt, and "was still running after 30 minutes" was replaced
+        with a success.
+
+        So a timed-out `_run` passes `exit_code_only=False` as well, and the one
+        case the override was written for, an exit code that lies about a machine
+        that has the tool, is exactly the case it still covers.
 
         The other direction, a worker that said yes and a check that says no,
         picks its sentence by **which route ran** rather than by which table the
@@ -1333,21 +1293,37 @@ class Installer:
         that already worked has stopped telling them the truth.
         """
         check = None
+        # One try around everything between here and the lock, because
+        # everything between here and the lock can raise and the slot is not
+        # released until the lock is taken. The probe had its own guard and
+        # `_disagreement` did not, which is a distinction the thread that dies
+        # does not make: `_disagreement`'s RESTORE branch imports
+        # `dubbing.segments` and its UV_ROUTE branch calls `uv_install_dir`,
+        # which raises RuntimeError when neither HOME nor USERPROFILE is set. On
+        # a partly synced venv the import fails, the worker thread dies with
+        # `_running` still true, and every install button answers 409 until the
+        # app is restarted. A message we could not compose is worth less than a
+        # slot we can still use.
         try:
-            check = self._probe(id_)
-        except Exception as exc:                      # a probe must never strand the slot
-            error = error or f"could not re-check {id_}: {type(exc).__name__}: {exc}"
-        fresh = check is not None and bool(check.get("ok"))
-        if fresh and not ok:
-            # The worker complained and the machine has the thing anyway. Keep
-            # what it said in the tail and stop calling this a failure.
-            self._line(f"the installer was unhappy ({error or 'no reason given'}), "
-                       f"but the re-check found {id_} on this machine, so it is "
-                       "installed and this is not a failure")
-            ok, error = True, None
-        elif ok and check is not None and not fresh:
+            try:
+                check = self._probe(id_)
+            except Exception as exc:                  # a probe must never strand the slot
+                error = error or f"could not re-check {id_}: {type(exc).__name__}: {exc}"
+            fresh = check is not None and bool(check.get("ok"))
+            if fresh and not ok and exit_code_only:
+                # The exit code complained and the machine has the thing anyway.
+                # Keep what it said in the tail and stop calling this a failure.
+                self._line(f"the installer was unhappy ({error or 'no reason given'}), "
+                           f"but the re-check found {id_} on this machine, so it is "
+                           "installed and this is not a failure")
+                ok, error = True, None
+            elif ok and check is not None and not fresh:
+                ok = False
+                error = error or self._disagreement(id_, check)
+        except Exception as exc:
             ok = False
-            error = error or self._disagreement(id_, check)
+            error = error or (f"the install of {id_} could not be checked: "
+                              f"{type(exc).__name__}: {exc}")
         with self._lock:
             self._running = False
             self._ok = ok
