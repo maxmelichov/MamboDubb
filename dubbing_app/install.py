@@ -271,8 +271,16 @@ def registry_path_entries() -> list[str]:
                 value, _ = winreg.QueryValueEx(handle, "Path")
         except OSError:
             continue
+        # Split on `;` and not `os.pathsep`, for the same reason PATHEXT does
+        # in `dubbing.tools`: this is a Windows registry value and it is always
+        # semicolon separated. `os.pathsep` happens to be `;` on the machine
+        # that runs this for real, so the two agree in production and the bug
+        # is invisible there. It shows up in the test, which fakes `winreg`
+        # from a Mac, where `os.pathsep` is `:` and every `C:\...` entry gets
+        # cut in half at its drive letter. A Windows-only parser that reads the
+        # host's separator is a parser the host can never check.
         found += [part for part in
-                  os.path.expandvars(str(value)).split(os.pathsep) if part]
+                  os.path.expandvars(str(value)).split(";") if part]
     return found
 
 

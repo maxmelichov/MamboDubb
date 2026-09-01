@@ -1563,11 +1563,13 @@ def test_the_registry_path_is_read_system_first_then_user(monkeypatch):
     import types
 
     fake = types.SimpleNamespace(HKEY_CURRENT_USER="HKCU", HKEY_LOCAL_MACHINE="HKLM")
-    # No drive letters in the fixtures: `registry_path_entries` splits on
-    # `os.pathsep`, which is ":" on the machine this test runs on, and a
-    # `C:\...` fixture would be split down the middle by the test harness
-    # rather than by anything the function does wrong.
-    system, user = r"\\SYSTEM\\ffmpeg\\bin", r"\\USER\\old-ffmpeg"
+    # Real drive letters, because that is what a real registry holds and it is
+    # the shape the parser has to survive. It could not, until the split moved
+    # from `os.pathsep` to `;`: this test runs on a Mac, where `os.pathsep` is
+    # ":", so every `C:\...` entry came back cut in half at its drive letter and
+    # the fixtures had to be written around the defect to stay green.
+    system = r"C:\Program Files\ffmpeg\bin"
+    user = r"C:\Users\eli\AppData\Local\old-ffmpeg"
     values = {("HKLM", r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"):
               system, ("HKCU", "Environment"): user}
 
