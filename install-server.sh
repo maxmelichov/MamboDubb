@@ -417,7 +417,7 @@ fi
 info ""
 info "Installed in $DIR"
 info "Start it again later with:"
-info "    cd $DIR && $UV run mambodubb --port $PORT"
+info "    cd $DIR && $UV run --extra app mambodubb --port $PORT"
 info ""
 info "First run: open Setup in the editor and press Install everything. That is"
 info "about 25 GB of models, and it resumes where it left off if you interrupt it."
@@ -429,4 +429,9 @@ if [ "${MAMBODUBB_START:-1}" = 0 ]; then
 fi
 
 info "Starting the studio on http://127.0.0.1:${PORT} (Ctrl-C to stop)"
-exec "$UV" run mambodubb --port "$PORT"
+# `--extra app` on the run line too: `uv run` re-syncs the venv to the
+# lockfile before it runs anything, and without the extra named it would sync
+# the extra's own dependencies right back out. They survive today only as
+# transitives of gradio, which is the accident the sync comment above refuses
+# to depend on.
+exec "$UV" run --extra app mambodubb --port "$PORT"
