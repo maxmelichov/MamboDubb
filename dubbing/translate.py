@@ -58,6 +58,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -1125,6 +1126,7 @@ def _mlx_available() -> bool:
 
 
 _VLLM_INSTALLED: bool | None = None
+_CUDA_COUNT: int | None = None
 
 
 def translator_venv_has(package: str) -> bool:
@@ -1161,12 +1163,28 @@ def _vllm_installed() -> bool:
 
 
 def _cuda_count() -> int:
-    try:
-        import torch
+    """How many CUDA devices this machine has, asked of `nvidia-smi`.
 
-        return int(torch.cuda.device_count())
-    except Exception:
-        return 0
+    Not of torch: the Setup screen polls `shells_out_to_uv()` → `_backend()` →
+    `_vllm_available()` on every `GET /api/setup`, in a server process whose
+    design rule is that it never imports torch (half a gigabyte resident to
+    answer a yes/no). `nvidia-smi -L` prints one line per device, ships with
+    the driver, and a card without a driver is not a card vLLM can use anyway.
+    Cached for the process: cards do not come and go mid-run."""
+    global _CUDA_COUNT
+    if _CUDA_COUNT is None:
+        exe = shutil.which("nvidia-smi")
+        if exe is None:
+            _CUDA_COUNT = 0
+        else:
+            try:
+                out = subprocess.run([exe, "-L"], capture_output=True, text=True,
+                                     timeout=30).stdout
+                _CUDA_COUNT = sum(1 for line in out.splitlines()
+                                  if line.startswith("GPU "))
+            except (OSError, subprocess.SubprocessError):
+                _CUDA_COUNT = 0
+    return _CUDA_COUNT
 
 
 def _vllm_available() -> bool:

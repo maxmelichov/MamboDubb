@@ -97,6 +97,7 @@ from typing import Any, Callable
 
 from dubbing import tools, uvrelease
 
+from . import runner as runner_mod
 from .errors import ApiError, busy, invalid
 
 # id → the argv to run, for *this* platform. The only executable strings in this
@@ -1045,10 +1046,17 @@ class Installer:
             # `errors="replace"`: a package manager's progress output is full of
             # box-drawing characters, and a decode error must not be what ends an
             # install that was otherwise working.
+            # Detached like a job child (`runner.spawn_kwargs`), so the timeout
+            # kill below can reach the whole tree. A package manager keeps its
+            # real work in children that inherit the stdout pipe; killing only
+            # the leader leaves that pipe open, and the read loop then blocks
+            # until the orphans exit — a "stopped, the slot is free again"
+            # message over a slot that was not free at all.
             proc = self._spawn(list(argv), stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                text=True, encoding="utf-8", errors="replace",
-                               bufsize=1, env=self._env())
+                               bufsize=1, env=self._env(),
+                               **runner_mod.spawn_kwargs())
         except OSError as exc:
             self._finish(id_, False, f"{type(exc).__name__}: {exc}")
             return
@@ -1190,10 +1198,11 @@ class Installer:
 
     @staticmethod
     def _kill(proc: subprocess.Popen) -> None:
-        try:
-            proc.kill()
-        except OSError:
-            pass
+        # The tree, not the leader: `_run` detached the child exactly so this
+        # can reach the grandchildren still holding the stdout pipe. The
+        # platform split (killpg / taskkill) lives in `runner.terminate_tree`,
+        # and every branch of it ends in at least `proc.kill()`.
+        runner_mod.terminate_tree(proc, hard=True)
 
     def _line(self, text: str) -> None:
         with self._lock:

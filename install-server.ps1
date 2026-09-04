@@ -277,9 +277,23 @@ try {
     # lockfile, so it survives.
     $Extras = @('--extra', 'app')
     $HasNvidia = Have 'nvidia-smi'
-    if ($HasNvidia) {
+    # Only when the checkout actually declares the extra: this script is fetched
+    # from main but installs the latest release *tag*, and a tag cut before the
+    # extra existed (v0.5.0) makes `uv sync --extra cuda` an error, which killed
+    # every fresh Windows install on a machine with a card, the machines the
+    # extra was invented for. Asking pyproject is what keeps one script correct
+    # against every tag it might check out.
+    $HasCudaExtra = Select-String -Path (Join-Path $Dir 'pyproject.toml') `
+        -Pattern '^cuda\s*=' -Quiet
+    $UseCuda = $HasNvidia -and $HasCudaExtra
+    if ($UseCuda) {
         Info 'NVIDIA driver found; including the CUDA wheels (a few GB more)'
         $Extras += @('--extra', 'cuda')
+    }
+    elseif ($HasNvidia) {
+        Info "NVIDIA driver found, but the $Ref release predates the CUDA wheel option,"
+        Info 'so this install runs the models on the CPU. Rerun this script after the'
+        Info 'next release to switch to the CUDA wheels.'
     }
     else {
         Info 'No nvidia-smi on this machine, so the CPU-only wheels are the right ones.'
@@ -302,7 +316,7 @@ try {
     # Say out loud whether it worked. A GPU install that silently did not take
     # is the exact failure this whole block exists to end, so it is not allowed
     # to end in a guess.
-    if ($HasNvidia) {
+    if ($UseCuda) {
         # --no-sync, because a bare `uv run` re-syncs to the lockfile without
         # the extras that were just installed, and removes what they brought:
         # the CUDA torchaudio and the cuBLAS and cuDNN wheels the speech
@@ -424,7 +438,7 @@ try {
     Info 'Start it again later with:'
     Info "    cd $Dir; & `"$Uv`" run $($Extras -join ' ') mambodubb --port $Port"
     Info ''
-    if ($HasNvidia) {
+    if ($UseCuda) {
         Info 'Keep `--extra app --extra cuda` on every uv sync and uv run. A bare one'
         Info 'syncs to the lockfile without the extra and removes what it brought: the'
         Info 'CUDA torchaudio and the cuBLAS and cuDNN wheels the speech recogniser loads.'

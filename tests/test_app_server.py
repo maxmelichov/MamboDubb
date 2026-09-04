@@ -2335,12 +2335,16 @@ def test_setup_report_shape(client):
     assert body["ok"] == all(c["ok"] for c in body["checks"] if c["required"])
 
 
-def test_setup_grades_every_check_and_required_is_derived_from_it(client):
+def test_setup_grades_every_check_and_required_is_derived_from_it(client, monkeypatch):
     """`required` has two values and the question has three: absent diarization
     weights (every speaker in the video collapsed into one) were reported exactly
     as informationally as a Korean checkpoint a Hebrew→English run never opens."""
+    from dubbing import translate
     from dubbing_app import setup as setup_mod
 
+    # Pin the one per-machine grade (`setup.uv_row`) to the Mac answer, so the
+    # optional list below holds on the Linux boxes this suite also runs on.
+    monkeypatch.setattr(translate, "shells_out_to_uv", lambda: False)
     checks = client.get("/api/setup").json()["checks"]
     for c in checks:
         assert c["severity"] in setup_mod.SEVERITIES, c["id"]
@@ -2411,21 +2415,23 @@ def test_setup_absent_optional_tool_changes_nothing_about_readiness(monkeypatch,
     assert failing_required(after) == failing_required(before)
 
 
-def test_setup_names_the_stage_a_blocking_check_would_kill(client):
+def test_setup_names_the_stage_a_blocking_check_would_kill(client, monkeypatch):
     """"Runs will fail" is true and useless. The screen offers "Skip anyway —
     runs will fail at fetch", and only the server knows which stage that is."""
+    from dubbing import translate
     from dubbing_app import setup as setup_mod
 
+    monkeypatch.setattr(translate, "shells_out_to_uv", lambda: False)
     checks = {c["id"]: c for c in client.get("/api/setup").json()["checks"]}
     assert checks["ffmpeg"]["stage"] == "fetch"
     assert checks["model.translate"]["stage"] == "translate"
     assert checks["model.asr.en"]["stage"] == "tts"
     # Only where it means something: a stage on an optional row reads as urgency.
     assert "stage" not in checks["disk"] and "stage" not in checks["model.demucs"]
-    # `uv` is graded per machine (`setup.uv_row`). This suite runs on a Mac,
-    # where the MLX translator loads in-process and nothing shells out to uv, so
-    # the row is optional and carries no stage, like every other row that kills
-    # nothing here. The off-Mac half of that rule has its own test below.
+    # `uv` is graded per machine (`setup.uv_row`), pinned above to the Mac
+    # answer: the MLX translator loads in-process and nothing shells out to uv,
+    # so the row is optional and carries no stage, like every other row that
+    # kills nothing there. The off-Mac half of that rule has its own test below.
     assert checks["uv"]["severity"] == "optional" and "stage" not in checks["uv"]
     # The table still names the stage uv kills where it is blocking, because
     # `stage` is only ever attached to a blocking row and so is never read on
@@ -3012,9 +3018,15 @@ def test_a_cached_copy_only_counts_where_the_loader_would_read_it(tmp_path, monk
     `hebrew.attach_adapter` raises), so a `models--*` in the cache does not make
     either feature work and a green row for one would send the user away from
     the thing that is actually broken."""
+    from dubbing import hebrew, transcript
     from dubbing_app import setup as setup_mod
 
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
+    # And point the local directories somewhere empty: on a machine whose
+    # `models/` really holds these weights the rows would be honestly green,
+    # which is not the half of the probe this test is about.
+    monkeypatch.setattr(transcript, "LID_MODEL", tmp_path / "lid")
+    monkeypatch.setattr(hebrew, "ADAPTER_DIR", tmp_path / "he-lora")
     downloads = setup_mod.model_downloads()
     for id_ in ("model.lid", "model.tts.he"):
         hub = downloads[id_]["hub"]
@@ -3123,12 +3135,18 @@ def test_setup_marks_the_rows_the_app_can_install(client):
     # same reason it is a separate route: it fetches nothing.
     restore = ({install_mod.DIARIZATION_ID}
                if install_mod.diarization_source() is not None else set())
+    # Plus uv wherever the official release archive is the route: no Linux
+    # distribution packages uv at all, so there is no manager argv for it in
+    # `INSTALLERS` there and the button downloads astral's build instead.
+    uvbtn = ({install_mod.UV_ID}
+             if install_mod.uv_release_route(install_mod.UV_ID)
+             and install_mod.uv_triple() is not None else set())
     # Plus the Demucs cache, which is in no table either and is always fixable:
     # the fetch is demucs's own, the button just asks for it before a run does.
     # It was the one row on the whole screen with no gesture at all.
     assert installable == (set(install_mod.INSTALLERS)
                            | set(setup_mod.model_downloads()) | static | restore
-                           | {install_mod.DEMUCS_ID})
+                           | uvbtn | {install_mod.DEMUCS_ID})
     assert installable & set(tools.recipes()) == set(tools.auto_installers()) | static
     # And never the rows nothing here can fix: the G2P weights ride inside a
     # package (`uv sync`, not a download), and free disk is not a thing to fetch.
