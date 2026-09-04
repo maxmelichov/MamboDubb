@@ -1,7 +1,7 @@
 {
   "name": "dubbing-studio-desktop",
   "private": true,
-  "version": "0.5.0",
+  "version": "0.5.1",
   "type": "module",
   "scripts": {
     "pretauri": "uv run --script ../../scripts/build_desktop.py check && uv run --script ../../scripts/stage_desktop_payload.py",

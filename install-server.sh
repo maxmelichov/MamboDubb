@@ -275,8 +275,40 @@ info "Resolving Python dependencies (several GB the first time)"
 # pyproject.toml says why it cannot share this one). Synced here rather than
 # left for the first translate stage to create, which is otherwise where a
 # multi-gigabyte torch download lands, in the middle of a run.
+#
+# `--extra vllm` on a Linux machine with an NVIDIA driver: vLLM is the fast
+# translation backend and `translate._backend()` picks it by looking at what is
+# *in* this venv, so leaving it out is a machine that quietly translates at a
+# fraction of its own speed forever. Gated exactly like the CUDA question is
+# everywhere else (`nvidia-smi` ships with the driver), and only where the
+# extra exists: a release cut before it would turn the flag into an error.
+TRANSLATOR_EXTRA=""
+if [ "$OS" = Linux ] && have nvidia-smi \
+        && grep -q '^vllm *=' "$DIR/translator/pyproject.toml" 2>/dev/null; then
+    info "NVIDIA driver found; including vLLM (the fast translation backend)"
+    TRANSLATOR_EXTRA="--extra vllm"
+fi
 info "Resolving the translator venv (the 12B translation model runs there)"
-"$UV" sync --project "$DIR/translator" || die "uv sync for the translator failed"
+# shellcheck disable=SC2086  # word splitting is the point: two argv words
+"$UV" sync --project "$DIR/translator" $TRANSLATOR_EXTRA \
+    || die "uv sync for the translator failed"
+
+# Say out loud whether the GPU install took, exactly as the Windows installer
+# does: a CUDA torch beside a driver too old to run it is not an error
+# anywhere, it is a stem separation that takes sixteen hours, and the only
+# cheap moment to catch it is now.
+if [ "$OS" = Linux ] && have nvidia-smi; then
+    cuda_ok=$("$UV" run --no-sync python -c \
+        'import torch; print(torch.cuda.is_available())' 2>/dev/null || true)
+    if [ "$cuda_ok" = True ]; then
+        info "CUDA is available to torch."
+    else
+        info "warning: nvidia-smi is present but torch reports no CUDA device."
+        info "  Usually a driver too old for this torch's CUDA build. Update the"
+        info "  NVIDIA driver and rerun this script; every model runs on the CPU"
+        info "  until then."
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # The web UI.
