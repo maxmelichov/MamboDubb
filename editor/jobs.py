@@ -15,6 +15,8 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+from dubbing import tools
+
 from .runs import REPO_ROOT
 
 LOG_LINES = 400
@@ -28,9 +30,13 @@ class Job:
         self.label = label
         self.log: deque[str] = deque(maxlen=LOG_LINES)
         self.returncode: int | None = None
+        # Detached (`tools.spawn_kwargs`), so cancel can end the whole tree: a
+        # leader-only terminate leaves ffmpeg encoding and holding this stdout
+        # pipe, and `_pump` then never sees EOF — a job reported "running"
+        # forever over work that was asked to stop.
         self.proc = subprocess.Popen(
             cmd, cwd=REPO_ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1,
+            text=True, bufsize=1, **tools.spawn_kwargs(),
         )
         threading.Thread(target=self._pump, daemon=True).start()
 
@@ -55,7 +61,7 @@ class Job:
 
     def cancel(self) -> None:
         if self.returncode is None:
-            self.proc.terminate()
+            tools.terminate_tree(self.proc, hard=False)
 
 
 _JOBS: dict[str, Job] = {}

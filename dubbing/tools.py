@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
+import subprocess
 import sys
 from collections.abc import Iterable
 from pathlib import Path
@@ -360,14 +362,79 @@ def find_uv(platform: str | None = None) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Detached subprocess trees, and how to end them whole.
+# ---------------------------------------------------------------------------
+#
+# Lifted here from dubbing_app/runner.py, because runner.py was the one place
+# allowed to hold the platform split and every other spawn site needed it too:
+# the editor's job cancel killed only the `python -m dubbing` leader while
+# ffmpeg kept encoding, the app's package-manager timeout killed only the shell
+# while apt kept the stdout pipe open, and the translator close left a
+# GPU-holding worker behind its uv launcher. One primitive, one comment, every
+# caller. runner.py re-exports these names unchanged.
+
+# Windows has no `subprocess.CREATE_NEW_PROCESS_GROUP` attribute off Windows, so
+# the value is spelled out: the tests choose the platform, not the host.
+CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+
+
+def spawn_kwargs(platform: str | None = None) -> dict[str, Any]:
+    """How to detach a child so stopping it takes its children with it.
+
+    POSIX: its own session (`start_new_session`), which is what makes
+    `killpg` reach the yt-dlp and ffmpeg the pipeline spawns. Windows has no
+    process groups in that sense (`CREATE_NEW_PROCESS_GROUP` only buys the
+    right to send a Ctrl-Break) so the tree is torn down with `taskkill /T`
+    instead (see `terminate_tree`). Either way "stop" means the re-encode stops
+    too, which is the whole point of running work in a child.
+    """
+    if (platform or sys.platform) == "win32":
+        return {"creationflags": CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def terminate_tree(proc: subprocess.Popen, *, hard: bool,
+                   platform: str | None = None) -> None:
+    """Ask the child *and its children* to stop (`hard=False`), or make them.
+
+    Every branch ends in a call that kills at least the child itself: a cancel
+    that quietly did nothing would leave a job the UI believes is stopping
+    running for another forty minutes.
+    """
+    if (platform or sys.platform) == "win32":
+        if not hard:
+            try:
+                proc.send_signal(getattr(signal, "CTRL_BREAK_EVENT", signal.SIGTERM))
+                return
+            except (OSError, ValueError, AttributeError):
+                pass                       # not in its own group, or already gone
+        # TerminateProcess does not touch grandchildren; `taskkill /T` does.
+        try:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        return
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL if hard else signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        (proc.kill if hard else proc.terminate)()
+
+
 def install_hint(id_: str, platform: str | None = None) -> str:
     """A sentence naming the command, or the empty string when there is none."""
     cmd = command(id_, platform)
     return f"install it with `{cmd}`" if cmd else ""
 
 
-__all__ = ["DEFAULT_PATHEXT", "RECIPES", "TOOLS_DIR_ENV", "UNATTENDED", "UV_FALLBACKS",
+__all__ = ["CREATE_NEW_PROCESS_GROUP", "DEFAULT_PATHEXT", "RECIPES", "TOOLS_DIR_ENV", "UNATTENDED", "UV_FALLBACKS",
            "UV_PATH_ENV", "auto_installers", "command", "find_uv", "install_hint",
-           "path_names", "platform_key", "recipe", "recipes", "resolve_tool",
+           "path_names", "platform_key", "recipe", "recipes", "resolve_tool", "spawn_kwargs", "terminate_tree",
            "tools_bin", "unattended", "utf8_stdio", "uv_exe", "uv_fallbacks",
            "uv_home", "uv_on_path"]

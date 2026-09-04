@@ -206,9 +206,14 @@ class WorkerHandle:
         # waiting for a worker that is already talking. A mangled log character
         # is the cheaper failure.
         env = {**(env if env is not None else os.environ), "PYTHONIOENCODING": "utf-8"}
+        # Detached (`tools.spawn_kwargs`): `cmd` is `uv run ... python worker.py`,
+        # so the process this handle holds is uv and the model lives in its
+        # child. `close`'s escalation has to be able to end both, or a stuck
+        # worker survives its own kill holding the GPU.
+        from .tools import spawn_kwargs
         self._proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                       stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                                      errors="replace", env=env)
+                                      errors="replace", env=env, **spawn_kwargs())
         self._stderr_tail: deque[str] = deque(maxlen=40)
         self._next_id = 0
         self._lines: queue.Queue[str | None] = queue.Queue()
@@ -334,14 +339,17 @@ class WorkerHandle:
                 self._proc.stdin.close()
         except OSError:
             pass
+        from .tools import terminate_tree
         try:
             self._proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            self._proc.terminate()
+            # The tree, not the leader: this handle holds uv, the worker is its
+            # child, and a leader-only kill leaves the model on the GPU.
+            terminate_tree(self._proc, hard=False)
             try:
                 self._proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                self._proc.kill()
+                terminate_tree(self._proc, hard=True)
                 self._proc.wait()
 
 
@@ -1163,14 +1171,24 @@ def _vllm_installed() -> bool:
 
 
 def _cuda_count() -> int:
-    """How many CUDA devices this machine has, asked of `nvidia-smi`.
+    """How many CUDA devices this process may use, asked of `nvidia-smi`.
 
     Not of torch: the Setup screen polls `shells_out_to_uv()` → `_backend()` →
     `_vllm_available()` on every `GET /api/setup`, in a server process whose
     design rule is that it never imports torch (half a gigabyte resident to
     answer a yes/no). `nvidia-smi -L` prints one line per device, ships with
     the driver, and a card without a driver is not a card vLLM can use anyway.
-    Cached for the process: cards do not come and go mid-run."""
+
+    "May use", not "has": `CUDA_VISIBLE_DEVICES` masks cards per process, torch
+    honoured it, and the worker this count gates inherits it verbatim, so a
+    physical count on a masked process would send a dub into a vLLM init that
+    can only die. The successful probe is cached (cards do not come and go
+    mid-run); a failed one is not, because a driver mid-update answers garbage
+    once and correctly forever after; `setup._read_gpu_memory_bytes` learned
+    the same lesson."""
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if visible is not None and not any(v.strip() for v in visible.split(",")):
+        return 0
     global _CUDA_COUNT
     if _CUDA_COUNT is None:
         exe = shutil.which("nvidia-smi")
@@ -1178,12 +1196,17 @@ def _cuda_count() -> int:
             _CUDA_COUNT = 0
         else:
             try:
-                out = subprocess.run([exe, "-L"], capture_output=True, text=True,
-                                     timeout=30).stdout
-                _CUDA_COUNT = sum(1 for line in out.splitlines()
+                proc = subprocess.run([exe, "-L"], capture_output=True, text=True,
+                                      timeout=10)
+                if proc.returncode != 0:
+                    return 0                      # transient: do not cache it
+                _CUDA_COUNT = sum(1 for line in proc.stdout.splitlines()
                                   if line.startswith("GPU "))
             except (OSError, subprocess.SubprocessError):
-                _CUDA_COUNT = 0
+                return 0                          # transient: do not cache it
+    if visible is not None:
+        masked = sum(1 for v in visible.split(",") if v.strip())
+        return min(_CUDA_COUNT, masked)
     return _CUDA_COUNT
 
 

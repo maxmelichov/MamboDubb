@@ -37,7 +37,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import signal
 import subprocess
 import sys
 import threading
@@ -99,57 +98,12 @@ class LineRuns:
         self.emit(log_event(line if count == 1 else f"{line}  (x{count})"))
 
 
-# Windows has no `subprocess.CREATE_NEW_PROCESS_GROUP` attribute off Windows, so
-# the value is spelled out — the tests choose the platform, not the host.
-CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
-
-
-def spawn_kwargs(platform: str | None = None) -> dict[str, Any]:
-    """How to detach the job child so cancelling takes its children with it.
-
-    POSIX: its own session (`start_new_session`), which is what makes
-    `killpg` reach the yt-dlp and ffmpeg the pipeline spawns. Windows has no
-    process groups in that sense — `CREATE_NEW_PROCESS_GROUP` only buys the
-    right to send it a Ctrl-Break — so the tree is torn down with `taskkill /T`
-    instead (see `terminate_tree`). Either way "stop" means the re-encode stops
-    too, which is the whole point of running the job in a child.
-    """
-    if (platform or sys.platform) == "win32":
-        return {"creationflags": CREATE_NEW_PROCESS_GROUP}
-    return {"start_new_session": True}
-
-
-def terminate_tree(proc: subprocess.Popen, *, hard: bool,
-                   platform: str | None = None) -> None:
-    """Ask the child *and its children* to stop (`hard=False`), or make them.
-
-    Every branch ends in a call that kills at least the child itself: a cancel
-    that quietly did nothing would leave a job the UI believes is stopping
-    running for another forty minutes.
-    """
-    if (platform or sys.platform) == "win32":
-        if not hard:
-            try:
-                proc.send_signal(getattr(signal, "CTRL_BREAK_EVENT", signal.SIGTERM))
-                return
-            except (OSError, ValueError, AttributeError):
-                pass                       # not in its own group, or already gone
-        # TerminateProcess does not touch grandchildren; `taskkill /T` does.
-        try:
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                           capture_output=True, timeout=30)
-        except (OSError, subprocess.SubprocessError):
-            pass
-        if proc.poll() is None:
-            try:
-                proc.kill()
-            except OSError:
-                pass
-        return
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL if hard else signal.SIGTERM)
-    except (ProcessLookupError, PermissionError, OSError):
-        (proc.kill if hard else proc.terminate)()
+# The platform split (detach a child, end its whole tree) lives in
+# `dubbing.tools` now, where the editor, the installer and the translator can
+# reach it too; re-exported unchanged because this module is where the tests
+# and the callers learned the names.
+from dubbing.tools import (  # noqa: E402, F401  (re-exports)
+    CREATE_NEW_PROCESS_GROUP, spawn_kwargs, terminate_tree)
 
 
 def parse_stderr(line: str) -> dict[str, Any] | None:

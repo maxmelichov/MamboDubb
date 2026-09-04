@@ -366,13 +366,15 @@ def test_no_module_reaches_for_a_posix_only_import():
 
 def test_the_pipeline_never_hardcodes_a_posix_process_call_outside_the_runner():
     """`os.killpg`, `os.setsid` and `preexec_fn` are POSIX-only. The one module
-    that may name them is `dubbing_app/runner.py`, which branches on platform."""
+    that may name them is `dubbing/tools.py`, where `terminate_tree` branches on
+    platform (it moved there from runner.py so the editor, the installer and
+    the translator could stop whole trees too; runner.py only re-exports)."""
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
     for path in list((root / "dubbing").rglob("*.py")) + \
             list((root / "dubbing_app").rglob("*.py")):
-        if path.name == "runner.py":
+        if path.name == "tools.py" and path.parent.name == "dubbing":
             continue
         source = path.read_text(encoding="utf-8")
         for name in ("os.killpg", "os.setsid", "preexec_fn", "os.getpgid"):

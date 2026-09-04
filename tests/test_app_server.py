@@ -3137,10 +3137,12 @@ def test_setup_marks_the_rows_the_app_can_install(client):
                if install_mod.diarization_source() is not None else set())
     # Plus uv wherever the official release archive is the route: no Linux
     # distribution packages uv at all, so there is no manager argv for it in
-    # `INSTALLERS` there and the button downloads astral's build instead.
+    # `INSTALLERS` there and the button downloads astral's build instead. The
+    # real predicate, like the sibling terms, so this set never drifts from the
+    # three conditions `installable` actually checks (triple, home, route).
     uvbtn = ({install_mod.UV_ID}
              if install_mod.uv_release_route(install_mod.UV_ID)
-             and install_mod.uv_triple() is not None else set())
+             and install_mod.installable(install_mod.UV_ID) else set())
     # Plus the Demucs cache, which is in no table either and is always fixable:
     # the fetch is demucs's own, the button just asks for it before a run does.
     # It was the one row on the whole screen with no gesture at all.

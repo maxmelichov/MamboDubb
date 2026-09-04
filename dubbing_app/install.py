@@ -1200,9 +1200,17 @@ class Installer:
     def _kill(proc: subprocess.Popen) -> None:
         # The tree, not the leader: `_run` detached the child exactly so this
         # can reach the grandchildren still holding the stdout pipe. The
-        # platform split (killpg / taskkill) lives in `runner.terminate_tree`,
-        # and every branch of it ends in at least `proc.kill()`.
-        runner_mod.terminate_tree(proc, hard=True)
+        # platform split (killpg / taskkill) lives in `runner.terminate_tree`.
+        # Guarded on a live child like `runner.Manager._kill`: this runs in the
+        # timeout Timer's thread, and a child reaped in the race between
+        # `proc.wait()` and `killer.cancel()` would hand `killpg` a recycled
+        # pid. Nothing here may raise — an exception escaping `expire` after
+        # `timed_out.set()` is a held slot reported free.
+        try:
+            if proc.poll() is None:
+                runner_mod.terminate_tree(proc, hard=True)
+        except OSError:
+            pass
 
     def _line(self, text: str) -> None:
         with self._lock:
