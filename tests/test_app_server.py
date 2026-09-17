@@ -4665,12 +4665,39 @@ def test_low_vram_moves_the_translator_row_to_the_weights_it_will_load(
     assert str(translate.LOW_VRAM_MODEL_PATH) == row["path"]
 
 
-def test_setup_still_loads_no_torch(client, env_home):
+def test_setup_still_loads_no_torch(tmp_path):
     """The whole module's first rule, and the low-VRAM row is the one that was
     tempted to break it: reading VRAM through torch would put half a gigabyte
-    into the server process to answer a question about a checkbox."""
-    client.get("/api/setup")
-    assert "torch" not in sys.modules
+    into the server process to answer a question about a checkbox.
+
+    Probed in a fresh interpreter rather than with the suite's shared client:
+    other tests' worker threads (jobs, installs) import torch legitimately and
+    keep running past their own test, so a process-wide `sys.modules` assert
+    here failed or passed on their timing, not on what /api/setup loads.
+    """
+    import subprocess
+    import textwrap
+
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    script = textwrap.dedent("""\
+        import sys
+        from pathlib import Path
+        from fastapi.testclient import TestClient
+        from dubbing_app.app import create_app
+        with TestClient(create_app(Path(sys.argv[1]), ui_dir="")) as c:
+            c.get("/api/setup").raise_for_status()
+        assert "torch" not in sys.modules, "GET /api/setup imported torch"
+        print("no-torch-ok")
+    """)
+    env = {**os.environ, "HOME": str(tmp_path),
+           "PYTHONPATH": str(Path(__file__).resolve().parents[1])}
+    env.pop("HF_TOKEN", None)
+    env.pop("HUGGING_FACE_HUB_TOKEN", None)
+    proc = subprocess.run([sys.executable, "-c", script, str(outputs)],
+                          capture_output=True, text=True, env=env, timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    assert "no-torch-ok" in proc.stdout
 
 
 def test_a_token_in_the_env_file_changes_nothing_on_the_checklist(client, env_home):

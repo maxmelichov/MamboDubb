@@ -56,6 +56,8 @@ dependencies = [
     "speechbrain>=1.1.0",
     # Deterministic digit→word spelling for TTS (dubbing/numwords.py)
     "num2words>=0.5",
+    "audio-separator>=0.36",
+    "audioread>=3.1.0",
 ]
 
 [project.optional-dependencies]

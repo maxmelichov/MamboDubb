@@ -160,6 +160,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "'movie' (dialogue register, gentler time-compression with "
                         "rate continuity, and short greeting/interjection beats keep "
                         "the actor's original voice)")
+    p.add_argument("--separator", choices=("demucs", "roformer"), default=None,
+                   help="stem separation model: 'demucs' (default, htdemucs_ft) or "
+                        "'roformer' (MelBand RoFormer, markedly better speech "
+                        "recovery under loud music; re-separates the run)")
     p.add_argument("--dub-foreign", action=argparse.BooleanOptionalAction, default=None,
                    help="dub confident third-language passages into the target instead "
                         "of keeping original audio with a subtitle (default: off; "
@@ -216,6 +220,7 @@ RECORDED_DEFAULTS: dict[str, Any] = {
     "transcript": "auto",
     "tts_model": "1.7b",
     "dub_foreign": False,
+    "separator": "demucs",
 }
 RECORDED_SETTINGS = tuple(RECORDED_DEFAULTS)
 
@@ -312,7 +317,11 @@ def stage_params(args: argparse.Namespace, m: dict[str, Any]) -> dict[str, dict[
     return {
         "fetch": {"source": args.source, "captions": captions_key(args.captions),
                   "duration": args.duration, "src": args.src},
-        "stems": {},
+        # Kept empty for demucs rather than recording {"separator": "demucs"}:
+        # the fingerprint is a hash of the params dict, so naming the default
+        # would flip every existing run's stems fingerprint and re-separate,
+        # re-transcribe and re-diarize finished projects for a no-op.
+        "stems": {} if args.separator == "demucs" else {"separator": args.separator},
         # `origin` is this stage's own output (ASR, or the captions fallback when
         # ASR was unavailable), and the two produce different words for the same
         # parameters so a run whose transcript source changed invalidates
@@ -461,7 +470,7 @@ def _run_stage(run: _Run, stage: str) -> dict[str, Any] | None:
         fetch.run(m, workdir, source=args.source, captions_file=args.captions,
                   duration_limit=args.duration, src_lang=args.src)
     elif stage == "stems":
-        stems.run(m, workdir)
+        stems.run(m, workdir, separator=args.separator)
     elif stage == "transcript":
         transcript.run(m, workdir, src_lang=args.src, tgt_lang=args.tgt,
                        prefer=args.transcript)
