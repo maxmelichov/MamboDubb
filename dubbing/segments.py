@@ -176,6 +176,11 @@ DIARIZATION_HUB_ENV = "DUB_DIARIZATION_HUB"
 # why pyannote stays the default: a movie over the cap merges voices, and a
 # merged voice becomes one clone reference for two actors.
 DIARIZER_PROJECT = Path(__file__).resolve().parents[1] / "diarizer"
+# Hybrid runs the worker in 5-minute windows with the speaker slots reset per
+# window: the 8-speaker cap binds across a film, not within a scene, and the
+# hybrid reads only change points so cross-window label identity is not needed
+# (see worker.py). Plain nemotron mode stays single-pass, where it is.
+HYBRID_CHUNK_SEC = 300.0
 
 # What this stage records in `m["health"]` when it has to run degraded, and
 # therefore what a successful run of it clears (see `run`). Read by `report.run`.
@@ -1067,7 +1072,7 @@ def _load_diarization_pipeline() -> tuple[Any, str]:
     raise RuntimeError("; ".join(reasons) or "no diarization source configured")
 
 
-def _diarize_nemotron(vocals: Path) -> list[dict[str, Any]]:
+def _diarize_nemotron(vocals: Path, chunk_sec: float = 0.0) -> list[dict[str, Any]]:
     """Turns from the Nemotron-3 worker in the diarizer/ venv. Raises on failure.
 
     The first run syncs that venv (NeMo, gigabytes) and fetches the model into
@@ -1087,7 +1092,8 @@ def _diarize_nemotron(vocals: Path) -> list[dict[str, Any]]:
         out = Path(tmp) / "turns.json"
         proc = subprocess.run(
             [uv, "run", "--project", str(DIARIZER_PROJECT), "python",
-             str(DIARIZER_PROJECT / "worker.py"), str(vocals), str(out)],
+             str(DIARIZER_PROJECT / "worker.py"), str(vocals), str(out),
+             str(chunk_sec)],
             stdout=sys.stderr, stderr=sys.stderr)
         if proc.returncode != 0 or not out.is_file():
             raise RuntimeError(f"nemotron worker exited {proc.returncode}")
@@ -1117,7 +1123,9 @@ def _embed_span(vocals: Path, start: float, end: float):
     from . import audio
 
     clip = audio.decode_mono(vocals, 16000, start=start, end=end)
-    if len(clip) < 8000:                    # under half a second embeds as noise
+    # REFINE_MIN_TURN_SEC's floor: a 0.55s turn measured 0.33 to its own
+    # cluster, so 0.4s is where the repo already trusts an ECAPA embedding.
+    if len(clip) < int(16000 * REFINE_MIN_TURN_SEC):
         return None
     wav = torch.from_numpy(clip.astype("float32")).unsqueeze(0)
     with torch.no_grad():
@@ -1211,6 +1219,13 @@ def _hybrid_turns(turns: list[dict[str, Any]], extra: list[dict[str, Any]],
                                a["end"])
             far = _embed_span(vocals, b["start"],
                               min(b["end"], b["start"] + HYBRID_SIDE_SEC))
+            # A movie interjection is often too short to embed on its own. The
+            # near side may borrow its speaker's centroid (their longest turns
+            # really are that voice); the far side may not its label is the
+            # fused one under test, so its centroid is the near voice by
+            # construction and would veto every split.
+            if near is None:
+                near = centroid(a["speaker"])
             if different(near, far):
                 b["speaker"] = far_label(far, a["speaker"])
                 relabelled += 1
@@ -1266,7 +1281,7 @@ def diarize(vocals: Path, *, note: Callable[[str], None] | None = None,
     if backend == "hybrid":
         turns = diarize(vocals, note=note)
         try:
-            extra = _diarize_nemotron(vocals)
+            extra = _diarize_nemotron(vocals, chunk_sec=HYBRID_CHUNK_SEC)
         except Exception as exc:
             print(f"  segments: nemotron diarizer unavailable ({exc}) "
                   f"hybrid runs as plain pyannote", file=sys.stderr)
