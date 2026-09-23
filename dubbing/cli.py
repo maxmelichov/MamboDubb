@@ -164,6 +164,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="stem separation model: 'demucs' (default, htdemucs_ft) or "
                         "'roformer' (MelBand RoFormer, markedly better speech "
                         "recovery under loud music; re-separates the run)")
+    p.add_argument("--aligner", choices=("none", "wav2vec2"), default=None,
+                   help="forced alignment of the transcript's word times: 'none' "
+                        "(default, Whisper's own timestamps) or 'wav2vec2' "
+                        "(CTC alignment per speech span; Hebrew source only, "
+                        "other languages keep Whisper times)")
     p.add_argument("--diarizer", choices=("pyannote", "nemotron", "hybrid"), default=None,
                    help="speaker diarization: 'pyannote' (default), 'nemotron' "
                         "(nvidia/Nemotron-3-Diarization in its own venv; fast "
@@ -228,6 +233,7 @@ RECORDED_DEFAULTS: dict[str, Any] = {
     "dub_foreign": False,
     "separator": "demucs",
     "diarizer": "pyannote",
+    "aligner": "none",
 }
 RECORDED_SETTINGS = tuple(RECORDED_DEFAULTS)
 
@@ -333,8 +339,12 @@ def stage_params(args: argparse.Namespace, m: dict[str, Any]) -> dict[str, dict[
         # ASR was unavailable), and the two produce different words for the same
         # parameters so a run whose transcript source changed invalidates
         # everything built on it, instead of caching a degraded transcript forever.
+        # The aligner joins only when non-default, like "stems" and "segments":
+        # naming the default would flip every finished run's transcript.
         "transcript": {"src": args.src, "tgt": args.tgt, "prefer": args.transcript,
-                       "origin": m["source"].get("transcript_origin")},
+                       "origin": m["source"].get("transcript_origin"),
+                       **({} if args.aligner == "none"
+                          else {"aligner": args.aligner})},
         # segments reads tgt_lang from the manifest, so the pair must be in its
         # fingerprint with params={} changing --tgt never invalidated it.
         # The diarizer joins the fingerprint only when it is not the default,
@@ -486,7 +496,7 @@ def _run_stage(run: _Run, stage: str) -> dict[str, Any] | None:
         stems.run(m, workdir, separator=args.separator)
     elif stage == "transcript":
         transcript.run(m, workdir, src_lang=args.src, tgt_lang=args.tgt,
-                       prefer=args.transcript)
+                       prefer=args.transcript, aligner=args.aligner)
     elif stage == "segments":
         run.words = run.words or transcript.load_words(workdir, m)
         segments.run(m, workdir, run.words, transcript.load_foreign_spans(workdir, m),

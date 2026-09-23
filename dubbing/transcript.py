@@ -1558,7 +1558,7 @@ def _all_foreign_spans(caption_words: list[dict[str, Any]], recovered: list[dict
 
 
 def run(m: dict[str, Any], workdir: Path, *, src_lang: str, tgt_lang: str = "en",
-        prefer: str = "auto") -> None:
+        prefer: str = "auto", aligner: str = "none") -> None:
     """Stage 3: produce `words.json` the word stream every later stage reads."""
     # Legacy ISO-639 spellings ("iw", "ji", "in") mean the same language to us and
     # to Whisper's `language=` argument; normalize once so every downstream use
@@ -1602,6 +1602,14 @@ def run(m: dict[str, Any], workdir: Path, *, src_lang: str, tgt_lang: str = "en"
             "No transcript words were produced. For a local file pass --captions "
             "<file.srt|.vtt|.json3>, or check that the ASR model is present under models/."
         )
+
+    if aligner == "wav2vec2":
+        from . import align
+
+        vocals = workdir / m["files"].get("vocals", "")
+        align.refine_word_times(
+            words, vocals if vocals.is_file() else workdir / m["files"]["source_wav"],
+            src_lang)
 
     spans = _all_foreign_spans(caption_words, recovered, en_spans, src_lang, tgt_lang)
     (workdir / "words.json").write_text(
