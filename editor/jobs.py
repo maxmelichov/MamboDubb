@@ -70,7 +70,7 @@ _JOBS: dict[str, Job] = {}
 # The `python -m dubbing` flag each recorded option is spelled with.
 OPT_FLAGS = {"genre": "--genre", "register": "--register", "transcript": "--transcript",
              "tts_model": "--tts-model", "device": "--device", "captions": "--captions",
-             "separator": "--separator"}
+             "separator": "--separator", "diarizer": "--diarizer"}
 
 
 def dub_command(source: str, out: Path, *, src: str = "he", tgt: str = "en",

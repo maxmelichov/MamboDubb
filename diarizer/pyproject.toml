@@ -1,0 +1,22 @@
+##
+# Isolated Nemotron-3 diarization worker NOT a member of the root uv project.
+#
+# NeMo wants its own transformers/lightning stack, and the main venv pins
+# transformers==4.57.3 (qwen-tts breaks on 5.x), so this follows the
+# translator/ pattern: its own venv, spoken to over a one-shot subprocess
+# (`uv run --project diarizer python worker.py <wav> <out.json>`), synced
+# lazily the first time `--diarizer nemotron` is used.
+#
+# The dependency is a pinned git commit, not a PyPI release, because
+# nvidia/Nemotron-3-Diarization (Sep 2026) needs RoPE support in
+# TransformerEncoder that nemo-toolkit 3.0.0 does not have. Move to the next
+# tagged release when one carries it.
+##
+[project]
+name = "diarizer"
+version = "0.1.0"
+description = "Nemotron-3 diarization worker (isolated venv, NeMo)"
+requires-python = ">=3.12"
+dependencies = [
+    "nemo-toolkit[asr] @ git+https://github.com/NVIDIA-NeMo/NeMo.git@5dbdde68d3897c03faeda1b0d9655cd90b1c5e08",
+]

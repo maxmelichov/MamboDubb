@@ -168,6 +168,15 @@ DIARIZATION_REVISION = "3533c8cf8e369892e6b79ff1bf80f7b0286a54ee"
 # so a server started before the variable was set still sees it.
 DIARIZATION_HUB_ENV = "DUB_DIARIZATION_HUB"
 
+# --diarizer nemotron: nvidia/Nemotron-3-Diarization through its own uv venv
+# (diarizer/, NeMo wants a transformers this venv pins away). Measured against
+# the pyannote stack on this repo's runs: on-par agreement and full coverage on
+# a 7-speaker run, but the model is hard-capped at 8 speakers and collapsed a
+# 12-speaker film to 8 while leaving 16% of its dialogue unmarked. That cap is
+# why pyannote stays the default: a movie over the cap merges voices, and a
+# merged voice becomes one clone reference for two actors.
+DIARIZER_PROJECT = Path(__file__).resolve().parents[1] / "diarizer"
+
 # What this stage records in `m["health"]` when it has to run degraded, and
 # therefore what a successful run of it clears (see `run`). Read by `report.run`.
 HEALTH_KEYS = ("segments.diarization", "segments.turn_refinement")
@@ -1058,9 +1067,41 @@ def _load_diarization_pipeline() -> tuple[Any, str]:
     raise RuntimeError("; ".join(reasons) or "no diarization source configured")
 
 
-def diarize(vocals: Path, *, note: Callable[[str], None] | None = None
-            ) -> list[dict[str, Any]]:
+def _diarize_nemotron(vocals: Path) -> list[dict[str, Any]]:
+    """Turns from the Nemotron-3 worker in the diarizer/ venv. Raises on failure.
+
+    The first run syncs that venv (NeMo, gigabytes) and fetches the model into
+    the Hugging Face cache; both are cached for every run after. The JSON comes
+    back through a file because NeMo owns the worker's stdout (see worker.py).
+    """
+    import json
+    import subprocess
+    import tempfile
+
+    from . import tools
+
+    uv = tools.find_uv()
+    if uv is None:
+        raise RuntimeError("uv not found, and the nemotron diarizer runs in a uv venv")
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "turns.json"
+        proc = subprocess.run(
+            [uv, "run", "--project", str(DIARIZER_PROJECT), "python",
+             str(DIARIZER_PROJECT / "worker.py"), str(vocals), str(out)],
+            stdout=sys.stderr, stderr=sys.stderr)
+        if proc.returncode != 0 or not out.is_file():
+            raise RuntimeError(f"nemotron worker exited {proc.returncode}")
+        return json.loads(out.read_text(encoding="utf-8"))
+
+
+def diarize(vocals: Path, *, note: Callable[[str], None] | None = None,
+            backend: str = "pyannote") -> list[dict[str, Any]]:
     """Pyannote turns; returns [] (single-speaker fallback) if unavailable.
+
+    `backend="nemotron"` asks the Nemotron-3 worker first and falls back to
+    pyannote on any failure the degraded path is the default engine, not
+    silence, and the reason lands in the run's health record like every other
+    fallback this stage takes.
 
     The fallback is a real verdict about the run every speaker becomes one
     voice, so every line is cloned from one reference and the reason is recorded
@@ -1071,6 +1112,14 @@ def diarize(vocals: Path, *, note: Callable[[str], None] | None = None
     with the app (`DIARIZATION_DIR`), so a machine that has never signed in to
     Hugging Face gets per-speaker voices like any other.
     """
+    if backend == "nemotron":
+        try:
+            return _diarize_nemotron(vocals)
+        except Exception as exc:
+            print(f"  segments: nemotron diarizer unavailable ({exc}) "
+                  f"falling back to pyannote", file=sys.stderr)
+            if note is not None:
+                note(f"nemotron unavailable ({exc}) pyannote used instead")
     try:
         os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
         import torch
@@ -1452,14 +1501,16 @@ def _noter(health: dict[str, str], key: str) -> Callable[[str], None]:
     return lambda reason: health.__setitem__(key, reason)
 
 
-def _speaker_turns(vocals: Path, health: dict[str, str]) -> list[dict[str, Any]]:
+def _speaker_turns(vocals: Path, health: dict[str, str],
+                   diarizer: str = "pyannote") -> list[dict[str, Any]]:
     """Diarize, absorb the blips, then refine the boundaries with embeddings.
 
     Smooth before refining: the blips absorbed here are what chop one speaker's
     long run into short ones, and every later decision (word labels, boundary
     cuts, embedding runs) must read the same, smoothed view of the turns.
     """
-    turns = diarize(vocals, note=_noter(health, "segments.diarization"))
+    turns = diarize(vocals, note=_noter(health, "segments.diarization"),
+                    backend=diarizer)
     smoothed = smooth_turns(turns)
     moved = sum(1 for a, b in zip(sorted(turns, key=lambda t: (t["start"], t["end"])),
                                   smoothed) if a["speaker"] != b["speaker"])
@@ -1543,7 +1594,8 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
         spans: list[dict[str, Any]] | None = None, dub_foreign: bool = False,
         genre: str = "documentary",
         overrides: list[tuple[float, float, bool]] | None = None,
-        lang_runs: list[dict[str, Any]] | None = None) -> None:
+        lang_runs: list[dict[str, Any]] | None = None,
+        diarizer: str = "pyannote") -> None:
     """Stage 4: words plus diarization in, one keep-or-dub decision per segment out."""
     from . import audio, manifest, transcript
 
@@ -1553,7 +1605,7 @@ def run(m: dict[str, Any], workdir: Path, words: list[dict[str, Any]],
     src_wav = workdir / m["files"]["source_wav"]
     health = _clear_health(m)
 
-    turns = _speaker_turns(vocals, health)
+    turns = _speaker_turns(vocals, health, diarizer=diarizer)
     assign_word_speakers(words, turns)
     segs = words_to_segments(words, src_lang, tgt_lang, turns=turns)
     # Word timestamps run late after a handoff; diarization knows better where the

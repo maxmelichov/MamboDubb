@@ -164,6 +164,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="stem separation model: 'demucs' (default, htdemucs_ft) or "
                         "'roformer' (MelBand RoFormer, markedly better speech "
                         "recovery under loud music; re-separates the run)")
+    p.add_argument("--diarizer", choices=("pyannote", "nemotron"), default=None,
+                   help="speaker diarization model: 'pyannote' (default) or "
+                        "'nemotron' (nvidia/Nemotron-3-Diarization in its own "
+                        "venv; fast and overlap-aware but capped at 8 speakers, "
+                        "so not for a full film cast)")
     p.add_argument("--dub-foreign", action=argparse.BooleanOptionalAction, default=None,
                    help="dub confident third-language passages into the target instead "
                         "of keeping original audio with a subtitle (default: off; "
@@ -221,6 +226,7 @@ RECORDED_DEFAULTS: dict[str, Any] = {
     "tts_model": "1.7b",
     "dub_foreign": False,
     "separator": "demucs",
+    "diarizer": "pyannote",
 }
 RECORDED_SETTINGS = tuple(RECORDED_DEFAULTS)
 
@@ -330,8 +336,14 @@ def stage_params(args: argparse.Namespace, m: dict[str, Any]) -> dict[str, dict[
                        "origin": m["source"].get("transcript_origin")},
         # segments reads tgt_lang from the manifest, so the pair must be in its
         # fingerprint with params={} changing --tgt never invalidated it.
+        # The diarizer joins the fingerprint only when it is not the default,
+        # for the same reason "stems" above only names a non-default separator:
+        # hashing {"diarizer": "pyannote"} into runs that never chose one would
+        # re-segment every finished project, and with it drop every lock.
         "segments": {"src": args.src, "tgt": args.tgt, "dub_foreign": args.dub_foreign,
-                     "genre": args.genre},
+                     "genre": args.genre,
+                     **({} if args.diarizer == "pyannote"
+                        else {"diarizer": args.diarizer})},
         "translate": {"src": args.src, "tgt": args.tgt,
                       "context": m["source"].get("context") or "",
                       "register": args.register, "genre": args.genre},
@@ -479,7 +491,8 @@ def _run_stage(run: _Run, stage: str) -> dict[str, Any] | None:
         segments.run(m, workdir, run.words, transcript.load_foreign_spans(workdir, m),
                      dub_foreign=args.dub_foreign, genre=args.genre,
                      overrides=run.overrides,
-                     lang_runs=transcript.load_lang_runs(workdir, m))
+                     lang_runs=transcript.load_lang_runs(workdir, m),
+                     diarizer=args.diarizer)
     elif stage == "translate":
         translate.run(m, workdir, source=args.src, target=args.tgt, save=run.save,
                       register=args.register, genre=args.genre)

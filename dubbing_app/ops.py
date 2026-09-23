@@ -43,7 +43,7 @@ STAGE_FIELDS = _edit.STAGE_FIELDS
 # Pipeline parameters a project can record, and the `dubbing.cli` argument each
 # one is. Anything absent keeps `dubbing.edit._args`'s own fallback.
 OPT_KEYS = ("genre", "register", "tts_model", "device", "transcript", "dub_foreign",
-            "separator")
+            "separator", "diarizer")
 
 
 # --------------------------------------------------------------------------
@@ -216,6 +216,7 @@ def _opts(m: dict[str, Any]) -> dict[str, Any]:
             "transcript": stored.get("transcript") or "auto",
             "dub_foreign": bool(stored.get("dub_foreign")),
             "separator": stored.get("separator") or "demucs",
+            "diarizer": stored.get("diarizer") or "pyannote",
             "captions": stored.get("captions")}
 
 
@@ -324,7 +325,7 @@ def full_run_argv(workdir: Path, source: dict[str, Any]) -> list[str]:
             "--tgt", tgt,
             "--register", opts["register"], "--genre", opts["genre"],
             "--tts-model", tts_model, "--transcript", opts["transcript"],
-            "--separator", opts["separator"]]
+            "--separator", opts["separator"], "--diarizer", opts["diarizer"]]
     if source.get("duration_limit"):
         argv += ["--duration", str(source["duration_limit"])]
     if source.get("context"):
