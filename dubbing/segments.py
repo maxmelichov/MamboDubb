@@ -1094,6 +1094,147 @@ def _diarize_nemotron(vocals: Path) -> list[dict[str, Any]]:
         return json.loads(out.read_text(encoding="utf-8"))
 
 
+# --diarizer hybrid: pyannote identities plus the handoffs only Nemotron heard.
+# Measured on this repo's film run: Nemotron found 7 speaker changes pyannote
+# had fused into one turn, and every one was real, with cross-boundary ECAPA
+# similarity 0.26 or lower against a same-speaker baseline median of 0.55
+# (p10 0.46). The gate below sits between those distributions.
+HYBRID_SPLIT_MAX_SIM = 0.35   # split only when the two sides sound this unalike
+HYBRID_ADOPT_MIN_SIM = 0.35   # far side adopts an existing voice at or above this
+HYBRID_MATCH_SEC = 0.5        # a pyannote boundary this close = same handoff
+HYBRID_EDGE_SEC = 0.4         # never cut closer than this to a turn's own edge
+HYBRID_SIDE_SEC = 1.8         # audio embedded on each side of a candidate cut
+
+
+def _embed_span(vocals: Path, start: float, end: float):
+    """Unit-normalized ECAPA embedding of one stretch of the vocals, or None."""
+    model = _load_ecapa()
+    if model is None:
+        return None
+    import numpy as np
+    import torch
+
+    from . import audio
+
+    clip = audio.decode_mono(vocals, 16000, start=start, end=end)
+    if len(clip) < 8000:                    # under half a second embeds as noise
+        return None
+    wav = torch.from_numpy(clip.astype("float32")).unsqueeze(0)
+    with torch.no_grad():
+        emb = model.encode_batch(wav.to(next(model.parameters()).device))
+    v = emb.squeeze().cpu().numpy().astype(float)
+    return v / (np.linalg.norm(v) or 1.0)
+
+
+def _change_points(turns: list[dict[str, Any]]) -> list[float]:
+    """Midpoints of the handoffs a diarizer heard: adjacent turns, new speaker."""
+    ts = sorted(turns, key=lambda t: (t["start"], t["end"]))
+    return [0.5 * (a["end"] + b["start"]) for a, b in zip(ts, ts[1:])
+            if a["speaker"] != b["speaker"] and b["start"] - a["end"] < 1.0]
+
+
+def _hybrid_turns(turns: list[dict[str, Any]], extra: list[dict[str, Any]],
+                  vocals: Path) -> list[dict[str, Any]]:
+    """Pyannote's turns, split where Nemotron heard a handoff pyannote fused.
+
+    Nemotron cannot be the diarizer (its 8-speaker cap merges a film's cast)
+    but it is a sharp change detector, so only its *change points* are
+    borrowed, and only where ECAPA agrees the two sides are different voices.
+    A change pyannote missed shows up in two shapes, both measured on the film
+    run:
+
+    * mid-turn: pyannote drew one turn across the handoff. The turn is split.
+    * at a same-speaker junction: pyannote heard the pause but gave both sides
+      one label. The far turn is relabelled.
+
+    Either way the far side adopts the nearest other existing voice, or a
+    fresh "<speaker>b" label (refine_turns' convention) when nothing matches
+    meaning worst case it gets its own clone reference instead of another
+    actor's.
+    """
+    if not turns:
+        return turns
+    out = sorted((dict(t) for t in turns), key=lambda t: (t["start"], t["end"]))
+    centroids: dict[str, Any] = {}
+
+    def centroid(spk: str):
+        if spk not in centroids:
+            import numpy as np
+
+            longest = sorted((t for t in out if t["speaker"] == spk),
+                             key=lambda t: t["end"] - t["start"], reverse=True)[:3]
+            embs = [e for t in longest
+                    if (e := _embed_span(vocals, t["start"], t["end"])) is not None]
+            if embs:
+                mean = np.mean(embs, axis=0)
+                centroids[spk] = mean / (np.linalg.norm(mean) or 1.0)
+            else:
+                centroids[spk] = None
+        return centroids[spk]
+
+    def far_label(far, host_speaker: str) -> str:
+        label, best = None, HYBRID_ADOPT_MIN_SIM
+        for spk in sorted({x["speaker"] for x in out}):
+            if spk == host_speaker:
+                continue
+            c = centroid(spk)
+            if c is not None and float(far @ c) > best:
+                best, label = float(far @ c), spk
+        if label is None:
+            existing = {x["speaker"] for x in out}
+            label = host_speaker + "b"
+            while label in existing:
+                label += "b"
+        return label
+
+    def different(near, far) -> bool:
+        return (near is not None and far is not None
+                and float(near @ far) < HYBRID_SPLIT_MAX_SIM)
+
+    split = relabelled = 0
+    for t in _change_points(extra):
+        changes = _change_points(out)       # recomputed: earlier edits count
+        if any(abs(t - c) <= HYBRID_MATCH_SEC for c in changes):
+            continue                        # pyannote already hears this handoff
+        # A same-speaker junction near the change point: the pause exists, the
+        # label does not change across it. Relabel the far turn if the voices
+        # really differ.
+        junction = None
+        for a, b in zip(out, out[1:]):
+            if (a["speaker"] == b["speaker"]
+                    and abs(0.5 * (a["end"] + b["start"]) - t) <= HYBRID_MATCH_SEC):
+                junction = (a, b)
+                break
+        if junction is not None:
+            a, b = junction
+            near = _embed_span(vocals, max(a["start"], a["end"] - HYBRID_SIDE_SEC),
+                               a["end"])
+            far = _embed_span(vocals, b["start"],
+                              min(b["end"], b["start"] + HYBRID_SIDE_SEC))
+            if different(near, far):
+                b["speaker"] = far_label(far, a["speaker"])
+                relabelled += 1
+            continue
+        host = next((x for x in out
+                     if x["start"] + HYBRID_EDGE_SEC < t < x["end"] - HYBRID_EDGE_SEC),
+                    None)
+        if host is None:
+            continue                        # in silence, or grazing a turn edge
+        near = _embed_span(vocals, max(host["start"], t - HYBRID_SIDE_SEC), t)
+        far = _embed_span(vocals, t, min(host["end"], t + HYBRID_SIDE_SEC))
+        if not different(near, far):
+            continue
+        out.append({"speaker": far_label(far, host["speaker"]),
+                    "start": round(t, 3), "end": host["end"]})
+        host["end"] = round(t, 3)
+        out.sort(key=lambda x: (x["start"], x["end"]))
+        split += 1
+    if split or relabelled:
+        print(f"  segments: hybrid fixed {split + relabelled} handoff(s) pyannote "
+              f"missed ({split} split, {relabelled} relabelled)", file=sys.stderr)
+    return out
+
+
 def diarize(vocals: Path, *, note: Callable[[str], None] | None = None,
             backend: str = "pyannote") -> list[dict[str, Any]]:
     """Pyannote turns; returns [] (single-speaker fallback) if unavailable.
@@ -1101,7 +1242,9 @@ def diarize(vocals: Path, *, note: Callable[[str], None] | None = None,
     `backend="nemotron"` asks the Nemotron-3 worker first and falls back to
     pyannote on any failure the degraded path is the default engine, not
     silence, and the reason lands in the run's health record like every other
-    fallback this stage takes.
+    fallback this stage takes. `backend="hybrid"` runs pyannote for identities
+    and adds the handoffs only Nemotron heard (see _hybrid_turns); a broken
+    worker degrades it to plain pyannote the same way.
 
     The fallback is a real verdict about the run every speaker becomes one
     voice, so every line is cloned from one reference and the reason is recorded
@@ -1120,6 +1263,17 @@ def diarize(vocals: Path, *, note: Callable[[str], None] | None = None,
                   f"falling back to pyannote", file=sys.stderr)
             if note is not None:
                 note(f"nemotron unavailable ({exc}) pyannote used instead")
+    if backend == "hybrid":
+        turns = diarize(vocals, note=note)
+        try:
+            extra = _diarize_nemotron(vocals)
+        except Exception as exc:
+            print(f"  segments: nemotron diarizer unavailable ({exc}) "
+                  f"hybrid runs as plain pyannote", file=sys.stderr)
+            if note is not None:
+                note(f"nemotron unavailable ({exc}) hybrid ran as plain pyannote")
+            return turns
+        return _hybrid_turns(turns, extra, vocals)
     try:
         os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
         import torch

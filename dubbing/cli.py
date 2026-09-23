@@ -164,11 +164,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="stem separation model: 'demucs' (default, htdemucs_ft) or "
                         "'roformer' (MelBand RoFormer, markedly better speech "
                         "recovery under loud music; re-separates the run)")
-    p.add_argument("--diarizer", choices=("pyannote", "nemotron"), default=None,
-                   help="speaker diarization model: 'pyannote' (default) or "
-                        "'nemotron' (nvidia/Nemotron-3-Diarization in its own "
-                        "venv; fast and overlap-aware but capped at 8 speakers, "
-                        "so not for a full film cast)")
+    p.add_argument("--diarizer", choices=("pyannote", "nemotron", "hybrid"), default=None,
+                   help="speaker diarization: 'pyannote' (default), 'nemotron' "
+                        "(nvidia/Nemotron-3-Diarization in its own venv; fast "
+                        "but capped at 8 speakers, so not for a full film "
+                        "cast), or 'hybrid' (pyannote identities plus the "
+                        "speaker handoffs only nemotron hears; the movie pick)")
     p.add_argument("--dub-foreign", action=argparse.BooleanOptionalAction, default=None,
                    help="dub confident third-language passages into the target instead "
                         "of keeping original audio with a subtitle (default: off; "

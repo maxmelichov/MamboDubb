@@ -68,6 +68,105 @@ def test_a_broken_nemotron_falls_back_to_pyannote_and_says_so(monkeypatch, tmp_p
     assert any("nemotron" in n for n in seen)
 
 
+def test_hybrid_lands_in_the_segments_fingerprint():
+    args = _args(["--diarizer", "hybrid"])
+    cli.resolve_settings(args, {"source": {}})
+    assert cli.stage_params(args, {"source": {}})["segments"]["diarizer"] == "hybrid"
+
+
+def test_hybrid_with_a_broken_worker_is_plain_pyannote(monkeypatch, tmp_path):
+    def boom(vocals):
+        raise RuntimeError("no venv here")
+
+    pyannote_turns = [{"speaker": "SPEAKER_00", "start": 0.0, "end": 2.0}]
+    monkeypatch.setattr(segments, "_diarize_nemotron", boom)
+    monkeypatch.setattr(segments, "_load_diarization_pipeline",
+                        lambda: (FakePyannote(pyannote_turns), "test"))
+    seen: list[str] = []
+    out = segments.diarize(tmp_path / "vocals.wav", note=seen.append,
+                           backend="hybrid")
+    assert out == []  # FakePyannote below is not a real pipeline; the point is
+    # the note: the worker failure is recorded and the run continues.
+    assert any("nemotron" in n for n in seen)
+
+
+class FakePyannote:
+    def __init__(self, turns):
+        self.turns = turns
+
+
+def _fake_embed(vectors):
+    """An `_embed_span` whose answer depends on where the span sits.
+
+    `vectors` maps (start, end) coverage to a unit vector: the first range
+    containing the span's midpoint wins. Spans outside every range embed as
+    None, like silence would.
+    """
+    def embed(vocals, start, end):
+        mid = 0.5 * (start + end)
+        for (a, b), v in vectors.items():
+            if a <= mid <= b:
+                return v
+        return None
+
+    return embed
+
+
+def test_hybrid_splits_a_turn_nemotron_heard_a_change_inside(monkeypatch):
+    import numpy as np
+
+    va, vb = np.array([1.0, 0.0]), np.array([0.0, 1.0])
+    monkeypatch.setattr(segments, "_embed_span",
+                        _fake_embed({(0.0, 5.0): va, (5.0, 10.0): vb}))
+    py = [{"speaker": "SPEAKER_00", "start": 0.0, "end": 10.0}]
+    ne = [{"speaker": "speaker_0", "start": 0.0, "end": 5.0},
+          {"speaker": "speaker_1", "start": 5.0, "end": 10.0}]
+    out = segments._hybrid_turns(py, ne, Path("vocals.wav"))
+    assert [(t["start"], t["end"], t["speaker"]) for t in out] == [
+        (0.0, 5.0, "SPEAKER_00"), (5.0, 10.0, "SPEAKER_00b")]
+
+
+def test_hybrid_relabels_the_far_side_of_a_fused_junction(monkeypatch):
+    import numpy as np
+
+    va, vb = np.array([1.0, 0.0]), np.array([0.0, 1.0])
+    monkeypatch.setattr(segments, "_embed_span",
+                        _fake_embed({(0.0, 4.0): va, (4.0, 8.0): vb, (8.0, 12.0): vb}))
+    # pyannote heard the pause at 4.0 but filed both sides as SPEAKER_00, and
+    # already knows a SPEAKER_01 elsewhere whose voice matches the far side.
+    py = [{"speaker": "SPEAKER_00", "start": 0.0, "end": 3.9},
+          {"speaker": "SPEAKER_00", "start": 4.1, "end": 8.0},
+          {"speaker": "SPEAKER_01", "start": 8.0, "end": 12.0}]
+    ne = [{"speaker": "speaker_0", "start": 0.0, "end": 3.9},
+          {"speaker": "speaker_1", "start": 4.1, "end": 8.0}]
+    out = segments._hybrid_turns(py, ne, Path("vocals.wav"))
+    assert out[1]["speaker"] == "SPEAKER_01"   # adopted, not minted
+
+
+def test_hybrid_leaves_same_voice_turns_alone(monkeypatch):
+    import numpy as np
+
+    va = np.array([1.0, 0.0])
+    monkeypatch.setattr(segments, "_embed_span",
+                        _fake_embed({(0.0, 10.0): va}))
+    py = [{"speaker": "SPEAKER_00", "start": 0.0, "end": 10.0}]
+    ne = [{"speaker": "speaker_0", "start": 0.0, "end": 5.0},
+          {"speaker": "speaker_1", "start": 5.0, "end": 10.0}]
+    assert segments._hybrid_turns(py, ne, Path("vocals.wav")) == py
+
+
+def test_hybrid_skips_a_change_pyannote_already_hears(monkeypatch):
+    def never(*a, **k):
+        raise AssertionError("no embedding should be computed")
+
+    monkeypatch.setattr(segments, "_embed_span", never)
+    py = [{"speaker": "SPEAKER_00", "start": 0.0, "end": 5.0},
+          {"speaker": "SPEAKER_01", "start": 5.0, "end": 10.0}]
+    ne = [{"speaker": "speaker_0", "start": 0.0, "end": 4.9},
+          {"speaker": "speaker_1", "start": 5.1, "end": 10.0}]
+    assert segments._hybrid_turns(py, ne, Path("vocals.wav")) == py
+
+
 def test_the_editor_rerun_command_carries_the_diarizer():
     from editor import jobs
 
