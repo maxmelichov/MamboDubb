@@ -176,11 +176,13 @@ DIARIZATION_HUB_ENV = "DUB_DIARIZATION_HUB"
 # why pyannote stays the default: a movie over the cap merges voices, and a
 # merged voice becomes one clone reference for two actors.
 DIARIZER_PROJECT = Path(__file__).resolve().parents[1] / "diarizer"
-# Hybrid runs the worker in 5-minute windows with the speaker slots reset per
+# Hybrid runs the worker in short windows with the speaker slots reset per
 # window: the 8-speaker cap binds across a film, not within a scene, and the
 # hybrid reads only change points so cross-window label identity is not needed
 # (see worker.py). Plain nemotron mode stays single-pass, where it is.
-HYBRID_CHUNK_SEC = 300.0
+# Swept on the film run: 300s recovered 5 confirmed handoffs, 150s recovered
+# 8, and 90s found more candidates without one more surviving the ECAPA gate.
+HYBRID_CHUNK_SEC = 150.0
 
 # What this stage records in `m["health"]` when it has to run degraded, and
 # therefore what a successful run of it clears (see `run`). Read by `report.run`.
