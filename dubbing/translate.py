@@ -2220,6 +2220,61 @@ def _preceding_for(seg: dict[str, Any], *, own_pair: bool, seg_pivot: bool, seg_
     return "", ""
 
 
+# Movie-genre translate-time length check, the translate→measure→revise shape
+# (ESTsoft, EMNLP 2025: duration-led revision buys speech overlap that no TTS
+# speed knob recovers). A movie line whose translation cannot be spoken inside
+# its own segment gets one guarded `shorten` now, before TTS exists, so the
+# timeline's reactive shorten (drift-triggered, after synthesis) fires less
+# and later stages compress less. Documentary runs are untouched: their prompt
+# and their output stay byte-identical.
+#
+# The rate is deliberately generous and the slack wide: this pass exists to
+# catch clear overruns, not to squeeze every line the timeline stage still
+# owns fine-grained fit, with the real clip duration in hand.
+PRE_BUDGET_RATE = {"words": 2.9, "chars": 6.5}   # speakable units per second
+PRE_BUDGET_SLACK = 1.2                           # only clearly-over lines revise
+
+
+def pre_budget_units(seg: dict[str, Any], target: str) -> int | None:
+    """The segment's speakable budget in `speech_units`, or None untimed."""
+    dur = float(seg.get("end") or 0) - float(seg.get("start") or 0)
+    if dur <= 0:
+        return None
+    unit = "chars" if script_for(target) in ("cjk", "hangul") else "words"
+    return max(3, int(dur * PRE_BUDGET_RATE[unit]))
+
+
+def _fit_movie_budget(h, seg: dict[str, Any], *, seg_src: str, seg_tgt: str,
+                      seg_pivot: bool, mids: dict[int, str], context: str,
+                      preceding: str) -> bool:
+    """One pre-TTS shorten when the line clearly overruns its segment.
+
+    Reuses `shorten` and every guard it carries (names, numbers, negation,
+    scripts), so a refusal leaves the full translation in place and the
+    timeline's own rescue still gets its turn later.
+    """
+    budget = pre_budget_units(seg, seg_tgt)
+    if budget is None:
+        return False
+    if speech_units(seg["text_en"], seg_tgt) <= budget * PRE_BUDGET_SLACK:
+        return False
+    if seg_pivot:
+        src_text, src_lang = mids.get(seg["id"], ""), "en"
+        if not src_text:
+            return False
+    else:
+        src_text, src_lang = seg["text"], seg_src
+    tight = shorten(h.processor, h.model, src_text, seg["text_en"], budget,
+                    source=src_lang, target=seg_tgt, context=context,
+                    preceding=preceding, device=h.device)
+    if not tight:
+        return False
+    print(f"  translate: seg {seg['id']} over its ~{budget}-unit time budget "
+          f"pre-shortened", file=sys.stderr)
+    seg["text_en"] = tight.strip()
+    return True
+
+
 def _dub_pass(h, dub: list[dict[str, Any]], *, source: str, target: str, context: str,
               before: dict[int, str], prev_of: dict[int, dict[str, Any]],
               mids: dict[int, str], established: dict[str, list[str]],
@@ -2305,6 +2360,10 @@ def _dub_pass(h, dub: list[dict[str, Any]], *, source: str, target: str, context
         text = _finalize_numbers(text, seg_tgt)
         if is_target_text(text, seg_tgt):
             seg["text_en"] = text.strip()
+            if genre == "movie":
+                _fit_movie_budget(h, seg, seg_src=seg_src, seg_tgt=seg_tgt,
+                                  seg_pivot=seg_pivot, mids=mids, context=seg_ctx,
+                                  preceding=prev_mid if seg_pivot else preceding)
             established[seg_tgt] = update_established_names(
                 established.setdefault(seg_tgt, []), seg["text_en"], seg_tgt)
             if seg_pivot:
