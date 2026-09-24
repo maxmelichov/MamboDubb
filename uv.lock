@@ -846,7 +846,7 @@ sdist = { url = "https://files.pythonhosted.org/packages/d5/9d/9a13947db23737548
 
 [[package]]
 name = "dubbingqwen"
-version = "0.5.1"
+version = "0.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "accelerate" },
