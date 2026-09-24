@@ -97,3 +97,22 @@ def test_a_typed_flag_beats_the_movie_default():
     cli.resolve_settings(args, {"source": {}})
     assert args.separator == "demucs"
     assert args.diarizer == "hybrid"
+
+
+def test_asr_default_fingerprints_exactly_like_before_the_flag_existed():
+    args = _args([])
+    cli.resolve_settings(args, {"source": {}})
+    assert args.asr == "sequential"
+    assert "asr" not in cli.stage_params(args, {"source": {}})["transcript"]
+
+
+def test_batched_asr_lands_in_the_transcript_fingerprint():
+    args = _args(["--asr", "batched"])
+    cli.resolve_settings(args, {"source": {}})
+    assert cli.stage_params(args, {"source": {}})["transcript"]["asr"] == "batched"
+
+
+def test_batched_asr_is_not_part_of_the_movie_preset():
+    args = _args(["--genre", "movie"])
+    cli.resolve_settings(args, {"source": {}})
+    assert args.asr == "sequential"

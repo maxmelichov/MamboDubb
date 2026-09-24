@@ -675,11 +675,26 @@ def speech_only(segments: Iterable[Any], *,
 
 
 def words_from_whisper(model, source_wav: Path, lang: str, *,
-                       limit: float | None = None) -> list[dict[str, Any]]:
-    segments, _info = model.transcribe(
-        str(source_wav), language=lang, beam_size=5, word_timestamps=True,
-        condition_on_previous_text=False, vad_filter=True,
-    )
+                       limit: float | None = None,
+                       asr: str = "sequential") -> list[dict[str, Any]]:
+    # Batched: faster-whisper's BatchedInferencePipeline, measured 10-12x
+    # faster on this hardware. Kept opt-in because its transcript is not the
+    # same one: ~9% of words differ from the sequential pass even on clean
+    # speech (chunk boundaries fall differently), and nobody has measured
+    # which side is more often right against references. Iterate batched,
+    # ship sequential.
+    if asr == "batched":
+        from faster_whisper import BatchedInferencePipeline
+
+        segments, _info = BatchedInferencePipeline(model=model).transcribe(
+            str(source_wav), language=lang, beam_size=5, word_timestamps=True,
+            condition_on_previous_text=False, batch_size=16,
+        )
+    else:
+        segments, _info = model.transcribe(
+            str(source_wav), language=lang, beam_size=5, word_timestamps=True,
+            condition_on_previous_text=False, vad_filter=True,
+        )
     return _words_of(speech_only(segments), limit=limit)
 
 
@@ -1499,7 +1514,8 @@ def _refuse_unusable_captions(prefer: str, raw: str | None, *, has_captions: boo
 
 
 def _asr_transcript(m: dict[str, Any], workdir: Path, *, src_lang: str, tgt_lang: str,
-                    limit: float | None, caption_words: list[dict[str, Any]]) -> tuple[
+                    limit: float | None, caption_words: list[dict[str, Any]],
+                    asr: str = "sequential") -> tuple[
                         list[dict[str, Any]], list[dict[str, Any]],
                         list[dict[str, Any]], list[dict[str, Any]]]:
     """Transcribe locally. Returns (words, recovered spans, target spans, lang runs)."""
@@ -1508,7 +1524,7 @@ def _asr_transcript(m: dict[str, Any], workdir: Path, *, src_lang: str, tgt_lang
     model = load_asr(src_lang)
     # Transcribe the isolated voice; judge speech presence from the mix.
     words = words_from_whisper(model, vocals if vocals.is_file() else source_wav,
-                               src_lang, limit=limit)
+                               src_lang, limit=limit, asr=asr)
     caption_spans = (foreign_spans(caption_words, src=src_lang, tgt=tgt_lang)
                      if caption_words else [])
     duration = float(limit or m["source"]["duration"])
@@ -1558,7 +1574,7 @@ def _all_foreign_spans(caption_words: list[dict[str, Any]], recovered: list[dict
 
 
 def run(m: dict[str, Any], workdir: Path, *, src_lang: str, tgt_lang: str = "en",
-        prefer: str = "auto", aligner: str = "none") -> None:
+        prefer: str = "auto", aligner: str = "none", asr: str = "sequential") -> None:
     """Stage 3: produce `words.json` the word stream every later stage reads."""
     # Legacy ISO-639 spellings ("iw", "ji", "in") mean the same language to us and
     # to Whisper's `language=` argument; normalize once so every downstream use
@@ -1588,7 +1604,7 @@ def run(m: dict[str, Any], workdir: Path, *, src_lang: str, tgt_lang: str = "en"
         try:
             words, recovered, en_spans, lang_runs = _asr_transcript(
                 m, workdir, src_lang=src_lang, tgt_lang=tgt_lang, limit=limit,
-                caption_words=caption_words)
+                caption_words=caption_words, asr=asr)
             origin = "asr"
         except Exception as exc:
             if prefer == "asr" or not caption_words:

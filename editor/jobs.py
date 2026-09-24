@@ -71,7 +71,7 @@ _JOBS: dict[str, Job] = {}
 OPT_FLAGS = {"genre": "--genre", "register": "--register", "transcript": "--transcript",
              "tts_model": "--tts-model", "device": "--device", "captions": "--captions",
              "separator": "--separator", "diarizer": "--diarizer",
-             "aligner": "--aligner"}
+             "aligner": "--aligner", "asr": "--asr"}
 
 
 def dub_command(source: str, out: Path, *, src: str = "he", tgt: str = "en",

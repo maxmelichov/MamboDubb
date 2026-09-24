@@ -166,6 +166,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="stem separation model: 'demucs' (default, htdemucs_ft) or "
                         "'roformer' (MelBand RoFormer, markedly better speech "
                         "recovery under loud music; re-separates the run)")
+    p.add_argument("--asr", choices=("sequential", "batched"), default=None,
+                   help="Whisper decoding: 'sequential' (default) or 'batched' "
+                        "(10x faster; ~9%% of words come out different, and "
+                        "nobody has measured which side is righter, so iterate "
+                        "batched and ship sequential)")
     p.add_argument("--aligner", choices=("none", "wav2vec2"), default=None,
                    help="forced alignment of the transcript's word times: 'none' "
                         "(default, Whisper's own timestamps) or 'wav2vec2' "
@@ -236,6 +241,7 @@ RECORDED_DEFAULTS: dict[str, Any] = {
     "separator": "demucs",
     "diarizer": "pyannote",
     "aligner": "none",
+    "asr": "sequential",
 }
 RECORDED_SETTINGS = tuple(RECORDED_DEFAULTS)
 
@@ -364,7 +370,9 @@ def stage_params(args: argparse.Namespace, m: dict[str, Any]) -> dict[str, dict[
         "transcript": {"src": args.src, "tgt": args.tgt, "prefer": args.transcript,
                        "origin": m["source"].get("transcript_origin"),
                        **({} if args.aligner == "none"
-                          else {"aligner": args.aligner})},
+                          else {"aligner": args.aligner}),
+                       **({} if args.asr == "sequential"
+                          else {"asr": args.asr})},
         # segments reads tgt_lang from the manifest, so the pair must be in its
         # fingerprint with params={} changing --tgt never invalidated it.
         # The diarizer joins the fingerprint only when it is not the default,
@@ -516,7 +524,7 @@ def _run_stage(run: _Run, stage: str) -> dict[str, Any] | None:
         stems.run(m, workdir, separator=args.separator)
     elif stage == "transcript":
         transcript.run(m, workdir, src_lang=args.src, tgt_lang=args.tgt,
-                       prefer=args.transcript, aligner=args.aligner)
+                       prefer=args.transcript, aligner=args.aligner, asr=args.asr)
     elif stage == "segments":
         run.words = run.words or transcript.load_words(workdir, m)
         segments.run(m, workdir, run.words, transcript.load_foreign_spans(workdir, m),
