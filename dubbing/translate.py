@@ -79,6 +79,11 @@ HUB_ID = "mlx-community/gemma-4-12B-it-6bit"
 # (throughput; Linux only) and plain transformers (the fallback, and the only CUDA
 # option on Windows). See `select_backend`.
 CUDA_MODEL_PATH = REPO_ROOT / "models" / "gemma-4-12b-it-cuda"
+# Where those weights download from: the ungated re-upload of the gated
+# google/gemma-4-12B-it, byte-identical bf16, so the Setup screen's Download
+# button needs no Hugging Face account (its standing rule). This is what the
+# local models/gemma-4-12b-it-cuda dir on the dev machines was fetched from.
+CUDA_HUB_ID = "unsloth/gemma-4-12b-it"
 # Low-VRAM mode: the same 12B, quantised harder, so an ordinary card or a 16 GB
 # Mac can run the translator at all. Same model, same prompts, same
 # post-processing only the weights are smaller. See `low_vram`.
@@ -1583,6 +1588,23 @@ def mlx_model_for(low: bool) -> tuple[Path, str, str]:
     if low:
         return LOW_VRAM_MODEL_PATH, LOW_VRAM_HUB_ID, "mlx mxfp4, low VRAM"
     return MODEL_PATH, HUB_ID, "mlx 6-bit"
+
+
+def translator_model_for(low: bool) -> tuple[Path, str, str]:
+    """(local dir, hub id, label) of the weights THIS machine's run loads. Pure.
+
+    The MLX builds exist only for the in-process Mac path; everywhere else the
+    isolated venv's workers open CUDA_MODEL_PATH (see `_worker_cmd`), and in
+    low-VRAM mode bitsandbytes quantises those same bf16 weights at load time,
+    so the directory and the download are the same either way. The old setup
+    screen asked `mlx_model_for` on every platform and its Download button
+    fetched 9.7 GB of MLX weights a Linux or Windows run never opens while
+    the translate stage then died on the missing CUDA dir.
+    """
+    if shells_out_to_uv():
+        label = "cuda bf16, 4-bit at load (low VRAM)" if low else "cuda bf16"
+        return CUDA_MODEL_PATH, CUDA_HUB_ID, label
+    return mlx_model_for(low)
 
 
 def mlx_weights() -> tuple[str, str]:

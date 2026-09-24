@@ -91,6 +91,15 @@ def client(outputs, fake):
         yield c
 
 
+@pytest.fixture()
+def mac_row(monkeypatch):
+    """Pin the Mac translator row: the row follows the platform now, and these
+    tests assert the MLX spellings whatever machine runs the suite."""
+    from dubbing import translate
+
+    monkeypatch.setattr(translate, "shells_out_to_uv", lambda: False)
+
+
 @contextmanager
 def live_server(app):
     """A real uvicorn on a real loopback socket.
@@ -2496,7 +2505,7 @@ def test_setup_asks_for_no_credential_anywhere_and_still_diarizes(client, monkey
     assert segments.DIARIZATION_MODEL not in [c for c, _, _ in sources]
 
 
-def test_setup_model_paths_come_from_the_pipeline(client):
+def test_setup_model_paths_come_from_the_pipeline(client, mac_row):
     """The check reads `dubbing`'s own constants, so it cannot drift from what
     the pipeline actually opens."""
     from dubbing import transcript, translate, tts
@@ -2774,7 +2783,7 @@ def test_an_incomplete_row_says_which_of_wait_and_resume_it_means(tmp_path, monk
 
 
 def test_an_incomplete_row_is_installable_and_the_plan_queues_it(client, tmp_path,
-                                                                 monkeypatch):
+                                                                 monkeypatch, mac_row):
     """A half-downloaded blocking model has to be fixable from the screen it is
     red on. `snapshot_download` resumes from the partial files, so the row's
     button and the queue both cost only the half that is not there."""
@@ -3942,7 +3951,7 @@ def hub_stub(monkeypatch, tmp_path):
     return {"local": local, "gate": gate, "step": step}
 
 
-def test_setup_model_rows_carry_hub_and_download_size(client):
+def test_setup_model_rows_carry_hub_and_download_size(client, mac_row):
     """"Download" without a size is the blind spinner this feature was refused
     over; the row carries the repo and the approximate cost up front."""
     from dubbing import translate
@@ -3961,7 +3970,7 @@ def test_setup_model_rows_carry_hub_and_download_size(client):
     assert checks["model.demucs"]["installable"] is True
 
 
-def test_download_reports_progress_and_reprobes_the_row(client, hub_stub):
+def test_download_reports_progress_and_reprobes_the_row(client, hub_stub, mac_row):
     from dubbing_app import setup as setup_mod
 
     total = setup_mod.model_downloads()["model.translate"]["bytes"]
@@ -3990,7 +3999,7 @@ def test_download_reports_progress_and_reprobes_the_row(client, hub_stub):
     assert body["check"]["installable"] is True
 
 
-def test_download_holds_the_one_install_slot(client, hub_stub, stub_installers):
+def test_download_holds_the_one_install_slot(client, hub_stub, stub_installers, mac_row):
     """One slot for tools and models alike: two downloads share one disk and
     the screen has one progress row."""
     stub_installers()
@@ -4505,7 +4514,7 @@ def test_a_failed_item_does_not_end_the_queue(client, stub_plan, tmp_path):
     assert (tmp_path / "b").exists()
 
 
-def test_the_queue_block_tracks_the_item_in_flight(client, monkeypatch, hub_stub):
+def test_the_queue_block_tracks_the_item_in_flight(client, monkeypatch, hub_stub, mac_row):
     """The progress the header draws is the slot's own — one poll carries both
     which item (`queue.pos`) and how far into it (`bytes_done`)."""
     monkeypatch.setattr(setup_mod, "install_plan",
@@ -4645,7 +4654,7 @@ def test_low_vram_save_then_probe_agree(client, env_home, monkeypatch):
 
 
 def test_low_vram_moves_the_translator_row_to_the_weights_it_will_load(
-        client, env_home, monkeypatch):
+        client, env_home, monkeypatch, mac_row):
     """With the mode on, the checklist must describe the mxfp4 build. A row that
     kept reporting the 6-bit one would call the machine ready for a model the
     run never opens, and its Download button would fetch 9.7 GB the run ignores
@@ -4663,6 +4672,31 @@ def test_low_vram_moves_the_translator_row_to_the_weights_it_will_load(
     assert row["hub"] == translate.LOW_VRAM_HUB_ID
     assert row["download_bytes"] < 9_700_000_000
     assert str(translate.LOW_VRAM_MODEL_PATH) == row["path"]
+
+
+def test_off_mac_the_translator_row_is_the_cuda_dir_the_run_loads(
+        client, env_home, monkeypatch):
+    """The cross-platform dead end this row used to be: on Linux and Windows
+    the run loads models/gemma-4-12b-it-cuda (translator worker argv), but the
+    row offered the MLX build so "Install everything" downloaded 9.7 GB the
+    run never opens and the translate stage then died on the missing CUDA dir.
+    Low-VRAM mode changes nothing off-Mac: bitsandbytes quantises the same
+    bf16 weights at load, so the row must not move."""
+    from dubbing import translate
+
+    monkeypatch.setattr(translate, "shells_out_to_uv", lambda: True)
+    monkeypatch.delenv("DUBBING_LOW_VRAM", raising=False)
+    row = next(c for c in client.get("/api/setup").json()["checks"]
+               if c["id"] == "model.translate")
+    assert row["hub"] == translate.CUDA_HUB_ID
+    assert row["path"] == str(translate.CUDA_MODEL_PATH)
+    assert row["download_bytes"] > 20_000_000_000
+
+    client.post("/api/setup/low_vram", json={"enabled": True})
+    row = next(c for c in client.get("/api/setup").json()["checks"]
+               if c["id"] == "model.translate")
+    assert row["hub"] == translate.CUDA_HUB_ID
+    assert row["path"] == str(translate.CUDA_MODEL_PATH)
 
 
 def test_setup_still_loads_no_torch(tmp_path):

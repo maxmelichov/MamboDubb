@@ -1140,16 +1140,21 @@ def model_downloads() -> dict[str, dict[str, Any]]:
     """
     from dubbing import hebrew, transcript, translate, tts
 
-    # The translator row follows low-VRAM mode, and has to: with the mode on,
-    # a row that reported the 6-bit build would call the machine ready for a
-    # model the run is not going to open, and its Download button would fetch
-    # 9.7 GB the run then ignores before quietly fetching 6.4 GB more.
-    tr_path, tr_hub, _ = translate.mlx_model_for(low_vram_state()[0])
+    # The translator row follows low-VRAM mode AND the platform, and has to:
+    # with the mode on, a row that reported the 6-bit build would call the
+    # machine ready for a model the run is not going to open; and off the Mac
+    # the run loads the CUDA bf16 dir, so the old always-MLX row's Download
+    # button fetched 9.7 GB of MLX weights a Linux or Windows run never opens
+    # while the translate stage then died on the missing CUDA dir.
+    tr_path, tr_hub, _ = translate.translator_model_for(low_vram_state()[0])
     out: dict[str, dict[str, Any]] = {
-        # Measured: mxfp4 6,399,849,874 and 6-bit 9,760,955,850 bytes on disk.
+        # Measured: mxfp4 6,399,849,874, 6-bit 9,760,955,850 and the CUDA
+        # bf16 dir 23,951,798,087 bytes on disk.
         "model.translate": {"hub": tr_hub, "path": tr_path,
-                            "bytes": 6_390_000_000 if tr_hub == translate.LOW_VRAM_HUB_ID
-                            else 9_760_000_000, "cached": True},
+                            "bytes": {translate.LOW_VRAM_HUB_ID: 6_390_000_000,
+                                      translate.CUDA_HUB_ID: 23_950_000_000,
+                                      }.get(tr_hub, 9_760_000_000),
+                            "cached": True},
     }
     # Only the default checkpoint is offered. 0.6b exists in tts.TTS_MODELS
     # solely so old manifests that recorded it can re-run; a download button
