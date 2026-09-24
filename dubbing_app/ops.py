@@ -209,15 +209,24 @@ def _opts(m: dict[str, Any]) -> dict[str, Any]:
     pipeline parameters instead of silently switching genre/register.
     """
     stored = recorded_opts(m)
-    return {"genre": stored.get("genre") or "documentary",
+    genre = stored.get("genre") or "documentary"
+    # A movie project whose stems/segments knobs were never recorded gets the
+    # movie defaults, the same rule as `cli.resolve_settings` for a fresh run.
+    # A project that has run once records its knobs explicitly (full_run_argv
+    # passes them and the CLI writes them to m["source"]), so this cannot
+    # silently upgrade a finished project's fingerprints.
+    from dubbing.cli import MOVIE_DEFAULTS
+
+    movie = MOVIE_DEFAULTS if genre == "movie" else {}
+    return {"genre": genre,
             "register": stored.get("register") or "narration",
             "tts_model": stored.get("tts_model") or "1.7b",
             "device": stored.get("device"),
             "transcript": stored.get("transcript") or "auto",
             "dub_foreign": bool(stored.get("dub_foreign")),
-            "separator": stored.get("separator") or "demucs",
-            "diarizer": stored.get("diarizer") or "pyannote",
-            "aligner": stored.get("aligner") or "none",
+            "separator": stored.get("separator") or movie.get("separator") or "demucs",
+            "diarizer": stored.get("diarizer") or movie.get("diarizer") or "pyannote",
+            "aligner": stored.get("aligner") or movie.get("aligner") or "none",
             "captions": stored.get("captions")}
 
 

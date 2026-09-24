@@ -67,3 +67,33 @@ def test_the_editor_rerun_command_carries_the_aligner():
 
     cmd = jobs.dub_command("in.mp4", Path("out"), opts={"aligner": "wav2vec2"})
     assert cmd[cmd.index("--aligner") + 1] == "wav2vec2"
+
+
+def test_a_fresh_movie_run_gets_the_movie_defaults():
+    args = _args(["--genre", "movie"])
+    cli.resolve_settings(args, {"source": {}})
+    assert (args.separator, args.diarizer, args.aligner) == (
+        "roformer", "hybrid", "wav2vec2")
+
+
+def test_an_existing_movie_run_keeps_what_it_recorded():
+    args = _args([])
+    cli.resolve_settings(args, {"source": {"genre": "movie", "separator": "demucs",
+                                           "diarizer": "pyannote", "aligner": "none"}})
+    assert (args.separator, args.diarizer, args.aligner) == (
+        "demucs", "pyannote", "none")
+
+
+def test_an_old_movie_manifest_without_the_new_keys_is_not_upgraded():
+    # Recorded before the flags existed: non-empty source, no separator key.
+    args = _args([])
+    cli.resolve_settings(args, {"source": {"genre": "movie", "register": "dialogue"}})
+    assert (args.separator, args.diarizer, args.aligner) == (
+        "demucs", "pyannote", "none")
+
+
+def test_a_typed_flag_beats_the_movie_default():
+    args = _args(["--genre", "movie", "--separator", "demucs"])
+    cli.resolve_settings(args, {"source": {}})
+    assert args.separator == "demucs"
+    assert args.diarizer == "hybrid"

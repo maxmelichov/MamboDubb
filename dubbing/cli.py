@@ -158,8 +158,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--genre", choices=("documentary", "movie"), default=None,
                    help="content genre: 'documentary' (default, current behavior) or "
                         "'movie' (dialogue register, gentler time-compression with "
-                        "rate continuity, and short greeting/interjection beats keep "
-                        "the actor's original voice)")
+                        "rate continuity, short greeting/interjection beats keep "
+                        "the actor's original voice, and on a new run the movie "
+                        "defaults: roformer separation, hybrid diarization, "
+                        "wav2vec2 word alignment)")
     p.add_argument("--separator", choices=("demucs", "roformer"), default=None,
                    help="stem separation model: 'demucs' (default, htdemucs_ft) or "
                         "'roformer' (MelBand RoFormer, markedly better speech "
@@ -237,6 +239,19 @@ RECORDED_DEFAULTS: dict[str, Any] = {
 }
 RECORDED_SETTINGS = tuple(RECORDED_DEFAULTS)
 
+# What `--genre movie` means for the knobs nobody typed, on a brand-new run
+# only: each one is a measured winner on film audio (RoFormer +3-4dB vocal
+# SI-SDR under a score, hybrid recovering the handoffs pyannote fused, the
+# aligner correcting 90ms-1.4s Whisper onsets). A run that exists already
+# keeps whatever it recorded even the empty answer, because "no opinion" on
+# an old manifest predates these flags, and upgrading it silently would
+# re-separate and re-segment a finished project.
+MOVIE_DEFAULTS: dict[str, str] = {
+    "separator": "roformer",
+    "diarizer": "hybrid",
+    "aligner": "wav2vec2",
+}
+
 
 def resolve_settings(args: argparse.Namespace, m: dict[str, Any] | None = None) -> None:
     """Fill in the options nobody typed: this run's own, then the built-in default.
@@ -275,10 +290,15 @@ def resolve_settings(args: argparse.Namespace, m: dict[str, Any] | None = None) 
     # with it, while fetch quietly falls back to ASR.
     if args.captions is None and recorded.get("captions"):
         args.captions = Path(recorded["captions"])
+    fresh = not recorded
     for key, fallback in RECORDED_DEFAULTS.items():
         if getattr(args, key, None) is not None:
             continue                       # typed on this command line: it wins
         value = recorded.get(key)
+        if value is None and fresh and args.genre == "movie":
+            # `genre` precedes these keys in RECORDED_DEFAULTS, so by the time
+            # the loop reaches them args.genre is already resolved.
+            fallback = MOVIE_DEFAULTS.get(key, fallback)
         setattr(args, key, fallback if value is None else value)
 
 
