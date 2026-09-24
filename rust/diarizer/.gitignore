@@ -1,0 +1,5 @@
+# Fetched, not vendored. Restore with:
+#   curl -sL https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-x64-1.28.0.tgz \
+#     | tar xz --strip-components=1 --one-top-level=onnxruntime
+target/
+onnxruntime/

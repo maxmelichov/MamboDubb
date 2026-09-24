@@ -232,3 +232,10 @@ dev = [
     "pytest>=8",
     "ruff>=0.8",
 ]
+
+[tool.pytest.ini_options]
+# The suite is tests/ alone. third_party/ holds vendored checkouts (pyannote
+# weights, Qwen3-TTS with its own examples/test_*.py that import torch and
+# touch CUDA at collection time); letting pytest wander in there fails the
+# suite on whatever the vendored code does to a busy GPU.
+testpaths = ["tests"]

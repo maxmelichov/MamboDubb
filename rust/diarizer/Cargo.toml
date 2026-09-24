@@ -1,0 +1,21 @@
+[package]
+name = "mambodubb-diarizer"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Nemotron-3 diarization worker: drop-in for diarizer/worker.py without the NeMo venv"
+
+[[bin]]
+name = "mambodubb-diarizer"
+path = "src/main.rs"
+
+[dependencies]
+# CPU execution provider only: the GPUs belong to training jobs, and the
+# model runs faster than realtime on CPU.
+parakeet-rs = { version = "0.3.8", features = ["sortformer"] }
+hound = "3.5"
+serde_json = "1.0"
+
+[profile.release]
+lto = true
+strip = true

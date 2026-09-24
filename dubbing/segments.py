@@ -176,6 +176,7 @@ DIARIZATION_HUB_ENV = "DUB_DIARIZATION_HUB"
 # why pyannote stays the default: a movie over the cap merges voices, and a
 # merged voice becomes one clone reference for two actors.
 DIARIZER_PROJECT = Path(__file__).resolve().parents[1] / "diarizer"
+DIARIZER_RUST = Path(__file__).resolve().parents[1] / "rust" / "diarizer"
 # Hybrid runs the worker in short windows with the speaker slots reset per
 # window: the 8-speaker cap binds across a film, not within a scene, and the
 # hybrid reads only change points so cross-window label identity is not needed
@@ -1074,12 +1075,26 @@ def _load_diarization_pipeline() -> tuple[Any, str]:
     raise RuntimeError("; ".join(reasons) or "no diarization source configured")
 
 
-def _diarize_nemotron(vocals: Path, chunk_sec: float = 0.0) -> list[dict[str, Any]]:
-    """Turns from the Nemotron-3 worker in the diarizer/ venv. Raises on failure.
+def _nemotron_binary() -> Path | None:
+    """The compiled diarizer if it exists: DUB_DIARIZER_BIN, else the repo build."""
+    override = os.environ.get("DUB_DIARIZER_BIN")
+    if override:
+        path = Path(override)
+        return path if path.is_file() else None
+    built = DIARIZER_RUST / "target" / "release" / "mambodubb-diarizer"
+    return built if built.is_file() else None
 
-    The first run syncs that venv (NeMo, gigabytes) and fetches the model into
-    the Hugging Face cache; both are cached for every run after. The JSON comes
-    back through a file because NeMo owns the worker's stdout (see worker.py).
+
+def _diarize_nemotron(vocals: Path, chunk_sec: float = 0.0) -> list[dict[str, Any]]:
+    """Turns from a Nemotron-3 worker, compiled or venv. Raises on failure.
+
+    The compiled worker (rust/diarizer, ONNX Runtime on CPU) is preferred when
+    its binary exists: same argv, same JSON, no NeMo venv. Otherwise the first
+    run syncs that venv (NeMo, gigabytes) and fetches the model into the
+    Hugging Face cache; both are cached for every run after. The JSON comes
+    back through a file either way because NeMo owns the worker's stdout (see
+    worker.py); the compiled worker keeps the contract so the parent cannot
+    tell them apart.
     """
     import json
     import subprocess
@@ -1087,15 +1102,19 @@ def _diarize_nemotron(vocals: Path, chunk_sec: float = 0.0) -> list[dict[str, An
 
     from . import tools
 
-    uv = tools.find_uv()
-    if uv is None:
-        raise RuntimeError("uv not found, and the nemotron diarizer runs in a uv venv")
+    compiled = _nemotron_binary()
+    if compiled is not None:
+        argv = [str(compiled)]
+    else:
+        uv = tools.find_uv()
+        if uv is None:
+            raise RuntimeError("uv not found, and the nemotron diarizer runs in a uv venv")
+        argv = [uv, "run", "--project", str(DIARIZER_PROJECT), "python",
+                str(DIARIZER_PROJECT / "worker.py")]
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "turns.json"
         proc = subprocess.run(
-            [uv, "run", "--project", str(DIARIZER_PROJECT), "python",
-             str(DIARIZER_PROJECT / "worker.py"), str(vocals), str(out),
-             str(chunk_sec)],
+            [*argv, str(vocals), str(out), str(chunk_sec)],
             stdout=sys.stderr, stderr=sys.stderr)
         if proc.returncode != 0 or not out.is_file():
             raise RuntimeError(f"nemotron worker exited {proc.returncode}")

@@ -1,0 +1,12 @@
+# ort-sys normally downloads a static ONNX Runtime from cdn.pyke.io, which
+# some networks 403. We link the official Microsoft 1.28.0 shared build in
+# onnxruntime/ instead (see .gitignore for the fetch command). The rpath is
+# relative so the binary finds the .so from target/release without env vars.
+[env]
+ORT_LIB_LOCATION = { value = "onnxruntime/lib", relative = true }
+# The Microsoft release ships shared libraries only; without this flag
+# ort-sys looks for a static libonnxruntime.a and fails.
+ORT_PREFER_DYNAMIC_LINK = "1"
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-args=-Wl,-rpath,$ORIGIN/../../onnxruntime/lib"]
